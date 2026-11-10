@@ -5800,2947 +5800,2910 @@ export function Playground({
 
   return (
     <div>
-        <section className={sectionCls} aria-label="Playground">
-          {/* Sticky play strip — money outcomes only
-              (build v154): a pure render over the SAME priced
-              result (`playgroundResult`) the readout below renders:
-              no new state, no storage, no actions, and no pricing
-              of its own. It pins at the top of the Playground tab
-              while the tab scrolls so the live figures stay in
-              view next to the dials. The pinned figures are
-              ONLY the three money outcomes:
-              Cash left after tax (pg.cashLeftAfterTax — cash in
-              minus the net tax bill, before any spending),
-              Spending (pgSpendingCents — the one spending
-              resolution buildPgInputs prices: the Spending
-              dial's local figure while it parses, else the Tax
-              Plan record's figure the dial sources from), and
-              Left after a year's spending (cash left after
-              health premiums minus that same spending — display
-              arithmetic only, the same comparison the
-              Tax-for-the-year card carries, with the same colour
-              rule: red when the year falls short of spending,
-              teal when it covers it). Since S-7 the strip reads
-              the dial's resolution rather than the record alone,
-              so the strip and the card can never show two
-              different verdicts mid-edit. Since R3-M3 the base
-              is the cash left after health premiums (the priced
-              cashLeftAfterHealthPremium — cash left after tax
-              less the net premium the strip itself shows when
-              one prices), because the spending excludes health
-              premiums; before R3-M3 both surfaces compared the
-              spending against the cash left after tax alone and
-              overstated the verdict by the whole net premium. The total
-              federal tax, MAGI, taxable income, bracket landing,
-              ACA cliff room, buffer line, IRMAA,
-              sale, and estimated ACA credit details are NOT shown
-              here — they stay in the Tax-for-the-year card and
-              the other readouts below, unchanged. It is the One
-              year face's pinned answer, so it renders on that
-              face only; the Projection face pins nothing — its
-              charts carry their own readouts. The Month / Year
-              pills at the end of the strip switch the two spend
-              readouts (Cash left after tax, Left after
-              spending) between their annual figures and those
-              figures divided by 12 — the one persisted
-              spendPerMonth state the Tax-for-the-year card's
-              pills share, so both spots always agree. */}
-          {pgFace === "year" && (() => {
-            const pg = playgroundResult;
-            // S-7 (engines review round 2): the strip reads
-            // the SAME spending resolution the priced result
-            // — and therefore the Tax-for-the-year card —
-            // reads: pgSpendingCents, the Spending dial's
-            // local figure while it parses to a positive
-            // amount, else the record's figure. buildPgInputs
-            // feeds exactly this value to the pricing as
-            // annualSpending, so while the dial is being
-            // edited the strip and the card price the same
-            // spending and their "Left after a year's
-            // spending" figures agree to the cent (the
-            // strip's is display arithmetic over the priced
-            // cash left; the card's is the engine's own
-            // r2 of the same subtraction). Before this fix
-            // the strip read the record (pgAnnualSpendingCents)
-            // while the card priced the dial, so mid-edit the
-            // two disagreed by the whole edit — opposite
-            // verdicts on the same screen until blur + save
-            // + refetch converged them.
-            // R3-M3 (engines review round 3): the strip's
-            // Left figure is the cash left after HEALTH
-            // PREMIUMS minus that same spending — the priced
-            // cashLeftAfterHealthPremium, which the strip
-            // already renders beside the net premium when one
-            // prices — exactly the engine's cashLeftVsSpending
-            // the card prints, so strip = card still holds to
-            // the cent, now on the premium-charged base. The
-            // pre-R3-M3 strip read cashLeftAfterTax here and
-            // repeated the engine's omission.
-            // P-S2 (parity audit): while a paste-load holds
-            // the pasted year's spending, that figure is the
-            // resolution — the strip reads the same
-            // pgResolvedSpendingDollars buildPgInputs prices,
-            // so strip = card holds for a pasted year too.
-            const stripSpendingDollars = pgResolvedSpendingDollars;
-            const stripLeftAfterSpending =
-              pg != null && stripSpendingDollars != null
-                ? pg.cashLeftAfterHealthPremium - stripSpendingDollars
-                : null;
-            return (
-              <div
-                className="sticky z-30 mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-md"
-                style={{ top: "var(--twsa-safe-area-inset-top, 0px)" }}
-                aria-label="Play strip — live summary of the priced year"
-              >
-                <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-                  <span>
-                    Cash left after tax{" "}
-                    <span className="font-bold text-[var(--accent)]">
-                      {spendPerMonth
-                        ? `${fmtDollarsExact((pg?.cashLeftAfterTax ?? 0) / 12)}/mo`
-                        : fmtDollars(pg?.cashLeftAfterTax ?? 0)}
-                    </span>
+        {/* Sticky play strip — money outcomes only
+            (build v154): a pure render over the SAME priced
+            result (`playgroundResult`) the readout below renders:
+            no new state, no storage, no actions, and no pricing
+            of its own. It pins at the top of the Playground tab
+            while the tab scrolls so the live figures stay in
+            view next to the dials. The pinned figures are
+            ONLY the three money outcomes:
+            Cash left after tax (pg.cashLeftAfterTax — cash in
+            minus the net tax bill, before any spending),
+            Spending (pgSpendingCents — the one spending
+            resolution buildPgInputs prices: the Spending
+            dial's local figure while it parses, else the Tax
+            Plan record's figure the dial sources from), and
+            Left after a year's spending (cash left after
+            health premiums minus that same spending — display
+            arithmetic only, the same comparison the
+            Tax-for-the-year card carries, with the same colour
+            rule: red when the year falls short of spending,
+            teal when it covers it). Since S-7 the strip reads
+            the dial's resolution rather than the record alone,
+            so the strip and the card can never show two
+            different verdicts mid-edit. Since R3-M3 the base
+            is the cash left after health premiums (the priced
+            cashLeftAfterHealthPremium — cash left after tax
+            less the net premium the strip itself shows when
+            one prices), because the spending excludes health
+            premiums; before R3-M3 both surfaces compared the
+            spending against the cash left after tax alone and
+            overstated the verdict by the whole net premium. The total
+            federal tax, MAGI, taxable income, bracket landing,
+            ACA cliff room, buffer line, IRMAA,
+            sale, and estimated ACA credit details are NOT shown
+            here — they stay in the Tax-for-the-year card and
+            the other readouts below, unchanged. It is the One
+            year face's pinned answer, so it renders on that
+            face only; the Projection face pins nothing — its
+            charts carry their own readouts. The Month / Year
+            pills at the end of the strip switch the two spend
+            readouts (Cash left after tax, Left after
+            spending) between their annual figures and those
+            figures divided by 12 — the one persisted
+            spendPerMonth state the Tax-for-the-year card's
+            pills share, so both spots always agree. */}
+        {pgFace === "year" && (() => {
+          const pg = playgroundResult;
+          // S-7 (engines review round 2): the strip reads
+          // the SAME spending resolution the priced result
+          // — and therefore the Tax-for-the-year card —
+          // reads: pgSpendingCents, the Spending dial's
+          // local figure while it parses to a positive
+          // amount, else the record's figure. buildPgInputs
+          // feeds exactly this value to the pricing as
+          // annualSpending, so while the dial is being
+          // edited the strip and the card price the same
+          // spending and their "Left after a year's
+          // spending" figures agree to the cent (the
+          // strip's is display arithmetic over the priced
+          // cash left; the card's is the engine's own
+          // r2 of the same subtraction). Before this fix
+          // the strip read the record (pgAnnualSpendingCents)
+          // while the card priced the dial, so mid-edit the
+          // two disagreed by the whole edit — opposite
+          // verdicts on the same screen until blur + save
+          // + refetch converged them.
+          // R3-M3 (engines review round 3): the strip's
+          // Left figure is the cash left after HEALTH
+          // PREMIUMS minus that same spending — the priced
+          // cashLeftAfterHealthPremium, which the strip
+          // already renders beside the net premium when one
+          // prices — exactly the engine's cashLeftVsSpending
+          // the card prints, so strip = card still holds to
+          // the cent, now on the premium-charged base. The
+          // pre-R3-M3 strip read cashLeftAfterTax here and
+          // repeated the engine's omission.
+          // P-S2 (parity audit): while a paste-load holds
+          // the pasted year's spending, that figure is the
+          // resolution — the strip reads the same
+          // pgResolvedSpendingDollars buildPgInputs prices,
+          // so strip = card holds for a pasted year too.
+          const stripSpendingDollars = pgResolvedSpendingDollars;
+          const stripLeftAfterSpending =
+            pg != null && stripSpendingDollars != null
+              ? pg.cashLeftAfterHealthPremium - stripSpendingDollars
+              : null;
+          return (
+            <div
+              className="sticky z-30 mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-md"
+              style={{ top: "var(--twsa-safe-area-inset-top, 0px)" }}
+              aria-label="Play strip — live summary of the priced year"
+            >
+              <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                <span>
+                  Cash left after tax{" "}
+                  <span className="font-bold text-[var(--accent)]">
+                    {spendPerMonth
+                      ? `${fmtDollarsExact((pg?.cashLeftAfterTax ?? 0) / 12)}/mo`
+                      : fmtDollars(pg?.cashLeftAfterTax ?? 0)}
                   </span>
-                  {pg != null && (pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0) && (
-                    <span className="contents">
-                      {pg.healthPremiumNet > 0 && (
-                        <span className="contents">
-                          <span aria-hidden="true" className="text-[var(--dim)]">
-                            ·
-                          </span>
-                          <span>
-                            Health premium (net){" "}
-                            <span className="font-bold">
-                              {fmtDollars(pg.healthPremiumNet)}
-                            </span>
-                          </span>
-                        </span>
-                      )}
-                      {/* IRMAA payable this year (internal review
-                          round 3 SHOULD-2): the surcharge actually
-                          payable in the priced year, beside the net
-                          premium — the block opens whenever either
-                          prices, so a year with a $0 net premium
-                          but a payable IRMAA still shows the cash
-                          left after health premiums it reduces. */}
-                      {pg.irmaaPayableAnnual > 0 && (
-                        <span className="contents">
-                          <span aria-hidden="true" className="text-[var(--dim)]">
-                            ·
-                          </span>
-                          <span>
-                            IRMAA payable{" "}
-                            <span className="font-bold">
-                              {fmtDollars(pg.irmaaPayableAnnual)}
-                            </span>
-                          </span>
-                        </span>
-                      )}
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span>
-                        Cash left after health premiums{" "}
-                        <span className="font-bold text-[var(--accent)]">
-                          {fmtDollars(pg.cashLeftAfterHealthPremium)}
-                        </span>
-                      </span>
-                    </span>
-                  )}
-                  {stripSpendingDollars != null && (
-                    <span className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span>
-                        Spending{" "}
-                        <span className="font-bold">
-                          {fmtDollars(stripSpendingDollars)}
-                        </span>
-                      </span>
-                    </span>
-                  )}
-                  {stripLeftAfterSpending != null && (
-                    <span className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span>
-                        Left after a {spendPerMonth ? "month" : "year"}
-                        &rsquo;s spending{" "}
-                        <span
-                          className={`font-bold ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
-                        >
-                          {spendPerMonth
-                            ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
-                            : fmtDollars(stripLeftAfterSpending)}
-                        </span>
-                      </span>
-                    </span>
-                  )}
-                </p>
-                <SpendPeriodPills
-                  perMonth={spendPerMonth}
-                  onChange={setSpendPerMonth}
-                />
-              </div>
-            );
-          })()}
-          <h2 className="text-base font-semibold">Playground</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Price one year or a projection from your own numbers — your plan is never touched.
-          </p>
-          {/* Plan total at the top (PLAN TOTAL VISIBILITY build):
-              the same Plan total the Tax Plan view carries —
-              pgPrefillSource.planTotal, resolved from the one Tax
-              Plan record (Pre-tax both spouses + taxable pool
-              after the exclusion + Roth + HSA; the College / 529
-              and Non-Taxable buckets are never counted) — shown
-              here on the default
-              screen, above the income strip, so both views open
-              on the same figure. It is a tap target: tapping it
-              jumps to the Your money panel in the Tax Plan, on
-              the Exclude from plan field where the exclusion can
-              be edited (App owns the view switch; see
-              onJumpToYourMoney). Display only — it reads the
-              resolved source and writes nothing. */}
-          {pgPrefillSource && (
-            <p className="mt-2">
-              {onJumpToYourMoney ? (
-                <button
-                  type="button"
-                  aria-label={`Plan total ${fmtDollarsExact(pgPrefillSource.planTotal)} excluding 529 and Non-Taxable — go to Your money in the Tax Plan to edit the exclusion`}
-                  className="flex flex-wrap items-baseline gap-x-2 text-left"
-                  onClick={onJumpToYourMoney}
-                >
-                  <span className="text-sm text-[var(--dim)]">Plan total</span>
-                  <span className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
-                    {fmtDollarsExact(pgPrefillSource.planTotal)}
-                  </span>
-                  <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
-                  <span className="text-sm text-[var(--dim)] underline underline-offset-2">
-                    Edit the exclusion in Your money
-                  </span>
-                </button>
-              ) : (
-                <span className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="text-sm text-[var(--dim)]">Plan total</span>
-                  <span className="tnum text-xl font-bold text-[var(--accent)]">
-                    {fmtDollarsExact(pgPrefillSource.planTotal)}
-                  </span>
-                  <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
                 </span>
-              )}
-            </p>
-          )}
-          {/* Income strip — always visible at the top of the
-              Playground, one line naming the three income
-              figures for the selected Tax year, so Interest,
-              Ordinary dividends and Qualified dividends are
-              seen without scrolling to the dials. Display only:
-              it reads the dials exactly as priced (see
-              pgInterestDollars above) and writes nothing. The
-              Qualified figure is the PRICED one
-              (pgQualifiedPricedDollars — the dial clamped to
-              the total, as the engine prices it), so on an
-              impossible pair the strip shows the priced
-              figure, not the raw dial (N-2). */}
-          <div
-            aria-label={`${pgTaxYearNum} income summary`}
-            className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
-          >
-            <p className="tnum text-sm font-medium text-[var(--text)]">
-              {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
-            </p>
-          </div>
-          {/* $0 income warning — only when the year's income
-              (Interest + Ordinary dividends; Qualified is part
-              of Ordinary, not added again) is $0. Tapping it
-              jumps to the income dials (Interest first), using
-              the same jump-and-highlight as the provenance taps. */}
-          {pgIncomeIsZero && (
-            <button
-              type="button"
-              className="mt-2 w-full rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--text)] hover:opacity-90"
-              onClick={() => jumpToPgField("roth-Interest", "income")}
-            >
-              Your income for {pgTaxYearNum} is $0 — is that right?
-            </button>
-          )}
-          {/* Face switch — two faces, one tool at a time. Both
-              faces share the one dial state, so switching loses
-              nothing and changes no value; it only chooses
-              which tool is on screen. Switching to Projection
-              also opens the projection panel (pgProjOpen — the
-              panel's own open state), which is what makes the
-              projection run; switching back leaves it open. */}
-          {/* Face switch (build v67): underlined text tabs in
-              the Retirement view's style, left-aligned over a
-              hairline — the app's one sub-navigation language —
-              instead of the former filled chips. */}
-          <div
-            className="mt-3 flex w-full flex-nowrap items-end border-b border-[var(--border)]"
-            role="group"
-            aria-label="Playground face"
-          >
-            <button
-              type="button"
-              aria-label="One year face"
-              aria-pressed={pgFace === "year"}
-              className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
-                pgFace === "year"
-                  ? "font-semibold text-[var(--text)]"
-                  : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
-              }`}
-              onClick={() => setPgFace("year")}
-            >
-              {pgFace === "year" && (
-                <span
-                  aria-hidden="true"
-                  className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
-                />
-              )}
-              One year
-            </button>
-            <button
-              type="button"
-              aria-label="Projection face"
-              aria-pressed={pgFace === "projection"}
-              className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
-                pgFace === "projection"
-                  ? "font-semibold text-[var(--text)]"
-                  : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
-              }`}
-              onClick={() => {
-                setPgFace("projection");
-                setPgProjOpen(true);
-              }}
-            >
-              {pgFace === "projection" && (
-                <span
-                  aria-hidden="true"
-                  className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
-                />
-              )}
-              Projection
-            </button>
-          </div>
-          {/* Plain-English summary — the sentence composed above
-              for the face on screen (pgPlainYearSentence on One
-              year, pgPlainProjSentence on Projection), updated
-              live from the dials on every render. */}
-          <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
-            {pgFace === "year" ? (
-              <p className="text-sm text-[var(--text)]">
-                {pgPlainYearSentence}
+                {pg != null && (pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0) && (
+                  <span className="contents">
+                    {pg.healthPremiumNet > 0 && (
+                      <span className="contents">
+                        <span aria-hidden="true" className="text-[var(--dim)]">
+                          ·
+                        </span>
+                        <span>
+                          Health premium (net){" "}
+                          <span className="font-bold">
+                            {fmtDollars(pg.healthPremiumNet)}
+                          </span>
+                        </span>
+                      </span>
+                    )}
+                    {/* IRMAA payable this year (internal review
+                        round 3 SHOULD-2): the surcharge actually
+                        payable in the priced year, beside the net
+                        premium — the block opens whenever either
+                        prices, so a year with a $0 net premium
+                        but a payable IRMAA still shows the cash
+                        left after health premiums it reduces. */}
+                    {pg.irmaaPayableAnnual > 0 && (
+                      <span className="contents">
+                        <span aria-hidden="true" className="text-[var(--dim)]">
+                          ·
+                        </span>
+                        <span>
+                          IRMAA payable{" "}
+                          <span className="font-bold">
+                            {fmtDollars(pg.irmaaPayableAnnual)}
+                          </span>
+                        </span>
+                      </span>
+                    )}
+                    <span aria-hidden="true" className="text-[var(--dim)]">
+                      ·
+                    </span>
+                    <span>
+                      Cash left after health premiums{" "}
+                      <span className="font-bold text-[var(--accent)]">
+                        {fmtDollars(pg.cashLeftAfterHealthPremium)}
+                      </span>
+                    </span>
+                  </span>
+                )}
+                {stripSpendingDollars != null && (
+                  <span className="contents">
+                    <span aria-hidden="true" className="text-[var(--dim)]">
+                      ·
+                    </span>
+                    <span>
+                      Spending{" "}
+                      <span className="font-bold">
+                        {fmtDollars(stripSpendingDollars)}
+                      </span>
+                    </span>
+                  </span>
+                )}
+                {stripLeftAfterSpending != null && (
+                  <span className="contents">
+                    <span aria-hidden="true" className="text-[var(--dim)]">
+                      ·
+                    </span>
+                    <span>
+                      Left after a {spendPerMonth ? "month" : "year"}
+                      &rsquo;s spending{" "}
+                      <span
+                        className={`font-bold ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                      >
+                        {spendPerMonth
+                          ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
+                          : fmtDollars(stripLeftAfterSpending)}
+                      </span>
+                    </span>
+                  </span>
+                )}
               </p>
+              <SpendPeriodPills
+                perMonth={spendPerMonth}
+                onChange={setSpendPerMonth}
+              />
+            </div>
+          );
+        })()}
+        <h2 className="text-base font-semibold">Playground</h2>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+          Price one year or a projection from your own numbers — your plan is never touched.
+        </p>
+        {/* Plan total at the top (PLAN TOTAL VISIBILITY build):
+            the same Plan total the Tax Plan view carries —
+            pgPrefillSource.planTotal, resolved from the one Tax
+            Plan record (Pre-tax both spouses + taxable pool
+            after the exclusion + Roth + HSA; the College / 529
+            and Non-Taxable buckets are never counted) — shown
+            here on the default
+            screen, above the income strip, so both views open
+            on the same figure. It is a tap target: tapping it
+            jumps to the Your money panel in the Tax Plan, on
+            the Exclude from plan field where the exclusion can
+            be edited (App owns the view switch; see
+            onJumpToYourMoney). Display only — it reads the
+            resolved source and writes nothing. */}
+        {pgPrefillSource && (
+          <p className="mt-2">
+            {onJumpToYourMoney ? (
+              <button
+                type="button"
+                aria-label={`Plan total ${fmtDollarsExact(pgPrefillSource.planTotal)} excluding 529 and Non-Taxable — go to Your money in the Tax Plan to edit the exclusion`}
+                className="flex flex-wrap items-baseline gap-x-2 text-left"
+                onClick={onJumpToYourMoney}
+              >
+                <span className="text-sm text-[var(--dim)]">Plan total</span>
+                <span className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                  {fmtDollarsExact(pgPrefillSource.planTotal)}
+                </span>
+                <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
+                <span className="text-sm text-[var(--dim)] underline underline-offset-2">
+                  Edit the exclusion in Your money
+                </span>
+              </button>
             ) : (
-              <p className="text-sm text-[var(--text)]">
-                {pgPlainProjSentence}
-              </p>
+              <span className="flex flex-wrap items-baseline gap-x-2">
+                <span className="text-sm text-[var(--dim)]">Plan total</span>
+                <span className="tnum text-xl font-bold text-[var(--accent)]">
+                  {fmtDollarsExact(pgPrefillSource.planTotal)}
+                </span>
+                <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
+              </span>
             )}
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-3">
+          </p>
+        )}
+        {/* Income strip — always visible at the top of the
+            Playground, one line naming the three income
+            figures for the selected Tax year, so Interest,
+            Ordinary dividends and Qualified dividends are
+            seen without scrolling to the dials. Display only:
+            it reads the dials exactly as priced (see
+            pgInterestDollars above) and writes nothing. The
+            Qualified figure is the PRICED one
+            (pgQualifiedPricedDollars — the dial clamped to
+            the total, as the engine prices it), so on an
+            impossible pair the strip shows the priced
+            figure, not the raw dial (N-2). */}
+        <div
+          aria-label={`${pgTaxYearNum} income summary`}
+          className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
+        >
+          <p className="tnum text-sm font-medium text-[var(--text)]">
+            {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
+          </p>
+        </div>
+        {/* $0 income warning — only when the year's income
+            (Interest + Ordinary dividends; Qualified is part
+            of Ordinary, not added again) is $0. Tapping it
+            jumps to the income dials (Interest first), using
+            the same jump-and-highlight as the provenance taps. */}
+        {pgIncomeIsZero && (
+          <button
+            type="button"
+            className="mt-2 w-full rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--text)] hover:opacity-90"
+            onClick={() => jumpToPgField("roth-Interest", "income")}
+          >
+            Your income for {pgTaxYearNum} is $0 — is that right?
+          </button>
+        )}
+        {/* Face switch — two faces, one tool at a time. Both
+            faces share the one dial state, so switching loses
+            nothing and changes no value; it only chooses
+            which tool is on screen. Switching to Projection
+            also opens the projection panel (pgProjOpen — the
+            panel's own open state), which is what makes the
+            projection run; switching back leaves it open. */}
+        {/* Face switch (build v67): underlined text tabs in
+            the Retirement view's style, left-aligned over a
+            hairline — the app's one sub-navigation language —
+            instead of the former filled chips. */}
+        <div
+          className="mt-3 flex w-full flex-nowrap items-end border-b border-[var(--border)]"
+          role="group"
+          aria-label="Playground face"
+        >
+          <button
+            type="button"
+            aria-label="One year face"
+            aria-pressed={pgFace === "year"}
+            className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
+              pgFace === "year"
+                ? "font-semibold text-[var(--text)]"
+                : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+            }`}
+            onClick={() => setPgFace("year")}
+          >
+            {pgFace === "year" && (
+              <span
+                aria-hidden="true"
+                className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+              />
+            )}
+            One year
+          </button>
+          <button
+            type="button"
+            aria-label="Projection face"
+            aria-pressed={pgFace === "projection"}
+            className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
+              pgFace === "projection"
+                ? "font-semibold text-[var(--text)]"
+                : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+            }`}
+            onClick={() => {
+              setPgFace("projection");
+              setPgProjOpen(true);
+            }}
+          >
+            {pgFace === "projection" && (
+              <span
+                aria-hidden="true"
+                className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+              />
+            )}
+            Projection
+          </button>
+        </div>
+        {/* Plain-English summary — the sentence composed above
+            for the face on screen (pgPlainYearSentence on One
+            year, pgPlainProjSentence on Projection), updated
+            live from the dials on every render. */}
+        <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
+          {pgFace === "year" ? (
+            <p className="text-sm text-[var(--text)]">
+              {pgPlainYearSentence}
+            </p>
+          ) : (
+            <p className="text-sm text-[var(--text)]">
+              {pgPlainProjSentence}
+            </p>
+          )}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            aria-label="Start from my numbers"
+            className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+            disabled={!pgPrefillSource}
+            onClick={prefillPlayground}
+          >
+            Start from my numbers
+          </button>
+          {!pgConfirmReset ? (
             <button
               type="button"
-              aria-label="Start from my numbers"
-              className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-              disabled={!pgPrefillSource}
-              onClick={prefillPlayground}
+              aria-label="Reset playground"
+              className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)]"
+              onClick={() => setPgConfirmReset(true)}
             >
-              Start from my numbers
+              Reset playground
             </button>
-            {!pgConfirmReset ? (
+          ) : (
+            <>
+              <span className="text-sm text-[var(--bad)]">
+                Reset playground? This clears every dial and the copy saved
+                for next time, back to a blank form.
+              </span>
               <button
                 type="button"
                 aria-label="Reset playground"
-                className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)]"
-                onClick={() => setPgConfirmReset(true)}
+                className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
+                onClick={resetPlayground}
               >
                 Reset playground
               </button>
-            ) : (
-              <>
-                <span className="text-sm text-[var(--bad)]">
-                  Reset playground? This clears every dial and the copy saved
-                  for next time, back to a blank form.
-                </span>
-                <button
-                  type="button"
-                  aria-label="Reset playground"
-                  className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
-                  onClick={resetPlayground}
-                >
-                  Reset playground
-                </button>
-                <button
-                  type="button"
-                  aria-label="Cancel reset"
-                  className="rounded-[var(--radius)] border border-[var(--border)] px-4 py-2 text-sm font-medium hover:text-[var(--accent)]"
-                  onClick={() => setPgConfirmReset(false)}
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-            {!pgPrefillSource && (
-              <span className="text-sm text-[var(--dim)]">
-                {pgPrefillBlockerName != null
-                  ? `“Start from my numbers” needs a pricable plan — the saved plan is missing its ${pgPrefillBlockerName}.`
-                  : "“Start from my numbers” needs a pricable plan."}
-              </span>
-            )}
-          </div>
-          {/* Rejected negative return actuals (contract v146,
-              NICE-1): shown whenever the stored return carries
-              a negative line the parse set aside, so the user
-              sees why that line's dial resolves as not entered
-              instead of finding a silent blank. */}
-          {pgRejectedReturnActuals.length > 0 && (
-            <p
-              role="note"
-              className="mt-3 max-w-3xl rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm leading-relaxed"
-            >
-              <strong>
-                A figure on your saved return isn&rsquo;t being used.
-              </strong>{" "}
-              {pgRejectedReturnText}. An income line on a Form 1040
-              can&rsquo;t be negative, so{" "}
-              {pgRejectedReturnActuals.length === 1
-                ? "it counts"
-                : "each counts"}{" "}
-              as not entered — its dial uses the plan&rsquo;s estimate
-              where the plan prices the year, and your other return
-              figures are used as stored.
-            </p>
-          )}
-          {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
-              build): the resolved taxable pool this view prices
-              from the saved plan, with the Tax Plan record's
-              exclusion named beside it — the same pool
-              pgPrefillSourceFrom resolves (Taxable + Cash less
-              the exclusion). Shown only while an exclusion
-              actually applies; Net Worth balances never move. */}
-          {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
-            <p className="tnum mt-2 text-sm text-[var(--text)]">
-              <strong>
-                Taxable pool after exclusion:{" "}
-                {fmtDollarsExact(pgPrefillSource.taxableStart)}
-              </strong>{" "}
-              — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
-              less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
-              excluded from the plan in the Tax Plan.
-            </p>
-          )}
-
-          {/* Load inputs from a paste — an occasional-use tool,
-              folded by default (see pasteOpen above): the heading
-              row carries the shared fold toggle at its right end,
-              and the fold covers the helper line, the textarea,
-              and the Load inputs button. The "Start from my
-              numbers" button and "Reset playground" link above
-              stay outside the fold, always visible. */}
-          <section className={sectionCls} aria-label="Load inputs from a paste">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <span>
-                <label
-                  className="block text-base font-semibold"
-                  htmlFor="roth-pg-paste"
-                >
-                  Load inputs from a paste
-                </label>
-                <span className="mt-0.5 block text-sm text-[var(--dim)]">
-                  {pgPasteLoaded
-                    ? "Inputs loaded from the paste"
-                    : pgPasteText.trim() !== ""
-                      ? "Paste entered — not loaded yet"
-                      : "Nothing pasted yet"}
-                </span>
-              </span>
               <button
                 type="button"
-                aria-label={
-                  pasteOpen ? "Hide paste loader" : "Show paste loader"
-                }
-                aria-expanded={pasteOpen}
-                aria-controls="playground-paste-inputs"
-                onClick={() => setPasteOpen(!pasteOpen)}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+                aria-label="Cancel reset"
+                className="rounded-[var(--radius)] border border-[var(--border)] px-4 py-2 text-sm font-medium hover:text-[var(--accent)]"
+                onClick={() => setPgConfirmReset(false)}
               >
-                <FoldChevron open={pasteOpen} />
+                Cancel
+              </button>
+            </>
+          )}
+          {!pgPrefillSource && (
+            <span className="text-sm text-[var(--dim)]">
+              {pgPrefillBlockerName != null
+                ? `“Start from my numbers” needs a pricable plan — the saved plan is missing its ${pgPrefillBlockerName}.`
+                : "“Start from my numbers” needs a pricable plan."}
+            </span>
+          )}
+        </div>
+        {/* Rejected negative return actuals (contract v146,
+            NICE-1): shown whenever the stored return carries
+            a negative line the parse set aside, so the user
+            sees why that line's dial resolves as not entered
+            instead of finding a silent blank. */}
+        {pgRejectedReturnActuals.length > 0 && (
+          <p
+            role="note"
+            className="mt-3 max-w-3xl rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm leading-relaxed"
+          >
+            <strong>
+              A figure on your saved return isn&rsquo;t being used.
+            </strong>{" "}
+            {pgRejectedReturnText}. An income line on a Form 1040
+            can&rsquo;t be negative, so{" "}
+            {pgRejectedReturnActuals.length === 1
+              ? "it counts"
+              : "each counts"}{" "}
+            as not entered — its dial uses the plan&rsquo;s estimate
+            where the plan prices the year, and your other return
+            figures are used as stored.
+          </p>
+        )}
+        {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
+            build): the resolved taxable pool this view prices
+            from the saved plan, with the Tax Plan record's
+            exclusion named beside it — the same pool
+            pgPrefillSourceFrom resolves (Taxable + Cash less
+            the exclusion). Shown only while an exclusion
+            actually applies; Net Worth balances never move. */}
+        {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
+          <p className="tnum mt-2 text-sm text-[var(--text)]">
+            <strong>
+              Taxable pool after exclusion:{" "}
+              {fmtDollarsExact(pgPrefillSource.taxableStart)}
+            </strong>{" "}
+            — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
+            less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
+            excluded from the plan in the Tax Plan.
+          </p>
+        )}
+
+        {/* Load inputs from a paste — an occasional-use tool,
+            folded by default (see pasteOpen above): the heading
+            row carries the shared fold toggle at its right end,
+            and the fold covers the helper line, the textarea,
+            and the Load inputs button. The "Start from my
+            numbers" button and "Reset playground" link above
+            stay outside the fold, always visible. */}
+        <section className={sectionCls} aria-label="Load inputs from a paste">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <span>
+              <label
+                className="block text-base font-semibold"
+                htmlFor="roth-pg-paste"
+              >
+                Load inputs from a paste
+              </label>
+              <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                {pgPasteLoaded
+                  ? "Inputs loaded from the paste"
+                  : pgPasteText.trim() !== ""
+                    ? "Paste entered — not loaded yet"
+                    : "Nothing pasted yet"}
+              </span>
+            </span>
+            <button
+              type="button"
+              aria-label={
+                pasteOpen ? "Hide paste loader" : "Show paste loader"
+              }
+              aria-expanded={pasteOpen}
+              aria-controls="playground-paste-inputs"
+              onClick={() => setPasteOpen(!pasteOpen)}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+            >
+              <FoldChevron open={pasteOpen} />
+            </button>
+          </div>
+          {pasteOpen && (
+            <div id="playground-paste-inputs" className="max-w-3xl">
+              <p className={hintCls}>
+                Paste the inputs block from a priced answer and every dial
+                below fills at once — the same as typing them.
+              </p>
+              <textarea
+                id="roth-pg-paste"
+                aria-label="Load inputs paste box"
+                className={`${inputCls} mt-2 font-mono text-xs`}
+                rows={3}
+                value={pgPasteText}
+                onChange={(e) => {
+                  setPgPasteText(e.target.value);
+                  setPgPasteLoaded(false);
+                }}
+                placeholder='{"kind":"playground-year","version":1,…}'
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  aria-label="Load inputs"
+                  className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                  disabled={pgPasteText.trim() === ""}
+                  onClick={applyPgPaste}
+                >
+                  Load inputs
+                </button>
+                {pgPasteLoaded && !pgPasteError && (
+                  <span className="text-sm text-[var(--dim)]" role="note">
+                    Loaded — the dials below now hold the pasted inputs.
+                  </span>
+                )}
+              </div>
+              {pgPasteError && (
+                <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                  {pgPasteError}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Known starting points — preset cards that load the
+            dials (see the loaders above). Loading a preset
+            sets dials only; nothing here writes the saved
+            plan record. Shown on both faces: the dials are
+            shared, so a starting point is useful from either
+            tool. The section folds behind the same chevron
+            toggle the Spending section folds use (see
+            knownPointsFolded above): expanded by default, and
+            folded shut it leaves only this header row. */}
+        <section className={sectionCls} aria-label="Start from a known point">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <span>
+              <span className="block text-base font-semibold">
+                Start from a known point
+              </span>
+              <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                {pgPresetNote ??
+                  `My ${pgTaxReturnYear} return as filed · a year from my saved plan · a blank year`}
+              </span>
+            </span>
+            <button
+              type="button"
+              aria-label={
+                knownPointsOpen
+                  ? "Hide starting points"
+                  : "Show starting points"
+              }
+              aria-expanded={knownPointsOpen}
+              aria-controls="playground-known-points"
+              onClick={() => setKnownPointsFolded(knownPointsOpen)}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+            >
+              <FoldChevron open={knownPointsOpen} />
+            </button>
+          </div>
+          {knownPointsOpen && (
+            <div id="playground-known-points">
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">My {pgTaxReturnYear} return as filed</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                {pgPrefillSource?.taxReturnInterest != null ||
+                pgPrefillSource?.taxReturnOrdinaryDividends != null
+                  ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)} — from ${pgReturnYearPhrase}. Loads the year ${pgTaxReturnYear} and those three dials; every other dial stays as it is.`
+                  : "The Form 1040 figures stored on your plan record. No figures are stored yet, so there is nothing to load."}
+              </p>
+              <button
+                type="button"
+                aria-label={`Load my ${pgTaxReturnYear} return as filed`}
+                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                disabled={
+                  !pgPrefillSource ||
+                  (pgPrefillSource.taxReturnInterest == null &&
+                    pgPrefillSource.taxReturnQualifiedDividends == null &&
+                    pgPrefillSource.taxReturnOrdinaryDividends == null)
+                }
+                onClick={applyPgAsFiled}
+              >
+                Load
               </button>
             </div>
-            {pasteOpen && (
-              <div id="playground-paste-inputs" className="max-w-3xl">
-                <p className={hintCls}>
-                  Paste the inputs block from a priced answer and every dial
-                  below fills at once — the same as typing them.
-                </p>
-                <textarea
-                  id="roth-pg-paste"
-                  aria-label="Load inputs paste box"
-                  className={`${inputCls} mt-2 font-mono text-xs`}
-                  rows={3}
-                  value={pgPasteText}
-                  onChange={(e) => {
-                    setPgPasteText(e.target.value);
-                    setPgPasteLoaded(false);
-                  }}
-                  placeholder='{"kind":"playground-year","version":1,…}'
-                />
-                <div className="mt-2 flex flex-wrap items-center gap-3">
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">A year from my saved plan</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                Pick a year the saved plan prices and load that year&rsquo;s
+                priced income and conversion as the dials. Your saved plan
+                is not changed.
+              </p>
+              {pgSavedPlanYears != null &&
+              pgSavedPlanYears.years.length > 0 ? (
+                <>
+                  <label
+                    className="mt-2 block text-xs font-medium text-[var(--text)]"
+                    htmlFor="pg-plan-preset-year"
+                  >
+                    Plan year
+                  </label>
+                  <select
+                    id="pg-plan-preset-year"
+                    aria-label="Plan year to load"
+                    className={inputCls}
+                    value={pgPlanPresetYear ?? ""}
+                    onChange={(e) =>
+                      setPgPlanPresetYear(parseIntField(e.target.value))
+                    }
+                  >
+                    {pgSavedPlanYears.years.map((y) => (
+                      <option key={y.year} value={y.year}>
+                        {y.year} — age {y.agePrimary}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
-                    aria-label="Load inputs"
-                    className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                    disabled={pgPasteText.trim() === ""}
-                    onClick={applyPgPaste}
-                  >
-                    Load inputs
-                  </button>
-                  {pgPasteLoaded && !pgPasteError && (
-                    <span className="text-sm text-[var(--dim)]" role="note">
-                      Loaded — the dials below now hold the pasted inputs.
-                    </span>
-                  )}
-                </div>
-                {pgPasteError && (
-                  <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
-                    {pgPasteError}
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
-
-          {/* Known starting points — preset cards that load the
-              dials (see the loaders above). Loading a preset
-              sets dials only; nothing here writes the saved
-              plan record. Shown on both faces: the dials are
-              shared, so a starting point is useful from either
-              tool. The section folds behind the same chevron
-              toggle the Spending section folds use (see
-              knownPointsFolded above): expanded by default, and
-              folded shut it leaves only this header row. */}
-          <section className={sectionCls} aria-label="Start from a known point">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <span>
-                <span className="block text-base font-semibold">
-                  Start from a known point
-                </span>
-                <span className="mt-0.5 block text-sm text-[var(--dim)]">
-                  {pgPresetNote ??
-                    `My ${pgTaxReturnYear} return as filed · a year from my saved plan · a blank year`}
-                </span>
-              </span>
-              <button
-                type="button"
-                aria-label={
-                  knownPointsOpen
-                    ? "Hide starting points"
-                    : "Show starting points"
-                }
-                aria-expanded={knownPointsOpen}
-                aria-controls="playground-known-points"
-                onClick={() => setKnownPointsFolded(knownPointsOpen)}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
-              >
-                <FoldChevron open={knownPointsOpen} />
-              </button>
-            </div>
-            {knownPointsOpen && (
-              <div id="playground-known-points">
-            <div className="mt-2 grid gap-2 sm:grid-cols-3">
-              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-                <p className="text-sm font-semibold">My {pgTaxReturnYear} return as filed</p>
-                <p className="mt-1 text-xs text-[var(--dim)]">
-                  {pgPrefillSource?.taxReturnInterest != null ||
-                  pgPrefillSource?.taxReturnOrdinaryDividends != null
-                    ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)} — from ${pgReturnYearPhrase}. Loads the year ${pgTaxReturnYear} and those three dials; every other dial stays as it is.`
-                    : "The Form 1040 figures stored on your plan record. No figures are stored yet, so there is nothing to load."}
-                </p>
-                <button
-                  type="button"
-                  aria-label={`Load my ${pgTaxReturnYear} return as filed`}
-                  className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                  disabled={
-                    !pgPrefillSource ||
-                    (pgPrefillSource.taxReturnInterest == null &&
-                      pgPrefillSource.taxReturnQualifiedDividends == null &&
-                      pgPrefillSource.taxReturnOrdinaryDividends == null)
-                  }
-                  onClick={applyPgAsFiled}
-                >
-                  Load
-                </button>
-              </div>
-              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-                <p className="text-sm font-semibold">A year from my saved plan</p>
-                <p className="mt-1 text-xs text-[var(--dim)]">
-                  Pick a year the saved plan prices and load that year&rsquo;s
-                  priced income and conversion as the dials. Your saved plan
-                  is not changed.
-                </p>
-                {pgSavedPlanYears != null &&
-                pgSavedPlanYears.years.length > 0 ? (
-                  <>
-                    <label
-                      className="mt-2 block text-xs font-medium text-[var(--text)]"
-                      htmlFor="pg-plan-preset-year"
-                    >
-                      Plan year
-                    </label>
-                    <select
-                      id="pg-plan-preset-year"
-                      aria-label="Plan year to load"
-                      className={inputCls}
-                      value={pgPlanPresetYear ?? ""}
-                      onChange={(e) =>
-                        setPgPlanPresetYear(parseIntField(e.target.value))
+                    aria-label="Load the chosen plan year"
+                    className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                    disabled={pgPlanPresetYear == null}
+                    onClick={() => {
+                      if (pgPlanPresetYear != null) {
+                        loadPgSavedPlanYear(pgPlanPresetYear);
                       }
-                    >
-                      {pgSavedPlanYears.years.map((y) => (
-                        <option key={y.year} value={y.year}>
-                          {y.year} — age {y.agePrimary}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      aria-label="Load the chosen plan year"
-                      className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                      disabled={pgPlanPresetYear == null}
-                      onClick={() => {
-                        if (pgPlanPresetYear != null) {
-                          loadPgSavedPlanYear(pgPlanPresetYear);
-                        }
-                      }}
-                    >
-                      Load this year
-                    </button>
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-[var(--dim)]">
-                    Needs a pricable saved plan.
-                  </p>
-                )}
-              </div>
-              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-                <p className="text-sm font-semibold">Blank year</p>
-                <p className="mt-1 text-xs text-[var(--dim)]">
-                  Every single-year dial cleared — a clean sheet. The
-                  projection still runs from its captured template.
+                    }}
+                  >
+                    Load this year
+                  </button>
+                </>
+              ) : (
+                <p className="mt-2 text-xs text-[var(--dim)]">
+                  Needs a pricable saved plan.
                 </p>
-                <button
-                  type="button"
-                  aria-label="Load a blank year"
-                  className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)]"
-                  onClick={applyPgBlankYear}
-                >
-                  Load
-                </button>
-              </div>
+              )}
             </div>
-              </div>
-            )}
-          </section>
-
-          {pgFace === "year" && (
-            <>
-          {/* Single-year dials (build v69): the group gets
-              the same outer shell as the section cards inside
-              it, but quieter — a dashed border on the page
-              background instead of a filled surface card — and
-              its explainer sentence rides the title's ⓘ. */}
-          <section
-            className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] px-3 py-3"
-            aria-label="Single-year dials"
-          >
-            <h3>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">Blank year</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                Every single-year dial cleared — a clean sheet. The
+                projection still runs from its captured template.
+              </p>
               <button
                 type="button"
-                aria-expanded={pgGroupOpen.single}
-                aria-label="Single-year dials group"
-                className="flex w-full items-start justify-between gap-3 pr-1 text-left"
-                onClick={() => togglePgGroup("single")}
+                aria-label="Load a blank year"
+                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)]"
+                onClick={applyPgBlankYear}
               >
-                <span className="flex items-center">
-                  <span className="text-base font-semibold">
-                    Single-year dials
-                  </span>
-                  <InfoNote
-                    text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
-                    ariaLabel="About the single-year dials"
-                  />
-                </span>
-                <FoldChevron open={!!pgGroupOpen.single} className="mt-0.5" />
+                Load
               </button>
-            </h3>
-          {pgGroupOpen.single && (
-            <>
-          {pgSectionCard("year", "The year", pgYearSummary, (
-            <>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div>
-              <div className="mb-1 flex items-center">
-                <label
-                  className="block text-sm font-medium text-[var(--text)]"
-                  htmlFor="roth-pg-year"
-                >
-                  Tax year
-                </label>
-                <InfoNote
-                  text="The year you're pricing. Brackets, deductions, and the ACA and IRMAA lines all come from that year's tax law."
-                  ariaLabel="About tax year"
-                />
-              </div>
-              <select
-                id="roth-pg-year"
-                aria-label="Tax year"
-                className={inputCls}
-                value={pgYear}
-                onChange={(e) => setPgYear(e.target.value)}
-              >
-                {TAX_LAW_YEARS.map((l) => (
-                  <option key={l.year} value={String(l.year)}>
-                    {l.year}
-                  </option>
-                ))}
-                {/* A year loaded from the projection chart can
-                    sit past the law table — keep it selectable
-                    so the dial shows the year actually priced
-                    (the hint below names the law row used). */}
-                {!TAX_LAW_YEARS.some((l) => String(l.year) === pgYear) &&
-                  pgYear.trim() !== "" && (
-                    <option value={pgYear}>{pgYear}</option>
-                  )}
-              </select>
-              <p className={hintCls}>
-                {(() => {
-                  const dialedYear =
-                    parseIntField(pgYear) ?? new Date().getFullYear();
-                  const lawYear = lawForYear(dialedYear).year;
-                  if (lawYear === dialedYear) {
-                    return "Priced under that year’s law row in the app’s tax tables.";
-                  }
-                  // A year past the law table prices under the
-                  // newest row, with that row's fixed dollar
-                  // lines (the Social Security thresholds, the
-                  // NIIT line, the IRMAA lines) shrunk for
-                  // inflation at the plan's rate — the same
-                  // treatment the plan's own year-by-year
-                  // pricing uses (S-4).
-                  const rate =
-                    playgroundResult?.inflationPct ??
-                    pgPrefillSource?.inflationPct ??
-                    SEED_INFLATION;
-                  const rateText = String(Math.round(rate * 100) / 100);
-                  return `No ${dialedYear} law row in the app’s tax tables yet — priced under the ${lawYear} law row, with its fixed dollar lines shrunk for inflation at your plan’s ${rateText}% — the same treatment your plan’s own pricing uses.`;
-                })()}
-              </p>
             </div>
-            <div>
-              <div className="mb-1 flex items-center">
-                <label
-                  className="block text-sm font-medium text-[var(--text)]"
-                  htmlFor="roth-pg-filing"
-                >
-                  Filing status
-                </label>
-                <InfoNote
-                  text="How the return is filed — married filing jointly, single, or head of household. It sets the bracket widths, the standard deduction, and which spouse fields apply."
-                  ariaLabel="About filing status"
-                  align="right"
-                />
-              </div>
-              <select
-                id="roth-pg-filing"
-                aria-label="Filing status"
-                className={inputCls}
-                value={pgFiling}
-                onChange={(e) => setPgFiling(e.target.value as FilingStatus)}
-              >
-                {(Object.keys(FILING_LABELS) as FilingStatus[]).map((k) => (
-                  <option key={k} value={k}>
-                    {FILING_LABELS[k]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {numField("Your age that year", pgAgeP, setPgAgeP, {
-              hint: "Ages drive the 65+ standard-deduction add-ons and the senior deduction.",
-              info: "Your age in that year. Turning 65 adds extra standard deduction, and age is what the required minimum distribution (RMD) rules key off.",
-            })}
-            {pgFiling === "mfj" &&
-              numField("Spouse age that year", pgAgeS, setPgAgeS, {
-                info: "Your spouse's age in that year. A spouse who is 65 or older adds the same extra standard deduction, counted the same way yours is.",
-                infoAlign: "right",
-              })}
           </div>
-          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+            </div>
+          )}
+        </section>
+
+        {pgFace === "year" && (
+          <>
+        {/* Single-year dials (build v69): the group gets
+            the same outer shell as the section cards inside
+            it, but quieter — a dashed border on the page
+            background instead of a filled surface card — and
+            its explainer sentence rides the title's ⓘ. */}
+        <section
+          className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] px-3 py-3"
+          aria-label="Single-year dials"
+        >
+          <h3>
+            <button
+              type="button"
+              aria-expanded={pgGroupOpen.single}
+              aria-label="Single-year dials group"
+              className="flex w-full items-start justify-between gap-3 pr-1 text-left"
+              onClick={() => togglePgGroup("single")}
+            >
+              <span className="flex items-center">
+                <span className="text-base font-semibold">
+                  Single-year dials
+                </span>
+                <InfoNote
+                  text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
+                  ariaLabel="About the single-year dials"
+                />
+              </span>
+              <FoldChevron open={!!pgGroupOpen.single} className="mt-0.5" />
+            </button>
+          </h3>
+        {pgGroupOpen.single && (
+          <>
+        {pgSectionCard("year", "The year", pgYearSummary, (
+          <>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div>
+            <div className="mb-1 flex items-center">
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-pg-year"
+              >
+                Tax year
+              </label>
+              <InfoNote
+                text="The year you're pricing. Brackets, deductions, and the ACA and IRMAA lines all come from that year's tax law."
+                ariaLabel="About tax year"
+              />
+            </div>
+            <select
+              id="roth-pg-year"
+              aria-label="Tax year"
+              className={inputCls}
+              value={pgYear}
+              onChange={(e) => setPgYear(e.target.value)}
+            >
+              {TAX_LAW_YEARS.map((l) => (
+                <option key={l.year} value={String(l.year)}>
+                  {l.year}
+                </option>
+              ))}
+              {/* A year loaded from the projection chart can
+                  sit past the law table — keep it selectable
+                  so the dial shows the year actually priced
+                  (the hint below names the law row used). */}
+              {!TAX_LAW_YEARS.some((l) => String(l.year) === pgYear) &&
+                pgYear.trim() !== "" && (
+                  <option value={pgYear}>{pgYear}</option>
+                )}
+            </select>
+            <p className={hintCls}>
+              {(() => {
+                const dialedYear =
+                  parseIntField(pgYear) ?? new Date().getFullYear();
+                const lawYear = lawForYear(dialedYear).year;
+                if (lawYear === dialedYear) {
+                  return "Priced under that year’s law row in the app’s tax tables.";
+                }
+                // A year past the law table prices under the
+                // newest row, with that row's fixed dollar
+                // lines (the Social Security thresholds, the
+                // NIIT line, the IRMAA lines) shrunk for
+                // inflation at the plan's rate — the same
+                // treatment the plan's own year-by-year
+                // pricing uses (S-4).
+                const rate =
+                  playgroundResult?.inflationPct ??
+                  pgPrefillSource?.inflationPct ??
+                  SEED_INFLATION;
+                const rateText = String(Math.round(rate * 100) / 100);
+                return `No ${dialedYear} law row in the app’s tax tables yet — priced under the ${lawYear} law row, with its fixed dollar lines shrunk for inflation at your plan’s ${rateText}% — the same treatment your plan’s own pricing uses.`;
+              })()}
+            </p>
+          </div>
+          <div>
+            <div className="mb-1 flex items-center">
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-pg-filing"
+              >
+                Filing status
+              </label>
+              <InfoNote
+                text="How the return is filed — married filing jointly, single, or head of household. It sets the bracket widths, the standard deduction, and which spouse fields apply."
+                ariaLabel="About filing status"
+                align="right"
+              />
+            </div>
+            <select
+              id="roth-pg-filing"
+              aria-label="Filing status"
+              className={inputCls}
+              value={pgFiling}
+              onChange={(e) => setPgFiling(e.target.value as FilingStatus)}
+            >
+              {(Object.keys(FILING_LABELS) as FilingStatus[]).map((k) => (
+                <option key={k} value={k}>
+                  {FILING_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {numField("Your age that year", pgAgeP, setPgAgeP, {
+            hint: "Ages drive the 65+ standard-deduction add-ons and the senior deduction.",
+            info: "Your age in that year. Turning 65 adds extra standard deduction, and age is what the required minimum distribution (RMD) rules key off.",
+          })}
+          {pgFiling === "mfj" &&
+            numField("Spouse age that year", pgAgeS, setPgAgeS, {
+              info: "Your spouse's age in that year. A spouse who is 65 or older adds the same extra standard deduction, counted the same way yours is.",
+              infoAlign: "right",
+            })}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+          <span className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              aria-label="You are on Medicare"
+              className="mt-1 h-4 w-4"
+              checked={pgMedPEffective}
+              onChange={(e) => setPgMedP(e.target.checked)}
+            />
+            <span className="text-sm">
+              On Medicare — you
+              <InfoNote
+                text="Medicare usually starts at 65. People on Medicare get no ACA credit; instead their income sets IRMAA surcharges on Medicare premiums two years later."
+                ariaLabel="About being on Medicare"
+              />
+              <span className="block text-xs text-[var(--dim)]">
+                Follows your age (65+) until you change it. Medicare decides
+                IRMAA vs ACA below.
+              </span>
+            </span>
+          </span>
+          {pgFiling === "mfj" && (
             <span className="flex items-start gap-2">
               <input
                 type="checkbox"
-                aria-label="You are on Medicare"
+                aria-label="Spouse is on Medicare"
                 className="mt-1 h-4 w-4"
-                checked={pgMedPEffective}
-                onChange={(e) => setPgMedP(e.target.checked)}
+                checked={pgMedSEffective}
+                onChange={(e) => setPgMedS(e.target.checked)}
               />
               <span className="text-sm">
-                On Medicare — you
+                On Medicare — spouse
                 <InfoNote
                   text="Medicare usually starts at 65. People on Medicare get no ACA credit; instead their income sets IRMAA surcharges on Medicare premiums two years later."
-                  ariaLabel="About being on Medicare"
+                  ariaLabel="About spouse being on Medicare"
+                  align="right"
                 />
                 <span className="block text-xs text-[var(--dim)]">
-                  Follows your age (65+) until you change it. Medicare decides
-                  IRMAA vs ACA below.
+                  Follows the spouse&rsquo;s age (65+) until you change it.
                 </span>
               </span>
             </span>
-            {pgFiling === "mfj" && (
-              <span className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  aria-label="Spouse is on Medicare"
-                  className="mt-1 h-4 w-4"
-                  checked={pgMedSEffective}
-                  onChange={(e) => setPgMedS(e.target.checked)}
-                />
-                <span className="text-sm">
-                  On Medicare — spouse
-                  <InfoNote
-                    text="Medicare usually starts at 65. People on Medicare get no ACA credit; instead their income sets IRMAA surcharges on Medicare premiums two years later."
-                    ariaLabel="About spouse being on Medicare"
-                    align="right"
-                  />
-                  <span className="block text-xs text-[var(--dim)]">
-                    Follows the spouse&rsquo;s age (65+) until you change it.
-                  </span>
-                </span>
-              </span>
+          )}
+        </div>
+          </>
+        ))}
+
+        {pgSectionCard("income", "Income for the year", pgIncomeSummary, (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Interest", pgInterest, setPgInterest, {
+            hint: pgIncomeHint(pgIncomeSources.interest, "2b", "interest"),
+            info: pgIncomeInfo(pgIncomeSources.interest, "2b", "interest", "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income."),
+            onEdit: () => markPgIncomeTyped("interest"),
+          })}
+          {moneyField("Ordinary dividends — total", pgOrdDiv, setPgOrdDiv, {
+            hint: pgIncomeHint(pgIncomeSources.ordinaryDividends, "3b", "dividends", "It includes the qualified dividends — they are counted once, not added again."),
+            info: pgIncomeInfo(pgIncomeSources.ordinaryDividends, "3b", "dividends", "All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once."),
+            infoAlign: "right",
+            onEdit: () => markPgIncomeTyped("ordinaryDividends"),
+          })}
+          {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
+            info: "Everything else taxed at the regular rates — wages, pensions, rent, and withdrawals from a traditional IRA or 401(k). It stacks on the same shelf as interest and pre-tax money out.",
+          })}
+          {moneyField("Tax-exempt interest", pgTaxExempt, setPgTaxExempt, {
+            hint: "Not taxed itself, but counts toward MAGI, ACA income, and how much Social Security is taxed.",
+            info: "Interest from municipal bonds. You pay no tax on it — but it still counts toward how much of your Social Security is taxed, and toward the ACA and IRMAA income tests. Tax-free is not invisible.",
+            infoAlign: "right",
+          })}
+          {moneyField("Your Social Security that year", pgSsP, setPgSsP, {
+            hint: "The year's total benefits. Blank counts as $0.",
+            info: "Your yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
+          })}
+          {pgFiling === "mfj" &&
+            moneyField("Spouse Social Security that year", pgSsS, setPgSsS, {
+              info: "Your spouse's yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
+              infoAlign: "right",
+            })}
+        </div>
+        ))}
+
+        {pgSectionCard("conversion", "Pre-tax money out", pgConversionSummary, (
+          <>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Pre-tax draw for spending", pgSpendingDraw, setPgSpendingDraw, {
+            hint: pgHoldActive && pgHoldDrawSolved && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
+              ? pgHeldTarget === "aca"
+                ? pgHeldCliffDollars != null
+                  ? `Auto — Hold solved the draw down so the money out stays at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
+                  : "Auto — Hold solved the draw down so the money out stays at the ACA cliff"
+                : `Auto — Hold solved the draw down so the money out stays at the ${pgHeldTarget}% top`
+              : "Money taken out of the pre-tax account to spend this year. It is taxed the same as a conversion — and, unlike one, it is cash in hand, so it counts toward the year's cash left below.",
+            info: "A distribution from your traditional IRA / 401(k) taken out to spend this year. The full amount counts as ordinary income, and because the cash is in hand it also counts in the year's cash in. A conversion moves the money to your Roth instead — the same income, but no cash in hand.",
+            onEdit: () => {
+              // Typing in the draw dial releases the hold,
+              // exactly like typing in the conversion dial —
+              // the typed value stands. (Programmatic writes
+              // from the hold effect call setPgSpendingDraw
+              // directly and never land here.)
+              if (pgHoldOn) setPgHoldOn(false);
+            },
+          })}
+          {moneyField("Conversion to Roth", pgConversion, setPgConversion, {
+            hint: pgHoldActive && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
+              ? pgHeldTarget === "aca"
+                ? pgHeldCliffDollars != null
+                  ? `Auto — holding at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
+                  : "Auto — holding the ACA cliff"
+                : `Auto — holding the ${pgHeldTarget}% top`
+              : "Money moved from the pre-tax account into your Roth this year. It counts as ordinary income — but it is not cash in hand, so it never counts toward the year's cash left.",
+            info: "Money converted from your traditional IRA / 401(k) into your Roth this year. The full amount counts as ordinary income, but the money lands in the Roth — it is not cash in hand, so it never counts in the year's cash in. Money you take out to spend belongs on the draw dial beside this one.",
+            onEdit: () => {
+              // Typing in the conversion dial releases the
+              // hold — the typed value stands. (Programmatic
+              // writes from the chips / hold effect call
+              // setPgConversion directly and never land here;
+              // moneyField calls onEdit only from its change
+              // handler, not from its blur reformat.)
+              if (pgHoldOn) setPgHoldOn(false);
+            },
+          })}
+          {moneyField("Pre-tax balance — primary (prior Dec 31)", pgPretax, setPgPretax, {
+            hint: "Optional. When entered, the year's RMD is priced on this balance (Joint Life when it applies) and the pre-tax money out is checked against what's left after the RMD.",
+            info: "What was in your traditional IRA / 401(k) on the prior Dec 31. Entering it lets the playground price this year's required minimum distribution (RMD) and check the pre-tax money out fits. Blank = no RMD priced.",
+            infoAlign: "right",
+          })}
+          {pgFiling === "mfj" &&
+            moneyField("Pre-tax balance — spouse (prior Dec 31)", pgPretaxSpouse, setPgPretaxSpouse, {
+              hint: "Optional. When entered, the spouse's RMD is priced on this balance on the spouse's own clock — not the primary's.",
+              info: "What was in your spouse's traditional IRA / 401(k) on the prior Dec 31. The spouse's required minimum distribution is priced on the spouse's own age and divisor. Blank = no spouse balance, no spouse RMD.",
+              infoAlign: "right",
+            })}
+          {moneyField("RMD already received this year", pgRmdReceived, setPgRmdReceived, {
+            hint: "The part of this year's RMD already paid — and already inside the income above. Blank = $0.",
+            info: "If part of this year's required minimum distribution has already been paid, it is already counted in the income you entered above (the December console's year-to-date income includes it the same way). Enter that part here and the playground subtracts it from the RMD the balances imply, so a paid RMD is never counted twice. Blank = none received yet.",
+          })}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="flex items-center text-sm text-[var(--dim)]">
+            Fill to:
+            <InfoNote
+              text="Sets the conversion amount for you: exactly enough, on top of any draw you've typed, to fill this tax bracket — or, with the ACA cliff chip, to land ACA household income exactly on the ACA target: the 400% poverty-line cliff minus the buffer set in ACA & state below — given everything else you've typed. The bracket tops are the ceilings of the 10%, 12%, 22% and 24% brackets."
+              ariaLabel="About fill to"
+            />
+          </span>
+          {[10, 12, 22, 24].map((pct) => (
+            <button
+              key={pct}
+              type="button"
+              aria-label={`Fill to the top of the ${pct}% bracket`}
+              className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+              disabled={pgAgePNum == null || pgAgePNum <= 0}
+              onClick={() => applyPgBracketFill(pct)}
+            >
+              {pct}%
+            </button>
+          ))}
+          <button
+            type="button"
+            aria-label="Fill to the ACA cliff"
+            className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+            disabled={pgAgePNum == null || pgAgePNum <= 0 || !pgAcaHasHardCliff}
+            onClick={applyPgAcaCliffFill}
+          >
+            ACA cliff
+          </button>
+          <button
+            type="button"
+            aria-label="Hold the fill"
+            aria-pressed={pgHoldOn}
+            className={pgHoldOn ? ceilChipActiveCls : ceilChipCls}
+            onClick={() => setPgHoldOn((v) => !v)}
+          >
+            Hold{pgHoldOn && pgHeldTarget != null ? (pgHeldTarget === "aca" ? " · ACA cliff" : ` · ${pgHeldTarget}%`) : ""}
+          </button>
+          <span className="flex items-center text-xs text-[var(--dim)]">
+            Hold keeps the fill on the tapped target as other dials change.
+            <InfoNote
+              text={
+                pgAcaBufferDollars > 0
+                  ? `With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer (the buffer set in ACA & state below; editing the buffer re-solves too). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it.`
+                  : "With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff (the ACA target is the cliff minus the buffer set in ACA & state below, currently $0). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it."
+              }
+              ariaLabel="About hold the fill"
+            />
+          </span>
+        </div>
+        {pgAcaCliffNote && (
+          <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+            {pgAcaCliffNote}
+          </p>
+        )}
+        {pgHoldOn && pgHeldTarget == null && (
+          <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+            Tap a fill chip to hold that target.
+          </p>
+        )}
+        {pgHoldCantCaption && (
+          <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+            {pgHoldCantCaption}
+          </p>
+        )}
+        {pgHoldCliffCaption && !pgHoldCantCaption && (
+          <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+            {pgHoldCliffCaption}
+          </p>
+        )}
+          </>
+        ))}
+
+        {pgSectionCard("stock", "Stock sale (long-term)", pgStockSummary, (
+        <>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Stock sold", pgSold, setPgSold, {
+            info: "The total sale price of the stock you sell — what you receive for it. Only the part of this above your cost basis is a gain.",
+          })}
+          {moneyField("Cost basis of stock sold", pgBasis, setPgBasis, {
+            hint: "Gain (or loss) = amount sold − basis, priced through the gains stack with the qualified dividends.",
+            info: "What you originally paid for the stock. Only the part of the sale above this is gain — the rest is your own money coming back, untaxed.",
+            infoAlign: "right",
+          })}
+          {moneyField("Qualified dividends", pgQualDiv, setPgQualDiv, {
+            hint: pgIncomeHint(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Part of the ordinary dividends total above — not in addition to it."),
+            info: pgIncomeInfo(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Dividends that qualify for the lower tax rate — Form 1040 line 3a. This amount is part of the total ordinary dividends you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates."),
+            onEdit: () => markPgIncomeTyped("qualifiedDividends"),
+          })}
+          {moneyField("Short-term loss carried in", pgCarryInSt, setPgCarryInSt, {
+            hint: "Banked short-term capital losses from earlier years, still unused as this year begins. Blank = none.",
+            info: "A capital-loss carryforward is a net capital loss from an earlier year that wasn't used up — the unused part carries into this year. Enter the short-term amount still unused as this year begins: it nets against this year's gains, then up to $3,000 of what is left offsets ordinary income, and anything still unused carries into next year. Leave blank when there is none.",
+          })}
+          {moneyField("Long-term loss carried in", pgCarryInLt, setPgCarryInLt, {
+            hint: "Banked long-term capital losses from earlier years, still unused as this year begins. Blank = none.",
+            info: "The long-term companion to the short-term carry-in above: a net long-term capital loss from an earlier year that wasn't used up. It nets against this year's gains first — a $20,000 long-term carry-in against a $30,000 gain leaves a $10,000 gain priced, not $30,000. Leave blank when there is none.",
+            infoAlign: "right",
+          })}
+          {moneyField("Of the short-term loss, the Washington part", pgCarryInStWa, setPgCarryInStWa, {
+            hint: "Only the part of the short-term loss that came from sales allocated to Washington. Blank = none.",
+            info: "The Washington-allocated part of the short-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the short-term total above, never an amount on top of it.",
+          })}
+          {moneyField("Of the long-term loss, the Washington part", pgCarryInLtWa, setPgCarryInLtWa, {
+            hint: "The Washington-allocated part of the long-term loss above. Blank = none.",
+            info: "The Washington-allocated part of the long-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the long-term total above, never an amount on top of it.",
+            infoAlign: "right",
+          })}
+        </div>
+        {pgDividendPairNote && (
+          <p className="mt-2 text-sm text-[var(--warn)]" role="note">
+            {pgDividendPairNote}
+          </p>
+        )}
+        </>
+        ))}
+
+        {pgSectionCard("aca", "ACA & state", pgAcaSummary, (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {numField("ACA household size", pgAcaSize, setPgAcaSize, {
+            hint: "Sets the 400% poverty-line cliff. Needed to see the ACA position.",
+            info: "How many people are in your tax household for health coverage. It sets the poverty line your income is measured against — a bigger household means a higher ACA cliff.",
+          })}
+          <div>
+            {moneyField("ACA benchmark premium / yr", pgBenchmark, setPgBenchmark, {
+              hint: "Needed to price the premium credit. Blank shows the cliff position only.",
+              info: "The yearly price of your area's benchmark Silver plan before any credit. The credit covers the part above a set share of your income — and vanishes entirely over the cliff.",
+              infoAlign: "right",
+            })}
+            {pgBenchmarkCaption && (
+              <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                {pgBenchmarkCaption}
+              </p>
             )}
           </div>
-            </>
-          ))}
-
-          {pgSectionCard("income", "Income for the year", pgIncomeSummary, (
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {moneyField("Interest", pgInterest, setPgInterest, {
-              hint: pgIncomeHint(pgIncomeSources.interest, "2b", "interest"),
-              info: pgIncomeInfo(pgIncomeSources.interest, "2b", "interest", "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income."),
-              onEdit: () => markPgIncomeTyped("interest"),
-            })}
-            {moneyField("Ordinary dividends — total", pgOrdDiv, setPgOrdDiv, {
-              hint: pgIncomeHint(pgIncomeSources.ordinaryDividends, "3b", "dividends", "It includes the qualified dividends — they are counted once, not added again."),
-              info: pgIncomeInfo(pgIncomeSources.ordinaryDividends, "3b", "dividends", "All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once."),
-              infoAlign: "right",
-              onEdit: () => markPgIncomeTyped("ordinaryDividends"),
-            })}
-            {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
-              info: "Everything else taxed at the regular rates — wages, pensions, rent, and withdrawals from a traditional IRA or 401(k). It stacks on the same shelf as interest and pre-tax money out.",
-            })}
-            {moneyField("Tax-exempt interest", pgTaxExempt, setPgTaxExempt, {
-              hint: "Not taxed itself, but counts toward MAGI, ACA income, and how much Social Security is taxed.",
-              info: "Interest from municipal bonds. You pay no tax on it — but it still counts toward how much of your Social Security is taxed, and toward the ACA and IRMAA income tests. Tax-free is not invisible.",
-              infoAlign: "right",
-            })}
-            {moneyField("Your Social Security that year", pgSsP, setPgSsP, {
-              hint: "The year's total benefits. Blank counts as $0.",
-              info: "Your yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
-            })}
-            {pgFiling === "mfj" &&
-              moneyField("Spouse Social Security that year", pgSsS, setPgSsS, {
-                info: "Your spouse's yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
-                infoAlign: "right",
-              })}
-          </div>
-          ))}
-
-          {pgSectionCard("conversion", "Pre-tax money out", pgConversionSummary, (
-            <>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {moneyField("Pre-tax draw for spending", pgSpendingDraw, setPgSpendingDraw, {
-              hint: pgHoldActive && pgHoldDrawSolved && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
-                ? pgHeldTarget === "aca"
-                  ? pgHeldCliffDollars != null
-                    ? `Auto — Hold solved the draw down so the money out stays at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
-                    : "Auto — Hold solved the draw down so the money out stays at the ACA cliff"
-                  : `Auto — Hold solved the draw down so the money out stays at the ${pgHeldTarget}% top`
-                : "Money taken out of the pre-tax account to spend this year. It is taxed the same as a conversion — and, unlike one, it is cash in hand, so it counts toward the year's cash left below.",
-              info: "A distribution from your traditional IRA / 401(k) taken out to spend this year. The full amount counts as ordinary income, and because the cash is in hand it also counts in the year's cash in. A conversion moves the money to your Roth instead — the same income, but no cash in hand.",
-              onEdit: () => {
-                // Typing in the draw dial releases the hold,
-                // exactly like typing in the conversion dial —
-                // the typed value stands. (Programmatic writes
-                // from the hold effect call setPgSpendingDraw
-                // directly and never land here.)
-                if (pgHoldOn) setPgHoldOn(false);
-              },
-            })}
-            {moneyField("Conversion to Roth", pgConversion, setPgConversion, {
-              hint: pgHoldActive && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
-                ? pgHeldTarget === "aca"
-                  ? pgHeldCliffDollars != null
-                    ? `Auto — holding at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
-                    : "Auto — holding the ACA cliff"
-                  : `Auto — holding the ${pgHeldTarget}% top`
-                : "Money moved from the pre-tax account into your Roth this year. It counts as ordinary income — but it is not cash in hand, so it never counts toward the year's cash left.",
-              info: "Money converted from your traditional IRA / 401(k) into your Roth this year. The full amount counts as ordinary income, but the money lands in the Roth — it is not cash in hand, so it never counts in the year's cash in. Money you take out to spend belongs on the draw dial beside this one.",
-              onEdit: () => {
-                // Typing in the conversion dial releases the
-                // hold — the typed value stands. (Programmatic
-                // writes from the chips / hold effect call
-                // setPgConversion directly and never land here;
-                // moneyField calls onEdit only from its change
-                // handler, not from its blur reformat.)
-                if (pgHoldOn) setPgHoldOn(false);
-              },
-            })}
-            {moneyField("Pre-tax balance — primary (prior Dec 31)", pgPretax, setPgPretax, {
-              hint: "Optional. When entered, the year's RMD is priced on this balance (Joint Life when it applies) and the pre-tax money out is checked against what's left after the RMD.",
-              info: "What was in your traditional IRA / 401(k) on the prior Dec 31. Entering it lets the playground price this year's required minimum distribution (RMD) and check the pre-tax money out fits. Blank = no RMD priced.",
-              infoAlign: "right",
-            })}
-            {pgFiling === "mfj" &&
-              moneyField("Pre-tax balance — spouse (prior Dec 31)", pgPretaxSpouse, setPgPretaxSpouse, {
-                hint: "Optional. When entered, the spouse's RMD is priced on this balance on the spouse's own clock — not the primary's.",
-                info: "What was in your spouse's traditional IRA / 401(k) on the prior Dec 31. The spouse's required minimum distribution is priced on the spouse's own age and divisor. Blank = no spouse balance, no spouse RMD.",
-                infoAlign: "right",
-              })}
-            {moneyField("RMD already received this year", pgRmdReceived, setPgRmdReceived, {
-              hint: "The part of this year's RMD already paid — and already inside the income above. Blank = $0.",
-              info: "If part of this year's required minimum distribution has already been paid, it is already counted in the income you entered above (the December console's year-to-date income includes it the same way). Enter that part here and the playground subtracts it from the RMD the balances imply, so a paid RMD is never counted twice. Blank = none received yet.",
-            })}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="flex items-center text-sm text-[var(--dim)]">
-              Fill to:
-              <InfoNote
-                text="Sets the conversion amount for you: exactly enough, on top of any draw you've typed, to fill this tax bracket — or, with the ACA cliff chip, to land ACA household income exactly on the ACA target: the 400% poverty-line cliff minus the buffer set in ACA & state below — given everything else you've typed. The bracket tops are the ceilings of the 10%, 12%, 22% and 24% brackets."
-                ariaLabel="About fill to"
-              />
-            </span>
-            {[10, 12, 22, 24].map((pct) => (
-              <button
-                key={pct}
-                type="button"
-                aria-label={`Fill to the top of the ${pct}% bracket`}
-                className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
-                disabled={pgAgePNum == null || pgAgePNum <= 0}
-                onClick={() => applyPgBracketFill(pct)}
-              >
-                {pct}%
-              </button>
-            ))}
-            <button
-              type="button"
-              aria-label="Fill to the ACA cliff"
-              className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
-              disabled={pgAgePNum == null || pgAgePNum <= 0 || !pgAcaHasHardCliff}
-              onClick={applyPgAcaCliffFill}
-            >
-              ACA cliff
-            </button>
-            <button
-              type="button"
-              aria-label="Hold the fill"
-              aria-pressed={pgHoldOn}
-              className={pgHoldOn ? ceilChipActiveCls : ceilChipCls}
-              onClick={() => setPgHoldOn((v) => !v)}
-            >
-              Hold{pgHoldOn && pgHeldTarget != null ? (pgHeldTarget === "aca" ? " · ACA cliff" : ` · ${pgHeldTarget}%`) : ""}
-            </button>
-            <span className="flex items-center text-xs text-[var(--dim)]">
-              Hold keeps the fill on the tapped target as other dials change.
-              <InfoNote
-                text={
-                  pgAcaBufferDollars > 0
-                    ? `With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer (the buffer set in ACA & state below; editing the buffer re-solves too). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it.`
-                    : "With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff (the ACA target is the cliff minus the buffer set in ACA & state below, currently $0). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it."
-                }
-                ariaLabel="About hold the fill"
-              />
-            </span>
-          </div>
-          {pgAcaCliffNote && (
-            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
-              {pgAcaCliffNote}
-            </p>
-          )}
-          {pgHoldOn && pgHeldTarget == null && (
-            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
-              Tap a fill chip to hold that target.
-            </p>
-          )}
-          {pgHoldCantCaption && (
-            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
-              {pgHoldCantCaption}
-            </p>
-          )}
-          {pgHoldCliffCaption && !pgHoldCantCaption && (
-            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
-              {pgHoldCliffCaption}
-            </p>
-          )}
-            </>
-          ))}
-
-          {pgSectionCard("stock", "Stock sale (long-term)", pgStockSummary, (
-          <>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {moneyField("Stock sold", pgSold, setPgSold, {
-              info: "The total sale price of the stock you sell — what you receive for it. Only the part of this above your cost basis is a gain.",
-            })}
-            {moneyField("Cost basis of stock sold", pgBasis, setPgBasis, {
-              hint: "Gain (or loss) = amount sold − basis, priced through the gains stack with the qualified dividends.",
-              info: "What you originally paid for the stock. Only the part of the sale above this is gain — the rest is your own money coming back, untaxed.",
-              infoAlign: "right",
-            })}
-            {moneyField("Qualified dividends", pgQualDiv, setPgQualDiv, {
-              hint: pgIncomeHint(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Part of the ordinary dividends total above — not in addition to it."),
-              info: pgIncomeInfo(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Dividends that qualify for the lower tax rate — Form 1040 line 3a. This amount is part of the total ordinary dividends you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates."),
-              onEdit: () => markPgIncomeTyped("qualifiedDividends"),
-            })}
-            {moneyField("Short-term loss carried in", pgCarryInSt, setPgCarryInSt, {
-              hint: "Banked short-term capital losses from earlier years, still unused as this year begins. Blank = none.",
-              info: "A capital-loss carryforward is a net capital loss from an earlier year that wasn't used up — the unused part carries into this year. Enter the short-term amount still unused as this year begins: it nets against this year's gains, then up to $3,000 of what is left offsets ordinary income, and anything still unused carries into next year. Leave blank when there is none.",
-            })}
-            {moneyField("Long-term loss carried in", pgCarryInLt, setPgCarryInLt, {
-              hint: "Banked long-term capital losses from earlier years, still unused as this year begins. Blank = none.",
-              info: "The long-term companion to the short-term carry-in above: a net long-term capital loss from an earlier year that wasn't used up. It nets against this year's gains first — a $20,000 long-term carry-in against a $30,000 gain leaves a $10,000 gain priced, not $30,000. Leave blank when there is none.",
-              infoAlign: "right",
-            })}
-            {moneyField("Of the short-term loss, the Washington part", pgCarryInStWa, setPgCarryInStWa, {
-              hint: "Only the part of the short-term loss that came from sales allocated to Washington. Blank = none.",
-              info: "The Washington-allocated part of the short-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the short-term total above, never an amount on top of it.",
-            })}
-            {moneyField("Of the long-term loss, the Washington part", pgCarryInLtWa, setPgCarryInLtWa, {
-              hint: "The Washington-allocated part of the long-term loss above. Blank = none.",
-              info: "The Washington-allocated part of the long-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the long-term total above, never an amount on top of it.",
-              infoAlign: "right",
-            })}
-          </div>
-          {pgDividendPairNote && (
-            <p className="mt-2 text-sm text-[var(--warn)]" role="note">
-              {pgDividendPairNote}
-            </p>
-          )}
-          </>
-          ))}
-
-          {pgSectionCard("aca", "ACA & state", pgAcaSummary, (
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {numField("ACA household size", pgAcaSize, setPgAcaSize, {
-              hint: "Sets the 400% poverty-line cliff. Needed to see the ACA position.",
-              info: "How many people are in your tax household for health coverage. It sets the poverty line your income is measured against — a bigger household means a higher ACA cliff.",
-            })}
+          {moneyField("Health premium — marketplace / yr", pgHealthAca, setPgHealthAca, {
+            hint: "Your plan's gross premium. The readout nets the advance credit taken off it.",
+            info: "The premium of the plan you are actually enrolled in this year, before the credit. It also caps the year's final credit in the filing settlement below. The strip at the top shows the premium net of the advance credit you actually took — the rest of the final credit settles in the cash left after tax — and the cash left after paying it. It never changes the year's tax — it is a cost readout, like spending.",
+          })}
+          {moneyField("Health premium — Medicare, per person / yr", pgHealthMedicare, setPgHealthMedicare, {
+            hint: "Part B + Part D base, for each person on Medicare this year.",
+            info: "The Medicare base premium per person on Medicare this year: Part B standard plus a Part D base premium. The IRMAA surcharge is NOT part of this amount — it is priced nowhere until you enter it in the IRMAA surcharge dial below; the IRMAA readout in the strip is the surcharge this year's income will cause in two years' time, not this year's surcharge.",
+          })}
+          {moneyField("IRMAA surcharge payable this year / yr", pgIrmaaPayable, setPgIrmaaPayable, {
+            hint: "The surcharge you actually pay this year, for the whole household. Blank = $0.",
+            info: "The Medicare IRMAA surcharge actually payable THIS year — the figure on your Medicare premium notice, or the plan march's own IRMAA for this year. It is charged beside the base premium in the cash left after health premiums, so the 'enough for the year' verdict counts it. It is NOT the IRMAA readout in the strip: that is the surcharge this year's income will cause in two years' time. The projection walk prices no payable IRMAA — each walked year has its own.",
+          })}
+          {moneyField("Advance credit (APTC) already taken / yr", pgAptcTaken, setPgAptcTaken, {
+            hint: "Advance premium credit you actually received this year. Blank = $0.",
+            info: "The advance premium tax credit paid toward your premiums during the year (your Form 1095-A total). The cash left after tax settles it at filing: any credit still due is added, and any advance above the final credit is repaid — the same settlement the December view runs for the same year, so the two cash-left figures agree.",
+          })}
+          {moneyField("Coverage-month reduction / yr", pgCoverageReduction, setPgCoverageReduction, {
+            hint: "Credit lost for months someone wasn't eligible. Blank = $0.",
+            info: "The credit is monthly, not annual: a month in which a household member had an affordable employer offer, or was eligible for Medicare or CHIP, shrinks that month's credit whatever the annual income says. Enter the total reduction for any ineligible months — it lowers the final credit in the year's filing settlement.",
+          })}
+          {moneyField("Dependent MAGI for ACA", pgDependentMagi, setPgDependentMagi, {
+            hint: "A filing dependent's income — counts toward the ACA household MAGI only. Blank = $0.",
+            info: "Count a dependent's income toward household MAGI only when the dependent is required to file because their income meets the filing threshold — a return filed only to recover withholding does not count. The amount counts toward the ACA household MAGI only: it can shrink the credit or push the household over the cliff, but it is never added to your own taxable income and never changes the tax itself.",
+          })}
+          {pgAcaHasHardCliff && (
             <div>
-              {moneyField("ACA benchmark premium / yr", pgBenchmark, setPgBenchmark, {
-                hint: "Needed to price the premium credit. Blank shows the cliff position only.",
-                info: "The yearly price of your area's benchmark Silver plan before any credit. The credit covers the part above a set share of your income — and vanishes entirely over the cliff.",
-                infoAlign: "right",
+              {moneyField("Buffer below the ACA cliff", pgAcaBuffer, setPgAcaBuffer, {
+                hint: "A safety cushion under the cliff — the ACA cliff fill and Hold aim this far under it. Never part of the pricing.",
+                info: "How far below the 400% poverty-line cliff you aim ACA MAGI, to leave room for year-end income landing higher than expected. The ACA cliff chip, Hold's ACA target, and the fill below all aim at cliff − buffer — editing the buffer while Hold is on re-solves to the new line. It only helps choose the pre-tax money out amount — the tax and credit price exactly as before for whatever amount is dialed.",
               })}
-              {pgBenchmarkCaption && (
-                <p className="mt-1 text-xs text-[var(--dim)]" role="note">
-                  {pgBenchmarkCaption}
-                </p>
-              )}
+              <button
+                type="button"
+                aria-label="Fill conversion to cliff minus buffer"
+                className="mt-1 text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+                disabled={pgAgePNum == null || pgAgePNum <= 0}
+                onClick={applyPgAcaBufferFill}
+              >
+                Fill conversion to cliff − buffer
+              </button>
             </div>
-            {moneyField("Health premium — marketplace / yr", pgHealthAca, setPgHealthAca, {
-              hint: "Your plan's gross premium. The readout nets the advance credit taken off it.",
-              info: "The premium of the plan you are actually enrolled in this year, before the credit. It also caps the year's final credit in the filing settlement below. The strip at the top shows the premium net of the advance credit you actually took — the rest of the final credit settles in the cash left after tax — and the cash left after paying it. It never changes the year's tax — it is a cost readout, like spending.",
-            })}
-            {moneyField("Health premium — Medicare, per person / yr", pgHealthMedicare, setPgHealthMedicare, {
-              hint: "Part B + Part D base, for each person on Medicare this year.",
-              info: "The Medicare base premium per person on Medicare this year: Part B standard plus a Part D base premium. The IRMAA surcharge is NOT part of this amount — it is priced nowhere until you enter it in the IRMAA surcharge dial below; the IRMAA readout in the strip is the surcharge this year's income will cause in two years' time, not this year's surcharge.",
-            })}
-            {moneyField("IRMAA surcharge payable this year / yr", pgIrmaaPayable, setPgIrmaaPayable, {
-              hint: "The surcharge you actually pay this year, for the whole household. Blank = $0.",
-              info: "The Medicare IRMAA surcharge actually payable THIS year — the figure on your Medicare premium notice, or the plan march's own IRMAA for this year. It is charged beside the base premium in the cash left after health premiums, so the 'enough for the year' verdict counts it. It is NOT the IRMAA readout in the strip: that is the surcharge this year's income will cause in two years' time. The projection walk prices no payable IRMAA — each walked year has its own.",
-            })}
-            {moneyField("Advance credit (APTC) already taken / yr", pgAptcTaken, setPgAptcTaken, {
-              hint: "Advance premium credit you actually received this year. Blank = $0.",
-              info: "The advance premium tax credit paid toward your premiums during the year (your Form 1095-A total). The cash left after tax settles it at filing: any credit still due is added, and any advance above the final credit is repaid — the same settlement the December view runs for the same year, so the two cash-left figures agree.",
-            })}
-            {moneyField("Coverage-month reduction / yr", pgCoverageReduction, setPgCoverageReduction, {
-              hint: "Credit lost for months someone wasn't eligible. Blank = $0.",
-              info: "The credit is monthly, not annual: a month in which a household member had an affordable employer offer, or was eligible for Medicare or CHIP, shrinks that month's credit whatever the annual income says. Enter the total reduction for any ineligible months — it lowers the final credit in the year's filing settlement.",
-            })}
-            {moneyField("Dependent MAGI for ACA", pgDependentMagi, setPgDependentMagi, {
-              hint: "A filing dependent's income — counts toward the ACA household MAGI only. Blank = $0.",
-              info: "Count a dependent's income toward household MAGI only when the dependent is required to file because their income meets the filing threshold — a return filed only to recover withholding does not count. The amount counts toward the ACA household MAGI only: it can shrink the credit or push the household over the cliff, but it is never added to your own taxable income and never changes the tax itself.",
-            })}
-            {pgAcaHasHardCliff && (
-              <div>
-                {moneyField("Buffer below the ACA cliff", pgAcaBuffer, setPgAcaBuffer, {
-                  hint: "A safety cushion under the cliff — the ACA cliff fill and Hold aim this far under it. Never part of the pricing.",
-                  info: "How far below the 400% poverty-line cliff you aim ACA MAGI, to leave room for year-end income landing higher than expected. The ACA cliff chip, Hold's ACA target, and the fill below all aim at cliff − buffer — editing the buffer while Hold is on re-solves to the new line. It only helps choose the pre-tax money out amount — the tax and credit price exactly as before for whatever amount is dialed.",
-                })}
+          )}
+          <div>
+            <label
+              className="block text-sm font-medium text-[var(--text)]"
+              htmlFor="roth-pg-residence"
+            >
+              State of residence
+            </label>
+            <select
+              id="roth-pg-residence"
+              aria-label="State of residence"
+              className={inputCls}
+              value={pgResidence}
+              onChange={(e) =>
+                setPgResidence(e.target.value === "WA" ? "WA" : "other")
+              }
+            >
+              <option value="WA">Washington — capital-gains excise</option>
+              <option value="other">Other / none — flat rate</option>
+            </select>
+            <p className={hintCls}>
+              Washington prices the state tax on this year&rsquo;s stock
+              gain under its capital-gains excise instead of the flat rate.
+            </p>
+          </div>
+          {pctField("State tax rate for this year", pgStateRate, setPgStateRate, {
+            hint:
+              pgResidence === "WA"
+                ? "Ignored for Washington — the excise prices the state tax instead."
+                : "Flat rate on taxable income, the plan's state model. 0 = none.",
+            info: "Your state's flat tax rate on taxable income, as a percent. Leave it at 0 to price federal tax only.",
+          })}
+          {moneyField("Mortgage interest", pgItemizedMortgage, setPgItemizedMortgage, {
+            hint: "Itemized deductions for this year. The year takes the greater of the itemized total and the standard deduction. Blank = $0.",
+          })}
+          {moneyField("State and local taxes paid", pgItemizedSalt, setPgItemizedSalt, {
+            hint: "Itemized deductions: taxes PAID this year. Capped on its own at the year's SALT cap ($40,000 for 2025, $40,400 for 2026, reduced for very high incomes) before the comparison. Blank = $0.",
+          })}
+          {moneyField("Charitable contributions", pgItemizedCharitable, setPgItemizedCharitable, {
+            hint: "Itemized deductions: this same figure is the one charitable input the Washington excise's charitable deduction also reads. Blank = $0.",
+          })}
+          {moneyField("Other itemized deductions", pgItemizedOther, setPgItemizedOther, {
+            hint: "Itemized deductions: anything else. The four components stay separate so the SALT cap applies to that component alone. Blank = $0.",
+          })}
+          <div className="col-span-2 sm:col-span-3">
+            <span className={labelCls}>Education expenses — for education credits</span>
+            <p className={hintCls}>
+              Optional: one row per student in this year — that
+              student&rsquo;s qualified education expenses, and whether the
+              student is eligible for the American Opportunity Credit
+              (AOTC). The AOTC prices per student (up to $2,500 each, 40%
+              refundable); other students&rsquo; expenses price the
+              Lifetime Learning Credit (20% of up to $10,000), and the same
+              student&rsquo;s expenses never count toward both. Leave
+              empty for no credits.
+            </p>
+            {pgEduStudents.map((row, i) => (
+              <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+                <div className="min-w-40 flex-1">
+                  {moneyField(`Student ${i + 1} qualified expenses`, row.expenses, (v) =>
+                    setPgEduStudents((rows) =>
+                      rows.map((r, j) => (j === i ? { ...r, expenses: v } : r)),
+                    ),
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pb-2">
+                  <input
+                    id={`pg-edu-aotc-${i}`}
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={row.aotcEligible}
+                    onChange={(e) =>
+                      setPgEduStudents((rows) =>
+                        rows.map((r, j) =>
+                          j === i ? { ...r, aotcEligible: e.target.checked } : r,
+                        ),
+                      )
+                    }
+                  />
+                  <label htmlFor={`pg-edu-aotc-${i}`} className="text-sm">
+                    AOTC-eligible
+                  </label>
+                </div>
                 <button
                   type="button"
-                  aria-label="Fill conversion to cliff minus buffer"
-                  className="mt-1 text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
-                  disabled={pgAgePNum == null || pgAgePNum <= 0}
-                  onClick={applyPgAcaBufferFill}
+                  aria-label={`Remove student ${i + 1}`}
+                  className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
+                  onClick={() =>
+                    setPgEduStudents((rows) => rows.filter((_, j) => j !== i))
+                  }
                 >
-                  Fill conversion to cliff − buffer
+                  ✕
                 </button>
               </div>
-            )}
-            <div>
-              <label
-                className="block text-sm font-medium text-[var(--text)]"
-                htmlFor="roth-pg-residence"
-              >
-                State of residence
-              </label>
-              <select
-                id="roth-pg-residence"
-                aria-label="State of residence"
-                className={inputCls}
-                value={pgResidence}
-                onChange={(e) =>
-                  setPgResidence(e.target.value === "WA" ? "WA" : "other")
+            ))}
+            {pgEduStudents.length < 12 && (
+              <button
+                type="button"
+                className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                onClick={() =>
+                  setPgEduStudents((rows) => [
+                    ...rows,
+                    { expenses: "", aotcEligible: true },
+                  ])
                 }
               >
-                <option value="WA">Washington — capital-gains excise</option>
-                <option value="other">Other / none — flat rate</option>
-              </select>
-              <p className={hintCls}>
-                Washington prices the state tax on this year&rsquo;s stock
-                gain under its capital-gains excise instead of the flat rate.
-              </p>
+                Add a student
+              </button>
+            )}
+          </div>
+        </div>
+        ))}
+
+        {pgSectionCard("spending", "Spending", pgSpendingSummary, (
+        <>
+        <div className="mt-2 max-w-xs">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <label
+              className="block text-sm font-medium text-[var(--text)]"
+              htmlFor="roth-pg-spending"
+            >
+              {pgSpendingUnit === "month" ? "Monthly spending" : "Spending per year"}
+            </label>
+            <div
+              role="group"
+              aria-label="Spending display period"
+              className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+            >
+              <button
+                type="button"
+                aria-label="Show spending per year"
+                aria-pressed={pgSpendingUnit === "year"}
+                onClick={() => setPgSpendingUnit("year")}
+                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                per year
+              </button>
+              <button
+                type="button"
+                aria-label="Show spending per month"
+                aria-pressed={pgSpendingUnit === "month"}
+                onClick={() => setPgSpendingUnit("month")}
+                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                per month
+              </button>
             </div>
-            {pctField("State tax rate for this year", pgStateRate, setPgStateRate, {
-              hint:
-                pgResidence === "WA"
-                  ? "Ignored for Washington — the excise prices the state tax instead."
-                  : "Flat rate on taxable income, the plan's state model. 0 = none.",
-              info: "Your state's flat tax rate on taxable income, as a percent. Leave it at 0 to price federal tax only.",
-            })}
-            {moneyField("Mortgage interest", pgItemizedMortgage, setPgItemizedMortgage, {
-              hint: "Itemized deductions for this year. The year takes the greater of the itemized total and the standard deduction. Blank = $0.",
-            })}
-            {moneyField("State and local taxes paid", pgItemizedSalt, setPgItemizedSalt, {
-              hint: "Itemized deductions: taxes PAID this year. Capped on its own at the year's SALT cap ($40,000 for 2025, $40,400 for 2026, reduced for very high incomes) before the comparison. Blank = $0.",
-            })}
-            {moneyField("Charitable contributions", pgItemizedCharitable, setPgItemizedCharitable, {
-              hint: "Itemized deductions: this same figure is the one charitable input the Washington excise's charitable deduction also reads. Blank = $0.",
-            })}
-            {moneyField("Other itemized deductions", pgItemizedOther, setPgItemizedOther, {
-              hint: "Itemized deductions: anything else. The four components stay separate so the SALT cap applies to that component alone. Blank = $0.",
-            })}
-            <div className="col-span-2 sm:col-span-3">
-              <span className={labelCls}>Education expenses — for education credits</span>
-              <p className={hintCls}>
-                Optional: one row per student in this year — that
-                student&rsquo;s qualified education expenses, and whether the
-                student is eligible for the American Opportunity Credit
-                (AOTC). The AOTC prices per student (up to $2,500 each, 40%
-                refundable); other students&rsquo; expenses price the
-                Lifetime Learning Credit (20% of up to $10,000), and the same
-                student&rsquo;s expenses never count toward both. Leave
-                empty for no credits.
+          </div>
+          <div className="relative">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+            >
+              $
+            </span>
+            <input
+              id="roth-pg-spending"
+              aria-label={
+                pgSpendingUnit === "month"
+                  ? "Playground — monthly spending"
+                  : "Playground — spending per year"
+              }
+              className={`${inputCls} pl-7`}
+              inputMode="decimal"
+              value={
+                pgSpendingUnit === "month"
+                  ? (pgSpendingMonthlyDraft ?? pgMonthlySpendingDisplay())
+                  : pgSpending
+              }
+              onFocus={() => {
+                pgSpendingFocusedRef.current = true;
+                if (pgSpendingUnit === "month") {
+                  setPgSpendingMonthlyDraft(monthlyRaw(pgSpending));
+                }
+              }}
+              onBlur={() => {
+                pgSpendingFocusedRef.current = false;
+                if (pgSpendingUnit === "month") {
+                  setPgSpendingMonthlyDraft(null);
+                }
+                // The annual state is canonicalized on blur,
+                // exactly as the Tax Plan's spending field
+                // does: the same numeric value, grouped.
+                const d = parseDollars(pgSpending);
+                if (d != null) setPgSpending(fmtMoneyInput(d));
+                // Blur flush: the value is settled now, so
+                // send any held Tax Plan write-through.
+                firePendingPgRothSaveRef.current();
+              }}
+              onChange={(e) => {
+                // An edit takes over the comparison: any
+                // held paste spending (P-S2) clears, and
+                // this dial's figure rules again (writing
+                // through to the record as usual).
+                setPgPastedSpending(undefined);
+                if (pgSpendingUnit === "month") {
+                  setPgSpendingMonthlyDraft(e.target.value);
+                  setPgSpending(monthlyToAnnual(e.target.value));
+                } else {
+                  setPgSpending(e.target.value);
+                }
+              }}
+            />
+          </div>
+          {pgSpendingUnit === "month" && (
+            <p className="mt-1 text-xs text-[var(--dim)]">
+              = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
+            </p>
+          )}
+          <p className="mt-1 text-xs text-[var(--dim)]">
+            The Tax Plan&rsquo;s annual spending — editing here changes the saved plan, like editing it in the Tax Plan or Retirement. It only sets the &ldquo;Left after a year&rsquo;s spending&rdquo; comparison below; it never changes the tax.
+          </p>
+          {pgSpendingMsg != null && (
+            <p className="mt-1 text-xs text-[var(--bad)]" role="note">
+              {pgSpendingMsg}
+            </p>
+          )}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Cash drawn for spending", pgCashDraw, setPgCashDraw, {
+            hint: "Money taken out of savings / the cash sleeve to pay this year's spending. Blank = $0.",
+            info: "Cash you take out of a savings account or the plan's cash sleeve to pay for this year. It is your own money coming back — no sale, no gain, no tax — so it counts as cash in for the year's verdict without counting as income. Leave blank when the year is funded other ways.",
+          })}
+          {moneyField("Roth drawn for spending", pgRothDraw, setPgRothDraw, {
+            hint: "Money taken out of your Roth accounts to pay this year's spending. Blank = $0.",
+            info: "Money you take out of your Roth IRA or Roth 401(k) to pay for this year. Roth money was already taxed on the way in, so a draw for spending is not taxed again and is not income — it counts as cash in for the year's verdict, like the plan's own funding ledger counts it. Leave blank when the year is funded other ways.",
+            infoAlign: "right",
+          })}
+        </div>
+        </>))}
+
+          </>
+        )}
+        </section>
+
+          </>
+        )}
+
+        {pgFace === "projection" && (
+          <>
+        {pgGroupHeader("projection", "Projection dials", "A separate what-if — the captured template year repeated year by year. These dials drive only the projection; they never change the single-year price.")}
+        {pgGroupOpen.projection && (
+        <section className={sectionCls} aria-label="Projection">
+          <h3>
+            <button
+              type="button"
+              aria-expanded={pgProjOpen}
+              aria-label="Projection section"
+              className="flex w-full items-start justify-between gap-3 text-left"
+              onClick={() => setPgProjOpen((v) => !v)}
+            >
+              <span>
+                <span className="block text-base font-semibold">Projection — repeat {pgProjTemplate != null ? `${pgProjTemplate.taxYear} (age ${pgProjTemplate.agePrimary})` : "this year"}{pgProjFromAge.trim() !== "" ? ` from age ${pgProjFromAge.trim()}` : ""} to age {pgProjToAge.trim() === "" ? "95" : pgProjToAge}</span>
+                <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                  {pgProjSummary}
+                </span>
+              </span>
+              <FoldChevron open={pgProjOpen} className="mt-0.5" />
+            </button>
+          </h3>
+          {pgProjOpen && (
+            <>
+              <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]">
+                A captured template year repeats, one bar per year,
+                priced by the same engine as the single-year view.
+                Projected years price the ACA cliff on the newest
+                poverty-guideline row, in today&rsquo;s dollars, while
+                the single-year view applies the statutory lookback to
+                its named year — so a loaded year&rsquo;s cliff can
+                differ from the chart&rsquo;s line.
               </p>
-              {pgEduStudents.map((row, i) => (
-                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
-                  <div className="min-w-40 flex-1">
-                    {moneyField(`Student ${i + 1} qualified expenses`, row.expenses, (v) =>
-                      setPgEduStudents((rows) =>
-                        rows.map((r, j) => (j === i ? { ...r, expenses: v } : r)),
-                      ),
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 pb-2">
-                    <input
-                      id={`pg-edu-aotc-${i}`}
-                      type="checkbox"
-                      className="h-4 w-4"
-                      checked={row.aotcEligible}
-                      onChange={(e) =>
-                        setPgEduStudents((rows) =>
-                          rows.map((r, j) =>
-                            j === i ? { ...r, aotcEligible: e.target.checked } : r,
-                          ),
-                        )
-                      }
-                    />
-                    <label htmlFor={`pg-edu-aotc-${i}`} className="text-sm">
-                      AOTC-eligible
-                    </label>
-                  </div>
+              <ExplainerInfoTip
+                id="playground.projectionHow"
+                label="how the projection works"
+              >
+<p>
+                  The pre-tax money out repeats as entered each
+                  year — or, in “replace” mode, Social Security and
+                  RMDs replace part of it as they arrive — and it
+                  lands in Roth when the money out is a conversion,
+                  or leaves as spending when it is a draw, stopping
+                  at the stop age or pre-tax floor if one is set.
+                  Balances grow at the expected return after each
+                  year&rsquo;s money moves, and spending and taxes
+                  are not taken out of them.
+                </p>
+                <p>
+                  Medicare switches on at 65 for each person, Social
+                  Security starts at its claiming age, RMDs price off
+                  the balance as it walks down, the ACA household
+                  steps down in its step-down year, and ACA ends once
+                  everyone is on Medicare.
+                </p>
+                <p>
+                  Click any bar to load that year into the
+                  single-year view — the chart itself runs from a
+                  captured snapshot of the template year and never
+                  changes when you click, so every year stays on the
+                  chart and any bar can be clicked again to go back.
+                </p>
+                <p>
+                  “Projection from age” starts the window at a
+                  different age without touching the template:
+                  earlier than the template age, the walk itself
+                  starts there — the calendar years and your
+                  spouse&rsquo;s age shift back with it, the
+                  template&rsquo;s income shape repeats from that
+                  age, every age-keyed switch follows each projected
+                  year&rsquo;s own ages, and the starting balances
+                  (the template&rsquo;s pre-tax balance and the
+                  starting taxable and Roth balances below) are the
+                  balances at that first projected year. Later than
+                  the template age, the walk still runs from the
+                  template year and the charts show the years from
+                  that age on, so the first shown year&rsquo;s
+                  balances are the walked ones.
+                </p>
+              </ExplainerInfoTip>
+              {pgProjTemplate != null && (
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+                  <p role="note" className="text-[var(--dim)]">
+                    Projection template: {pgProjTemplate.taxYear} (age{" "}
+                    {pgProjTemplate.agePrimary})
+                    {!pgProjTemplateIsCurrent &&
+                      " — the single-year view above shows a different year; the chart still runs from this template."}
+                  </p>
                   <button
                     type="button"
-                    aria-label={`Remove student ${i + 1}`}
-                    className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
-                    onClick={() =>
-                      setPgEduStudents((rows) => rows.filter((_, j) => j !== i))
-                    }
+                    aria-label="Re-run projection from the year above"
+                    disabled={pgProjTemplateIsCurrent || pgAgePNum == null || pgAgePNum <= 0}
+                    className="px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:no-underline disabled:opacity-50"
+                    onClick={captureProjTemplate}
                   >
-                    ✕
+                    {pgProjTemplateIsCurrent
+                      ? "Already running from the year above"
+                      : "Re-run projection from the year above"}
                   </button>
                 </div>
-              ))}
-              {pgEduStudents.length < 12 && (
-                <button
-                  type="button"
-                  className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-                  onClick={() =>
-                    setPgEduStudents((rows) => [
-                      ...rows,
-                      { expenses: "", aotcEligible: true },
-                    ])
-                  }
-                >
-                  Add a student
-                </button>
               )}
-            </div>
-          </div>
-          ))}
-
-          {pgSectionCard("spending", "Spending", pgSpendingSummary, (
-          <>
-          <div className="mt-2 max-w-xs">
-            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-              <label
-                className="block text-sm font-medium text-[var(--text)]"
-                htmlFor="roth-pg-spending"
-              >
-                {pgSpendingUnit === "month" ? "Monthly spending" : "Spending per year"}
-              </label>
-              <div
-                role="group"
-                aria-label="Spending display period"
-                className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-              >
-                <button
-                  type="button"
-                  aria-label="Show spending per year"
-                  aria-pressed={pgSpendingUnit === "year"}
-                  onClick={() => setPgSpendingUnit("year")}
-                  className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                >
-                  per year
-                </button>
-                <button
-                  type="button"
-                  aria-label="Show spending per month"
-                  aria-pressed={pgSpendingUnit === "month"}
-                  onClick={() => setPgSpendingUnit("month")}
-                  className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                >
-                  per month
-                </button>
-              </div>
-            </div>
-            <div className="relative">
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
-              >
-                $
-              </span>
-              <input
-                id="roth-pg-spending"
-                aria-label={
-                  pgSpendingUnit === "month"
-                    ? "Playground — monthly spending"
-                    : "Playground — spending per year"
-                }
-                className={`${inputCls} pl-7`}
-                inputMode="decimal"
-                value={
-                  pgSpendingUnit === "month"
-                    ? (pgSpendingMonthlyDraft ?? pgMonthlySpendingDisplay())
-                    : pgSpending
-                }
-                onFocus={() => {
-                  pgSpendingFocusedRef.current = true;
-                  if (pgSpendingUnit === "month") {
-                    setPgSpendingMonthlyDraft(monthlyRaw(pgSpending));
-                  }
-                }}
-                onBlur={() => {
-                  pgSpendingFocusedRef.current = false;
-                  if (pgSpendingUnit === "month") {
-                    setPgSpendingMonthlyDraft(null);
-                  }
-                  // The annual state is canonicalized on blur,
-                  // exactly as the Tax Plan's spending field
-                  // does: the same numeric value, grouped.
-                  const d = parseDollars(pgSpending);
-                  if (d != null) setPgSpending(fmtMoneyInput(d));
-                  // Blur flush: the value is settled now, so
-                  // send any held Tax Plan write-through.
-                  firePendingPgRothSaveRef.current();
-                }}
-                onChange={(e) => {
-                  // An edit takes over the comparison: any
-                  // held paste spending (P-S2) clears, and
-                  // this dial's figure rules again (writing
-                  // through to the record as usual).
-                  setPgPastedSpending(undefined);
-                  if (pgSpendingUnit === "month") {
-                    setPgSpendingMonthlyDraft(e.target.value);
-                    setPgSpending(monthlyToAnnual(e.target.value));
-                  } else {
-                    setPgSpending(e.target.value);
-                  }
-                }}
-              />
-            </div>
-            {pgSpendingUnit === "month" && (
-              <p className="mt-1 text-xs text-[var(--dim)]">
-                = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
-              </p>
-            )}
-            <p className="mt-1 text-xs text-[var(--dim)]">
-              The Tax Plan&rsquo;s annual spending — editing here changes the saved plan, like editing it in the Tax Plan or Retirement. It only sets the &ldquo;Left after a year&rsquo;s spending&rdquo; comparison below; it never changes the tax.
-            </p>
-            {pgSpendingMsg != null && (
-              <p className="mt-1 text-xs text-[var(--bad)]" role="note">
-                {pgSpendingMsg}
-              </p>
-            )}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {moneyField("Cash drawn for spending", pgCashDraw, setPgCashDraw, {
-              hint: "Money taken out of savings / the cash sleeve to pay this year's spending. Blank = $0.",
-              info: "Cash you take out of a savings account or the plan's cash sleeve to pay for this year. It is your own money coming back — no sale, no gain, no tax — so it counts as cash in for the year's verdict without counting as income. Leave blank when the year is funded other ways.",
-            })}
-            {moneyField("Roth drawn for spending", pgRothDraw, setPgRothDraw, {
-              hint: "Money taken out of your Roth accounts to pay this year's spending. Blank = $0.",
-              info: "Money you take out of your Roth IRA or Roth 401(k) to pay for this year. Roth money was already taxed on the way in, so a draw for spending is not taxed again and is not income — it counts as cash in for the year's verdict, like the plan's own funding ledger counts it. Leave blank when the year is funded other ways.",
-              infoAlign: "right",
-            })}
-          </div>
-          </>))}
-
-            </>
-          )}
-          </section>
-
-            </>
-          )}
-
-          {pgFace === "projection" && (
-            <>
-          {pgGroupHeader("projection", "Projection dials", "A separate what-if — the captured template year repeated year by year. These dials drive only the projection; they never change the single-year price.")}
-          {pgGroupOpen.projection && (
-          <section className={sectionCls} aria-label="Projection">
-            <h3>
-              <button
-                type="button"
-                aria-expanded={pgProjOpen}
-                aria-label="Projection section"
-                className="flex w-full items-start justify-between gap-3 text-left"
-                onClick={() => setPgProjOpen((v) => !v)}
-              >
-                <span>
-                  <span className="block text-base font-semibold">Projection — repeat {pgProjTemplate != null ? `${pgProjTemplate.taxYear} (age ${pgProjTemplate.agePrimary})` : "this year"}{pgProjFromAge.trim() !== "" ? ` from age ${pgProjFromAge.trim()}` : ""} to age {pgProjToAge.trim() === "" ? "95" : pgProjToAge}</span>
-                  <span className="mt-0.5 block text-sm text-[var(--dim)]">
-                    {pgProjSummary}
-                  </span>
-                </span>
-                <FoldChevron open={pgProjOpen} className="mt-0.5" />
-              </button>
-            </h3>
-            {pgProjOpen && (
-              <>
-                <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]">
-                  A captured template year repeats, one bar per year,
-                  priced by the same engine as the single-year view.
-                  Projected years price the ACA cliff on the newest
-                  poverty-guideline row, in today&rsquo;s dollars, while
-                  the single-year view applies the statutory lookback to
-                  its named year — so a loaded year&rsquo;s cliff can
-                  differ from the chart&rsquo;s line.
-                </p>
-                <ExplainerInfoTip
-                  id="playground.projectionHow"
-                  label="how the projection works"
-                >
-<p>
-                    The pre-tax money out repeats as entered each
-                    year — or, in “replace” mode, Social Security and
-                    RMDs replace part of it as they arrive — and it
-                    lands in Roth when the money out is a conversion,
-                    or leaves as spending when it is a draw, stopping
-                    at the stop age or pre-tax floor if one is set.
-                    Balances grow at the expected return after each
-                    year&rsquo;s money moves, and spending and taxes
-                    are not taken out of them.
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {numField("Projection from age", pgProjFromAge, setPgProjFromAge, {
+                  idLabel: "Projection from age",
+                  hint:
+                    pgProjTemplate != null
+                      ? `Blank uses the template's own age (${pgProjTemplate.agePrimary}). Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.`
+                      : "Blank uses the template year's own age. Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.",
+                })}
+                {numField("Project to age", pgProjToAge, setPgProjToAge, {
+                  idLabel: "Projection to age",
+                  hint: "The last age projected. 95 unless you change it.",
+                })}
+                {pctField("Expected return", pgProjReturnPct, setPgProjReturnPct, {
+                  idLabel: "Projection expected return",
+                  hint:
+                    pgPrefillSource != null
+                      ? `Blank uses your plan's expected return (${pgPrefillSource.expectedReturnPct}%). Balances grow at this rate after each year's money moves.`
+                      : "Balances grow at this rate after each year's money moves.",
+                })}
+                <div>
+                  <label className={labelCls} htmlFor="roth-pg-proj-draw-mode">
+                    When Social Security and RMDs arrive
+                  </label>
+                  <select
+                    id="roth-pg-proj-draw-mode"
+                    aria-label="Projection draw behavior"
+                    className={inputCls}
+                    value={pgProjDrawMode}
+                    onChange={(e) =>
+                      setPgProjDrawMode(e.target.value === "replace" ? "replace" : "repeat")
+                    }
+                  >
+                    <option value="repeat">The draw repeats as entered</option>
+                    <option value="replace">Social Security and RMDs replace the draw</option>
+                  </select>
+                  <p className={hintCls}>
+                    “Replace” shrinks the pre-tax money out by whatever
+                    Social Security and RMDs arrive beyond the template
+                    year&rsquo;s own, floored at $0.
                   </p>
-                  <p>
-                    Medicare switches on at 65 for each person, Social
-                    Security starts at its claiming age, RMDs price off
-                    the balance as it walks down, the ACA household
-                    steps down in its step-down year, and ACA ends once
-                    everyone is on Medicare.
-                  </p>
-                  <p>
-                    Click any bar to load that year into the
-                    single-year view — the chart itself runs from a
-                    captured snapshot of the template year and never
-                    changes when you click, so every year stays on the
-                    chart and any bar can be clicked again to go back.
-                  </p>
-                  <p>
-                    “Projection from age” starts the window at a
-                    different age without touching the template:
-                    earlier than the template age, the walk itself
-                    starts there — the calendar years and your
-                    spouse&rsquo;s age shift back with it, the
-                    template&rsquo;s income shape repeats from that
-                    age, every age-keyed switch follows each projected
-                    year&rsquo;s own ages, and the starting balances
-                    (the template&rsquo;s pre-tax balance and the
-                    starting taxable and Roth balances below) are the
-                    balances at that first projected year. Later than
-                    the template age, the walk still runs from the
-                    template year and the charts show the years from
-                    that age on, so the first shown year&rsquo;s
-                    balances are the walked ones.
-                  </p>
-                </ExplainerInfoTip>
-                {pgProjTemplate != null && (
-                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-                    <p role="note" className="text-[var(--dim)]">
-                      Projection template: {pgProjTemplate.taxYear} (age{" "}
-                      {pgProjTemplate.agePrimary})
-                      {!pgProjTemplateIsCurrent &&
-                        " — the single-year view above shows a different year; the chart still runs from this template."}
-                    </p>
-                    <button
-                      type="button"
-                      aria-label="Re-run projection from the year above"
-                      disabled={pgProjTemplateIsCurrent || pgAgePNum == null || pgAgePNum <= 0}
-                      className="px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:no-underline disabled:opacity-50"
-                      onClick={captureProjTemplate}
-                    >
-                      {pgProjTemplateIsCurrent
-                        ? "Already running from the year above"
-                        : "Re-run projection from the year above"}
-                    </button>
-                  </div>
-                )}
-                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {numField("Projection from age", pgProjFromAge, setPgProjFromAge, {
-                    idLabel: "Projection from age",
-                    hint:
-                      pgProjTemplate != null
-                        ? `Blank uses the template's own age (${pgProjTemplate.agePrimary}). Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.`
-                        : "Blank uses the template year's own age. Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.",
+                </div>
+                <div>
+                  <label className={labelCls} htmlFor="roth-pg-proj-kind">
+                    Pre-tax money out is
+                  </label>
+                  <select
+                    id="roth-pg-proj-kind"
+                    aria-label="Projection money out kind"
+                    className={inputCls}
+                    value={pgProjMoneyOutKind}
+                    onChange={(e) =>
+                      setPgProjMoneyOutKind(e.target.value === "draw" ? "draw" : "conversion")
+                    }
+                  >
+                    <option value="conversion">A conversion — it lands in Roth</option>
+                    <option value="draw">A draw — it leaves as spending</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls} htmlFor="roth-pg-proj-stop">
+                    The money out stops
+                  </label>
+                  <select
+                    id="roth-pg-proj-stop"
+                    aria-label="Projection stop rule"
+                    className={inputCls}
+                    value={pgProjStopKind}
+                    onChange={(e) =>
+                      setPgProjStopKind(
+                        e.target.value === "age"
+                          ? "age"
+                          : e.target.value === "floor"
+                            ? "floor"
+                            : "none",
+                      )
+                    }
+                  >
+                    <option value="none">Never — it repeats every year</option>
+                    <option value="age">After a stop age</option>
+                    <option value="floor">At a pre-tax floor</option>
+                  </select>
+                </div>
+                {pgProjStopKind === "age" &&
+                  numField("Convert through age", pgProjStopValue, setPgProjStopValue, {
+                    idLabel: "Projection convert through age",
+                    hint: "The last age the money out runs. $0 after it.",
                   })}
-                  {numField("Project to age", pgProjToAge, setPgProjToAge, {
-                    idLabel: "Projection to age",
-                    hint: "The last age projected. 95 unless you change it.",
+                {pgProjStopKind === "floor" &&
+                  moneyField("Pre-tax floor", pgProjStopValue, setPgProjStopValue, {
+                    idLabel: "Projection pre-tax floor",
+                    hint: "The money out shrinks so the pre-tax balance never goes below this, and stops once it is reached.",
                   })}
-                  {pctField("Expected return", pgProjReturnPct, setPgProjReturnPct, {
-                    idLabel: "Projection expected return",
+                {numField("Your Social Security claiming age", pgProjSsPClaimAge, setPgProjSsPClaimAge, {
+                  idLabel: "Projection your claiming age",
+                  hint:
+                    pgPrefillSource?.ssPrimaryStartAge != null
+                      ? `Blank uses your plan's claiming age (${pgPrefillSource.ssPrimaryStartAge}).`
+                      : "Blank keeps the template amount in pay every year.",
+                })}
+                {moneyField("Your Social Security per year", pgProjSsPAnnual, setPgProjSsPAnnual, {
+                  idLabel: "Projection your Social Security per year",
+                  hint: "What the benefit pays from the claiming age. Blank uses the template amount, or your plan's when the template year is before claiming.",
+                })}
+                {pgFiling === "mfj" &&
+                  numField("Spouse Social Security claiming age", pgProjSsSClaimAge, setPgProjSsSClaimAge, {
+                    idLabel: "Projection spouse claiming age",
                     hint:
-                      pgPrefillSource != null
-                        ? `Blank uses your plan's expected return (${pgPrefillSource.expectedReturnPct}%). Balances grow at this rate after each year's money moves.`
-                        : "Balances grow at this rate after each year's money moves.",
-                  })}
-                  <div>
-                    <label className={labelCls} htmlFor="roth-pg-proj-draw-mode">
-                      When Social Security and RMDs arrive
-                    </label>
-                    <select
-                      id="roth-pg-proj-draw-mode"
-                      aria-label="Projection draw behavior"
-                      className={inputCls}
-                      value={pgProjDrawMode}
-                      onChange={(e) =>
-                        setPgProjDrawMode(e.target.value === "replace" ? "replace" : "repeat")
-                      }
-                    >
-                      <option value="repeat">The draw repeats as entered</option>
-                      <option value="replace">Social Security and RMDs replace the draw</option>
-                    </select>
-                    <p className={hintCls}>
-                      “Replace” shrinks the pre-tax money out by whatever
-                      Social Security and RMDs arrive beyond the template
-                      year&rsquo;s own, floored at $0.
-                    </p>
-                  </div>
-                  <div>
-                    <label className={labelCls} htmlFor="roth-pg-proj-kind">
-                      Pre-tax money out is
-                    </label>
-                    <select
-                      id="roth-pg-proj-kind"
-                      aria-label="Projection money out kind"
-                      className={inputCls}
-                      value={pgProjMoneyOutKind}
-                      onChange={(e) =>
-                        setPgProjMoneyOutKind(e.target.value === "draw" ? "draw" : "conversion")
-                      }
-                    >
-                      <option value="conversion">A conversion — it lands in Roth</option>
-                      <option value="draw">A draw — it leaves as spending</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelCls} htmlFor="roth-pg-proj-stop">
-                      The money out stops
-                    </label>
-                    <select
-                      id="roth-pg-proj-stop"
-                      aria-label="Projection stop rule"
-                      className={inputCls}
-                      value={pgProjStopKind}
-                      onChange={(e) =>
-                        setPgProjStopKind(
-                          e.target.value === "age"
-                            ? "age"
-                            : e.target.value === "floor"
-                              ? "floor"
-                              : "none",
-                        )
-                      }
-                    >
-                      <option value="none">Never — it repeats every year</option>
-                      <option value="age">After a stop age</option>
-                      <option value="floor">At a pre-tax floor</option>
-                    </select>
-                  </div>
-                  {pgProjStopKind === "age" &&
-                    numField("Convert through age", pgProjStopValue, setPgProjStopValue, {
-                      idLabel: "Projection convert through age",
-                      hint: "The last age the money out runs. $0 after it.",
-                    })}
-                  {pgProjStopKind === "floor" &&
-                    moneyField("Pre-tax floor", pgProjStopValue, setPgProjStopValue, {
-                      idLabel: "Projection pre-tax floor",
-                      hint: "The money out shrinks so the pre-tax balance never goes below this, and stops once it is reached.",
-                    })}
-                  {numField("Your Social Security claiming age", pgProjSsPClaimAge, setPgProjSsPClaimAge, {
-                    idLabel: "Projection your claiming age",
-                    hint:
-                      pgPrefillSource?.ssPrimaryStartAge != null
-                        ? `Blank uses your plan's claiming age (${pgPrefillSource.ssPrimaryStartAge}).`
+                      pgPrefillSource?.ssSpouseStartAge != null
+                        ? `Blank uses your plan's claiming age (${pgPrefillSource.ssSpouseStartAge}).`
                         : "Blank keeps the template amount in pay every year.",
                   })}
-                  {moneyField("Your Social Security per year", pgProjSsPAnnual, setPgProjSsPAnnual, {
-                    idLabel: "Projection your Social Security per year",
-                    hint: "What the benefit pays from the claiming age. Blank uses the template amount, or your plan's when the template year is before claiming.",
+                {pgFiling === "mfj" &&
+                  moneyField("Spouse Social Security per year", pgProjSsSAnnual, setPgProjSsSAnnual, {
+                    idLabel: "Projection spouse Social Security per year",
+                    hint: "What the spouse benefit pays from its claiming age. Blank follows the same rule as yours.",
                   })}
-                  {pgFiling === "mfj" &&
-                    numField("Spouse Social Security claiming age", pgProjSsSClaimAge, setPgProjSsSClaimAge, {
-                      idLabel: "Projection spouse claiming age",
-                      hint:
-                        pgPrefillSource?.ssSpouseStartAge != null
-                          ? `Blank uses your plan's claiming age (${pgPrefillSource.ssSpouseStartAge}).`
-                          : "Blank keeps the template amount in pay every year.",
-                    })}
-                  {pgFiling === "mfj" &&
-                    moneyField("Spouse Social Security per year", pgProjSsSAnnual, setPgProjSsSAnnual, {
-                      idLabel: "Projection spouse Social Security per year",
-                      hint: "What the spouse benefit pays from its claiming age. Blank follows the same rule as yours.",
-                    })}
-                  {moneyField("Starting taxable balance", pgProjTaxableStart, setPgProjTaxableStart, {
-                    idLabel: "Projection starting taxable balance",
-                    hint:
-                      pgPrefillSource != null
-                        ? `Blank uses your plan's taxable balance (${fmtDollars(pgPrefillSource.taxableStart)}). This is the balance at the projection's first year; the stock sale draws it down from there.`
-                        : "This is the balance at the projection's first year; the stock sale draws it down from there. Blank = no taxable balance tracked — the sale repeats as typed.",
-                  })}
-                  {moneyField("Starting Roth balance", pgProjRothStart, setPgProjRothStart, {
-                    idLabel: "Projection starting Roth balance",
-                    hint:
-                      pgPrefillSource != null
-                        ? `Blank uses your plan's Roth balance (${fmtDollars(pgPrefillSource.rothStart)}). This is the balance at the projection's first year.`
-                        : "This is the balance at the projection's first year.",
-                  })}
-                  {numField("ACA household size after step-down", pgProjAcaSizeAfter, setPgProjAcaSizeAfter, {
-                    idLabel: "Projection ACA household size after",
-                    hint: "The household size from the step-down year on. Typing in either of these two fields turns them into a single-step override of your plan's household schedule.",
-                  })}
-                  {numField("ACA step-down year", pgProjAcaStepYear, setPgProjAcaStepYear, {
-                    idLabel: "Projection ACA step-down year",
-                    hint:
-                      pgPrefillSource?.acaHouseholdSchedule != null &&
-                      pgPrefillSource.acaHouseholdSchedule.length > 0
-                        ? `Blank uses your plan's household schedule (first step ${pgPrefillSource.acaHouseholdSchedule[0]?.fromYear}).`
-                        : "Blank = no step-down.",
-                  })}
-                </div>
-                {pgProjection == null && (
-                  <p className="mt-3 text-sm text-[var(--dim)]" role="note">
-                    Enter your age for the template year above and the
-                    projection draws here.
-                  </p>
-                )}
-                {pgProjection != null &&
-                  (() => {
-                    const proj = pgProjection;
-                    const n = proj.years.length;
-                    // The §1211(b) allowance segment's hatch
-                    // (P-S10): the same overlay the single-year
-                    // stack and the Tax Plan chart draw their
-                    // negative allowance segments with, so the
-                    // segment reads as a subtraction in all
-                    // three charts.
-                    const allowanceHatchStyle = {
-                      backgroundImage:
-                        "repeating-linear-gradient(45deg, rgba(255,255,255,0.5) 0 5px, rgba(0,0,0,0.22) 5px 10px)",
-                    } as const;
-                    /* P-S10 (parity audit, SHOULD — settled
-                       STAND): the segment list carries the
-                       whole preferential stack beside the six
-                       ordinary segments, decomposed from the
-                       priced result exactly as the single-year
-                       stack decomposes it (round-2 S-9 there,
-                       P-S9 in the Tax Plan chart): qualified
-                       dividends as their own segment, long-term
-                       gain as max(0, r.ltcgNet) — the priced
-                       NET result, not the typed sale gain (an
-                       entering loss carryforward nets against
-                       the sale in the walk before the stack
-                       prices, and a harvested gain adds to
-                       it) — tax-exempt interest, and the
-                       §1211(b) capital-loss allowance as a
-                       hatched NEGATIVE top segment. Before
-                       P-S10 the chart drew only the six
-                       ordinary segments while its line read
-                       r.magi — AGI plus tax-exempt interest,
-                       with AGI itself carrying the qualified
-                       dividends and priced gains net of the
-                       allowance — so every bar sat below its
-                       own MAGI line by the whole preferential
-                       stack (the settlement's worked example:
-                       bars $6,500 against a $21,500 line on
-                       yield income alone). With the priced
-                       decomposition the segments sum to MAGI
-                       exactly, as priceYear composes it: the
-                       ordinary pieces plus qualified dividends
-                       plus the positive net gain less the
-                       allowance make AGI, and the tax-exempt
-                       interest completes MAGI. The legend and
-                       each bar's spoken summary derive from
-                       this same list, so all three foot
-                       together by construction. */
-                    const segDefs = [
-                      { key: "interest", label: "Interest", color: "#3b82f6", hatch: false },
-                      { key: "orddiv", label: "Ordinary dividends (non-qualified part)", color: "#06b6d4", hatch: false },
-                      { key: "other", label: "Other ordinary income", color: "#f59e0b", hatch: false },
-                      { key: "ss", label: "Taxable Social Security", color: "#ef4444", hatch: false },
-                      { key: "rmd", label: "RMD", color: "#8b5cf6", hatch: false },
-                      { key: "conv", label: "Pre-tax money out", color: "#0f766e", hatch: false },
-                      { key: "qualdiv", label: "Qualified dividends", color: "#84cc16", hatch: false },
-                      { key: "gains", label: "Long-term gain", color: "#f97316", hatch: false },
-                      { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", hatch: false },
-                      { key: "lossallow", label: "Capital-loss allowance (§1211(b))", color: "#64748b", hatch: true },
-                    ] as const;
-                    const segAmount = (
-                      r: PlaygroundYearResult,
-                      key: (typeof segDefs)[number]["key"],
-                    ): number =>
-                      key === "interest"
-                        ? r.interest
-                        : key === "orddiv"
-                          ? r.nonQualifiedDividends
-                          : key === "other"
-                            ? r.otherOrdinary
-                            : key === "ss"
-                              ? r.ssTaxable
-                              : key === "rmd"
-                                ? r.rmd
-                                : key === "conv"
-                                  ? r.conversion + r.spendingDraw
-                                  : key === "qualdiv"
-                                    ? r.qualifiedDividends
-                                    : key === "gains"
-                                      ? Math.max(0, r.ltcgNet)
-                                      : key === "taxexempt"
-                                        ? r.taxExemptInterest
-                                        : -r.capitalLossAllowance;
-                    const stackTotal = (r: PlaygroundYearResult) =>
-                      segDefs.reduce((a, d) => a + segAmount(r, d.key), 0);
-                    // Income-chart display window (trim): the income
-                    // chart draws only through ONE year past the last
-                    // year with any income activity, so a run whose
-                    // income ends mid-window (on the user's current
-                    // template the pre-tax money runs out at 75 and
-                    // every later year is $0) doesn't trail a long
-                    // flat zero tail across the card — the drop to
-                    // zero stays visible, then the chart stops. The
-                    // walk itself is untouched: yMax, the legend, and
-                    // the balances chart below all still span the
-                    // full window to the to-age, and a run whose
-                    // income reaches the to-age displays the full
-                    // span exactly as before (no trim, no caption).
-                    const yearHasIncome = (r: PlaygroundYearResult) =>
-                      stackTotal(r) !== 0 || r.ltcgPriced !== 0 || r.magi !== 0;
-                    let lastActiveIdx = -1;
-                    proj.years.forEach((y, i) => {
-                      if (yearHasIncome(y.result)) lastActiveIdx = i;
-                    });
-                    const dispN =
-                      lastActiveIdx >= 0 && lastActiveIdx < n - 1
-                        ? Math.min(n, lastActiveIdx + 2)
-                        : n;
-                    const dispYears = proj.years.slice(0, dispN);
-                    const incomeTrimmed = dispN < n;
-                    const lastActiveYear =
-                      lastActiveIdx >= 0 ? proj.years[lastActiveIdx] : undefined;
-                    const yMax = Math.max(
-                      1,
-                      ...proj.years.map((y) =>
-                        Math.max(
-                          stackTotal(y.result),
-                          y.result.magi,
-                          y.result.aca.cliff ?? 0,
-                        ),
+                {moneyField("Starting taxable balance", pgProjTaxableStart, setPgProjTaxableStart, {
+                  idLabel: "Projection starting taxable balance",
+                  hint:
+                    pgPrefillSource != null
+                      ? `Blank uses your plan's taxable balance (${fmtDollars(pgPrefillSource.taxableStart)}). This is the balance at the projection's first year; the stock sale draws it down from there.`
+                      : "This is the balance at the projection's first year; the stock sale draws it down from there. Blank = no taxable balance tracked — the sale repeats as typed.",
+                })}
+                {moneyField("Starting Roth balance", pgProjRothStart, setPgProjRothStart, {
+                  idLabel: "Projection starting Roth balance",
+                  hint:
+                    pgPrefillSource != null
+                      ? `Blank uses your plan's Roth balance (${fmtDollars(pgPrefillSource.rothStart)}). This is the balance at the projection's first year.`
+                      : "This is the balance at the projection's first year.",
+                })}
+                {numField("ACA household size after step-down", pgProjAcaSizeAfter, setPgProjAcaSizeAfter, {
+                  idLabel: "Projection ACA household size after",
+                  hint: "The household size from the step-down year on. Typing in either of these two fields turns them into a single-step override of your plan's household schedule.",
+                })}
+                {numField("ACA step-down year", pgProjAcaStepYear, setPgProjAcaStepYear, {
+                  idLabel: "Projection ACA step-down year",
+                  hint:
+                    pgPrefillSource?.acaHouseholdSchedule != null &&
+                    pgPrefillSource.acaHouseholdSchedule.length > 0
+                      ? `Blank uses your plan's household schedule (first step ${pgPrefillSource.acaHouseholdSchedule[0]?.fromYear}).`
+                      : "Blank = no step-down.",
+                })}
+              </div>
+              {pgProjection == null && (
+                <p className="mt-3 text-sm text-[var(--dim)]" role="note">
+                  Enter your age for the template year above and the
+                  projection draws here.
+                </p>
+              )}
+              {pgProjection != null &&
+                (() => {
+                  const proj = pgProjection;
+                  const n = proj.years.length;
+                  // The §1211(b) allowance segment's hatch
+                  // (P-S10): the same overlay the single-year
+                  // stack and the Tax Plan chart draw their
+                  // negative allowance segments with, so the
+                  // segment reads as a subtraction in all
+                  // three charts.
+                  const allowanceHatchStyle = {
+                    backgroundImage:
+                      "repeating-linear-gradient(45deg, rgba(255,255,255,0.5) 0 5px, rgba(0,0,0,0.22) 5px 10px)",
+                  } as const;
+                  /* P-S10 (parity audit, SHOULD — settled
+                     STAND): the segment list carries the
+                     whole preferential stack beside the six
+                     ordinary segments, decomposed from the
+                     priced result exactly as the single-year
+                     stack decomposes it (round-2 S-9 there,
+                     P-S9 in the Tax Plan chart): qualified
+                     dividends as their own segment, long-term
+                     gain as max(0, r.ltcgNet) — the priced
+                     NET result, not the typed sale gain (an
+                     entering loss carryforward nets against
+                     the sale in the walk before the stack
+                     prices, and a harvested gain adds to
+                     it) — tax-exempt interest, and the
+                     §1211(b) capital-loss allowance as a
+                     hatched NEGATIVE top segment. Before
+                     P-S10 the chart drew only the six
+                     ordinary segments while its line read
+                     r.magi — AGI plus tax-exempt interest,
+                     with AGI itself carrying the qualified
+                     dividends and priced gains net of the
+                     allowance — so every bar sat below its
+                     own MAGI line by the whole preferential
+                     stack (the settlement's worked example:
+                     bars $6,500 against a $21,500 line on
+                     yield income alone). With the priced
+                     decomposition the segments sum to MAGI
+                     exactly, as priceYear composes it: the
+                     ordinary pieces plus qualified dividends
+                     plus the positive net gain less the
+                     allowance make AGI, and the tax-exempt
+                     interest completes MAGI. The legend and
+                     each bar's spoken summary derive from
+                     this same list, so all three foot
+                     together by construction. */
+                  const segDefs = [
+                    { key: "interest", label: "Interest", color: "#3b82f6", hatch: false },
+                    { key: "orddiv", label: "Ordinary dividends (non-qualified part)", color: "#06b6d4", hatch: false },
+                    { key: "other", label: "Other ordinary income", color: "#f59e0b", hatch: false },
+                    { key: "ss", label: "Taxable Social Security", color: "#ef4444", hatch: false },
+                    { key: "rmd", label: "RMD", color: "#8b5cf6", hatch: false },
+                    { key: "conv", label: "Pre-tax money out", color: "#0f766e", hatch: false },
+                    { key: "qualdiv", label: "Qualified dividends", color: "#84cc16", hatch: false },
+                    { key: "gains", label: "Long-term gain", color: "#f97316", hatch: false },
+                    { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", hatch: false },
+                    { key: "lossallow", label: "Capital-loss allowance (§1211(b))", color: "#64748b", hatch: true },
+                  ] as const;
+                  const segAmount = (
+                    r: PlaygroundYearResult,
+                    key: (typeof segDefs)[number]["key"],
+                  ): number =>
+                    key === "interest"
+                      ? r.interest
+                      : key === "orddiv"
+                        ? r.nonQualifiedDividends
+                        : key === "other"
+                          ? r.otherOrdinary
+                          : key === "ss"
+                            ? r.ssTaxable
+                            : key === "rmd"
+                              ? r.rmd
+                              : key === "conv"
+                                ? r.conversion + r.spendingDraw
+                                : key === "qualdiv"
+                                  ? r.qualifiedDividends
+                                  : key === "gains"
+                                    ? Math.max(0, r.ltcgNet)
+                                    : key === "taxexempt"
+                                      ? r.taxExemptInterest
+                                      : -r.capitalLossAllowance;
+                  const stackTotal = (r: PlaygroundYearResult) =>
+                    segDefs.reduce((a, d) => a + segAmount(r, d.key), 0);
+                  // Income-chart display window (trim): the income
+                  // chart draws only through ONE year past the last
+                  // year with any income activity, so a run whose
+                  // income ends mid-window (on the user's current
+                  // template the pre-tax money runs out at 75 and
+                  // every later year is $0) doesn't trail a long
+                  // flat zero tail across the card — the drop to
+                  // zero stays visible, then the chart stops. The
+                  // walk itself is untouched: yMax, the legend, and
+                  // the balances chart below all still span the
+                  // full window to the to-age, and a run whose
+                  // income reaches the to-age displays the full
+                  // span exactly as before (no trim, no caption).
+                  const yearHasIncome = (r: PlaygroundYearResult) =>
+                    stackTotal(r) !== 0 || r.ltcgPriced !== 0 || r.magi !== 0;
+                  let lastActiveIdx = -1;
+                  proj.years.forEach((y, i) => {
+                    if (yearHasIncome(y.result)) lastActiveIdx = i;
+                  });
+                  const dispN =
+                    lastActiveIdx >= 0 && lastActiveIdx < n - 1
+                      ? Math.min(n, lastActiveIdx + 2)
+                      : n;
+                  const dispYears = proj.years.slice(0, dispN);
+                  const incomeTrimmed = dispN < n;
+                  const lastActiveYear =
+                    lastActiveIdx >= 0 ? proj.years[lastActiveIdx] : undefined;
+                  const yMax = Math.max(
+                    1,
+                    ...proj.years.map((y) =>
+                      Math.max(
+                        stackTotal(y.result),
+                        y.result.magi,
+                        y.result.aca.cliff ?? 0,
                       ),
-                    );
-                    const magiPoints = dispYears
-                      .map(
-                        (y, i) =>
-                          `${i + 0.5},${100 - (y.result.magi / yMax) * 100}`,
-                      )
-                      .join(" ");
-                    // ACA cliff line runs: consecutive years that
-                    // carry a hard cliff (ACA applies, a cliff
-                    // figure, coverage 2026+).
-                    const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
-                    dispYears.forEach((y, i) => {
-                      const cliff =
-                        y.calendarYear >= 2026 && y.result.aca.applies
-                          ? y.result.aca.cliff
-                          : null;
-                      if (cliff == null) return;
-                      const prev = i > 0 ? dispYears[i - 1] : undefined;
-                      const prevCliff =
-                        prev != null &&
-                        prev.calendarYear >= 2026 &&
-                        prev.result.aca.applies
-                          ? prev.result.aca.cliff
-                          : null;
-                      if (prevCliff != null) {
-                        cliffRuns.push({
-                          x1: i - 0.5,
-                          y1: 100 - (prevCliff / yMax) * 100,
-                          x2: i + 0.5,
-                          y2: 100 - (cliff / yMax) * 100,
-                        });
-                      } else {
-                        cliffRuns.push({
-                          x1: i + 0.1,
-                          y1: 100 - (cliff / yMax) * 100,
-                          x2: i + 0.9,
-                          y2: 100 - (cliff / yMax) * 100,
-                        });
-                      }
-                    });
-                    const presentSegs = segDefs.filter((d) =>
-                      proj.years.some((y) => segAmount(y.result, d.key) !== 0),
-                    );
-                    // Balances area chart: one point per year
-                    // boundary (each year's starting balances,
-                    // plus the final ending balances).
-                    const balPoints = [
-                      ...proj.years.map((y) => y.startBalances),
-                      proj.endBalances,
-                    ];
-                    const balLayers = [
-                      { key: "pretax", label: "Pre-tax", color: "#7c3aed", get: (b: (typeof balPoints)[number]) => b.pretax },
-                      { key: "taxable", label: "Taxable", color: "#d97706", get: (b: (typeof balPoints)[number]) => b.taxable },
-                      { key: "roth", label: "Roth", color: "#14705a", get: (b: (typeof balPoints)[number]) => b.roth },
-                    ].filter((l) => balPoints.some((b) => l.get(b) != null));
-                    const balCum = balPoints.map((b) => {
-                      let cum = 0;
-                      return balLayers.map((l) => {
-                        const v = l.get(b) ?? 0;
-                        const lo = cum;
-                        cum += v;
-                        return { lo, hi: cum };
+                    ),
+                  );
+                  const magiPoints = dispYears
+                    .map(
+                      (y, i) =>
+                        `${i + 0.5},${100 - (y.result.magi / yMax) * 100}`,
+                    )
+                    .join(" ");
+                  // ACA cliff line runs: consecutive years that
+                  // carry a hard cliff (ACA applies, a cliff
+                  // figure, coverage 2026+).
+                  const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
+                  dispYears.forEach((y, i) => {
+                    const cliff =
+                      y.calendarYear >= 2026 && y.result.aca.applies
+                        ? y.result.aca.cliff
+                        : null;
+                    if (cliff == null) return;
+                    const prev = i > 0 ? dispYears[i - 1] : undefined;
+                    const prevCliff =
+                      prev != null &&
+                      prev.calendarYear >= 2026 &&
+                      prev.result.aca.applies
+                        ? prev.result.aca.cliff
+                        : null;
+                    if (prevCliff != null) {
+                      cliffRuns.push({
+                        x1: i - 0.5,
+                        y1: 100 - (prevCliff / yMax) * 100,
+                        x2: i + 0.5,
+                        y2: 100 - (cliff / yMax) * 100,
                       });
-                    });
-                    const balTotalAt = (i: number): number => {
-                      const c = balCum[i];
-                      if (c == null || c.length === 0) return 0;
-                      return c[c.length - 1]?.hi ?? 0;
-                    };
-                    const balMax = Math.max(1, ...balCum.map((c) => c[c.length - 1]?.hi ?? 0));
-                    // Y axis: round the top up to a nice step so the
-                    // dollar scale and gridlines land on round figures.
-                    // The series itself is unchanged — only the axis
-                    // ceiling moves (to the next nice value at or above
-                    // the true maximum).
-                    const balTickStep = (() => {
-                      const rough = balMax / 5;
-                      const mag = Math.pow(10, Math.floor(Math.log10(rough)));
-                      const norm = rough / mag;
-                      const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
-                      return mult * mag;
-                    })();
-                    const balYMax = Math.max(balTickStep, Math.ceil(balMax / balTickStep) * balTickStep);
-                    const balTicks: number[] = [];
-                    for (let v = 0; v <= balYMax + balTickStep / 1000; v += balTickStep) {
-                      balTicks.push(Math.round(v * 100) / 100);
+                    } else {
+                      cliffRuns.push({
+                        x1: i + 0.1,
+                        y1: 100 - (cliff / yMax) * 100,
+                        x2: i + 0.9,
+                        y2: 100 - (cliff / yMax) * 100,
+                      });
                     }
-                    const fmtBalAxis = (v: number): string => {
-                      if (v === 0) return "$0";
-                      if (Math.abs(v) >= 1_000_000) {
-                        const m = v / 1_000_000;
-                        return `$${Number.isInteger(m) ? m : m.toFixed(1)}M`;
-                      }
-                      if (Math.abs(v) >= 1_000) return `$${Math.round(v / 1_000)}k`;
-                      return `$${Math.round(v)}`;
-                    };
-                    const balX = (i: number) =>
-                      balPoints.length > 1 ? (i / (balPoints.length - 1)) * 100 : 50;
-                    const balY = (v: number) => 100 - (v / balYMax) * 100;
-                    const balFirstYear = proj.years[0]?.calendarYear ?? 0;
-                    const balEndingTotal = balTotalAt(balCum.length - 1);
-                    const balSelected = pgBalSelectedYear != null
-                      ? proj.years.find((y) => y.calendarYear === pgBalSelectedYear) ?? null
-                      : null;
-                    return (
-                      <>
-                        <div className="mt-4" aria-label="Projected income by year chart">
-                          <h4 className="text-sm font-semibold">
-                            Income stack by year — ages {dispYears[0]?.agePrimary} to{" "}
-                            {dispYears[dispN - 1]?.agePrimary}
-                          </h4>
-                          <div className="relative mt-2 h-56">
-                            <div className="absolute inset-0 flex items-end gap-[2px]">
-                              {dispYears.map((y) => {
-                                let cum = 0;
-                                const segs = segDefs
-                                  .map((d) => {
-                                    const amount = segAmount(y.result, d.key);
-                                    const start = cum;
-                                    cum += amount;
-                                    return { ...d, amount, start };
-                                  })
-                                  .filter((s) => s.amount !== 0);
-                                const selected =
-                                  pgProjSelectedYear === y.calendarYear;
-                                const segSummary = segs
-                                  .map((s) => `${s.label} ${fmtDollars(s.amount)}`)
-                                  .join("; ");
-                                return (
-                                  <button
-                                    key={y.calendarYear}
-                                    type="button"
-                                    aria-label={`Load ${y.calendarYear} (age ${y.agePrimary}) into the single-year view — MAGI ${fmtDollars(y.result.magi)}, total tax ${fmtDollars(y.result.totalTax)}${segSummary ? ` — ${segSummary}` : ""}`}
-                                    aria-pressed={selected}
-                                    className={`relative h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${selected ? "ring-2 ring-[var(--accent)] ring-inset" : pgProjSelectedYear != null ? "opacity-40" : ""}`}
-                                    onClick={() => loadProjYear(y.calendarYear)}
-                                  >
-                                    {segs.map((s) => (
-                                      <span
-                                        key={s.key}
-                                        aria-hidden="true"
-                                        className="absolute right-0 left-0 border-b border-[var(--bg)]"
-                                        style={{
-                                          bottom: `${(Math.min(s.start, s.start + s.amount) / yMax) * 100}%`,
-                                          height: `${(Math.abs(s.amount) / yMax) * 100}%`,
-                                          background: s.color,
-                                          ...(s.hatch ? allowanceHatchStyle : {}),
-                                        }}
-                                      />
-                                    ))}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <svg
-                              className="pointer-events-none absolute inset-0 h-full w-full"
-                              viewBox={`0 0 ${dispN} 100`}
-                              preserveAspectRatio="none"
-                              aria-hidden="true"
-                            >
-                              {cliffRuns.map((r, i) => (
-                                <line
-                                  key={i}
-                                  x1={r.x1}
-                                  y1={r.y1}
-                                  x2={r.x2}
-                                  y2={r.y2}
-                                  stroke="var(--warn)"
-                                  strokeWidth={1.5}
-                                  strokeDasharray="5 3"
-                                  vectorEffect="non-scaling-stroke"
-                                />
-                              ))}
-                              <polyline
-                                points={magiPoints}
-                                fill="none"
-                                stroke="var(--text)"
-                                strokeWidth={1.5}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            </svg>
-                          </div>
-                          <div className="mt-1 flex gap-[2px]" aria-hidden="true">
+                  });
+                  const presentSegs = segDefs.filter((d) =>
+                    proj.years.some((y) => segAmount(y.result, d.key) !== 0),
+                  );
+                  // Balances area chart: one point per year
+                  // boundary (each year's starting balances,
+                  // plus the final ending balances).
+                  const balPoints = [
+                    ...proj.years.map((y) => y.startBalances),
+                    proj.endBalances,
+                  ];
+                  const balLayers = [
+                    { key: "pretax", label: "Pre-tax", color: "#7c3aed", get: (b: (typeof balPoints)[number]) => b.pretax },
+                    { key: "taxable", label: "Taxable", color: "#d97706", get: (b: (typeof balPoints)[number]) => b.taxable },
+                    { key: "roth", label: "Roth", color: "#14705a", get: (b: (typeof balPoints)[number]) => b.roth },
+                  ].filter((l) => balPoints.some((b) => l.get(b) != null));
+                  const balCum = balPoints.map((b) => {
+                    let cum = 0;
+                    return balLayers.map((l) => {
+                      const v = l.get(b) ?? 0;
+                      const lo = cum;
+                      cum += v;
+                      return { lo, hi: cum };
+                    });
+                  });
+                  const balTotalAt = (i: number): number => {
+                    const c = balCum[i];
+                    if (c == null || c.length === 0) return 0;
+                    return c[c.length - 1]?.hi ?? 0;
+                  };
+                  const balMax = Math.max(1, ...balCum.map((c) => c[c.length - 1]?.hi ?? 0));
+                  // Y axis: round the top up to a nice step so the
+                  // dollar scale and gridlines land on round figures.
+                  // The series itself is unchanged — only the axis
+                  // ceiling moves (to the next nice value at or above
+                  // the true maximum).
+                  const balTickStep = (() => {
+                    const rough = balMax / 5;
+                    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+                    const norm = rough / mag;
+                    const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+                    return mult * mag;
+                  })();
+                  const balYMax = Math.max(balTickStep, Math.ceil(balMax / balTickStep) * balTickStep);
+                  const balTicks: number[] = [];
+                  for (let v = 0; v <= balYMax + balTickStep / 1000; v += balTickStep) {
+                    balTicks.push(Math.round(v * 100) / 100);
+                  }
+                  const fmtBalAxis = (v: number): string => {
+                    if (v === 0) return "$0";
+                    if (Math.abs(v) >= 1_000_000) {
+                      const m = v / 1_000_000;
+                      return `$${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+                    }
+                    if (Math.abs(v) >= 1_000) return `$${Math.round(v / 1_000)}k`;
+                    return `$${Math.round(v)}`;
+                  };
+                  const balX = (i: number) =>
+                    balPoints.length > 1 ? (i / (balPoints.length - 1)) * 100 : 50;
+                  const balY = (v: number) => 100 - (v / balYMax) * 100;
+                  const balFirstYear = proj.years[0]?.calendarYear ?? 0;
+                  const balEndingTotal = balTotalAt(balCum.length - 1);
+                  const balSelected = pgBalSelectedYear != null
+                    ? proj.years.find((y) => y.calendarYear === pgBalSelectedYear) ?? null
+                    : null;
+                  return (
+                    <>
+                      <div className="mt-4" aria-label="Projected income by year chart">
+                        <h4 className="text-sm font-semibold">
+                          Income stack by year — ages {dispYears[0]?.agePrimary} to{" "}
+                          {dispYears[dispN - 1]?.agePrimary}
+                        </h4>
+                        <div className="relative mt-2 h-56">
+                          <div className="absolute inset-0 flex items-end gap-[2px]">
                             {dispYears.map((y) => {
-                              const labelSelected =
+                              let cum = 0;
+                              const segs = segDefs
+                                .map((d) => {
+                                  const amount = segAmount(y.result, d.key);
+                                  const start = cum;
+                                  cum += amount;
+                                  return { ...d, amount, start };
+                                })
+                                .filter((s) => s.amount !== 0);
+                              const selected =
                                 pgProjSelectedYear === y.calendarYear;
+                              const segSummary = segs
+                                .map((s) => `${s.label} ${fmtDollars(s.amount)}`)
+                                .join("; ");
                               return (
-                                <span
+                                <button
                                   key={y.calendarYear}
-                                  className={`min-w-0 flex-1 text-center whitespace-nowrap ${labelSelected ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                                  type="button"
+                                  aria-label={`Load ${y.calendarYear} (age ${y.agePrimary}) into the single-year view — MAGI ${fmtDollars(y.result.magi)}, total tax ${fmtDollars(y.result.totalTax)}${segSummary ? ` — ${segSummary}` : ""}`}
+                                  aria-pressed={selected}
+                                  className={`relative h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${selected ? "ring-2 ring-[var(--accent)] ring-inset" : pgProjSelectedYear != null ? "opacity-40" : ""}`}
+                                  onClick={() => loadProjYear(y.calendarYear)}
                                 >
-                                  {labelSelected ||
-                                  y.agePrimary % 5 === 0 ||
-                                  y.agePrimary === dispYears[0]?.agePrimary ||
-                                  y.agePrimary === dispYears[dispN - 1]?.agePrimary
-                                    ? y.agePrimary
-                                    : ""}
-                                </span>
+                                  {segs.map((s) => (
+                                    <span
+                                      key={s.key}
+                                      aria-hidden="true"
+                                      className="absolute right-0 left-0 border-b border-[var(--bg)]"
+                                      style={{
+                                        bottom: `${(Math.min(s.start, s.start + s.amount) / yMax) * 100}%`,
+                                        height: `${(Math.abs(s.amount) / yMax) * 100}%`,
+                                        background: s.color,
+                                        ...(s.hatch ? allowanceHatchStyle : {}),
+                                      }}
+                                    />
+                                  ))}
+                                </button>
                               );
                             })}
                           </div>
-                          <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                            {presentSegs.map((d) => (
-                              <span key={d.key} className="inline-flex items-center gap-1.5">
-                                <span
-                                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                                  style={{ background: d.color }}
-                                  aria-hidden="true"
-                                />
-                                {d.label}
-                              </span>
+                          <svg
+                            className="pointer-events-none absolute inset-0 h-full w-full"
+                            viewBox={`0 0 ${dispN} 100`}
+                            preserveAspectRatio="none"
+                            aria-hidden="true"
+                          >
+                            {cliffRuns.map((r, i) => (
+                              <line
+                                key={i}
+                                x1={r.x1}
+                                y1={r.y1}
+                                x2={r.x2}
+                                y2={r.y2}
+                                stroke="var(--warn)"
+                                strokeWidth={1.5}
+                                strokeDasharray="5 3"
+                                vectorEffect="non-scaling-stroke"
+                              />
                             ))}
+                            <polyline
+                              points={magiPoints}
+                              fill="none"
+                              stroke="var(--text)"
+                              strokeWidth={1.5}
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          </svg>
+                        </div>
+                        <div className="mt-1 flex gap-[2px]" aria-hidden="true">
+                          {dispYears.map((y) => {
+                            const labelSelected =
+                              pgProjSelectedYear === y.calendarYear;
+                            return (
+                              <span
+                                key={y.calendarYear}
+                                className={`min-w-0 flex-1 text-center whitespace-nowrap ${labelSelected ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                              >
+                                {labelSelected ||
+                                y.agePrimary % 5 === 0 ||
+                                y.agePrimary === dispYears[0]?.agePrimary ||
+                                y.agePrimary === dispYears[dispN - 1]?.agePrimary
+                                  ? y.agePrimary
+                                  : ""}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                          {presentSegs.map((d) => (
+                            <span key={d.key} className="inline-flex items-center gap-1.5">
+                              <span
+                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                                style={{ background: d.color }}
+                                aria-hidden="true"
+                              />
+                              {d.label}
+                            </span>
+                          ))}
+                          <span className="inline-flex items-center gap-1.5">
+                            <span
+                              aria-hidden="true"
+                              className="inline-block h-0 w-4 border-t-2 border-[var(--text)]"
+                            />
+                            MAGI
+                          </span>
+                          {cliffRuns.length > 0 && (
                             <span className="inline-flex items-center gap-1.5">
                               <span
                                 aria-hidden="true"
-                                className="inline-block h-0 w-4 border-t-2 border-[var(--text)]"
+                                className="inline-block h-0 w-4 border-t-2 border-dashed border-[var(--warn)]"
                               />
-                              MAGI
+                              ACA cliff (plan convention)
                             </span>
-                            {cliffRuns.length > 0 && (
-                              <span className="inline-flex items-center gap-1.5">
-                                <span
-                                  aria-hidden="true"
-                                  className="inline-block h-0 w-4 border-t-2 border-dashed border-[var(--warn)]"
-                                />
-                                ACA cliff (plan convention)
+                          )}
+                        </p>
+                        {incomeTrimmed && lastActiveYear != null && (
+                          <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                            No income after {lastActiveYear.calendarYear} (age{" "}
+                            {lastActiveYear.agePrimary}), so this chart stops
+                            one year past it. The projection still runs to{" "}
+                            {proj.years[n - 1]?.calendarYear} (age{" "}
+                            {proj.years[n - 1]?.agePrimary}) — the balances
+                            chart below covers the full span.
+                          </p>
+                        )}
+                        {pgProjSelectedYear != null && (
+                          <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                            Showing {pgProjSelectedYear} in the single-year
+                            view below. Click any other bar to view that
+                            year instead — the chart stays as it is.
+                          </p>
+                        )}
+                      </div>
+                      <div className="mt-5" aria-label="Projected balances chart" ref={pgBalancesRef}>
+                        <h4 className="text-sm font-semibold">Balances by year</h4>
+                        <p className="mt-1 text-sm text-[var(--text)]">
+                          Spending and taxes are not taken out of these balances.
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--dim)]">
+                          Each balance grows at the expected return after the
+                          year&rsquo;s money moves: the pre-tax balance falls
+                          by its RMD and the money out, the taxable balance
+                          by the stock sale, and a conversion lands in Roth
+                          (a draw leaves instead). Taxes are not taken out
+                          of any balance here.
+                        </p>
+                        <div className="mt-3 flex gap-2">
+                          {/* Y axis — dollar scale */}
+                          <div className="relative h-56 w-14 shrink-0" aria-hidden="true">
+                            {balTicks.map((t) => (
+                              <span
+                                key={t}
+                                className="tnum absolute right-1 text-[11px] whitespace-nowrap text-[var(--dim)]"
+                                style={{ top: `${balY(t)}%`, transform: "translateY(-50%)" }}
+                              >
+                                {fmtBalAxis(t)}
                               </span>
-                            )}
-                          </p>
-                          {incomeTrimmed && lastActiveYear != null && (
-                            <p className="mt-1 text-xs text-[var(--dim)]" role="note">
-                              No income after {lastActiveYear.calendarYear} (age{" "}
-                              {lastActiveYear.agePrimary}), so this chart stops
-                              one year past it. The projection still runs to{" "}
-                              {proj.years[n - 1]?.calendarYear} (age{" "}
-                              {proj.years[n - 1]?.agePrimary}) — the balances
-                              chart below covers the full span.
-                            </p>
-                          )}
-                          {pgProjSelectedYear != null && (
-                            <p className="mt-1 text-xs text-[var(--dim)]" role="note">
-                              Showing {pgProjSelectedYear} in the single-year
-                              view below. Click any other bar to view that
-                              year instead — the chart stays as it is.
-                            </p>
-                          )}
-                        </div>
-                        <div className="mt-5" aria-label="Projected balances chart" ref={pgBalancesRef}>
-                          <h4 className="text-sm font-semibold">Balances by year</h4>
-                          <p className="mt-1 text-sm text-[var(--text)]">
-                            Spending and taxes are not taken out of these balances.
-                          </p>
-                          <p className="mt-1 text-xs text-[var(--dim)]">
-                            Each balance grows at the expected return after the
-                            year&rsquo;s money moves: the pre-tax balance falls
-                            by its RMD and the money out, the taxable balance
-                            by the stock sale, and a conversion lands in Roth
-                            (a draw leaves instead). Taxes are not taken out
-                            of any balance here.
-                          </p>
-                          <div className="mt-3 flex gap-2">
-                            {/* Y axis — dollar scale */}
-                            <div className="relative h-56 w-14 shrink-0" aria-hidden="true">
-                              {balTicks.map((t) => (
-                                <span
-                                  key={t}
-                                  className="tnum absolute right-1 text-[11px] whitespace-nowrap text-[var(--dim)]"
-                                  style={{ top: `${balY(t)}%`, transform: "translateY(-50%)" }}
-                                >
-                                  {fmtBalAxis(t)}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="relative h-56">
-                                {/* Horizontal gridlines */}
-                                <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-                                  {balTicks.map((t) => (
-                                    <span
-                                      key={t}
-                                      className="absolute right-0 left-0 border-t border-[var(--border)]"
-                                      style={{ top: `${balY(t)}%`, opacity: t === 0 ? 0 : 0.55 }}
-                                    />
-                                  ))}
-                                </div>
-                                <svg
-                                  className="absolute inset-0 h-full w-full"
-                                  viewBox="0 0 100 100"
-                                  preserveAspectRatio="none"
-                                  role="img"
-                                  aria-label={`Stacked balances from ${fmtDollars(balTotalAt(0))} at age ${proj.years[0]?.agePrimary} to ${fmtDollars(balTotalAt(balCum.length - 1))} after age ${proj.years[n - 1]?.agePrimary}`}
-                                >
-                                  {balLayers.map((l, li) => {
-                                    const top = balCum
-                                      .map((c, i) => `${balX(i)},${balY(c[li]?.hi ?? 0)}`)
-                                      .join(" ");
-                                    const bottom = balCum
-                                      .map((c, i) => `${balX(i)},${balY(c[li]?.lo ?? 0)}`)
-                                      .reverse()
-                                      .join(" ");
-                                    return (
-                                      <polygon
-                                        key={l.key}
-                                        points={`${top} ${bottom}`}
-                                        fill={l.color}
-                                        fillOpacity={0.75}
-                                        stroke={l.color}
-                                        strokeWidth={0.4}
-                                      />
-                                    );
-                                  })}
-                                </svg>
-                                {/* Click a year — one column per projected year */}
-                                <div className="absolute inset-0 flex">
-                                  {proj.years.map((y) => {
-                                    const isSel = pgBalSelectedYear === y.calendarYear;
-                                    const end = y.endBalances;
-                                    const endTotal = (end.pretax ?? 0) + (end.taxable ?? 0) + end.roth;
-                                    return (
-                                      <button
-                                        key={y.calendarYear}
-                                        type="button"
-                                        aria-label={`Show balances for ${y.calendarYear} — Pre-tax ${fmtDollars(end.pretax ?? 0)}, Taxable ${fmtDollars(end.taxable ?? 0)}, Roth ${fmtDollars(end.roth)}, total ${fmtDollars(endTotal)}`}
-                                        aria-pressed={isSel}
-                                        className={`h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${isSel ? "ring-2 ring-[var(--accent)] ring-inset" : ""}`}
-                                        onClick={() => setPgBalSelectedYear(y.calendarYear)}
-                                      />
-                                    );
-                                  })}
-                                </div>
-                                {/* Ending total at the right edge of the stack */}
-                                <span
-                                  className="tnum pointer-events-none absolute rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-[var(--text)]"
-                                  style={{ right: 4, top: `${balY(balEndingTotal)}%`, transform: "translateY(-50%)" }}
-                                >
-                                  Total {fmtDollars(balEndingTotal)}
-                                </span>
+                            ))}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="relative h-56">
+                              {/* Horizontal gridlines */}
+                              <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                                {balTicks.map((t) => (
+                                  <span
+                                    key={t}
+                                    className="absolute right-0 left-0 border-t border-[var(--border)]"
+                                    style={{ top: `${balY(t)}%`, opacity: t === 0 ? 0 : 0.55 }}
+                                  />
+                                ))}
                               </div>
-                              {/* X axis — year labels every 5 years */}
-                              <div className="mt-1 flex" aria-hidden="true">
-                                {proj.years.map((y) => {
-                                  const show = balFirstYear !== 0 && (y.calendarYear - balFirstYear) % 5 === 0;
-                                  const isSel = pgBalSelectedYear === y.calendarYear;
+                              <svg
+                                className="absolute inset-0 h-full w-full"
+                                viewBox="0 0 100 100"
+                                preserveAspectRatio="none"
+                                role="img"
+                                aria-label={`Stacked balances from ${fmtDollars(balTotalAt(0))} at age ${proj.years[0]?.agePrimary} to ${fmtDollars(balTotalAt(balCum.length - 1))} after age ${proj.years[n - 1]?.agePrimary}`}
+                              >
+                                {balLayers.map((l, li) => {
+                                  const top = balCum
+                                    .map((c, i) => `${balX(i)},${balY(c[li]?.hi ?? 0)}`)
+                                    .join(" ");
+                                  const bottom = balCum
+                                    .map((c, i) => `${balX(i)},${balY(c[li]?.lo ?? 0)}`)
+                                    .reverse()
+                                    .join(" ");
                                   return (
-                                    <span
+                                    <polygon
+                                      key={l.key}
+                                      points={`${top} ${bottom}`}
+                                      fill={l.color}
+                                      fillOpacity={0.75}
+                                      stroke={l.color}
+                                      strokeWidth={0.4}
+                                    />
+                                  );
+                                })}
+                              </svg>
+                              {/* Click a year — one column per projected year */}
+                              <div className="absolute inset-0 flex">
+                                {proj.years.map((y) => {
+                                  const isSel = pgBalSelectedYear === y.calendarYear;
+                                  const end = y.endBalances;
+                                  const endTotal = (end.pretax ?? 0) + (end.taxable ?? 0) + end.roth;
+                                  return (
+                                    <button
                                       key={y.calendarYear}
-                                      className={`min-w-0 flex-1 text-center whitespace-nowrap ${isSel ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
-                                    >
-                                      {show || isSel ? y.calendarYear : ""}
-                                    </span>
+                                      type="button"
+                                      aria-label={`Show balances for ${y.calendarYear} — Pre-tax ${fmtDollars(end.pretax ?? 0)}, Taxable ${fmtDollars(end.taxable ?? 0)}, Roth ${fmtDollars(end.roth)}, total ${fmtDollars(endTotal)}`}
+                                      aria-pressed={isSel}
+                                      className={`h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${isSel ? "ring-2 ring-[var(--accent)] ring-inset" : ""}`}
+                                      onClick={() => setPgBalSelectedYear(y.calendarYear)}
+                                    />
                                   );
                                 })}
                               </div>
+                              {/* Ending total at the right edge of the stack */}
+                              <span
+                                className="tnum pointer-events-none absolute rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-[var(--text)]"
+                                style={{ right: 4, top: `${balY(balEndingTotal)}%`, transform: "translateY(-50%)" }}
+                              >
+                                Total {fmtDollars(balEndingTotal)}
+                              </span>
+                            </div>
+                            {/* X axis — year labels every 5 years */}
+                            <div className="mt-1 flex" aria-hidden="true">
+                              {proj.years.map((y) => {
+                                const show = balFirstYear !== 0 && (y.calendarYear - balFirstYear) % 5 === 0;
+                                const isSel = pgBalSelectedYear === y.calendarYear;
+                                return (
+                                  <span
+                                    key={y.calendarYear}
+                                    className={`min-w-0 flex-1 text-center whitespace-nowrap ${isSel ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                                  >
+                                    {show || isSel ? y.calendarYear : ""}
+                                  </span>
+                                );
+                              })}
                             </div>
                           </div>
-                          <p className="mt-1 text-xs text-[var(--dim)]">
-                            Click a year in the chart to see its balances.
-                          </p>
-                          {balSelected != null && (
-                            <div
-                              className="mt-2 rounded border border-[var(--border)] bg-[var(--bg)] px-3 py-2"
-                              role="region"
-                              aria-label={`Balances for ${balSelected.calendarYear}`}
-                            >
-                              <p className="text-xs font-semibold">
-                                {balSelected.calendarYear} — end of year
-                              </p>
-                              <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                                <span>
-                                  <span className="text-[var(--dim)]">Pre-tax </span>
-                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.pretax ?? 0)}</span>
-                                </span>
-                                <span>
-                                  <span className="text-[var(--dim)]">Taxable </span>
-                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.taxable ?? 0)}</span>
-                                </span>
-                                <span>
-                                  <span className="text-[var(--dim)]">Roth </span>
-                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.roth)}</span>
-                                </span>
-                                <span>
-                                  <span className="text-[var(--dim)]">Total </span>
-                                  <span className="font-semibold">
-                                    {fmtDollars((balSelected.endBalances.pretax ?? 0) + (balSelected.endBalances.taxable ?? 0) + balSelected.endBalances.roth)}
-                                  </span>
-                                </span>
-                              </p>
-                            </div>
-                          )}
-                          <p className="tnum mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                            {balLayers.map((l) => {
-                              const firstBal = balPoints[0];
-                              const lastBal = balPoints[balPoints.length - 1];
-                              const first = firstBal != null ? l.get(firstBal) : null;
-                              const last = lastBal != null ? l.get(lastBal) : null;
-                              return (
-                                <span key={l.key} className="inline-flex items-center gap-1.5">
-                                  <span
-                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                                    style={{ background: l.color }}
-                                    aria-hidden="true"
-                                  />
-                                  {l.label}{" "}
-                                  <span className="font-medium text-[var(--text)]">
-                                    {fmtDollars(first ?? 0)} → {fmtDollars(last ?? 0)}
-                                  </span>
-                                </span>
-                              );
-                            })}
-                            <span className="inline-flex items-center gap-1.5">
-                              Total{" "}
-                              <span className="font-medium text-[var(--text)]">
-                                {fmtDollars(balTotalAt(0))} → {fmtDollars(balEndingTotal)}
-                              </span>
-                            </span>
-                          </p>
                         </div>
-                      </>
-                    );
-                  })()}
-              </>
-            )}
-          </section>
-          )}
+                        <p className="mt-1 text-xs text-[var(--dim)]">
+                          Click a year in the chart to see its balances.
+                        </p>
+                        {balSelected != null && (
+                          <div
+                            className="mt-2 rounded border border-[var(--border)] bg-[var(--bg)] px-3 py-2"
+                            role="region"
+                            aria-label={`Balances for ${balSelected.calendarYear}`}
+                          >
+                            <p className="text-xs font-semibold">
+                              {balSelected.calendarYear} — end of year
+                            </p>
+                            <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                              <span>
+                                <span className="text-[var(--dim)]">Pre-tax </span>
+                                <span className="font-medium">{fmtDollars(balSelected.endBalances.pretax ?? 0)}</span>
+                              </span>
+                              <span>
+                                <span className="text-[var(--dim)]">Taxable </span>
+                                <span className="font-medium">{fmtDollars(balSelected.endBalances.taxable ?? 0)}</span>
+                              </span>
+                              <span>
+                                <span className="text-[var(--dim)]">Roth </span>
+                                <span className="font-medium">{fmtDollars(balSelected.endBalances.roth)}</span>
+                              </span>
+                              <span>
+                                <span className="text-[var(--dim)]">Total </span>
+                                <span className="font-semibold">
+                                  {fmtDollars((balSelected.endBalances.pretax ?? 0) + (balSelected.endBalances.taxable ?? 0) + balSelected.endBalances.roth)}
+                                </span>
+                              </span>
+                            </p>
+                          </div>
+                        )}
+                        <p className="tnum mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                          {balLayers.map((l) => {
+                            const firstBal = balPoints[0];
+                            const lastBal = balPoints[balPoints.length - 1];
+                            const first = firstBal != null ? l.get(firstBal) : null;
+                            const last = lastBal != null ? l.get(lastBal) : null;
+                            return (
+                              <span key={l.key} className="inline-flex items-center gap-1.5">
+                                <span
+                                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                                  style={{ background: l.color }}
+                                  aria-hidden="true"
+                                />
+                                {l.label}{" "}
+                                <span className="font-medium text-[var(--text)]">
+                                  {fmtDollars(first ?? 0)} → {fmtDollars(last ?? 0)}
+                                </span>
+                              </span>
+                            );
+                          })}
+                          <span className="inline-flex items-center gap-1.5">
+                            Total{" "}
+                            <span className="font-medium text-[var(--text)]">
+                              {fmtDollars(balTotalAt(0))} → {fmtDollars(balEndingTotal)}
+                            </span>
+                          </span>
+                        </p>
+                      </div>
+                    </>
+                  );
+                })()}
             </>
           )}
+        </section>
+        )}
+          </>
+        )}
 
-          {/* The single-year readout — the One year face's
-              answer, below its dials. It renders on that face
-              only; the Projection face's click-a-year readout
-              (the balances readout inside the projection panel)
-              is that face's equivalent, and clicking a chart
-              year still loads the year into these same dials —
-              switching back to One year shows it priced. */}
-          {pgFace === "year" && playgroundResult == null && (
-            <p className="mt-4 text-sm text-[var(--dim)]" role="note">
-              Enter your age for the year above and the year is priced here —
-              bracket landing, ACA cliff, and IRMAA, all from the same engine as
-              the plan.
-            </p>
-          )}
-          {pgFace === "year" && playgroundResult != null &&
-            (() => {
-              const pg = playgroundResult;
-              const pgYearNum = parseIntField(pgYear) ?? new Date().getFullYear();
-              // The entered pre-tax balance as buildPgInputs prices
-              // it (negatives clamped to 0) — the readout's RMD
-              // subtext and balance watch-out read it from here so
-              // they name the same balance the engine priced. The
-              // combined balance: the pricer prices the total
-              // (primary + spouse) for the RMD and the
-              // conversion-exceeds-balance watch-out. MFJ only
-              // for the spouse's side (a balance typed under
-              // MFJ stays in the dial when the filing changes).
-              const pgPretaxRaw = parseDollars(pgPretax);
-              const pgPretaxSpouseRaw =
-                pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
-              const pgPretaxBalance =
-                pgPretaxRaw == null && pgPretaxSpouseRaw == null
-                  ? null
-                  : Math.max(0, (pgPretaxRaw ?? 0) + (pgPretaxSpouseRaw ?? 0));
-              const pgBalanceLeftAfterRmd =
-                pgPretaxBalance == null ? null : pgPretaxBalance - pg.rmd;
-              const takeawayParts: string[] = [];
-              if (pg.conversion + pg.spendingDraw <= 0) {
-                takeawayParts.push("No pre-tax money out typed");
-              } else if (pg.landingBracketPct != null) {
-                // Build v114: the room-left wording is gone
-                // from this headline sentence (room-left site 1)
-                // — the sentence names the landing bracket only,
-                // exactly as it already did when no room figure
-                // was priced. The other room-left sites (the
-                // income-stack heading's status text, the gains
-                // stack's 0% room segment, the ACA-cliff room
-                // chips) are untouched.
-                takeawayParts.push(
-                  pg.landingExactlyFilled
-                    ? `Pre-tax money out fills the ${pg.landingBracketPct}% bracket exactly`
-                    : `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket`,
-                );
-              } else {
-                takeawayParts.push(
-                  "The pre-tax money out is fully sheltered by deductions — none of it is taxed",
-                );
+        {/* The single-year readout — the One year face's
+            answer, below its dials. It renders on that face
+            only; the Projection face's click-a-year readout
+            (the balances readout inside the projection panel)
+            is that face's equivalent, and clicking a chart
+            year still loads the year into these same dials —
+            switching back to One year shows it priced. */}
+        {pgFace === "year" && playgroundResult == null && (
+          <p className="mt-4 text-sm text-[var(--dim)]" role="note">
+            Enter your age for the year above and the year is priced here —
+            bracket landing, ACA cliff, and IRMAA, all from the same engine as
+            the plan.
+          </p>
+        )}
+        {pgFace === "year" && playgroundResult != null &&
+          (() => {
+            const pg = playgroundResult;
+            const pgYearNum = parseIntField(pgYear) ?? new Date().getFullYear();
+            // The entered pre-tax balance as buildPgInputs prices
+            // it (negatives clamped to 0) — the readout's RMD
+            // subtext and balance watch-out read it from here so
+            // they name the same balance the engine priced. The
+            // combined balance: the pricer prices the total
+            // (primary + spouse) for the RMD and the
+            // conversion-exceeds-balance watch-out. MFJ only
+            // for the spouse's side (a balance typed under
+            // MFJ stays in the dial when the filing changes).
+            const pgPretaxRaw = parseDollars(pgPretax);
+            const pgPretaxSpouseRaw =
+              pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
+            const pgPretaxBalance =
+              pgPretaxRaw == null && pgPretaxSpouseRaw == null
+                ? null
+                : Math.max(0, (pgPretaxRaw ?? 0) + (pgPretaxSpouseRaw ?? 0));
+            const pgBalanceLeftAfterRmd =
+              pgPretaxBalance == null ? null : pgPretaxBalance - pg.rmd;
+            const takeawayParts: string[] = [];
+            if (pg.conversion + pg.spendingDraw <= 0) {
+              takeawayParts.push("No pre-tax money out typed");
+            } else if (pg.landingBracketPct != null) {
+              // Build v114: the room-left wording is gone
+              // from this headline sentence (room-left site 1)
+              // — the sentence names the landing bracket only,
+              // exactly as it already did when no room figure
+              // was priced. The other room-left sites (the
+              // income-stack heading's status text, the gains
+              // stack's 0% room segment, the ACA-cliff room
+              // chips) are untouched.
+              takeawayParts.push(
+                pg.landingExactlyFilled
+                  ? `Pre-tax money out fills the ${pg.landingBracketPct}% bracket exactly`
+                  : `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket`,
+              );
+            } else {
+              takeawayParts.push(
+                "The pre-tax money out is fully sheltered by deductions — none of it is taxed",
+              );
+            }
+            takeawayParts.push(`MAGI ${fmtDollars(pg.magi)}`);
+            if (pg.aca.applies && pg.aca.cliff != null && pg.aca.positionDollars != null) {
+              // The cliff delta is measured from ACA household
+              // income, not MAGI — when the two differ (partly
+              // untaxed Social Security), the clause prints the
+              // ACA figure it is measured from, so the delta
+              // foots from a number on this line.
+              const acaPos = pg.aca.positionDollars;
+              const acaDelta = pg.aca.overCliff
+                ? `over the ACA cliff by ${fmtDollars(-acaPos)}`
+                : `under the ACA cliff by ${fmtDollars(acaPos)}`;
+              takeawayParts.push(
+                pg.acaMagi !== pg.magi
+                  ? `ACA household income ${fmtDollars(pg.acaMagi)} — ${acaDelta}`
+                  : acaDelta,
+              );
+            }
+            if (pg.irmaa.applies) {
+              takeawayParts.push(
+                `IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`,
+              );
+            }
+            /* Landing-headline explainer (build v77): the ⓘ
+               on the landing headline, in the two-finish-lines
+               way the question was answered in chat — every
+               figure computed here from the priced result, no
+               figure written in. Which text shows is decided
+               from the priced figures alone. The ACA line is
+               the cliff minus the typed buffer, measured on
+               the ACA household income (pg.acaMagi) — the same
+               basis the play strip's buffer readout measures
+               it on, so the "on the line" / "under the line"
+               standing foots with the figure the copy names
+               as total income; when the two MAGI figures are
+               the same (no untaxed Social Security) that
+               figure is the headline's MAGI. Variant A: total
+               income sits on the ACA line (within half a
+               dollar, the play strip's own tolerance) with
+               room left in the landing bracket — the ACA
+               line stopped the money first. Variant B: total
+               income is under the ACA line and the bracket
+               top is the nearer line (room left no more than
+               the distance to the ACA line) — the bracket
+               stopped it first. Every other standing renders
+               no ⓘ: no hard cliff (the brief's rule); the
+               money fully sheltered or no landing bracket;
+               no pre-tax money out; past the ACA line; the
+               money stopping short of both lines; or the
+               two lines coinciding (bracket filled exactly
+               on the ACA line) — in each there is no
+               binding-first line for the copy to name, and
+               naming one would mislead. The Income stack
+               heading's ⓘ below is untouched, and the
+               headline wording itself is unchanged — the ⓘ
+               only rides beside it. */
+            const landingExplainerText: string | null = (() => {
+              if (!pgAcaHasHardCliff) return null;
+              const cliff = pg.aca.cliff;
+              if (cliff == null) return null;
+              if (pg.conversion + pg.spendingDraw <= 0) return null;
+              const room = pg.landingRoomLeft;
+              if (pg.landingBracketPct == null || room == null) {
+                return null;
               }
-              takeawayParts.push(`MAGI ${fmtDollars(pg.magi)}`);
-              if (pg.aca.applies && pg.aca.cliff != null && pg.aca.positionDollars != null) {
-                // The cliff delta is measured from ACA household
-                // income, not MAGI — when the two differ (partly
-                // untaxed Social Security), the clause prints the
-                // ACA figure it is measured from, so the delta
-                // foots from a number on this line.
-                const acaPos = pg.aca.positionDollars;
-                const acaDelta = pg.aca.overCliff
-                  ? `over the ACA cliff by ${fmtDollars(-acaPos)}`
-                  : `under the ACA cliff by ${fmtDollars(acaPos)}`;
-                takeawayParts.push(
-                  pg.acaMagi !== pg.magi
-                    ? `ACA household income ${fmtDollars(pg.acaMagi)} — ${acaDelta}`
-                    : acaDelta,
-                );
+              const bufferLine = cliff - pgAcaBufferDollars;
+              const diff = bufferLine - pg.acaMagi;
+              const lineName =
+                pgAcaBufferDollars > 0 ? "ACA line" : "ACA cliff";
+              const lineDesc =
+                pgAcaBufferDollars > 0
+                  ? `the ACA line of ${fmtDollars(bufferLine)} (the cliff of ${fmtDollars(cliff)} minus your ${fmtDollars(pgAcaBufferDollars)} safety buffer)`
+                  : `the ACA cliff of ${fmtDollars(cliff)}`;
+              if (Math.abs(diff) <= 0.5 && room > 0.5) {
+                // Build v114: variant A reworded — it names
+                // the two lines and which comes first, and no
+                // longer names the room figure (no room-left
+                // content anywhere in this tooltip).
+                return `Think of two finish lines, and the pre-tax money stops at whichever comes first. Your total income is ${fmtDollars(pg.acaMagi)}, right on ${lineDesc}. The ${lineName} comes first, so it is the limit here — the top of the ${pg.landingBracketPct}% bracket sits just past it, unused.`;
               }
-              if (pg.irmaa.applies) {
-                takeawayParts.push(
-                  `IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`,
-                );
+              if (diff > 0.5 && room <= diff + 0.5) {
+                return `Think of two finish lines, and the pre-tax money stops at whichever comes first. The top of the ${pg.landingBracketPct}% bracket is the nearer finish line. Your total income is ${fmtDollars(pg.acaMagi)}, still ${fmtDollars(diff)} under ${lineDesc}. So the bracket top is the limit here, not the ${lineName}.`;
               }
-              /* Landing-headline explainer (build v77): the ⓘ
-                 on the landing headline, in the two-finish-lines
-                 way the question was answered in chat — every
-                 figure computed here from the priced result, no
-                 figure written in. Which text shows is decided
-                 from the priced figures alone. The ACA line is
-                 the cliff minus the typed buffer, measured on
-                 the ACA household income (pg.acaMagi) — the same
-                 basis the play strip's buffer readout measures
-                 it on, so the "on the line" / "under the line"
-                 standing foots with the figure the copy names
-                 as total income; when the two MAGI figures are
-                 the same (no untaxed Social Security) that
-                 figure is the headline's MAGI. Variant A: total
-                 income sits on the ACA line (within half a
-                 dollar, the play strip's own tolerance) with
-                 room left in the landing bracket — the ACA
-                 line stopped the money first. Variant B: total
-                 income is under the ACA line and the bracket
-                 top is the nearer line (room left no more than
-                 the distance to the ACA line) — the bracket
-                 stopped it first. Every other standing renders
-                 no ⓘ: no hard cliff (the brief's rule); the
-                 money fully sheltered or no landing bracket;
-                 no pre-tax money out; past the ACA line; the
-                 money stopping short of both lines; or the
-                 two lines coinciding (bracket filled exactly
-                 on the ACA line) — in each there is no
-                 binding-first line for the copy to name, and
-                 naming one would mislead. The Income stack
-                 heading's ⓘ below is untouched, and the
-                 headline wording itself is unchanged — the ⓘ
-                 only rides beside it. */
-              const landingExplainerText: string | null = (() => {
-                if (!pgAcaHasHardCliff) return null;
-                const cliff = pg.aca.cliff;
-                if (cliff == null) return null;
-                if (pg.conversion + pg.spendingDraw <= 0) return null;
-                const room = pg.landingRoomLeft;
-                if (pg.landingBracketPct == null || room == null) {
+              return null;
+            })();
+            const stackRow = (
+              label: ReactNode,
+              value: ReactNode,
+              sub?: string,
+              highlightValue?: boolean,
+              // The highlight color for a highlighted value:
+              // the teal accent by default; a caller that
+              // prices money owed passes the red owed color.
+              highlightClass = "text-[var(--accent)]",
+            ) => (
+              <div>
+                <dt className="text-[var(--dim)]">{label}</dt>
+                <dd className="tnum font-medium">
+                  {highlightValue ? (
+                    <span className={`font-bold ${highlightClass}`}>{value}</span>
+                  ) : (
+                    value
+                  )}
+                </dd>
+                {sub && <dd className="text-xs text-[var(--dim)]">{sub}</dd>}
+              </div>
+            );
+            /* Income-stacking chart — presentation ONLY. The
+               segment model (segments, positions, bands,
+               markers, hatch) comes from buildStackModel above.
+               Every figure is read straight off the priced
+               result (`pg`, pricePlaygroundYear's own fields);
+               see buildStackModel's comment for the sourcing. */
+            const stackModel = buildStackModel(pg, pgYearNum, pgFiling);
+            /* Bracket-by-bracket status (build v69): the
+               text the chart's legend used to print under the
+               bar — every bracket top with its passed-by /
+               room-left standing, and the 0% gains line — now
+               computed once as this one string and carried by
+               the Income stack heading's ⓘ, verbatim from the
+               same figures the legend printed. */
+            const bracketStatusText = [
+              ...stackModel.markers.map(
+                (m) =>
+                  `${m.rate}% top ${fmtDollars(m.to)} — ${
+                    m.room > 0.5
+                      ? `${fmtDollars(m.room)} left`
+                      : m.room >= -0.5
+                        ? "filled exactly"
+                        : `passed by ${fmtDollars(-m.room)}`
+                  }`,
+              ),
+              `0% gains end ${fmtDollars(stackModel.zeroTop)} — ${
+                stackModel.zeroTop - stackModel.ordinaryTaxable > 0.5
+                  ? `${fmtDollars(stackModel.zeroTop - stackModel.ordinaryTaxable)} left`
+                  : stackModel.zeroTop - stackModel.ordinaryTaxable >= -0.5
+                    ? "filled exactly"
+                    : `passed by ${fmtDollars(stackModel.ordinaryTaxable - stackModel.zeroTop)}`
+              } · only taxable-account gains and qualified dividends get the 0% rate`,
+            ].join(" · ");
+            const stackChart = (() => {
+              const {
+                bands,
+                markers,
+                ordPos,
+                gainsPos,
+                visibleOrdSegs,
+                gainsSegs,
+                legendSegs,
+                deductions,
+                ordinaryTaxable,
+                gainsTotal,
+                axisTaxableMax,
+                zeroTop,
+                floor20,
+                show20,
+                pct,
+                taxX,
+                hatchStyle,
+              } = stackModel;
+              /* Legend provenance taps (build v144, extended
+                 v142): only the legend items that ARE a dial
+                 input are taps — they jump to that input field
+                 (scroll + flash, via jumpToPgField). The others
+                 stay plain text, per the standing rule that
+                 computed figures are never taps:
+                 - Interest → the Interest dial (income section).
+                 - Pre-tax money out → the Pre-tax draw for
+                   spending dial (conversion section) — the
+                   segment is the two money-out dials' priced
+                   sum; the tap lands on the first of them.
+                 - Qualified dividends → the Qualified dividends
+                   dial (stock section).
+                 - Ordinary dividends (non-qualified part) →
+                   the Ordinary dividends total dial
+                   (income section, build v142): the
+                   non-qualified figure itself is computed
+                   (ordinary total minus qualified, from TWO
+                   inputs), so the tap goes to the parent
+                   figure it belongs to — the total dial.
+                 Plain text, no tap:
+                 - Deductions — the standard deduction from the
+                   year's law table (the standard won over the
+                   itemized inputs); no input field.
+                 Field ids are the moneyField ids (roth- + the
+                 label with non-alphanumerics as dashes). */
+              const legendTapTargets: Record<
+                string,
+                { fieldId: string; section: PgSectionId; ariaLabel: string }
+              > = {
+                interest: {
+                  fieldId: "roth-Interest",
+                  section: "income",
+                  ariaLabel: "Go to the Interest field",
+                },
+                orddiv: {
+                  fieldId: "roth-Ordinary-dividends-total",
+                  section: "income",
+                  ariaLabel: "Go to the Ordinary dividends field",
+                },
+                conv: {
+                  fieldId: "roth-Pre-tax-draw-for-spending",
+                  section: "conversion",
+                  ariaLabel: "Go to the Pre-tax money out fields",
+                },
+                qualdiv: {
+                  fieldId: "roth-Qualified-dividends",
+                  section: "stock",
+                  ariaLabel: "Go to the Qualified dividends field",
+                },
+              };
+              /* ACA cliff line — presentation ONLY, derived
+                 from the priced result in the chart's own
+                 coordinates: the line sits at the taxable-axis
+                 position cliff − (acaMagi − taxableIncome), so
+                 a year priced exactly on the cliff (acaMagi =
+                 cliff) draws the line exactly at the stack's
+                 end (taxableIncome's position). The offset is
+                 read off the priced year — NOT assumed to be
+                 the deductions — because tax-exempt interest
+                 and the untaxed part of Social Security move
+                 the MAGI↔taxable gap. Shown only when the
+                 priced year carries a hard cliff (the same
+                 applicability rule as the ACA cliff chip: ACA
+                 applies with a cliff figure, coverage 2026+)
+                 and the derived position falls inside the
+                 drawn axis; outside the axis no line is drawn
+                 rather than a misleading one. */
+              const acaCliffLine = (() => {
+                if (pgYearNum < 2026) return null;
+                if (!pg.aca.applies || pg.aca.cliff == null) return null;
+                const taxablePos =
+                  pg.aca.cliff - (pg.acaMagi - pg.taxableIncome);
+                if (taxablePos < 0 || taxablePos > axisTaxableMax) {
                   return null;
                 }
-                const bufferLine = cliff - pgAcaBufferDollars;
-                const diff = bufferLine - pg.acaMagi;
-                const lineName =
-                  pgAcaBufferDollars > 0 ? "ACA line" : "ACA cliff";
-                const lineDesc =
-                  pgAcaBufferDollars > 0
-                    ? `the ACA line of ${fmtDollars(bufferLine)} (the cliff of ${fmtDollars(cliff)} minus your ${fmtDollars(pgAcaBufferDollars)} safety buffer)`
-                    : `the ACA cliff of ${fmtDollars(cliff)}`;
-                if (Math.abs(diff) <= 0.5 && room > 0.5) {
-                  // Build v114: variant A reworded — it names
-                  // the two lines and which comes first, and no
-                  // longer names the room figure (no room-left
-                  // content anywhere in this tooltip).
-                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. Your total income is ${fmtDollars(pg.acaMagi)}, right on ${lineDesc}. The ${lineName} comes first, so it is the limit here — the top of the ${pg.landingBracketPct}% bracket sits just past it, unused.`;
-                }
-                if (diff > 0.5 && room <= diff + 0.5) {
-                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. The top of the ${pg.landingBracketPct}% bracket is the nearer finish line. Your total income is ${fmtDollars(pg.acaMagi)}, still ${fmtDollars(diff)} under ${lineDesc}. So the bracket top is the limit here, not the ${lineName}.`;
-                }
-                return null;
+                return { xPct: taxX(taxablePos), cliff: pg.aca.cliff };
               })();
-              const stackRow = (
-                label: ReactNode,
-                value: ReactNode,
-                sub?: string,
-                highlightValue?: boolean,
-                // The highlight color for a highlighted value:
-                // the teal accent by default; a caller that
-                // prices money owed passes the red owed color.
-                highlightClass = "text-[var(--accent)]",
-              ) => (
-                <div>
-                  <dt className="text-[var(--dim)]">{label}</dt>
-                  <dd className="tnum font-medium">
-                    {highlightValue ? (
-                      <span className={`font-bold ${highlightClass}`}>{value}</span>
-                    ) : (
-                      value
-                    )}
-                  </dd>
-                  {sub && <dd className="text-xs text-[var(--dim)]">{sub}</dd>}
-                </div>
+              /* Buffer line (build v69): the same
+                 construction aimed at cliff − buffer — the
+                 MAGI the dials actually target. Drawn only
+                 when a hard cliff applies (the same rule as
+                 the cliff line) and a buffer above $0 is
+                 entered, and only inside the drawn axis. */
+              const acaBufferLine = (() => {
+                if (acaCliffLine == null) return null;
+                if (!pgAcaHasHardCliff || pgAcaBufferDollars <= 0) {
+                  return null;
+                }
+                const target = pg.aca.cliff! - pgAcaBufferDollars;
+                const taxablePos =
+                  target - (pg.acaMagi - pg.taxableIncome);
+                if (taxablePos < 0 || taxablePos > axisTaxableMax) {
+                  return null;
+                }
+                return { xPct: taxX(taxablePos), magi: target };
+              })();
+              /* Floating landmark labels (build v75): exactly
+                 TWO of the pre-v69 floating labels return — the
+                 LANDING bracket's top label (the first bracket
+                 whose top is at or above the ordinary taxable
+                 total; build v89: the bracket rate only, the
+                 pre-v69 "rate · room left" tail removed — from
+                 the same marker figures the heading's ⓘ
+                 status string uses) and the "0% gains end" label
+                 at its tick, in its pre-v69 form with its small
+                 ⓘ. No labels for passed or higher brackets.
+                 Collision discipline: when both labels are
+                 present they sit on TWO distinct rows — gains
+                 end on the upper row, the landing bracket on
+                 the row below it — so their text can never
+                 overlap however close their ticks sit; each
+                 label stays anchored at its tick, with its
+                 centre clamped inside the chart (a tick at the
+                 right edge right-aligns its label) so neither
+                 label can overflow the card at any width. */
+              const landingIndex = markers.findIndex(
+                (m) => m.room >= 0,
               );
-              /* Income-stacking chart — presentation ONLY. The
-                 segment model (segments, positions, bands,
-                 markers, hatch) comes from buildStackModel above.
-                 Every figure is read straight off the priced
-                 result (`pg`, pricePlaygroundYear's own fields);
-                 see buildStackModel's comment for the sourcing. */
-              const stackModel = buildStackModel(pg, pgYearNum, pgFiling);
-              /* Bracket-by-bracket status (build v69): the
-                 text the chart's legend used to print under the
-                 bar — every bracket top with its passed-by /
-                 room-left standing, and the 0% gains line — now
-                 computed once as this one string and carried by
-                 the Income stack heading's ⓘ, verbatim from the
-                 same figures the legend printed. */
-              const bracketStatusText = [
-                ...stackModel.markers.map(
-                  (m) =>
-                    `${m.rate}% top ${fmtDollars(m.to)} — ${
-                      m.room > 0.5
-                        ? `${fmtDollars(m.room)} left`
-                        : m.room >= -0.5
-                          ? "filled exactly"
-                          : `passed by ${fmtDollars(-m.room)}`
-                    }`,
-                ),
-                `0% gains end ${fmtDollars(stackModel.zeroTop)} — ${
-                  stackModel.zeroTop - stackModel.ordinaryTaxable > 0.5
-                    ? `${fmtDollars(stackModel.zeroTop - stackModel.ordinaryTaxable)} left`
-                    : stackModel.zeroTop - stackModel.ordinaryTaxable >= -0.5
-                      ? "filled exactly"
-                      : `passed by ${fmtDollars(stackModel.ordinaryTaxable - stackModel.zeroTop)}`
-                } · only taxable-account gains and qualified dividends get the 0% rate`,
-              ].join(" · ");
-              const stackChart = (() => {
-                const {
-                  bands,
-                  markers,
-                  ordPos,
-                  gainsPos,
-                  visibleOrdSegs,
-                  gainsSegs,
-                  legendSegs,
-                  deductions,
-                  ordinaryTaxable,
-                  gainsTotal,
-                  axisTaxableMax,
-                  zeroTop,
-                  floor20,
-                  show20,
-                  pct,
-                  taxX,
-                  hatchStyle,
-                } = stackModel;
-                /* Legend provenance taps (build v144, extended
-                   v142): only the legend items that ARE a dial
-                   input are taps — they jump to that input field
-                   (scroll + flash, via jumpToPgField). The others
-                   stay plain text, per the standing rule that
-                   computed figures are never taps:
-                   - Interest → the Interest dial (income section).
-                   - Pre-tax money out → the Pre-tax draw for
-                     spending dial (conversion section) — the
-                     segment is the two money-out dials' priced
-                     sum; the tap lands on the first of them.
-                   - Qualified dividends → the Qualified dividends
-                     dial (stock section).
-                   - Ordinary dividends (non-qualified part) →
-                     the Ordinary dividends total dial
-                     (income section, build v142): the
-                     non-qualified figure itself is computed
-                     (ordinary total minus qualified, from TWO
-                     inputs), so the tap goes to the parent
-                     figure it belongs to — the total dial.
-                   Plain text, no tap:
-                   - Deductions — the standard deduction from the
-                     year's law table (the standard won over the
-                     itemized inputs); no input field.
-                   Field ids are the moneyField ids (roth- + the
-                   label with non-alphanumerics as dashes). */
-                const legendTapTargets: Record<
-                  string,
-                  { fieldId: string; section: PgSectionId; ariaLabel: string }
-                > = {
-                  interest: {
-                    fieldId: "roth-Interest",
-                    section: "income",
-                    ariaLabel: "Go to the Interest field",
-                  },
-                  orddiv: {
-                    fieldId: "roth-Ordinary-dividends-total",
-                    section: "income",
-                    ariaLabel: "Go to the Ordinary dividends field",
-                  },
-                  conv: {
-                    fieldId: "roth-Pre-tax-draw-for-spending",
-                    section: "conversion",
-                    ariaLabel: "Go to the Pre-tax money out fields",
-                  },
-                  qualdiv: {
-                    fieldId: "roth-Qualified-dividends",
-                    section: "stock",
-                    ariaLabel: "Go to the Qualified dividends field",
-                  },
-                };
-                /* ACA cliff line — presentation ONLY, derived
-                   from the priced result in the chart's own
-                   coordinates: the line sits at the taxable-axis
-                   position cliff − (acaMagi − taxableIncome), so
-                   a year priced exactly on the cliff (acaMagi =
-                   cliff) draws the line exactly at the stack's
-                   end (taxableIncome's position). The offset is
-                   read off the priced year — NOT assumed to be
-                   the deductions — because tax-exempt interest
-                   and the untaxed part of Social Security move
-                   the MAGI↔taxable gap. Shown only when the
-                   priced year carries a hard cliff (the same
-                   applicability rule as the ACA cliff chip: ACA
-                   applies with a cliff figure, coverage 2026+)
-                   and the derived position falls inside the
-                   drawn axis; outside the axis no line is drawn
-                   rather than a misleading one. */
-                const acaCliffLine = (() => {
-                  if (pgYearNum < 2026) return null;
-                  if (!pg.aca.applies || pg.aca.cliff == null) return null;
-                  const taxablePos =
-                    pg.aca.cliff - (pg.acaMagi - pg.taxableIncome);
-                  if (taxablePos < 0 || taxablePos > axisTaxableMax) {
-                    return null;
-                  }
-                  return { xPct: taxX(taxablePos), cliff: pg.aca.cliff };
-                })();
-                /* Buffer line (build v69): the same
-                   construction aimed at cliff − buffer — the
-                   MAGI the dials actually target. Drawn only
-                   when a hard cliff applies (the same rule as
-                   the cliff line) and a buffer above $0 is
-                   entered, and only inside the drawn axis. */
-                const acaBufferLine = (() => {
-                  if (acaCliffLine == null) return null;
-                  if (!pgAcaHasHardCliff || pgAcaBufferDollars <= 0) {
-                    return null;
-                  }
-                  const target = pg.aca.cliff! - pgAcaBufferDollars;
-                  const taxablePos =
-                    target - (pg.acaMagi - pg.taxableIncome);
-                  if (taxablePos < 0 || taxablePos > axisTaxableMax) {
-                    return null;
-                  }
-                  return { xPct: taxX(taxablePos), magi: target };
-                })();
-                /* Floating landmark labels (build v75): exactly
-                   TWO of the pre-v69 floating labels return — the
-                   LANDING bracket's top label (the first bracket
-                   whose top is at or above the ordinary taxable
-                   total; build v89: the bracket rate only, the
-                   pre-v69 "rate · room left" tail removed — from
-                   the same marker figures the heading's ⓘ
-                   status string uses) and the "0% gains end" label
-                   at its tick, in its pre-v69 form with its small
-                   ⓘ. No labels for passed or higher brackets.
-                   Collision discipline: when both labels are
-                   present they sit on TWO distinct rows — gains
-                   end on the upper row, the landing bracket on
-                   the row below it — so their text can never
-                   overlap however close their ticks sit; each
-                   label stays anchored at its tick, with its
-                   centre clamped inside the chart (a tick at the
-                   right edge right-aligns its label) so neither
-                   label can overflow the card at any width. */
-                const landingIndex = markers.findIndex(
-                  (m) => m.room >= 0,
-                );
-                const landingMarker =
-                  landingIndex >= 0 ? (markers[landingIndex] ?? null) : null;
-                /* Build v89: the landing label shows the
-                   bracket rate only — the "· $X left" tail and
-                   the v82 ⓘ beside it are removed at the user's
-                   direction (the room figure confused more
-                   than it helped); position, anchoring, font,
-                   colour, and stagger behaviour are unchanged.
-                   Build v114: an ⓘ returns beside the rate
-                   (the landing tooltip, composed from the priced
-                   figures, with no room figure in it), and a
-                   thin connector line drops from the label to
-                   its dashed guide line — see the label block
-                   below. */
-                const showGainsEndLabel = gainsTotal > 0;
-                /* Axis-row stacking (build v76): whether the
-                   cliff and buffer axis labels sit close enough
-                   to need two rows. On narrow screens the
-                   axis-end figure also needs its own row: at
-                   phone width the cliff label and the axis-end
-                   figure share the first row and collide (the
-                   cliff label is long and its line sits near
-                   the right edge, now that headroom draws it
-                   on the chart), so below the small-screen
-                   breakpoint the axis-end figure drops to a
-                   row of its own — a third row when both
-                   marker labels are present, a second row
-                   when only the cliff label is — while at
-                   desktop widths the rows are exactly as
-                   before. The marker labels' wording and
-                   positions are unchanged at every width.
-                   Build v84: the bracket-top tick labels
-                   no longer live below the bar at all (see
-                   below), so the axis block below the bar is
-                   back to exactly these pre-v83 rows — the
-                   $0 / cliff / buffer labels sit on the row
-                   directly under the bar, as they did before
-                   the tick row existed. */
-                const axisLinesClose =
-                  acaCliffLine != null &&
-                  acaBufferLine != null &&
-                  Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
-                /* Bracket-top tick labels (build v77, anchored
-                   build v79, moved to the line tops contract
-                   v84): one small tick label for each bracket
-                   top whose guide line is drawn — the same
-                   inAxis rule the lines use, judged against
-                   the pre-headroom base axis end, so a top
-                   beyond the axis end renders nothing and a
-                   tick never names a line that is not drawn.
-                   The labels live ABOVE the bar, at the top
-                   ends of their own dashed guide lines: a
-                   16px strip at the top of the chart block
-                   carries them, each label's centre exactly
-                   on its line (the same taxX(m.to) the
-                   overlay line uses, centred with
-                   translateX(-50%)), with the same 24px edge
-                   clamp as before (the card-edge bound the
-                   tick labels themselves carry, not the
-                   floating labels' chart-edge bound). Below
-                   the strip a 10px spacer carries the dashed
-                   lines up past the gains track, so each
-                   label sits above the gains segment with
-                   its line visibly running up to it — the
-                   strip and spacer are flow content above
-                   the bar area, and the lines, the band
-                   tints, and the white-line ⓘ live in the
-                   bar-area wrapper below them, starting 4px
-                   above the bar's top (the same absolute
-                   spot the old 26px offset put them) while
-                   ticks are present, and at the bar's top
-                   exactly as before when no tick is drawn.
-                   COLLISION: neighbouring labels that would
-                   touch at phone width are staggered by the
-                   strip itself (see TickStrip) — a label
-                   drops to a second row, still centred on
-                   its line, and the flow layout carries the
-                   bar down with it. CLEARANCE: the tick strip is a flow
-                   row below the floating labels and the
-                   Buffer label row above the bar, so a tick label
-                   can never overlap a floating label however
-                   close a bracket top sits to the landing or
-                   gains-end tick — the Buffer label row stands
-                   between them when a hard cliff applies, and
-                   the strip's own top margin keeps 4px of
-                   daylight when it does not. Within the strip
-                   the tops sit a whole bracket apart. Rate
-                   and top are read off the same marker
-                   figures the guide lines and the heading's
-                   ⓘ use — no figure is written in. */
-                const axisBracketTicks = markers.filter((m) => m.inAxis);
-                const hasAxisTicks = axisBracketTicks.length > 0;
-                /* The bar-area overlays start 4px above the
-                   bar's top while ticks are present (the
-                   strip + spacer sit above the bar-area
-                   wrapper, so this is the same absolute
-                   spot the old 26px-from-the-chart-top
-                   offset put them); 0 when no tick is
-                   drawn, so a tickless chart is
-                   pixel-identical to before v84. */
-                const barOverlayTopPx = hasAxisTicks ? -4 : 0;
-                const axisHeightCls = axisLinesClose
-                  ? "h-12 sm:h-8"
-                  : acaCliffLine != null
-                    ? "h-8 sm:h-4"
-                    : "h-4";
-                const axisMagiRowTop = "";
-                const axisBufferRowTop = axisLinesClose ? "top-4" : "";
-                /* Build v115: the fallback is an explicit
-                   top-0, not "": the axis-end span now rides
-                   outside the axis block (see its render below),
-                   so it can no longer take the block's top from
-                   its static position inside it — an explicit
-                   top-0 against the shared row box resolves to
-                   exactly that same spot. */
-                const axisEndRowTop = axisLinesClose
-                  ? "top-8 sm:top-0"
-                  : acaCliffLine != null
-                    ? "top-4 sm:top-0"
-                    : "top-0";
-                return (
-                  <div className="mt-3" aria-label="Income stacking chart">
-                    <p className="mt-1 text-xs text-[var(--dim)]">
-                      On a taxable-income axis. The hatched start of the bar is
-                      the {fmtDollars(deductions)} of deductions sheltering the
-                      first dollars — the stack nets to{" "}
-                      {fmtDollars(ordinaryTaxable)} of ordinary taxable income
-                      {gainsTotal > 0
-                        ? `, ${fmtDollars(pg.taxableIncome)} with gains on top`
-                        : ""}
-                      .
-                    </p>
-                    {(landingMarker != null || showGainsEndLabel) && (
-                      <div className="relative mt-1" ref={stackLabelsRef}>
-                        {showGainsEndLabel && (
+              const landingMarker =
+                landingIndex >= 0 ? (markers[landingIndex] ?? null) : null;
+              /* Build v89: the landing label shows the
+                 bracket rate only — the "· $X left" tail and
+                 the v82 ⓘ beside it are removed at the user's
+                 direction (the room figure confused more
+                 than it helped); position, anchoring, font,
+                 colour, and stagger behaviour are unchanged.
+                 Build v114: an ⓘ returns beside the rate
+                 (the landing tooltip, composed from the priced
+                 figures, with no room figure in it), and a
+                 thin connector line drops from the label to
+                 its dashed guide line — see the label block
+                 below. */
+              const showGainsEndLabel = gainsTotal > 0;
+              /* Axis-row stacking (build v76): whether the
+                 cliff and buffer axis labels sit close enough
+                 to need two rows. On narrow screens the
+                 axis-end figure also needs its own row: at
+                 phone width the cliff label and the axis-end
+                 figure share the first row and collide (the
+                 cliff label is long and its line sits near
+                 the right edge, now that headroom draws it
+                 on the chart), so below the small-screen
+                 breakpoint the axis-end figure drops to a
+                 row of its own — a third row when both
+                 marker labels are present, a second row
+                 when only the cliff label is — while at
+                 desktop widths the rows are exactly as
+                 before. The marker labels' wording and
+                 positions are unchanged at every width.
+                 Build v84: the bracket-top tick labels
+                 no longer live below the bar at all (see
+                 below), so the axis block below the bar is
+                 back to exactly these pre-v83 rows — the
+                 $0 / cliff / buffer labels sit on the row
+                 directly under the bar, as they did before
+                 the tick row existed. */
+              const axisLinesClose =
+                acaCliffLine != null &&
+                acaBufferLine != null &&
+                Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
+              /* Bracket-top tick labels (build v77, anchored
+                 build v79, moved to the line tops contract
+                 v84): one small tick label for each bracket
+                 top whose guide line is drawn — the same
+                 inAxis rule the lines use, judged against
+                 the pre-headroom base axis end, so a top
+                 beyond the axis end renders nothing and a
+                 tick never names a line that is not drawn.
+                 The labels live ABOVE the bar, at the top
+                 ends of their own dashed guide lines: a
+                 16px strip at the top of the chart block
+                 carries them, each label's centre exactly
+                 on its line (the same taxX(m.to) the
+                 overlay line uses, centred with
+                 translateX(-50%)), with the same 24px edge
+                 clamp as before (the card-edge bound the
+                 tick labels themselves carry, not the
+                 floating labels' chart-edge bound). Below
+                 the strip a 10px spacer carries the dashed
+                 lines up past the gains track, so each
+                 label sits above the gains segment with
+                 its line visibly running up to it — the
+                 strip and spacer are flow content above
+                 the bar area, and the lines, the band
+                 tints, and the white-line ⓘ live in the
+                 bar-area wrapper below them, starting 4px
+                 above the bar's top (the same absolute
+                 spot the old 26px offset put them) while
+                 ticks are present, and at the bar's top
+                 exactly as before when no tick is drawn.
+                 COLLISION: neighbouring labels that would
+                 touch at phone width are staggered by the
+                 strip itself (see TickStrip) — a label
+                 drops to a second row, still centred on
+                 its line, and the flow layout carries the
+                 bar down with it. CLEARANCE: the tick strip is a flow
+                 row below the floating labels and the
+                 Buffer label row above the bar, so a tick label
+                 can never overlap a floating label however
+                 close a bracket top sits to the landing or
+                 gains-end tick — the Buffer label row stands
+                 between them when a hard cliff applies, and
+                 the strip's own top margin keeps 4px of
+                 daylight when it does not. Within the strip
+                 the tops sit a whole bracket apart. Rate
+                 and top are read off the same marker
+                 figures the guide lines and the heading's
+                 ⓘ use — no figure is written in. */
+              const axisBracketTicks = markers.filter((m) => m.inAxis);
+              const hasAxisTicks = axisBracketTicks.length > 0;
+              /* The bar-area overlays start 4px above the
+                 bar's top while ticks are present (the
+                 strip + spacer sit above the bar-area
+                 wrapper, so this is the same absolute
+                 spot the old 26px-from-the-chart-top
+                 offset put them); 0 when no tick is
+                 drawn, so a tickless chart is
+                 pixel-identical to before v84. */
+              const barOverlayTopPx = hasAxisTicks ? -4 : 0;
+              const axisHeightCls = axisLinesClose
+                ? "h-12 sm:h-8"
+                : acaCliffLine != null
+                  ? "h-8 sm:h-4"
+                  : "h-4";
+              const axisMagiRowTop = "";
+              const axisBufferRowTop = axisLinesClose ? "top-4" : "";
+              /* Build v115: the fallback is an explicit
+                 top-0, not "": the axis-end span now rides
+                 outside the axis block (see its render below),
+                 so it can no longer take the block's top from
+                 its static position inside it — an explicit
+                 top-0 against the shared row box resolves to
+                 exactly that same spot. */
+              const axisEndRowTop = axisLinesClose
+                ? "top-8 sm:top-0"
+                : acaCliffLine != null
+                  ? "top-4 sm:top-0"
+                  : "top-0";
+              return (
+                <div className="mt-3" aria-label="Income stacking chart">
+                  <p className="mt-1 text-xs text-[var(--dim)]">
+                    On a taxable-income axis. The hatched start of the bar is
+                    the {fmtDollars(deductions)} of deductions sheltering the
+                    first dollars — the stack nets to{" "}
+                    {fmtDollars(ordinaryTaxable)} of ordinary taxable income
+                    {gainsTotal > 0
+                      ? `, ${fmtDollars(pg.taxableIncome)} with gains on top`
+                      : ""}
+                    .
+                  </p>
+                  {(landingMarker != null || showGainsEndLabel) && (
+                    <div className="relative mt-1" ref={stackLabelsRef}>
+                      {showGainsEndLabel && (
+                        <div className="relative h-[18px]">
+                          <span
+                            className="absolute inline-flex items-center whitespace-nowrap"
+                            style={{
+                              left: `clamp(78px, ${taxX(zeroTop)}%, calc(100% - 78px))`,
+                              transform: "translateX(-50%)",
+                              /* Lift this label's stacking context
+                                 above the chart-area wrapper below
+                                 (build v87, mirroring the v82
+                                 landing-label lift): the centring
+                                 transform traps the bubble's own
+                                 z-index inside this span, so
+                                 without a z-index here the later
+                                 chart-area sibling — bars, tick
+                                 labels, guide lines, tint, and
+                                 the z-1 gains track — paints over
+                                 the downward-opening bubble.
+                                 Build v120: while this label's
+                                 own bubble is open the span lifts
+                                 to 25, above its sibling labels,
+                                 so the bubble paints above them
+                                 too. Build v129: the lift is
+                                 z-20, below the z-30 sticky play
+                                 strip, so the label slides under
+                                 the strip when the chart scrolls
+                                 under it. */
+                              zIndex: chartLabelZ("zero"),
+                            }}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="tnum text-[11px]"
+                              style={{ color: "#db2777" }}
+                            >
+                              0% gains end · {fmtDollars(zeroTop)}
+                            </span>
+                            <InfoNote
+                              text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
+                              ariaLabel="About the 0% gains line"
+                              align={taxX(zeroTop) > 60 ? "right" : "left"}
+                              onOpenChange={(open) => setChartLabelOpen("zero", open)}
+                            />
+                          </span>
+                        </div>
+                      )}
+                      {landingMarker != null && (
                           <div className="relative h-[18px]">
+                            {/* Landing-bracket label (contract
+                                v89): rate only — the "· $X left"
+                                tail and the v82 ⓘ are removed;
+                                the label stays aria-hidden (its
+                                figure is already in the chart's
+                                accessible description). Contract
+                                v114: the ⓘ returns beside the
+                                rate, carrying the bracket's own
+                                explainer (the landing tooltip —
+                                what the bracket is and the
+                                ordinary taxable income sitting
+                                in it, composed live; no room
+                                figure, per the v114 headline
+                                rule). The label's text, position,
+                                anchoring, font, colour, and
+                                z-index are unchanged. */}
                             <span
                               className="absolute inline-flex items-center whitespace-nowrap"
                               style={{
-                                left: `clamp(78px, ${taxX(zeroTop)}%, calc(100% - 78px))`,
+                                color: landingMarker.color,
+                                left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
                                 transform: "translateX(-50%)",
-                                /* Lift this label's stacking context
-                                   above the chart-area wrapper below
-                                   (build v87, mirroring the v82
-                                   landing-label lift): the centring
-                                   transform traps the bubble's own
-                                   z-index inside this span, so
-                                   without a z-index here the later
-                                   chart-area sibling — bars, tick
-                                   labels, guide lines, tint, and
-                                   the z-1 gains track — paints over
-                                   the downward-opening bubble.
-                                   Build v120: while this label's
-                                   own bubble is open the span lifts
-                                   to 25, above its sibling labels,
-                                   so the bubble paints above them
-                                   too. Build v129: the lift is
-                                   z-20, below the z-30 sticky play
-                                   strip, so the label slides under
-                                   the strip when the chart scrolls
-                                   under it. */
-                                zIndex: chartLabelZ("zero"),
+                                /* Stacking lift (build v129):
+                                   the label rides at z-20 — above
+                                   the chart-area content below it
+                                   but below the z-30 sticky play
+                                   strip, so it slides under the
+                                   strip when the chart scrolls
+                                   under it instead of painting
+                                   over its text (the v82 lift had
+                                   it at z-31, above the strip,
+                                   which is the overlap the user
+                                   reported); removing the ⓘ must
+                                   not move the label's paint order.
+                                   Build v120: while this
+                                   label's own bubble is open the
+                                   span lifts to 25, above its
+                                   sibling labels, so the bubble
+                                   paints above them too. */
+                                zIndex: chartLabelZ("landing"),
                               }}
                             >
                               <span
                                 aria-hidden="true"
                                 className="tnum text-[11px]"
-                                style={{ color: "#db2777" }}
                               >
-                                0% gains end · {fmtDollars(zeroTop)}
+                                {landingMarker.rate}%
                               </span>
                               <InfoNote
-                                text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
-                                ariaLabel="About the 0% gains line"
-                                align={taxX(zeroTop) > 60 ? "right" : "left"}
-                                onOpenChange={(open) => setChartLabelOpen("zero", open)}
+                                text={`Your ordinary income lands in this bracket — ${fmtDollars(ordinaryTaxable)} of ordinary taxable income sits in the ${landingMarker.rate}% bracket, the rate on your last dollars of ordinary income.`}
+                                ariaLabel={`About the ${landingMarker.rate}% landing bracket`}
+                                align={taxX(landingMarker.to) > 60 ? "right" : "left"}
+                                onOpenChange={(open) => setChartLabelOpen("landing", open)}
                               />
                             </span>
                           </div>
                         )}
-                        {landingMarker != null && (
-                            <div className="relative h-[18px]">
-                              {/* Landing-bracket label (contract
-                                  v89): rate only — the "· $X left"
-                                  tail and the v82 ⓘ are removed;
-                                  the label stays aria-hidden (its
-                                  figure is already in the chart's
-                                  accessible description). Contract
-                                  v114: the ⓘ returns beside the
-                                  rate, carrying the bracket's own
-                                  explainer (the landing tooltip —
-                                  what the bracket is and the
-                                  ordinary taxable income sitting
-                                  in it, composed live; no room
-                                  figure, per the v114 headline
-                                  rule). The label's text, position,
-                                  anchoring, font, colour, and
-                                  z-index are unchanged. */}
-                              <span
-                                className="absolute inline-flex items-center whitespace-nowrap"
-                                style={{
-                                  color: landingMarker.color,
-                                  left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
-                                  transform: "translateX(-50%)",
-                                  /* Stacking lift (build v129):
-                                     the label rides at z-20 — above
-                                     the chart-area content below it
-                                     but below the z-30 sticky play
-                                     strip, so it slides under the
-                                     strip when the chart scrolls
-                                     under it instead of painting
-                                     over its text (the v82 lift had
-                                     it at z-31, above the strip,
-                                     which is the overlap the user
-                                     reported); removing the ⓘ must
-                                     not move the label's paint order.
-                                     Build v120: while this
-                                     label's own bubble is open the
-                                     span lifts to 25, above its
-                                     sibling labels, so the bubble
-                                     paints above them too. */
-                                  zIndex: chartLabelZ("landing"),
-                                }}
-                              >
-                                <span
-                                  aria-hidden="true"
-                                  className="tnum text-[11px]"
-                                >
-                                  {landingMarker.rate}%
-                                </span>
-                                <InfoNote
-                                  text={`Your ordinary income lands in this bracket — ${fmtDollars(ordinaryTaxable)} of ordinary taxable income sits in the ${landingMarker.rate}% bracket, the rate on your last dollars of ordinary income.`}
-                                  ariaLabel={`About the ${landingMarker.rate}% landing bracket`}
-                                  align={taxX(landingMarker.to) > 60 ? "right" : "left"}
-                                  onOpenChange={(open) => setChartLabelOpen("landing", open)}
-                                />
-                              </span>
-                            </div>
-                          )}
-                        {/* Landing-label connector (contract
-                            v114): a thin leader line in the
-                            landing marker's own colour, dropped
-                            from the bottom of this label block at
-                            the marker's tick position down to the
-                            top of its dashed guide line — the
-                            height is the measured gap (see
-                            landingLinkH at the component level),
-                            so the line ends exactly where the
-                            dashed line begins, through the buffer
-                            label row and the tick strip, at any
-                            width. Drawn only when the marker's
-                            dashed line is drawn (inAxis). */}
-                        {landingMarker != null && landingMarker.inAxis && landingLinkH != null && (
-                          <div
-                            aria-hidden="true"
-                            className="pointer-events-none absolute"
-                            style={{
-                              left: `${taxX(landingMarker.to)}%`,
-                              top: "100%",
-                              height: landingLinkH,
-                              borderLeft: `1px solid ${landingMarker.color}`,
-                            }}
-                          />
-                        )}
-                      </div>
-                    )}
-                    {/* Buffer label (build v85): the v79
-                        bracket's label WITHOUT the brace — the
-                        tinted buffer span below (see the chart
-                        area) now marks the zone, so the brace
-                        with its end ticks is gone. The label
-                        itself stays, centred on the span at the
-                        same horizontal centre the bracket label
-                        used, its centre clamped inside the chart
-                        so a narrow span (a small buffer) or a
-                        span near an edge never overflows. It
-                        lives on a row of its own below the
-                        floating labels above, so it can never
-                        overlap them. It renders only when both
-                        lines render: a hard cliff applies and
-                        the buffer is above $0 (at $0 the lines
-                        coincide and there is no span — the
-                        single line is identified by the axis
-                        label alone); with no hard cliff nothing
-                        renders, as before. The figure is composed
-                        live from the typed buffer dollars —
-                        never written in. The dashed lines
-                        themselves and the two-row axis labels
-                        below are unchanged. */}
-                    {acaCliffLine != null && acaBufferLine != null && (
-                      <div className="relative h-[26px]">
-                        {/* Build v114: the label gains the
-                            buffer ⓘ (the 0% InfoNote pattern —
-                            live-composed text, align by the
-                            label's position, the z-20 lift on
-                            its span, which the centring
-                            transform requires for the bubble to
-                            paint above the chart area). The
-                            label text itself stays aria-hidden
-                            and centred exactly as before; only
-                            the wrapper's aria-hidden comes off,
-                            so the ⓘ button is reachable. */}
-                        <span
-                          className="absolute top-0 inline-flex items-center whitespace-nowrap"
-                          style={{
-                            left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
-                            transform: "translateX(-50%)",
-                            /* Build v120: while this label's own
-                               bubble is open the span lifts to 25,
-                               above its sibling labels, so the
-                               bubble paints above them too. Contract
-                               v129: the lift is z-20, below the z-30
-                               sticky play strip. */
-                            zIndex: chartLabelZ("buffer"),
-                          }}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className="tnum text-[11px] font-medium"
-                            style={{ color: "var(--dim)" }}
-                          >
-                            Buffer {fmtDollars(pgAcaBufferDollars)}
-                          </span>
-                          <InfoNote
-                            text={`Your safety margin under the ACA cliff. The cliff is ${fmtDollars(acaCliffLine.cliff)}; the buffer stops your income ${fmtDollars(pgAcaBufferDollars)} short of it, at ${fmtDollars(acaBufferLine.magi)}, so a small surprise doesn't wipe out the whole credit.`}
-                            ariaLabel="About the ACA safety buffer"
-                            align={(acaBufferLine.xPct + acaCliffLine.xPct) / 2 > 60 ? "right" : "left"}
-                            onOpenChange={(open) => setChartLabelOpen("buffer", open)}
-                          />
-                        </span>
-                      </div>
-                    )}
-                    <div className="relative" ref={stackChartRef}>
-                      {/* Buffer-span tint (build v85): the
-                          region between the buffer dashed line
-                          and the cliff dashed line, filled with
-                          a translucent tint in the cliff line's
-                          colour (var(--warn)), running the full
-                          height of the chart area — from the top
-                          of the tick-label strip, through the
-                          bar, to the axis. It renders on exactly
-                          the gate the v79 bracket used: both
-                          lines render (a hard cliff applies and
-                          the buffer is above $0); at a $0 buffer
-                          or with no hard cliff there is no tint,
-                          as there was no bracket. It is the
-                          FIRST child of this wrapper and
-                          absolutely positioned, so it paints
-                          BEHIND everything in the chart area —
-                          the tick labels, the bar segments, the
-                          dashed lines, and the white-line ⓘ all
-                          sit in later siblings and paint over
-                          it — and it takes no space in flow, so
-                          it changes no measured geometry: the
-                          TickStrip stagger measurement still
-                          sees the real label spans. Pointer
-                          events pass straight through it, so it
-                          can never swallow a tap on the ⓘ. */}
-                      {acaCliffLine != null && acaBufferLine != null && (
+                      {/* Landing-label connector (contract
+                          v114): a thin leader line in the
+                          landing marker's own colour, dropped
+                          from the bottom of this label block at
+                          the marker's tick position down to the
+                          top of its dashed guide line — the
+                          height is the measured gap (see
+                          landingLinkH at the component level),
+                          so the line ends exactly where the
+                          dashed line begins, through the buffer
+                          label row and the tick strip, at any
+                          width. Drawn only when the marker's
+                          dashed line is drawn (inAxis). */}
+                      {landingMarker != null && landingMarker.inAxis && landingLinkH != null && (
                         <div
                           aria-hidden="true"
-                          className="pointer-events-none absolute top-0 bottom-0"
+                          className="pointer-events-none absolute"
                           style={{
-                            left: `${acaBufferLine.xPct}%`,
-                            width: `${Math.max(0, acaCliffLine.xPct - acaBufferLine.xPct)}%`,
-                            background:
-                              "color-mix(in srgb, var(--warn) 15%, transparent)",
+                            left: `${taxX(landingMarker.to)}%`,
+                            top: "100%",
+                            height: landingLinkH,
+                            borderLeft: `1px solid ${landingMarker.color}`,
                           }}
                         />
                       )}
-                      {/* Bracket-top tick labels at the top ends
-                          of their guide lines (build v84):
-                          the strip above the bar, then the
-                          10px spacer the dashed lines run up
-                          through to meet the labels. Both render
-                          only while a tick is drawn; the strip
-                          staggers colliding labels to a second
-                          row itself, and the bar-area wrapper
-                          below flows down with it. */}
-                      {hasAxisTicks && (
-                        <TickStrip
-                          ticks={axisBracketTicks.map((m) => {
-                            /* Build v114: the landing bracket's
-                               tick carries the bracket-top ⓘ,
-                               composed live from the same marker
-                               figures and the law row's rate list
-                               (the rate past this top is the next
-                               band's rate). Every other tick is
-                               note-free, exactly as before. */
-                            if (
-                              landingMarker == null ||
-                              m.rate !== landingMarker.rate
-                            ) {
-                              return m;
-                            }
-                            const nextRate =
-                              lawForYear(pgYearNum).rates[
-                                markers.findIndex((x) => x.rate === m.rate) + 1
-                              ];
-                            return {
-                              ...m,
-                              note: `The top of the ${m.rate}% bracket: ordinary taxable income up to ${fmtDollars(m.to)}.${nextRate != null ? ` Past this line, the ${nextRate}% rate starts.` : ""}`,
-                              noteAriaLabel: `About the ${m.rate}% bracket top`,
-                            };
-                          })}
-                          taxX={taxX}
+                    </div>
+                  )}
+                  {/* Buffer label (build v85): the v79
+                      bracket's label WITHOUT the brace — the
+                      tinted buffer span below (see the chart
+                      area) now marks the zone, so the brace
+                      with its end ticks is gone. The label
+                      itself stays, centred on the span at the
+                      same horizontal centre the bracket label
+                      used, its centre clamped inside the chart
+                      so a narrow span (a small buffer) or a
+                      span near an edge never overflows. It
+                      lives on a row of its own below the
+                      floating labels above, so it can never
+                      overlap them. It renders only when both
+                      lines render: a hard cliff applies and
+                      the buffer is above $0 (at $0 the lines
+                      coincide and there is no span — the
+                      single line is identified by the axis
+                      label alone); with no hard cliff nothing
+                      renders, as before. The figure is composed
+                      live from the typed buffer dollars —
+                      never written in. The dashed lines
+                      themselves and the two-row axis labels
+                      below are unchanged. */}
+                  {acaCliffLine != null && acaBufferLine != null && (
+                    <div className="relative h-[26px]">
+                      {/* Build v114: the label gains the
+                          buffer ⓘ (the 0% InfoNote pattern —
+                          live-composed text, align by the
+                          label's position, the z-20 lift on
+                          its span, which the centring
+                          transform requires for the bubble to
+                          paint above the chart area). The
+                          label text itself stays aria-hidden
+                          and centred exactly as before; only
+                          the wrapper's aria-hidden comes off,
+                          so the ⓘ button is reachable. */}
+                      <span
+                        className="absolute top-0 inline-flex items-center whitespace-nowrap"
+                        style={{
+                          left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
+                          transform: "translateX(-50%)",
+                          /* Build v120: while this label's own
+                             bubble is open the span lifts to 25,
+                             above its sibling labels, so the
+                             bubble paints above them too. Contract
+                             v129: the lift is z-20, below the z-30
+                             sticky play strip. */
+                          zIndex: chartLabelZ("buffer"),
+                        }}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="tnum text-[11px] font-medium"
+                          style={{ color: "var(--dim)" }}
+                        >
+                          Buffer {fmtDollars(pgAcaBufferDollars)}
+                        </span>
+                        <InfoNote
+                          text={`Your safety margin under the ACA cliff. The cliff is ${fmtDollars(acaCliffLine.cliff)}; the buffer stops your income ${fmtDollars(pgAcaBufferDollars)} short of it, at ${fmtDollars(acaBufferLine.magi)}, so a small surprise doesn't wipe out the whole credit.`}
+                          ariaLabel="About the ACA safety buffer"
+                          align={(acaBufferLine.xPct + acaCliffLine.xPct) / 2 > 60 ? "right" : "left"}
+                          onOpenChange={(open) => setChartLabelOpen("buffer", open)}
                         />
-                      )}
-                      <div className="relative">
+                      </span>
+                    </div>
+                  )}
+                  <div className="relative" ref={stackChartRef}>
+                    {/* Buffer-span tint (build v85): the
+                        region between the buffer dashed line
+                        and the cliff dashed line, filled with
+                        a translucent tint in the cliff line's
+                        colour (var(--warn)), running the full
+                        height of the chart area — from the top
+                        of the tick-label strip, through the
+                        bar, to the axis. It renders on exactly
+                        the gate the v79 bracket used: both
+                        lines render (a hard cliff applies and
+                        the buffer is above $0); at a $0 buffer
+                        or with no hard cliff there is no tint,
+                        as there was no bracket. It is the
+                        FIRST child of this wrapper and
+                        absolutely positioned, so it paints
+                        BEHIND everything in the chart area —
+                        the tick labels, the bar segments, the
+                        dashed lines, and the white-line ⓘ all
+                        sit in later siblings and paint over
+                        it — and it takes no space in flow, so
+                        it changes no measured geometry: the
+                        TickStrip stagger measurement still
+                        sees the real label spans. Pointer
+                        events pass straight through it, so it
+                        can never swallow a tap on the ⓘ. */}
+                    {acaCliffLine != null && acaBufferLine != null && (
                       <div
-                        className="absolute right-0 bottom-0 left-0"
-                        style={{ top: barOverlayTopPx }}
                         aria-hidden="true"
-                      >
-                        {bands.map((b, i) => (
-                          <div
-                            key={b.rate}
-                            className="absolute top-0 bottom-0"
-                            style={{
-                              left: `${taxX(b.from)}%`,
-                              width: `${Math.max(0, taxX(b.to) - taxX(b.from))}%`,
-                              background:
-                                i % 2 === 0
-                                  ? "rgba(128,128,128,0.07)"
-                                  : "rgba(20,89,76,0.08)",
-                            }}
-                          />
-                        ))}
-                      </div>
-                      {gainsTotal > 0 && (
-                        <div className="relative h-5" role="img" aria-label={`Gains stack: ${gainsSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}`}>
-                          {gainsPos.map((s) => (
-                            <div
-                              key={s.key}
-                              className="absolute top-0 flex h-5 items-center justify-center overflow-hidden"
-                              style={{
-                                left: `${s.leftPct}%`,
-                                width: `${s.widthPct}%`,
-                                background: s.color,
-                                /* S-9: a hatched segment (the
-                                   §1211(b) allowance) wears the
-                                   deductions hatch over its base
-                                   colour, marking the tail of the
-                                   stack the allowance removes. */
-                                ...(s.hatch ? hatchStyle : {}),
-                              }}
-                            >
-                              {s.wide && (
-                                <span className="truncate px-1 text-[11px] font-medium text-white">
-                                  {s.short ?? s.label} {fmtDollars(s.amount)}
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                          <div
-                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
-                            style={{ left: `${taxX(zeroTop)}%`, borderColor: "#db2777" }}
-                            aria-hidden="true"
-                          />
-                          {show20 && (
-                            <div
-                              className="absolute top-0 bottom-0 border-l-2 border-dashed"
-                              style={{ left: `${taxX(floor20)}%`, borderColor: "#ea580c" }}
-                              aria-hidden="true"
-                            />
-                          )}
-                        </div>
-                      )}
-                      <div
-                        className={`relative h-10 ${gainsTotal > 0 ? "mt-1" : ""}`}
-                        role="img"
-                        aria-label={`Ordinary income stack: ${visibleOrdSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}, less deductions ${fmtDollars(deductions)}, nets to ${fmtDollars(ordinaryTaxable)} of ordinary taxable income`}
-                      >
-                        {ordPos.map((s) => (
+                        className="pointer-events-none absolute top-0 bottom-0"
+                        style={{
+                          left: `${acaBufferLine.xPct}%`,
+                          width: `${Math.max(0, acaCliffLine.xPct - acaBufferLine.xPct)}%`,
+                          background:
+                            "color-mix(in srgb, var(--warn) 15%, transparent)",
+                        }}
+                      />
+                    )}
+                    {/* Bracket-top tick labels at the top ends
+                        of their guide lines (build v84):
+                        the strip above the bar, then the
+                        10px spacer the dashed lines run up
+                        through to meet the labels. Both render
+                        only while a tick is drawn; the strip
+                        staggers colliding labels to a second
+                        row itself, and the bar-area wrapper
+                        below flows down with it. */}
+                    {hasAxisTicks && (
+                      <TickStrip
+                        ticks={axisBracketTicks.map((m) => {
+                          /* Build v114: the landing bracket's
+                             tick carries the bracket-top ⓘ,
+                             composed live from the same marker
+                             figures and the law row's rate list
+                             (the rate past this top is the next
+                             band's rate). Every other tick is
+                             note-free, exactly as before. */
+                          if (
+                            landingMarker == null ||
+                            m.rate !== landingMarker.rate
+                          ) {
+                            return m;
+                          }
+                          const nextRate =
+                            lawForYear(pgYearNum).rates[
+                              markers.findIndex((x) => x.rate === m.rate) + 1
+                            ];
+                          return {
+                            ...m,
+                            note: `The top of the ${m.rate}% bracket: ordinary taxable income up to ${fmtDollars(m.to)}.${nextRate != null ? ` Past this line, the ${nextRate}% rate starts.` : ""}`,
+                            noteAriaLabel: `About the ${m.rate}% bracket top`,
+                          };
+                        })}
+                        taxX={taxX}
+                      />
+                    )}
+                    <div className="relative">
+                    <div
+                      className="absolute right-0 bottom-0 left-0"
+                      style={{ top: barOverlayTopPx }}
+                      aria-hidden="true"
+                    >
+                      {bands.map((b, i) => (
+                        <div
+                          key={b.rate}
+                          className="absolute top-0 bottom-0"
+                          style={{
+                            left: `${taxX(b.from)}%`,
+                            width: `${Math.max(0, taxX(b.to) - taxX(b.from))}%`,
+                            background:
+                              i % 2 === 0
+                                ? "rgba(128,128,128,0.07)"
+                                : "rgba(20,89,76,0.08)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {gainsTotal > 0 && (
+                      <div className="relative h-5" role="img" aria-label={`Gains stack: ${gainsSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}`}>
+                        {gainsPos.map((s) => (
                           <div
                             key={s.key}
-                            className="absolute top-0 flex h-10 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
+                            className="absolute top-0 flex h-5 items-center justify-center overflow-hidden"
                             style={{
                               left: `${s.leftPct}%`,
                               width: `${s.widthPct}%`,
                               background: s.color,
+                              /* S-9: a hatched segment (the
+                                 §1211(b) allowance) wears the
+                                 deductions hatch over its base
+                                 colour, marking the tail of the
+                                 stack the allowance removes. */
+                              ...(s.hatch ? hatchStyle : {}),
                             }}
                           >
                             {s.wide && (
@@ -8750,1167 +8713,1202 @@ export function Playground({
                             )}
                           </div>
                         ))}
-                        {deductions > 0 && (
+                        <div
+                          className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                          style={{ left: `${taxX(zeroTop)}%`, borderColor: "#db2777" }}
+                          aria-hidden="true"
+                        />
+                        {show20 && (
                           <div
-                            className="pointer-events-none absolute top-0 h-10"
-                            style={{ left: 0, width: `${pct(deductions)}%`, ...hatchStyle }}
+                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                            style={{ left: `${taxX(floor20)}%`, borderColor: "#ea580c" }}
                             aria-hidden="true"
                           />
                         )}
                       </div>
-                      <div
-                        className="pointer-events-none absolute right-0 bottom-0 left-0"
-                        style={{ top: barOverlayTopPx }}
-                        aria-hidden="true"
-                        ref={stackLinesRef}
-                      >
-                        {markers
-                          .filter((m) => m.inAxis)
-                          .map((m) => (
-                            <div
-                              key={m.rate}
-                              className="absolute top-0 bottom-0 border-l border-dashed"
-                              style={{ left: `${taxX(m.to)}%`, borderColor: m.color }}
-                            />
-                          ))}
-                        <div
-                          className="absolute top-0 bottom-0 border-l"
-                          style={{ left: `${taxX(0)}%`, borderColor: "var(--dim)" }}
-                        />
-                        {zeroTop <= axisTaxableMax && (
-                          <div
-                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
-                            style={{
-                              left: `${taxX(zeroTop)}%`,
-                              borderColor: "#db2777",
-                            }}
-                          />
-                        )}
-                        {acaCliffLine != null && (
-                          <div
-                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
-                            style={{
-                              left: `${acaCliffLine.xPct}%`,
-                              borderColor: "var(--warn)",
-                            }}
-                          />
-                        )}
-                        {acaBufferLine != null && (
-                          <div
-                            className="absolute top-0 bottom-0 border-l border-dashed"
-                            style={{
-                              left: `${acaBufferLine.xPct}%`,
-                              borderColor: "var(--dim)",
-                            }}
-                          />
-                        )}
-                      </div>
-                      {/* White-line ⓘ (build v79, amendment): the
-                          shared InfoNote ⓘ at the top of the solid
-                          $0 line, where the deductions hatch ends.
-                          Its copy is plain English composed live
-                          from the priced deductions total — never
-                          written in — and names it simply
-                          "the line", with no colour claim
-                          (build v88). The
-                          marker sits inside the bar at the line's
-                          top, clear of the floating labels and the
-                          bracket row above, with its centre
-                          clamped inside the chart so a $0 line at
-                          an edge never overflows. It renders
-                          whenever the $0 line renders — the line
-                          is unconditional in this chart, so the
-                          marker is too. The bubble is the plain
-                          absolute one the other chart ⓘs use,
-                          opening below the marker — NOT the
-                          viewport-clamped variant: that variant
-                          positions fixed against the viewport,
-                          and a centring transform on this
-                          marker's wrapper would capture fixed
-                          positioning and land the bubble far
-                          from the marker (verified live in the
-                          rendered pass: the clamped bubble
-                          never appeared near the marker). The
-                          wrapper therefore centres with a
-                          negative margin and carries no
-                          transform at all. The plain bubble's align flips
-                          near the right edge and its width is
-                          capped to the viewport, so it stays on
-                          screen at phone width. */}
-                      <div
-                        className="absolute z-10"
-                        style={{
-                          /* Build v84: the marker sits at the
-                             top of the BAR area — below the tick
-                             strip and dash spacer while ticks are
-                             present, at the chart's top as before
-                             when none are. The bar-area wrapper
-                             starts below the strip, so 4px above
-                             the bar is the same spot as the old
-                             offset. */
-                          top: barOverlayTopPx,
-                          left: `clamp(11px, ${taxX(0)}%, calc(100% - 11px))`,
-                          /* Centre on the line with a negative
-                             margin, NOT a translateX transform:
-                             the marker's wrapper must carry no
-                             transform — with the old viewport-
-                             clamped bubble, the centring
-                             transform captured its fixed
-                             positioning and landed it far from
-                             the marker (verified live in the
-                             rendered pass). Margin centring
-                             keeps every transform out of the
-                             marker's ancestry, and the plain
-                             bubble below is verified painting.
-                             The span is 22px wide (18px button +
-                             the 4px ml-1), so −11px centres it
-                             exactly as translateX(-50%) did. */
-                          marginLeft: "-11px",
-                        }}
-                      >
-                        <InfoNote
-                          text={`Taxable income starts at the line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the line counts, starting at $0.`}
-                          ariaLabel="About the $0 taxable line"
-                          align={taxX(0) > 60 ? "right" : "left"}
-                        />
-                      </div>
-                      </div>
-                    </div>
-                    <div className="relative mt-1">
+                    )}
                     <div
-                      className={`relative ${axisHeightCls}`}
-                      aria-hidden="true"
+                      className={`relative h-10 ${gainsTotal > 0 ? "mt-1" : ""}`}
+                      role="img"
+                      aria-label={`Ordinary income stack: ${visibleOrdSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}, less deductions ${fmtDollars(deductions)}, nets to ${fmtDollars(ordinaryTaxable)} of ordinary taxable income`}
                     >
-                      <span
-                        className={`tnum absolute ${axisMagiRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
-                        style={{
-                          left: `${taxX(0)}%`,
-                          transform:
-                            taxX(0) < 15 ? "translateX(-8%)" : "translateX(-50%)",
-                        }}
-                      >
-                        $0 taxable
-                      </span>
+                      {ordPos.map((s) => (
+                        <div
+                          key={s.key}
+                          className="absolute top-0 flex h-10 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
+                          style={{
+                            left: `${s.leftPct}%`,
+                            width: `${s.widthPct}%`,
+                            background: s.color,
+                          }}
+                        >
+                          {s.wide && (
+                            <span className="truncate px-1 text-[11px] font-medium text-white">
+                              {s.short ?? s.label} {fmtDollars(s.amount)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                      {deductions > 0 && (
+                        <div
+                          className="pointer-events-none absolute top-0 h-10"
+                          style={{ left: 0, width: `${pct(deductions)}%`, ...hatchStyle }}
+                          aria-hidden="true"
+                        />
+                      )}
+                    </div>
+                    <div
+                      className="pointer-events-none absolute right-0 bottom-0 left-0"
+                      style={{ top: barOverlayTopPx }}
+                      aria-hidden="true"
+                      ref={stackLinesRef}
+                    >
+                      {markers
+                        .filter((m) => m.inAxis)
+                        .map((m) => (
+                          <div
+                            key={m.rate}
+                            className="absolute top-0 bottom-0 border-l border-dashed"
+                            style={{ left: `${taxX(m.to)}%`, borderColor: m.color }}
+                          />
+                        ))}
+                      <div
+                        className="absolute top-0 bottom-0 border-l"
+                        style={{ left: `${taxX(0)}%`, borderColor: "var(--dim)" }}
+                      />
+                      {zeroTop <= axisTaxableMax && (
+                        <div
+                          className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                          style={{
+                            left: `${taxX(zeroTop)}%`,
+                            borderColor: "#db2777",
+                          }}
+                        />
+                      )}
                       {acaCliffLine != null && (
-                        <span
-                          className={`tnum absolute ${axisMagiRowTop} text-[11px] font-medium whitespace-nowrap`}
+                        <div
+                          className="absolute top-0 bottom-0 border-l-2 border-dashed"
                           style={{
                             left: `${acaCliffLine.xPct}%`,
-                            color: "var(--warn)",
-                            transform:
-                              acaCliffLine.xPct > 85
-                                ? "translateX(-92%)"
-                                : acaCliffLine.xPct < 15
-                                  ? "translateX(-8%)"
-                                  : "translateX(-50%)",
+                            borderColor: "var(--warn)",
                           }}
-                        >
-                          ACA cliff · MAGI {fmtDollars(acaCliffLine.cliff)}
-                        </span>
+                        />
                       )}
                       {acaBufferLine != null && (
-                        <span
-                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisBufferRowTop}`}
+                        <div
+                          className="absolute top-0 bottom-0 border-l border-dashed"
                           style={{
                             left: `${acaBufferLine.xPct}%`,
-                            transform:
-                              acaBufferLine.xPct > 85
-                                ? "translateX(-92%)"
-                                : acaBufferLine.xPct < 15
-                                  ? "translateX(-8%)"
-                                  : "translateX(-50%)",
+                            borderColor: "var(--dim)",
                           }}
-                        >
-                          Buffer · MAGI {fmtDollars(acaBufferLine.magi)}
+                        />
+                      )}
+                    </div>
+                    {/* White-line ⓘ (build v79, amendment): the
+                        shared InfoNote ⓘ at the top of the solid
+                        $0 line, where the deductions hatch ends.
+                        Its copy is plain English composed live
+                        from the priced deductions total — never
+                        written in — and names it simply
+                        "the line", with no colour claim
+                        (build v88). The
+                        marker sits inside the bar at the line's
+                        top, clear of the floating labels and the
+                        bracket row above, with its centre
+                        clamped inside the chart so a $0 line at
+                        an edge never overflows. It renders
+                        whenever the $0 line renders — the line
+                        is unconditional in this chart, so the
+                        marker is too. The bubble is the plain
+                        absolute one the other chart ⓘs use,
+                        opening below the marker — NOT the
+                        viewport-clamped variant: that variant
+                        positions fixed against the viewport,
+                        and a centring transform on this
+                        marker's wrapper would capture fixed
+                        positioning and land the bubble far
+                        from the marker (verified live in the
+                        rendered pass: the clamped bubble
+                        never appeared near the marker). The
+                        wrapper therefore centres with a
+                        negative margin and carries no
+                        transform at all. The plain bubble's align flips
+                        near the right edge and its width is
+                        capped to the viewport, so it stays on
+                        screen at phone width. */}
+                    <div
+                      className="absolute z-10"
+                      style={{
+                        /* Build v84: the marker sits at the
+                           top of the BAR area — below the tick
+                           strip and dash spacer while ticks are
+                           present, at the chart's top as before
+                           when none are. The bar-area wrapper
+                           starts below the strip, so 4px above
+                           the bar is the same spot as the old
+                           offset. */
+                        top: barOverlayTopPx,
+                        left: `clamp(11px, ${taxX(0)}%, calc(100% - 11px))`,
+                        /* Centre on the line with a negative
+                           margin, NOT a translateX transform:
+                           the marker's wrapper must carry no
+                           transform — with the old viewport-
+                           clamped bubble, the centring
+                           transform captured its fixed
+                           positioning and landed it far from
+                           the marker (verified live in the
+                           rendered pass). Margin centring
+                           keeps every transform out of the
+                           marker's ancestry, and the plain
+                           bubble below is verified painting.
+                           The span is 22px wide (18px button +
+                           the 4px ml-1), so −11px centres it
+                           exactly as translateX(-50%) did. */
+                        marginLeft: "-11px",
+                      }}
+                    >
+                      <InfoNote
+                        text={`Taxable income starts at the line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the line counts, starting at $0.`}
+                        ariaLabel="About the $0 taxable line"
+                        align={taxX(0) > 60 ? "right" : "left"}
+                      />
+                    </div>
+                    </div>
+                  </div>
+                  <div className="relative mt-1">
+                  <div
+                    className={`relative ${axisHeightCls}`}
+                    aria-hidden="true"
+                  >
+                    <span
+                      className={`tnum absolute ${axisMagiRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
+                      style={{
+                        left: `${taxX(0)}%`,
+                        transform:
+                          taxX(0) < 15 ? "translateX(-8%)" : "translateX(-50%)",
+                      }}
+                    >
+                      $0 taxable
+                    </span>
+                    {acaCliffLine != null && (
+                      <span
+                        className={`tnum absolute ${axisMagiRowTop} text-[11px] font-medium whitespace-nowrap`}
+                        style={{
+                          left: `${acaCliffLine.xPct}%`,
+                          color: "var(--warn)",
+                          transform:
+                            acaCliffLine.xPct > 85
+                              ? "translateX(-92%)"
+                              : acaCliffLine.xPct < 15
+                                ? "translateX(-8%)"
+                                : "translateX(-50%)",
+                        }}
+                      >
+                        ACA cliff · MAGI {fmtDollars(acaCliffLine.cliff)}
+                      </span>
+                    )}
+                    {acaBufferLine != null && (
+                      <span
+                        className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisBufferRowTop}`}
+                        style={{
+                          left: `${acaBufferLine.xPct}%`,
+                          transform:
+                            acaBufferLine.xPct > 85
+                              ? "translateX(-92%)"
+                              : acaBufferLine.xPct < 15
+                                ? "translateX(-8%)"
+                                : "translateX(-50%)",
+                        }}
+                      >
+                        Buffer · MAGI {fmtDollars(acaBufferLine.magi)}
+                      </span>
+                    )}
+                    {/* Build v84: the bracket-top tick labels
+                        moved to the top ends of their guide
+                        lines, above the bar — nothing renders
+                        for them in this below-bar block. */}
+                  </div>
+                  {/* Build v115: the axis-end figure — the
+                      right end of the chart's scale — gains the
+                      ⓘ (the 0% InfoNote pattern: live-composed
+                      copy, align by the label's position, the
+                      z-20 lift on its span). The label sits at
+                      the axis's right end by construction, so
+                      its bubble aligns right. The note's text
+                      carries no figure; the figure beside it is
+                      composed live from axisTaxableMax, exactly
+                      as before — nothing is written in. The span
+                      rides OUTSIDE the aria-hidden axis block,
+                      wrapped with it in one relative row box so
+                      its right anchor and row tops resolve
+                      against the same box the block occupies —
+                      the v114 buffer-label discipline: a button
+                      inside aria-hidden is unreachable, so the
+                      figure text alone carries aria-hidden and
+                      the ⓘ stays reachable. Because the ⓘ is
+                      inside the figure's own span, it travels
+                      with the figure in both layouts: the
+                      desktop axis row, and the phone-width
+                      layout below 640px where axisEndRowTop
+                      drops the figure to a row of its own. The
+                      $0 taxable label and its ⓘ are untouched. */}
+                  <span
+                    className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
+                    /* Build v120: while this label's own
+                       bubble is open the span lifts to 25,
+                       above its sibling labels, so the bubble
+                       paints above them too. Build v129:
+                       the lift is z-20, below the z-30 sticky
+                       play strip. */
+                    style={{ right: 0, zIndex: chartLabelZ("axisEnd") }}
+                  >
+                    <span aria-hidden="true">
+                      {fmtDollars(axisTaxableMax)}
+                    </span>
+                    <InfoNote
+                      text="The right end of the chart's scale. The scale runs a little past the furthest line on the chart so nothing piles up at the right edge — this is where the ruler stops, not income, tax, or a bracket top."
+                      ariaLabel="About the end of the chart's scale"
+                      align="right"
+                      onOpenChange={(open) => setChartLabelOpen("axisEnd", open)}
+                    />
+                  </span>
+                  </div>
+                  <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                      {(
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                            style={hatchStyle}
+                            aria-hidden="true"
+                          />
+                          Deductions{" "}
+                          <span className="tnum font-medium text-[var(--text)]">
+                            −{fmtDollars(deductions)}
+                          </span>
                         </span>
                       )}
-                      {/* Build v84: the bracket-top tick labels
-                          moved to the top ends of their guide
-                          lines, above the bar — nothing renders
-                          for them in this below-bar block. */}
-                    </div>
-                    {/* Build v115: the axis-end figure — the
-                        right end of the chart's scale — gains the
-                        ⓘ (the 0% InfoNote pattern: live-composed
-                        copy, align by the label's position, the
-                        z-20 lift on its span). The label sits at
-                        the axis's right end by construction, so
-                        its bubble aligns right. The note's text
-                        carries no figure; the figure beside it is
-                        composed live from axisTaxableMax, exactly
-                        as before — nothing is written in. The span
-                        rides OUTSIDE the aria-hidden axis block,
-                        wrapped with it in one relative row box so
-                        its right anchor and row tops resolve
-                        against the same box the block occupies —
-                        the v114 buffer-label discipline: a button
-                        inside aria-hidden is unreachable, so the
-                        figure text alone carries aria-hidden and
-                        the ⓘ stays reachable. Because the ⓘ is
-                        inside the figure's own span, it travels
-                        with the figure in both layouts: the
-                        desktop axis row, and the phone-width
-                        layout below 640px where axisEndRowTop
-                        drops the figure to a row of its own. The
-                        $0 taxable label and its ⓘ are untouched. */}
-                    <span
-                      className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
-                      /* Build v120: while this label's own
-                         bubble is open the span lifts to 25,
-                         above its sibling labels, so the bubble
-                         paints above them too. Build v129:
-                         the lift is z-20, below the z-30 sticky
-                         play strip. */
-                      style={{ right: 0, zIndex: chartLabelZ("axisEnd") }}
-                    >
-                      <span aria-hidden="true">
-                        {fmtDollars(axisTaxableMax)}
-                      </span>
-                      <InfoNote
-                        text="The right end of the chart's scale. The scale runs a little past the furthest line on the chart so nothing piles up at the right edge — this is where the ruler stops, not income, tax, or a bracket top."
-                        ariaLabel="About the end of the chart's scale"
-                        align="right"
-                        onOpenChange={(open) => setChartLabelOpen("axisEnd", open)}
-                      />
-                    </span>
-                    </div>
-                    <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                        {(
-                          <span className="inline-flex items-center gap-1.5">
-                            <span
-                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
-                              style={hatchStyle}
-                              aria-hidden="true"
-                            />
-                            Deductions{" "}
+                      {legendSegs.map((s) => {
+                        const tap = legendTapTargets[s.key];
+                        const text = (
+                          <>
+                            {s.label}{" "}
                             <span className="tnum font-medium text-[var(--text)]">
-                              −{fmtDollars(deductions)}
-                            </span>
-                          </span>
-                        )}
-                        {legendSegs.map((s) => {
-                          const tap = legendTapTargets[s.key];
-                          const text = (
-                            <>
-                              {s.label}{" "}
-                              <span className="tnum font-medium text-[var(--text)]">
-                                {fmtDollars(s.amount)}
-                              </span>
-                            </>
-                          );
-                          return (
-                            <span key={s.key} className="inline-flex items-center gap-1.5">
-                              <span
-                                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm${s.hatch ? " border border-[var(--dim)]" : ""}`}
-                                style={s.hatch ? hatchStyle : { background: s.color }}
-                                aria-hidden="true"
-                              />
-                              {tap ? (
-                                <button
-                                  type="button"
-                                  aria-label={tap.ariaLabel}
-                                  className={pgTapCls}
-                                  onClick={() =>
-                                    jumpToPgField(tap.fieldId, tap.section)
-                                  }
-                                >
-                                  {text}
-                                </button>
-                              ) : (
-                                text
-                              )}
-                            </span>
-                          );
-                        })}
-                    </p>
-                    {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
-                      <p className="mt-1 text-xs text-[var(--dim)]" role="note">
-                        No income typed yet — the stack will draw here as you
-                        type.
-                      </p>
-                    )}
-                  </div>
-                );
-              })();
-              /* Income-stack cliff markers — presentation ONLY:
-                 insertions into the "How {year} stacks up" stack
-                 below, plus one closing room note under it. No
-                 figure is priced here: the ACA cliff, the ACA
-                 position, the IRMAA tier, the per-person monthly
-                 surcharge, the premium year, and the next IRMAA
-                 line with its room all come straight off the
-                 priced result (`pg` — the same fields the ACA &
-                 IRMAA block above prints). The one line not
-                 stored on the result — the IRMAA tier line the
-                 landed tier crossed (the floor of the landed
-                 tier) — is read from the SAME law row the pricing
-                 used, through the engine's own classifier helper
-                 irmaaTierUpTo(tier − 1, …) at the playground's 0%
-                 inflation, exactly as pricePlaygroundYear derives
-                 its stored nextTierLine from irmaaTierUpTo(tier, …).
-                 Placement: the stack's additive rows are walked
-                 in their printed order, accumulating TWO running
-                 totals — one per MAGI definition — from the SAME
-                 row values the block prints. Every printed row
-                 counts the same toward both MAGIs except Social
-                 Security received: IRMAA MAGI counts only the
-                 TAXABLE part (pg.ssTaxable) while ACA MAGI counts
-                 the FULL benefit (pg.ssBenefits) — that is the
-                 whole difference between the two totals (MAGI =
-                 AGI + tax-exempt interest; ACA MAGI = MAGI + the
-                 untaxed part of Social Security), so the two
-                 markers can correctly land on different rows.
-                 Tax-exempt interest counts toward both (it is the
-                 printed row between Social Security and the
-                 conversion). A marker is inserted immediately
-                 after the first row whose cumulative total for
-                 its own MAGI passes its line (strictly over —
-                 the engine's own tests: ACA overCliff is
-                 acaMagi > cliff, and an IRMAA tier starts once
-                 MAGI is over the previous tier's ceiling). The
-                 AGI / deduction / taxable-income rows after the
-                 gains row are not additive to MAGI and never
-                 carry a marker. The ACA cliff exists only for
-                 coverage 2026+ (the engine's hasCliff rule in
-                 acaCreditFor): in 2025 the result still carries
-                 the 400%-of-FPL figure, but no marker is placed
-                 and the closing note says so instead. */
-              const stackBlock = (() => {
-                type StackEntry = {
-                  key: string;
-                  node: ReactNode;
-                  aca: number;
-                  irmaa: number;
-                };
-                /* P-S12: the "Long-term gains priced" row's
-                   sub-text decomposes the PRICED figure beside
-                   it — the priced net gain part, max(0,
-                   pg.ltcgNet), plus the qualified dividends —
-                   the two addends of pg.ltcgPriced itself
-                   (ltcgPriced = max(0, ltcgNet) +
-                   qualifiedDividends in the shared pricer), so
-                   the sentence adds to the row value. The typed
-                   sale gain (pg.stockGain) is gross and
-                   pre-ledger: an entering loss carryforward
-                   nets against it and a priced harvest adds to
-                   it before ltcgNet is struck, and a losing
-                   sale floors at $0 in the priced part, so a
-                   sub-text built from the typed figure
-                   disagreed with the row value by the absorbed
-                   / harvested / floored amount — the same
-                   reason the S-9 stack above forbids the typed
-                   figure for its gain segment. When a harvest
-                   priced a gain it is named inside the net
-                   figure it rides (it is already inside
-                   ltcgNet, never an extra addend). */
-                const pricedGainPart = Math.max(0, pg.ltcgNet);
-                const gainsSubText =
-                  pg.harvestedGain > 0
-                    ? `Net long-term gain ${fmtDollars(pricedGainPart)} (incl. harvested gain ${fmtDollars(pg.harvestedGain)}) + qualified dividends ${fmtDollars(pg.qualifiedDividends)}`
-                    : `Net long-term gain ${fmtDollars(pricedGainPart)} + qualified dividends ${fmtDollars(pg.qualifiedDividends)}`;
-                const additive: StackEntry[] = [
-                  {
-                    key: "interest",
-                    node: stackRow("Interest", fmtDollars(pg.interest)),
-                    aca: pg.interest,
-                    irmaa: pg.interest,
-                  },
-                  {
-                    key: "orddiv",
-                    node: stackRow(
-                      "Ordinary dividends (non-qualified part)",
-                      fmtDollars(pg.nonQualifiedDividends),
-                      pg.qualifiedDividends > 0
-                        ? `of the ${fmtDollars(pg.ordinaryDividends)} total (line 3b) — the qualified ${fmtDollars(pg.qualifiedDividends)} rides the gains stack below`
-                        : undefined,
-                    ),
-                    aca: pg.nonQualifiedDividends,
-                    irmaa: pg.nonQualifiedDividends,
-                  },
-                  {
-                    key: "other",
-                    node: stackRow("Other ordinary income", fmtDollars(pg.otherOrdinary)),
-                    aca: pg.otherOrdinary,
-                    irmaa: pg.otherOrdinary,
-                  },
-                  {
-                    key: "rmd",
-                    node: pg.rmdPriced
-                      ? stackRow(
-                          "RMD for the year",
-                          fmtDollars(pg.rmd),
-                          pg.rmdDivisor != null
-                            ? `Balance ÷ ${pg.rmdDivisor} (${pg.rmdTable === "joint" ? "Joint Life" : "Uniform Lifetime"} table)`
-                            : pgPretaxBalance === 0
-                              ? "No RMD — the pre-tax balance entered is $0"
-                              : "No RMD due at this age",
-                        )
-                      : stackRow("RMD for the year", "Not priced"),
-                    aca: pg.rmd,
-                    irmaa: pg.rmd,
-                  },
-                  {
-                    key: "ss",
-                    node: stackRow(
-                      "Social Security received",
-                      fmtDollars(pg.ssBenefits),
-                      pg.ssBenefits > 0
-                        ? `of which taxable: ${fmtDollars(pg.ssTaxable)} (${pg.ssPctTaxed}% under §86)`
-                        : undefined,
-                    ),
-                    aca: pg.ssBenefits,
-                    irmaa: pg.ssTaxable,
-                  },
-                  {
-                    key: "taxexempt",
-                    node: stackRow(
-                      "Tax-exempt interest",
-                      fmtDollars(pg.taxExemptInterest),
-                      "Not in AGI; counted in MAGI",
-                    ),
-                    aca: pg.taxExemptInterest,
-                    irmaa: pg.taxExemptInterest,
-                  },
-                  {
-                    key: "conversion",
-                    node: stackRow("Pre-tax money out", fmtDollars(pg.conversion + pg.spendingDraw)),
-                    aca: pg.conversion + pg.spendingDraw,
-                    irmaa: pg.conversion + pg.spendingDraw,
-                  },
-                  {
-                    key: "gains",
-                    node: stackRow(
-                      "Long-term gains priced",
-                      fmtDollars(pg.ltcgPriced),
-                      gainsSubText,
-                    ),
-                    aca: pg.ltcgPriced,
-                    irmaa: pg.ltcgPriced,
-                  },
-                ];
-                // The §1211(b) capital-loss allowance, when a
-                // net capital loss priced one: a negative row
-                // after the gains row (the loss offsets gains
-                // first, then up to $3,000 of ordinary income),
-                // so the additive rows foot to AGI / MAGI.
-                if (pg.capitalLossAllowance > 0) {
-                  additive.push({
-                    key: "caplossallowance",
-                    node: stackRow(
-                      "Capital-loss allowance (§1211(b))",
-                      `−${fmtDollars(pg.capitalLossAllowance)}`,
-                      "Net capital loss applied against ordinary income",
-                    ),
-                    aca: -pg.capitalLossAllowance,
-                    irmaa: -pg.capitalLossAllowance,
-                  });
-                }
-                // 2026-11-09: four rows of the stack are
-                // placeholders at $0 — Other ordinary income,
-                // RMD for the year, Social Security received,
-                // and Tax-exempt interest hide while they price
-                // at $0 and come back when they carry a value.
-                // (The RMD row's "Not priced" state is not a $0
-                // line and stays.) Filtering them here, before
-                // the marker walk, cannot move a cliff marker:
-                // a $0 row adds 0 to both running MAGI totals,
-                // so it is never the row a crossing first lands
-                // on, and the after-the-last-row fallback still
-                // lands after the last shown row.
-                const shownAdditive = additive.filter((e) => {
-                  switch (e.key) {
-                    case "other":
-                      return pg.otherOrdinary !== 0;
-                    case "rmd":
-                      return !pg.rmdPriced || pg.rmd !== 0;
-                    case "ss":
-                      return pg.ssBenefits !== 0;
-                    case "taxexempt":
-                      return pg.taxExemptInterest !== 0;
-                    default:
-                      return true;
-                  }
-                });
-                // The ACA section applies for these markers when
-                // the result carries a cliff figure — set only
-                // when a household size was entered and not
-                // everyone in the household is on Medicare.
-                const acaApplies = pg.aca.cliff != null;
-                const acaHasCliff = acaApplies && pgYearNum >= 2026;
-                const acaCrossed = acaHasCliff && pg.aca.overCliff;
-                const acaCliff = pg.aca.cliff ?? 0;
-                // The line under the priced tier, graded under
-                // the PREMIUM year's law row — the same row the
-                // server grades pg.irmaa.tier under (contract
-                // v97), never the priced year's row.
-                const irmaaLine =
-                  pg.irmaa.applies && pg.irmaa.tier >= 1
-                    ? irmaaTierUpTo(
-                        pg.irmaa.tier - 1,
-                        pgFiling,
-                        lawForYear(pg.irmaa.premiumYear),
-                        pg.irmaa.premiumYear,
-                        0,
-                      )
-                    : null;
-                let acaCum = 0;
-                let irmaaCum = 0;
-                let acaAfter = -1;
-                let irmaaAfter = -1;
-                shownAdditive.forEach((e, i) => {
-                  acaCum += e.aca;
-                  irmaaCum += e.irmaa;
-                  if (acaCrossed && acaAfter === -1 && acaCum > acaCliff) acaAfter = i;
-                  if (irmaaLine != null && irmaaAfter === -1 && irmaaCum > irmaaLine) irmaaAfter = i;
-                });
-                // A crossed line's marker always renders: if the
-                // running totals never passed it mid-stack (only
-                // possible on a sub-cent rounding seam), it lands
-                // after the last additive row instead.
-                if (acaCrossed && acaAfter === -1) acaAfter = shownAdditive.length - 1;
-                if (irmaaLine != null && irmaaAfter === -1) irmaaAfter = shownAdditive.length - 1;
-                const markerCls =
-                  "col-span-2 rounded-[var(--radius)] bg-[var(--warn-soft)] px-2.5 py-1.5 text-xs font-medium text-[var(--warn)] sm:col-span-3 sm:text-sm";
-                const acaMarker = acaCrossed ? (
-                  <div className={markerCls} role="note">
-                    <span aria-hidden="true">⚠</span>{" "}
-                    {`ACA cliff crossed — ${fmtDollars(acaCliff)} (400% of FPL). Over the cliff, the premium credit is $0.`}
-                  </div>
-                ) : null;
-                const irmaaMarker =
-                  irmaaLine != null ? (
-                    <div className={markerCls} role="note">
-                      <span aria-hidden="true">⚠</span>{" "}
-                      {`IRMAA Tier ${pg.irmaa.tier} line crossed — ${fmtDollars(irmaaLine)}. Surcharge $${pg.irmaa.monthlyPerPerson.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo per person in ${pg.irmaa.premiumYear}.`}
-                    </div>
-                  ) : null;
-                // Closing room note: one part per applicable line
-                // NOT crossed (a crossed ACA cliff is the marker's
-                // story, not the note's; IRMAA keeps its next-line
-                // distance even when a lower line was crossed).
-                const noteParts: string[] = [];
-                if (acaApplies) {
-                  if (!acaHasCliff) {
-                    noteParts.push(`No ACA cliff in ${pgYearNum}.`);
-                  } else if (!acaCrossed && pg.aca.positionDollars != null) {
-                    noteParts.push(
-                      `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
-                    );
-                  }
-                }
-                if (pg.irmaa.applies && pg.irmaa.nextTierLine != null) {
-                  noteParts.push(
-                    `Next IRMAA line (Tier ${pg.irmaa.tier + 1} at ${fmtDollars(pg.irmaa.nextTierLine)}): ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} away`,
-                  );
-                }
-                return (
-                  <>
-                    <h3 className="text-sm font-semibold">
-                      How {pgYearNum} stacks up
-                    </h3>
-                    <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                      {shownAdditive.map((e, i) => (
-                        <Fragment key={e.key}>
-                          {e.node}
-                          {acaAfter === i ? acaMarker : null}
-                          {irmaaAfter === i ? irmaaMarker : null}
-                        </Fragment>
-                      ))}
-                      {stackRow("AGI", fmtDollars(pg.agi))}
-                      {stackRow(
-                        "Standard deduction",
-                        fmtDollars(pg.standardDeduction),
-                        pg.age65AddonTotal > 0
-                          ? `includes ${fmtDollars(pg.age65AddonTotal)} of 65+ add-ons (${pg.count65} ${pg.count65 === 1 ? "person" : "people"} 65+)`
-                          : undefined,
-                      )}
-                      {pg.itemizedDeduction > 0 &&
-                        stackRow(
-                          "Itemized deductions",
-                          fmtDollars(pg.itemizedDeduction),
-                          pg.deductionTaken === "itemized"
-                            ? `more than the standard deduction — used (state & local taxes allowed: ${fmtDollars(pg.itemizedSaltAllowed)})`
-                            : "less than the standard deduction — standard used",
-                        )}
-                      {pg.section68Reduction > 0 &&
-                        stackRow(
-                          "§68 limitation (2026 law)",
-                          fmtDollars(pg.section68Reduction),
-                          "already taken off the itemized deductions above",
-                        )}
-                      {pg.nonItemizerCharitableDeduction > 0 &&
-                        stackRow(
-                          "Charitable deduction (§170(p))",
-                          fmtDollars(pg.nonItemizerCharitableDeduction),
-                          "already taken off AGI above — not in the deductions",
-                        )}
-                      {pg.seniorDeduction > 0 &&
-                        stackRow("Senior deduction (65+)", fmtDollars(pg.seniorDeduction))}
-                      {stackRow("Taxable income", fmtDollars(pg.taxableIncome))}
-                    </dl>
-                    {noteParts.length > 0 && (
-                      <p className="tnum mt-2 text-xs text-[var(--dim)]" role="note">
-                        {noteParts.join(" · ")}
-                      </p>
-                    )}
-                  </>
-                );
-              })();
-              return (
-                <>
-                <div className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
-                  <p className="tnum text-base font-medium">
-                    {takeawayParts.join(" · ")}
-                    {landingExplainerText != null && (
-                      <>
-                        {" "}
-                        <InfoNote
-                          text={landingExplainerText}
-                          ariaLabel="About the bracket top and the ACA line"
-                          align="right"
-                          viewportClamp
-                        />
-                      </>
-                    )}
-                  </p>
-
-                  <div className="mt-3">
-                    <h3 className="text-sm font-semibold">
-                      Income stack
-                      <InfoNote
-                        text={bracketStatusText}
-                        ariaLabel="Bracket-by-bracket status for the income stack"
-                      />
-                    </h3>
-                  </div>
-
-                  {stackChart}
-
-                  {!pg.rmdPriced && (
-                    <p className="mt-2 text-sm" role="note">
-                      No pre-tax balance entered — no RMD priced, and the
-                      pre-tax money out isn&rsquo;t capped.
-                    </p>
-                  )}
-                  {pg.conversionExceedsBalance && (
-                    <p className="mt-2 text-sm" role="note">
-                      <strong>Watch out:</strong> the pre-tax money out typed is more
-                      than the pre-tax balance left after the RMD (
-                      {fmtDollars(pgBalanceLeftAfterRmd ?? 0)}), so it couldn&rsquo;t all come out of
-                      that balance — the tax below still prices the amount typed.
-                    </p>
-                  )}
-                  {pg.capitalLoss > 0 && (
-                    <p className="mt-2 text-sm" role="note">
-                      <strong>Net capital loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
-                      capital losses offset capital gains only — the qualified
-                      dividends entered still price in full — and{" "}
-                      {fmtDollars(pg.capitalLossAllowance)} of the loss offsets
-                      ordinary income this year (the §1211(b) capital-loss
-                      allowance, up to $3,000).
-                      {pg.capitalLoss > pg.capitalLossAllowance && (
-                        <>
-                          {" "}The remaining{" "}
-                          {fmtDollars(pg.capitalLoss - pg.capitalLossAllowance)} isn&rsquo;t
-                          priced here — in real life it carries forward to later years.
-                        </>
-                      )}
-                    </p>
-                  )}
-
-                </div>
-
-                <div className="flex flex-col gap-4">
-                  <section className={sectionCls} aria-label="ACA and IRMAA">
-                  <h3 className="text-sm font-semibold">ACA &amp; IRMAA</h3>
-                  {pg.aca.everyoneOnMedicare ? (
-                    <p className="mt-1 text-sm">
-                      No ACA — everyone in the household is on Medicare.
-                    </p>
-                  ) : pg.aca.cliff == null ? (
-                    <p className="mt-1 text-sm">
-                      ACA: enter a household size above to see where this year
-                      sits against the 400% poverty-line cliff.
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-sm">
-                      ACA cliff for a household of {pg.aca.householdSize}:{" "}
-                      {fmtDollars(pg.aca.cliff)}{" "}
-                      (400% of the poverty line).{" "}
-                      {pg.aca.overCliff
-                        ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
-                        : `ACA household income is under the cliff by ${fmtDollars(pg.aca.positionDollars ?? 0)}`}
-                      {!pg.aca.overCliff &&
-                        (pg.aca.credit != null ? (
-                          <>
-                            {" — estimated credit "}
-                            <span className="font-bold text-[var(--accent)]">
-                              {fmtDollars(pg.aca.credit)}
-                            </span>
-                            {" at the ACA benchmark premium entered."}
-                          </>
-                        ) : (
-                          " — enter an ACA benchmark premium above to price the credit."
-                        ))}
-                      {pg.aca.pctFpl != null && pg.aca.pctFpl < 138 && (
-                        <>
-                          {" "}
-                          Under 138% of the poverty line, coverage routes to
-                          Medicaid in most states rather than a marketplace plan —
-                          treat any credit as flagged, not bankable.
-                        </>
-                      )}
-                    </p>
-                  )}
-                  {pg.gainsFlags.acaFlag != null && (
-                    <p className="mt-1 text-sm font-medium" role="note">
-                      {pg.gainsFlags.acaFlag.text}
-                    </p>
-                  )}
-                  {pg.irmaa.applies ? (
-                    <p className="mt-1 text-sm">
-                      IRMAA: this year&rsquo;s MAGI sets Tier {pg.irmaa.tier} for{" "}
-                      {pg.irmaa.premiumYear}.{" "}
-                      {pg.irmaa.tier === 0
-                        ? "Tier 0 carries no surcharge."
-                        : `Surcharge ${fmtDollars(pg.irmaa.monthlyPerPerson)}/mo per person on Medicare — ${fmtDollars(pg.irmaa.annualHousehold)}/yr for the household (${pg.irmaa.personsOnMedicare} on Medicare).`}{" "}
-                      {pg.irmaa.nextTierLine != null
-                        ? `MAGI is ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} under the next tier line at ${fmtDollars(pg.irmaa.nextTierLine)}.`
-                        : "That is the top tier — there is no higher line."}
-                    </p>
-                  ) : (
-                    !pg.aca.everyoneOnMedicare && (
-                      <p className="mt-1 text-sm">
-                        No IRMAA — nobody in the household is on Medicare.
-                      </p>
-                    )
-                  )}
-                  {pg.gainsFlags.irmaaFlag != null && (
-                    <p className="mt-1 text-sm font-medium" role="note">
-                      {pg.gainsFlags.irmaaFlag.text}
-                    </p>
-                  )}
-                  </section>
-
-                  <section className={sectionCls} aria-label="Tax for the year">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold">Tax for the year</h3>
-                    {/* Month / Year pills: the same persisted
-                        spendPerMonth state the sticky strip's
-                        pills write — they switch ONLY the two
-                        spend readouts below (Cash left after
-                        tax, Left after a year's spending); every
-                        other row in this card stays annual. */}
-                    <SpendPeriodPills
-                      perMonth={spendPerMonth}
-                      onChange={setSpendPerMonth}
-                    />
-                  </div>
-                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                    {stackRow(
-                      "Federal tax on ordinary income",
-                      fmtDollars(pg.ordinaryTax),
-                    )}
-                    {stackRow(
-                      "Federal tax on gains",
-                      fmtDollars(pg.ltcgTax + pg.niit),
-                      pg.niit > 0
-                        ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
-                        : undefined,
-                    )}
-                    {stackRow(
-                      "Total federal tax",
-                      fmtDollars(pg.federalTax),
-                      undefined,
-                      true,
-                      // Money owed: the same red as the negative
-                      // "Left after a year's spending" below.
-                      "text-[var(--bad)]",
-                    )}
-                    {pg.educationAotc > 0 &&
-                      stackRow(
-                        "American Opportunity Credit",
-                        fmtDollars(pg.educationAotc),
-                        `${fmtDollars(pg.educationRefundable)} of it is refundable — paid even past a $0 tax bill, shown below, not inside the tax. The nonrefundable part is already inside the total federal tax.`,
-                      )}
-                    {pg.educationLlc > 0 &&
-                      stackRow(
-                        "Lifetime Learning Credit",
-                        fmtDollars(pg.educationLlc),
-                        "Nonrefundable — already inside the total federal tax.",
-                      )}
-                    {(pg.educationAotc > 0 || pg.educationLlc > 0) &&
-                      stackRow(
-                        "Nonrefundable education credits applied",
-                        fmtDollars(pg.educationNonrefundable),
-                      )}
-                    {pg.educationRefundable > 0 &&
-                      stackRow(
-                        "Refundable education credit (AOTC)",
-                        fmtDollars(pg.educationRefundable),
-                        "Paid on top of the tax result — not netted into the total federal tax.",
-                      )}
-                    {pg.amtOwed > 0 &&
-                      stackRow(
-                        <>
-                          Alternative minimum tax (AMT)
-                          <InfoNote
-                            text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) beat the regular tax — the difference is already inside the total federal tax.`}
-                            ariaLabel="About the alternative minimum tax"
-                          />
-                        </>,
-                        fmtDollars(pg.amtOwed),
-                      )}
-                    {pg.amtOwed === 0 && pg.amti > 0 &&
-                      stackRow(
-                        <>
-                          Alternative minimum tax (AMT)
-                          <InfoNote
-                            text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`}
-                            ariaLabel="About the alternative minimum tax"
-                          />
-                        </>,
-                        "$0",
-                      )}
-                    {/* State tax, listed ONCE (P-S13, parity
-                        audit SHOULD — settled STAND): the
-                        pricer's stateTax is mutually exclusive
-                        by residence — for a WA resident it IS
-                        the capital-gains excise (the flat rate
-                        never applies), and for any other
-                        residence it is the flat-rate tax. The
-                        generic row therefore stands down for a
-                        WA resident and the excise row below —
-                        which carries the base breakdown as its
-                        sub-text — is the year's one state-tax
-                        row; before this fix the two rows listed
-                        the identical dollars side by side and a
-                        reader summing the card double-counted
-                        the whole excise. */}
-                    {pg.stateTax > 0 && pgResidence !== "WA" &&
-                      stackRow("State tax", fmtDollars(pg.stateTax))}
-                    {pgResidence === "WA" &&
-                      stackRow(
-                        "Washington capital-gains excise",
-                        fmtDollars(pg.stateTax),
-                        `${fmtDollars(pg.waGains)} of gains − ${fmtDollars(pg.waStandardDeduction)} standard deduction = ${fmtDollars(pg.waTaxableGains)} taxable`,
-                      )}
-                    {stackRow("MAGI", fmtDollars(pg.magi))}
-                    {pg.acaMagi !== pg.magi &&
-                      stackRow(
-                        "ACA household income",
-                        fmtDollars(pg.acaMagi),
-                        "MAGI plus the untaxed part of Social Security",
-                      )}
-                    {/* Dial split of the pre-tax money out: the
-                        year's pre-tax money out sits on TWO dials
-                        in the Pre-tax money out section above —
-                        the Conversion to Roth dial and the Pre-tax
-                        draw for spending dial — and the two are
-                        priced the same as income but opposite as
-                        cash. Naming both amounts here, on the card
-                        itself, is what keeps a year whose money
-                        out is all conversion from reading as a
-                        cash shortfall: the conversion is real
-                        income (it is inside MAGI above) but it
-                        lands in Roth, so the cash-left rows below
-                        never count it, while a draw is cash in
-                        hand and they do. Shown whenever either
-                        dial is non-zero, both rows together, so
-                        the empty dial reads $0 beside the filled
-                        one. Figures are the priced result's own
-                        echoes (pg.conversion / pg.spendingDraw);
-                        no figure changes. */}
-                    {(pg.conversion > 0 || pg.spendingDraw > 0) &&
-                      stackRow(
-                        "On the Conversion to Roth dial",
-                        fmtDollars(pg.conversion),
-                        "Goes to Roth — income, but not cash in hand, so it is not counted in the cash left below.",
-                      )}
-                    {(pg.conversion > 0 || pg.spendingDraw > 0) &&
-                      stackRow(
-                        "On the Pre-tax draw for spending dial",
-                        fmtDollars(pg.spendingDraw),
-                        "Cash in hand — counted in the cash left below.",
-                      )}
-                    {/* Cash left after tax (build v114, fixed
-                        text + ⓘ build v116): the
-                        engine-priced readout on the same pricing
-                        (pg.cashIn / pg.netTaxBill /
-                        pg.cashLeftAfterTax — never client
-                        arithmetic): all the year's cash in minus
-                        its net tax bill, before any spending. The
-                        fixed subtext carries no figure; the ⓘ
-                        (the 0% InfoNote pattern — live-composed
-                        figures, align by the label's position)
-                        names the cash in and the net tax bill as
-                        priced, and carries the filing sentence
-                        only when the net bill is a refund. In
-                        Month mode (the shared persisted
-                        spendPerMonth toggle) the value shows the
-                        same figure divided by 12 with a "/mo"
-                        suffix and the sub-line and ⓘ name the
-                        month instead of the year; the ⓘ's
-                        derivation figures stay annual, as
-                        priced. */}
-                    {stackRow(
-                      <>
-                        Cash left after tax
-                        <InfoNote
-                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — ${PLAYGROUND_CASH_LEFT_BASIS} It's what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.${pg.conversion > 0 || pg.spendingDraw > 0 ? ` Cash in counts the ${fmtDollars(pg.spendingDraw)} on the Pre-tax draw for spending dial and does not count the ${fmtDollars(pg.conversion)} on the Conversion to Roth dial — a conversion goes to Roth, not cash in hand.` : ""}${pg.cashDraw > 0 || pg.rothDraw > 0 ? ` Cash in also counts the funding dials in Spending: Cash drawn for spending ${fmtDollars(pg.cashDraw)} and Roth drawn for spending ${fmtDollars(pg.rothDraw)}.` : ""}${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
-                          ariaLabel="About the cash left after tax"
-                        />
-                      </>,
-                      spendPerMonth
-                        ? `${fmtDollarsExact(pg.cashLeftAfterTax / 12)}/mo`
-                        : fmtDollars(pg.cashLeftAfterTax),
-                      `Cash in minus the net tax bill — what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.`,
-                      true,
-                    )}
-                    {/* Left after a year's spending (contract
-                        v126, "enough for the year"; R3-M3): cash
-                        left after HEALTH PREMIUMS minus the
-                        annual spending — the engine-priced
-                        comparison (pg.cashLeftVsSpending, which
-                        the engine now derives from
-                        cashLeftAfterHealthPremium), positive =
-                        enough for the year, negative = short.
-                        The spending excludes health premiums, so
-                        the premium is charged before the
-                        comparison; before R3-M3 the comparison
-                        ran off the cash left after tax alone and
-                        overstated the verdict by the whole net
-                        premium whenever one priced. The IRMAA
-                        surcharge payable this year (internal
-                        review round 3 SHOULD-2) is charged
-                        beside the premium in the same cash left
-                        after health premiums, and the ⓘ names
-                        it in the derivation whenever it prices
-                        — a year with a $0 net premium but a
-                        payable IRMAA takes the premium-charged
-                        branch too, since the comparison still
-                        runs off the reduced cash left. The spending
-                        is the Tax Plan record's annual spending
-                        (the Retirement calculator's default when
-                        the record has none), now editable in this
-                        view's Spending dial (build v145, one
-                        source); the row hides when no spending
-                        resolves. Since P-S2 a paste-load can hold
-                        the pasted year's own spending ahead of
-                        that resolution — the ⓘ then names the
-                        paste, not the Tax Plan, as the source —
-                        so a replayed year is judged against the
-                        spending it was priced with. No provenance tap: a tap to the
-                        income inputs would mislead — the
-                        comparison is driven by spending, not
-                        income — so the ⓘ names the spending and
-                        its source instead (and, when a premium
-                        or a payable IRMAA prices, the
-                        premium-charged derivation),
-                        and carries the refund-timing sentence
-                        whenever the net bill is a refund. The ⓘ
-                        and the visible sub-line also name the two
-                        pre-tax dials whenever either is non-zero —
-                        the comparison's cash counts the Pre-tax
-                        draw for spending dial and never the
-                        Conversion to Roth dial — so a shortfall
-                        priced off a conversion never reads as
-                        missing spendable cash. In
-                        Month mode (the shared persisted
-                        spendPerMonth toggle) the label, value,
-                        and sub-line name the month — the value
-                        is the same figure divided by 12 with a
-                        "/mo" suffix — while the ⓘ keeps naming
-                        the annual figures it is derived from. */}
-                    {pg.cashLeftVsSpending != null && pg.annualSpending != null && (
-                      stackRow(
-                        <>
-                          Left after a {spendPerMonth ? "month" : "year"}
-                          &rsquo;s spending
-                          <InfoNote
-                            text={(pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)}${pg.healthPremiumNet > 0 ? ` minus the net health premium ${fmtDollars(pg.healthPremiumNet)}` : ""}${pg.irmaaPayableAnnual > 0 ? ` minus the IRMAA payable this year ${fmtDollars(pg.irmaaPayableAnnual)}` : ""} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`) + (pg.conversion > 0 || pg.spendingDraw > 0 ? ` The cash this comparison runs on counts the Pre-tax draw for spending dial (${fmtDollars(pg.spendingDraw)}) and not the Conversion to Roth dial (${fmtDollars(pg.conversion)}) — a conversion goes to Roth, so it cannot pay this spending; money taken out to spend belongs on the draw dial.` : "")}
-                            ariaLabel={`About the amount left after a ${spendPerMonth ? "month" : "year"}'s spending`}
-                          />
-                        </>,
-                        <span
-                          className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
-                        >
-                          {spendPerMonth
-                            ? `${fmtDollarsExact(pg.cashLeftVsSpending / 12)}/mo`
-                            : fmtDollars(pg.cashLeftVsSpending)}
-                        </span>,
-                        (pg.cashLeftVsSpending > 0
-                          ? `Enough for the ${spendPerMonth ? "month" : "year"}.`
-                          : pg.cashLeftVsSpending < 0
-                            ? `Short of a ${spendPerMonth ? "month" : "year"}'s spending.`
-                            : `Exactly enough for the ${spendPerMonth ? "month" : "year"}.`) +
-                          (pg.conversion > 0
-                            ? ` The ${fmtDollars(pg.conversion)} on the Conversion to Roth dial goes to Roth — it is not cash for spending.`
-                            : ""),
-                      )
-                    )}
-                  </dl>
-                  {pg.conversion > 0 && (
-                    <p className="mt-2 text-sm">
-                      {pg.spendingDraw > 0 ? (
-                        <>
-                          The money on the Conversion to Roth dial itself costs{" "}
-                          <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
-                          of federal tax —{" "}
-                          {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
-                          of the amount on that dial
-                          {pg.conversionTotalCost !== pg.conversionFederalCost
-                            ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
-                            : ""}
-                          . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
-                          the same year priced at $0 on that dial — the money on the
-                          Pre-tax draw for spending dial still taken.
-                        </>
-                      ) : (
-                        <>
-                          The money on the Conversion to Roth dial itself costs{" "}
-                          <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
-                          of federal tax —{" "}
-                          {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
-                          of the amount on that dial
-                          {pg.conversionTotalCost !== pg.conversionFederalCost
-                            ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
-                            : ""}
-                          . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
-                          the same year priced at $0 on that dial. All of this
-                          year&rsquo;s pre-tax money out is on that dial — it goes to
-                          Roth, not to spending, so none of it is cash in hand.
-                          Money taken out to spend belongs on the Pre-tax draw
-                          for spending dial, which is $0 here.
-                        </>
-                      )}
-                    </p>
-                  )}
-                  {pg.saleAfterTax != null && (
-                    <p className="mt-2 text-sm" role="note">
-                      {(() => {
-                        // Sale-after-tax highlight: only the final
-                        // "{leftover} of it is left." segment is
-                        // emphasised — bold in the accent colour; the
-                        // rest of the sentence keeps its styling. The
-                        // split is taken from the engine's own composed
-                        // string at its final ", " (the one before the
-                        // leftover figure — grouped dollar figures
-                        // never contain ", "), so the displayed text
-                        // stays byte-identical. The variant where the
-                        // year's tax exceeds the proceeds phrases the
-                        // outcome differently (no "of it is left."
-                        // tail) and renders exactly as composed.
-                        const sat = pg.saleAfterTax;
-                        const cut =
-                          sat.leftover >= 0 &&
-                          sat.text.endsWith(" of it is left.")
-                            ? sat.text.lastIndexOf(", ") + 2
-                            : -1;
-                        if (cut < 2) return sat.text;
-                        return (
-                          <>
-                            {sat.text.slice(0, cut)}
-                            <span className="font-bold text-[var(--accent)]">
-                              {sat.text.slice(cut)}
+                              {fmtDollars(s.amount)}
                             </span>
                           </>
                         );
-                      })()}
+                        return (
+                          <span key={s.key} className="inline-flex items-center gap-1.5">
+                            <span
+                              className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm${s.hatch ? " border border-[var(--dim)]" : ""}`}
+                              style={s.hatch ? hatchStyle : { background: s.color }}
+                              aria-hidden="true"
+                            />
+                            {tap ? (
+                              <button
+                                type="button"
+                                aria-label={tap.ariaLabel}
+                                className={pgTapCls}
+                                onClick={() =>
+                                  jumpToPgField(tap.fieldId, tap.section)
+                                }
+                              >
+                                {text}
+                              </button>
+                            ) : (
+                              text
+                            )}
+                          </span>
+                        );
+                      })}
+                  </p>
+                  {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
+                    <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                      No income typed yet — the stack will draw here as you
+                      type.
                     </p>
                   )}
-
-                  </section>
-
-                  <section className={sectionCls} aria-label={`How ${pgYearNum} stacks up`}>
-                    {stackBlock}
-                  </section>
-
-                  <section className={sectionCls} aria-label="Gains stack">
-                  <h3 className="text-sm font-semibold">
-                    Gains stack
-                    <InfoNote
-                      text="Net investment income tax is priced on interest, dividends and gains — the net investment income base."
-                      ariaLabel="About the gains stack and the net investment income tax"
-                    />
-                  </h3>
-                  {(() => {
-                    // Gains stack as a horizontal stacked bar
-                    // (build v69), in the income stack's visual
-                    // language: one segment per rate tier sized by
-                    // the dollars taxed there, with the unused 0%
-                    // room drawn first as an empty hatched segment
-                    // when there is any. Every figure is the priced
-                    // result's own (pg.gainsAt0 / At15 / At20 and
-                    // pg.gainsZeroRoomLeft).
-                    const segs = [
-                      { key: "room", label: "0% gains room left", amount: pg.gainsZeroRoomLeft, color: "", empty: true },
-                      { key: "at0", label: "Taxed at 0%", amount: pg.gainsAt0, color: "#65a30d", empty: false },
-                      { key: "at15", label: "Taxed at 15%", amount: pg.gainsAt15, color: "#5f6caf", empty: false },
-                      { key: "at20", label: "Taxed at 20%", amount: pg.gainsAt20, color: "#7a5c8f", empty: false },
-                    ].filter((g) => g.amount > 0);
-                    const total = segs.reduce((a, g) => a + g.amount, 0);
-                    if (total <= 0) {
-                      return (
-                        <p className="mt-1 text-sm text-[var(--dim)]">
-                          No gains priced for this year.
-                        </p>
-                      );
-                    }
-                    return (
-                      <>
-                        <div
-                          className="mt-2 flex h-6 w-full overflow-hidden rounded-sm"
-                          role="img"
-                          aria-label={`Gains stack bar: ${segs.map((g) => `${g.label} ${fmtDollars(g.amount)}`).join(", ")}`}
-                        >
-                          {segs.map((g) => (
-                            <div
-                              key={g.key}
-                              className="flex h-full min-w-0 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
-                              style={{
-                                width: `${(g.amount / total) * 100}%`,
-                                background: g.empty ? undefined : g.color,
-                                ...(g.empty ? STACK_HATCH_STYLE : {}),
-                              }}
-                            >
-                              {(g.amount / total) * 100 >= 14 && (
-                                <span className={`truncate px-1 text-[11px] font-medium ${g.empty ? "text-[var(--text)]" : "text-white"}`}>
-                                  {fmtDollars(g.amount)}
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                        <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                          {segs.map((g) => (
-                            <span key={g.key} className="inline-flex items-center gap-1.5">
-                              <span
-                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
-                                style={g.empty ? STACK_HATCH_STYLE : { background: g.color }}
-                                aria-hidden="true"
-                              />
-                              {g.label}{" "}
-                              <span className="tnum font-medium text-[var(--text)]">
-                                {fmtDollars(g.amount)}
-                              </span>
-                            </span>
-                          ))}
-                        </p>
-                      </>
-                    );
-                  })()}
-                  <p className="tnum mt-2 text-sm">
-                    Net investment income tax{" "}
-                    <span className="font-medium">{fmtDollars(pg.niit)}</span>
-                  </p>
-
-                  </section>
                 </div>
+              );
+            })();
+            /* Income-stack cliff markers — presentation ONLY:
+               insertions into the "How {year} stacks up" stack
+               below, plus one closing room note under it. No
+               figure is priced here: the ACA cliff, the ACA
+               position, the IRMAA tier, the per-person monthly
+               surcharge, the premium year, and the next IRMAA
+               line with its room all come straight off the
+               priced result (`pg` — the same fields the ACA &
+               IRMAA block above prints). The one line not
+               stored on the result — the IRMAA tier line the
+               landed tier crossed (the floor of the landed
+               tier) — is read from the SAME law row the pricing
+               used, through the engine's own classifier helper
+               irmaaTierUpTo(tier − 1, …) at the playground's 0%
+               inflation, exactly as pricePlaygroundYear derives
+               its stored nextTierLine from irmaaTierUpTo(tier, …).
+               Placement: the stack's additive rows are walked
+               in their printed order, accumulating TWO running
+               totals — one per MAGI definition — from the SAME
+               row values the block prints. Every printed row
+               counts the same toward both MAGIs except Social
+               Security received: IRMAA MAGI counts only the
+               TAXABLE part (pg.ssTaxable) while ACA MAGI counts
+               the FULL benefit (pg.ssBenefits) — that is the
+               whole difference between the two totals (MAGI =
+               AGI + tax-exempt interest; ACA MAGI = MAGI + the
+               untaxed part of Social Security), so the two
+               markers can correctly land on different rows.
+               Tax-exempt interest counts toward both (it is the
+               printed row between Social Security and the
+               conversion). A marker is inserted immediately
+               after the first row whose cumulative total for
+               its own MAGI passes its line (strictly over —
+               the engine's own tests: ACA overCliff is
+               acaMagi > cliff, and an IRMAA tier starts once
+               MAGI is over the previous tier's ceiling). The
+               AGI / deduction / taxable-income rows after the
+               gains row are not additive to MAGI and never
+               carry a marker. The ACA cliff exists only for
+               coverage 2026+ (the engine's hasCliff rule in
+               acaCreditFor): in 2025 the result still carries
+               the 400%-of-FPL figure, but no marker is placed
+               and the closing note says so instead. */
+            const stackBlock = (() => {
+              type StackEntry = {
+                key: string;
+                node: ReactNode;
+                aca: number;
+                irmaa: number;
+              };
+              /* P-S12: the "Long-term gains priced" row's
+                 sub-text decomposes the PRICED figure beside
+                 it — the priced net gain part, max(0,
+                 pg.ltcgNet), plus the qualified dividends —
+                 the two addends of pg.ltcgPriced itself
+                 (ltcgPriced = max(0, ltcgNet) +
+                 qualifiedDividends in the shared pricer), so
+                 the sentence adds to the row value. The typed
+                 sale gain (pg.stockGain) is gross and
+                 pre-ledger: an entering loss carryforward
+                 nets against it and a priced harvest adds to
+                 it before ltcgNet is struck, and a losing
+                 sale floors at $0 in the priced part, so a
+                 sub-text built from the typed figure
+                 disagreed with the row value by the absorbed
+                 / harvested / floored amount — the same
+                 reason the S-9 stack above forbids the typed
+                 figure for its gain segment. When a harvest
+                 priced a gain it is named inside the net
+                 figure it rides (it is already inside
+                 ltcgNet, never an extra addend). */
+              const pricedGainPart = Math.max(0, pg.ltcgNet);
+              const gainsSubText =
+                pg.harvestedGain > 0
+                  ? `Net long-term gain ${fmtDollars(pricedGainPart)} (incl. harvested gain ${fmtDollars(pg.harvestedGain)}) + qualified dividends ${fmtDollars(pg.qualifiedDividends)}`
+                  : `Net long-term gain ${fmtDollars(pricedGainPart)} + qualified dividends ${fmtDollars(pg.qualifiedDividends)}`;
+              const additive: StackEntry[] = [
+                {
+                  key: "interest",
+                  node: stackRow("Interest", fmtDollars(pg.interest)),
+                  aca: pg.interest,
+                  irmaa: pg.interest,
+                },
+                {
+                  key: "orddiv",
+                  node: stackRow(
+                    "Ordinary dividends (non-qualified part)",
+                    fmtDollars(pg.nonQualifiedDividends),
+                    pg.qualifiedDividends > 0
+                      ? `of the ${fmtDollars(pg.ordinaryDividends)} total (line 3b) — the qualified ${fmtDollars(pg.qualifiedDividends)} rides the gains stack below`
+                      : undefined,
+                  ),
+                  aca: pg.nonQualifiedDividends,
+                  irmaa: pg.nonQualifiedDividends,
+                },
+                {
+                  key: "other",
+                  node: stackRow("Other ordinary income", fmtDollars(pg.otherOrdinary)),
+                  aca: pg.otherOrdinary,
+                  irmaa: pg.otherOrdinary,
+                },
+                {
+                  key: "rmd",
+                  node: pg.rmdPriced
+                    ? stackRow(
+                        "RMD for the year",
+                        fmtDollars(pg.rmd),
+                        pg.rmdDivisor != null
+                          ? `Balance ÷ ${pg.rmdDivisor} (${pg.rmdTable === "joint" ? "Joint Life" : "Uniform Lifetime"} table)`
+                          : pgPretaxBalance === 0
+                            ? "No RMD — the pre-tax balance entered is $0"
+                            : "No RMD due at this age",
+                      )
+                    : stackRow("RMD for the year", "Not priced"),
+                  aca: pg.rmd,
+                  irmaa: pg.rmd,
+                },
+                {
+                  key: "ss",
+                  node: stackRow(
+                    "Social Security received",
+                    fmtDollars(pg.ssBenefits),
+                    pg.ssBenefits > 0
+                      ? `of which taxable: ${fmtDollars(pg.ssTaxable)} (${pg.ssPctTaxed}% under §86)`
+                      : undefined,
+                  ),
+                  aca: pg.ssBenefits,
+                  irmaa: pg.ssTaxable,
+                },
+                {
+                  key: "taxexempt",
+                  node: stackRow(
+                    "Tax-exempt interest",
+                    fmtDollars(pg.taxExemptInterest),
+                    "Not in AGI; counted in MAGI",
+                  ),
+                  aca: pg.taxExemptInterest,
+                  irmaa: pg.taxExemptInterest,
+                },
+                {
+                  key: "conversion",
+                  node: stackRow("Pre-tax money out", fmtDollars(pg.conversion + pg.spendingDraw)),
+                  aca: pg.conversion + pg.spendingDraw,
+                  irmaa: pg.conversion + pg.spendingDraw,
+                },
+                {
+                  key: "gains",
+                  node: stackRow(
+                    "Long-term gains priced",
+                    fmtDollars(pg.ltcgPriced),
+                    gainsSubText,
+                  ),
+                  aca: pg.ltcgPriced,
+                  irmaa: pg.ltcgPriced,
+                },
+              ];
+              // The §1211(b) capital-loss allowance, when a
+              // net capital loss priced one: a negative row
+              // after the gains row (the loss offsets gains
+              // first, then up to $3,000 of ordinary income),
+              // so the additive rows foot to AGI / MAGI.
+              if (pg.capitalLossAllowance > 0) {
+                additive.push({
+                  key: "caplossallowance",
+                  node: stackRow(
+                    "Capital-loss allowance (§1211(b))",
+                    `−${fmtDollars(pg.capitalLossAllowance)}`,
+                    "Net capital loss applied against ordinary income",
+                  ),
+                  aca: -pg.capitalLossAllowance,
+                  irmaa: -pg.capitalLossAllowance,
+                });
+              }
+              // 2026-11-09: four rows of the stack are
+              // placeholders at $0 — Other ordinary income,
+              // RMD for the year, Social Security received,
+              // and Tax-exempt interest hide while they price
+              // at $0 and come back when they carry a value.
+              // (The RMD row's "Not priced" state is not a $0
+              // line and stays.) Filtering them here, before
+              // the marker walk, cannot move a cliff marker:
+              // a $0 row adds 0 to both running MAGI totals,
+              // so it is never the row a crossing first lands
+              // on, and the after-the-last-row fallback still
+              // lands after the last shown row.
+              const shownAdditive = additive.filter((e) => {
+                switch (e.key) {
+                  case "other":
+                    return pg.otherOrdinary !== 0;
+                  case "rmd":
+                    return !pg.rmdPriced || pg.rmd !== 0;
+                  case "ss":
+                    return pg.ssBenefits !== 0;
+                  case "taxexempt":
+                    return pg.taxExemptInterest !== 0;
+                  default:
+                    return true;
+                }
+              });
+              // The ACA section applies for these markers when
+              // the result carries a cliff figure — set only
+              // when a household size was entered and not
+              // everyone in the household is on Medicare.
+              const acaApplies = pg.aca.cliff != null;
+              const acaHasCliff = acaApplies && pgYearNum >= 2026;
+              const acaCrossed = acaHasCliff && pg.aca.overCliff;
+              const acaCliff = pg.aca.cliff ?? 0;
+              // The line under the priced tier, graded under
+              // the PREMIUM year's law row — the same row the
+              // server grades pg.irmaa.tier under (contract
+              // v97), never the priced year's row.
+              const irmaaLine =
+                pg.irmaa.applies && pg.irmaa.tier >= 1
+                  ? irmaaTierUpTo(
+                      pg.irmaa.tier - 1,
+                      pgFiling,
+                      lawForYear(pg.irmaa.premiumYear),
+                      pg.irmaa.premiumYear,
+                      0,
+                    )
+                  : null;
+              let acaCum = 0;
+              let irmaaCum = 0;
+              let acaAfter = -1;
+              let irmaaAfter = -1;
+              shownAdditive.forEach((e, i) => {
+                acaCum += e.aca;
+                irmaaCum += e.irmaa;
+                if (acaCrossed && acaAfter === -1 && acaCum > acaCliff) acaAfter = i;
+                if (irmaaLine != null && irmaaAfter === -1 && irmaaCum > irmaaLine) irmaaAfter = i;
+              });
+              // A crossed line's marker always renders: if the
+              // running totals never passed it mid-stack (only
+              // possible on a sub-cent rounding seam), it lands
+              // after the last additive row instead.
+              if (acaCrossed && acaAfter === -1) acaAfter = shownAdditive.length - 1;
+              if (irmaaLine != null && irmaaAfter === -1) irmaaAfter = shownAdditive.length - 1;
+              const markerCls =
+                "col-span-2 rounded-[var(--radius)] bg-[var(--warn-soft)] px-2.5 py-1.5 text-xs font-medium text-[var(--warn)] sm:col-span-3 sm:text-sm";
+              const acaMarker = acaCrossed ? (
+                <div className={markerCls} role="note">
+                  <span aria-hidden="true">⚠</span>{" "}
+                  {`ACA cliff crossed — ${fmtDollars(acaCliff)} (400% of FPL). Over the cliff, the premium credit is $0.`}
+                </div>
+              ) : null;
+              const irmaaMarker =
+                irmaaLine != null ? (
+                  <div className={markerCls} role="note">
+                    <span aria-hidden="true">⚠</span>{" "}
+                    {`IRMAA Tier ${pg.irmaa.tier} line crossed — ${fmtDollars(irmaaLine)}. Surcharge $${pg.irmaa.monthlyPerPerson.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo per person in ${pg.irmaa.premiumYear}.`}
+                  </div>
+                ) : null;
+              // Closing room note: one part per applicable line
+              // NOT crossed (a crossed ACA cliff is the marker's
+              // story, not the note's; IRMAA keeps its next-line
+              // distance even when a lower line was crossed).
+              const noteParts: string[] = [];
+              if (acaApplies) {
+                if (!acaHasCliff) {
+                  noteParts.push(`No ACA cliff in ${pgYearNum}.`);
+                } else if (!acaCrossed && pg.aca.positionDollars != null) {
+                  noteParts.push(
+                    `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
+                  );
+                }
+              }
+              if (pg.irmaa.applies && pg.irmaa.nextTierLine != null) {
+                noteParts.push(
+                  `Next IRMAA line (Tier ${pg.irmaa.tier + 1} at ${fmtDollars(pg.irmaa.nextTierLine)}): ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} away`,
+                );
+              }
+              return (
+                <>
+                  <h3 className="text-sm font-semibold">
+                    How {pgYearNum} stacks up
+                  </h3>
+                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                    {shownAdditive.map((e, i) => (
+                      <Fragment key={e.key}>
+                        {e.node}
+                        {acaAfter === i ? acaMarker : null}
+                        {irmaaAfter === i ? irmaaMarker : null}
+                      </Fragment>
+                    ))}
+                    {stackRow("AGI", fmtDollars(pg.agi))}
+                    {stackRow(
+                      "Standard deduction",
+                      fmtDollars(pg.standardDeduction),
+                      pg.age65AddonTotal > 0
+                        ? `includes ${fmtDollars(pg.age65AddonTotal)} of 65+ add-ons (${pg.count65} ${pg.count65 === 1 ? "person" : "people"} 65+)`
+                        : undefined,
+                    )}
+                    {pg.itemizedDeduction > 0 &&
+                      stackRow(
+                        "Itemized deductions",
+                        fmtDollars(pg.itemizedDeduction),
+                        pg.deductionTaken === "itemized"
+                          ? `more than the standard deduction — used (state & local taxes allowed: ${fmtDollars(pg.itemizedSaltAllowed)})`
+                          : "less than the standard deduction — standard used",
+                      )}
+                    {pg.section68Reduction > 0 &&
+                      stackRow(
+                        "§68 limitation (2026 law)",
+                        fmtDollars(pg.section68Reduction),
+                        "already taken off the itemized deductions above",
+                      )}
+                    {pg.nonItemizerCharitableDeduction > 0 &&
+                      stackRow(
+                        "Charitable deduction (§170(p))",
+                        fmtDollars(pg.nonItemizerCharitableDeduction),
+                        "already taken off AGI above — not in the deductions",
+                      )}
+                    {pg.seniorDeduction > 0 &&
+                      stackRow("Senior deduction (65+)", fmtDollars(pg.seniorDeduction))}
+                    {stackRow("Taxable income", fmtDollars(pg.taxableIncome))}
+                  </dl>
+                  {noteParts.length > 0 && (
+                    <p className="tnum mt-2 text-xs text-[var(--dim)]" role="note">
+                      {noteParts.join(" · ")}
+                    </p>
+                  )}
                 </>
               );
-            })()}
-        </section>
+            })();
+            return (
+              <>
+              <div className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
+                <p className="tnum text-base font-medium">
+                  {takeawayParts.join(" · ")}
+                  {landingExplainerText != null && (
+                    <>
+                      {" "}
+                      <InfoNote
+                        text={landingExplainerText}
+                        ariaLabel="About the bracket top and the ACA line"
+                        align="right"
+                        viewportClamp
+                      />
+                    </>
+                  )}
+                </p>
+
+                <div className="mt-3">
+                  <h3 className="text-sm font-semibold">
+                    Income stack
+                    <InfoNote
+                      text={bracketStatusText}
+                      ariaLabel="Bracket-by-bracket status for the income stack"
+                    />
+                  </h3>
+                </div>
+
+                {stackChart}
+
+                {!pg.rmdPriced && (
+                  <p className="mt-2 text-sm" role="note">
+                    No pre-tax balance entered — no RMD priced, and the
+                    pre-tax money out isn&rsquo;t capped.
+                  </p>
+                )}
+                {pg.conversionExceedsBalance && (
+                  <p className="mt-2 text-sm" role="note">
+                    <strong>Watch out:</strong> the pre-tax money out typed is more
+                    than the pre-tax balance left after the RMD (
+                    {fmtDollars(pgBalanceLeftAfterRmd ?? 0)}), so it couldn&rsquo;t all come out of
+                    that balance — the tax below still prices the amount typed.
+                  </p>
+                )}
+                {pg.capitalLoss > 0 && (
+                  <p className="mt-2 text-sm" role="note">
+                    <strong>Net capital loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
+                    capital losses offset capital gains only — the qualified
+                    dividends entered still price in full — and{" "}
+                    {fmtDollars(pg.capitalLossAllowance)} of the loss offsets
+                    ordinary income this year (the §1211(b) capital-loss
+                    allowance, up to $3,000).
+                    {pg.capitalLoss > pg.capitalLossAllowance && (
+                      <>
+                        {" "}The remaining{" "}
+                        {fmtDollars(pg.capitalLoss - pg.capitalLossAllowance)} isn&rsquo;t
+                        priced here — in real life it carries forward to later years.
+                      </>
+                    )}
+                  </p>
+                )}
+
+              </div>
+
+              <div className="flex flex-col gap-4">
+                <section className={sectionCls} aria-label="ACA and IRMAA">
+                <h3 className="text-sm font-semibold">ACA &amp; IRMAA</h3>
+                {pg.aca.everyoneOnMedicare ? (
+                  <p className="mt-1 text-sm">
+                    No ACA — everyone in the household is on Medicare.
+                  </p>
+                ) : pg.aca.cliff == null ? (
+                  <p className="mt-1 text-sm">
+                    ACA: enter a household size above to see where this year
+                    sits against the 400% poverty-line cliff.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-sm">
+                    ACA cliff for a household of {pg.aca.householdSize}:{" "}
+                    {fmtDollars(pg.aca.cliff)}{" "}
+                    (400% of the poverty line).{" "}
+                    {pg.aca.overCliff
+                      ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
+                      : `ACA household income is under the cliff by ${fmtDollars(pg.aca.positionDollars ?? 0)}`}
+                    {!pg.aca.overCliff &&
+                      (pg.aca.credit != null ? (
+                        <>
+                          {" — estimated credit "}
+                          <span className="font-bold text-[var(--accent)]">
+                            {fmtDollars(pg.aca.credit)}
+                          </span>
+                          {" at the ACA benchmark premium entered."}
+                        </>
+                      ) : (
+                        " — enter an ACA benchmark premium above to price the credit."
+                      ))}
+                    {pg.aca.pctFpl != null && pg.aca.pctFpl < 138 && (
+                      <>
+                        {" "}
+                        Under 138% of the poverty line, coverage routes to
+                        Medicaid in most states rather than a marketplace plan —
+                        treat any credit as flagged, not bankable.
+                      </>
+                    )}
+                  </p>
+                )}
+                {pg.gainsFlags.acaFlag != null && (
+                  <p className="mt-1 text-sm font-medium" role="note">
+                    {pg.gainsFlags.acaFlag.text}
+                  </p>
+                )}
+                {pg.irmaa.applies ? (
+                  <p className="mt-1 text-sm">
+                    IRMAA: this year&rsquo;s MAGI sets Tier {pg.irmaa.tier} for{" "}
+                    {pg.irmaa.premiumYear}.{" "}
+                    {pg.irmaa.tier === 0
+                      ? "Tier 0 carries no surcharge."
+                      : `Surcharge ${fmtDollars(pg.irmaa.monthlyPerPerson)}/mo per person on Medicare — ${fmtDollars(pg.irmaa.annualHousehold)}/yr for the household (${pg.irmaa.personsOnMedicare} on Medicare).`}{" "}
+                    {pg.irmaa.nextTierLine != null
+                      ? `MAGI is ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} under the next tier line at ${fmtDollars(pg.irmaa.nextTierLine)}.`
+                      : "That is the top tier — there is no higher line."}
+                  </p>
+                ) : (
+                  !pg.aca.everyoneOnMedicare && (
+                    <p className="mt-1 text-sm">
+                      No IRMAA — nobody in the household is on Medicare.
+                    </p>
+                  )
+                )}
+                {pg.gainsFlags.irmaaFlag != null && (
+                  <p className="mt-1 text-sm font-medium" role="note">
+                    {pg.gainsFlags.irmaaFlag.text}
+                  </p>
+                )}
+                </section>
+
+                <section className={sectionCls} aria-label="Tax for the year">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">Tax for the year</h3>
+                  {/* Month / Year pills: the same persisted
+                      spendPerMonth state the sticky strip's
+                      pills write — they switch ONLY the two
+                      spend readouts below (Cash left after
+                      tax, Left after a year's spending); every
+                      other row in this card stays annual. */}
+                  <SpendPeriodPills
+                    perMonth={spendPerMonth}
+                    onChange={setSpendPerMonth}
+                  />
+                </div>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                  {stackRow(
+                    "Federal tax on ordinary income",
+                    fmtDollars(pg.ordinaryTax),
+                  )}
+                  {stackRow(
+                    "Federal tax on gains",
+                    fmtDollars(pg.ltcgTax + pg.niit),
+                    pg.niit > 0
+                      ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
+                      : undefined,
+                  )}
+                  {stackRow(
+                    "Total federal tax",
+                    fmtDollars(pg.federalTax),
+                    undefined,
+                    true,
+                    // Money owed: the same red as the negative
+                    // "Left after a year's spending" below.
+                    "text-[var(--bad)]",
+                  )}
+                  {pg.educationAotc > 0 &&
+                    stackRow(
+                      "American Opportunity Credit",
+                      fmtDollars(pg.educationAotc),
+                      `${fmtDollars(pg.educationRefundable)} of it is refundable — paid even past a $0 tax bill, shown below, not inside the tax. The nonrefundable part is already inside the total federal tax.`,
+                    )}
+                  {pg.educationLlc > 0 &&
+                    stackRow(
+                      "Lifetime Learning Credit",
+                      fmtDollars(pg.educationLlc),
+                      "Nonrefundable — already inside the total federal tax.",
+                    )}
+                  {(pg.educationAotc > 0 || pg.educationLlc > 0) &&
+                    stackRow(
+                      "Nonrefundable education credits applied",
+                      fmtDollars(pg.educationNonrefundable),
+                    )}
+                  {pg.educationRefundable > 0 &&
+                    stackRow(
+                      "Refundable education credit (AOTC)",
+                      fmtDollars(pg.educationRefundable),
+                      "Paid on top of the tax result — not netted into the total federal tax.",
+                    )}
+                  {pg.amtOwed > 0 &&
+                    stackRow(
+                      <>
+                        Alternative minimum tax (AMT)
+                        <InfoNote
+                          text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) beat the regular tax — the difference is already inside the total federal tax.`}
+                          ariaLabel="About the alternative minimum tax"
+                        />
+                      </>,
+                      fmtDollars(pg.amtOwed),
+                    )}
+                  {pg.amtOwed === 0 && pg.amti > 0 &&
+                    stackRow(
+                      <>
+                        Alternative minimum tax (AMT)
+                        <InfoNote
+                          text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`}
+                          ariaLabel="About the alternative minimum tax"
+                        />
+                      </>,
+                      "$0",
+                    )}
+                  {/* State tax, listed ONCE (P-S13, parity
+                      audit SHOULD — settled STAND): the
+                      pricer's stateTax is mutually exclusive
+                      by residence — for a WA resident it IS
+                      the capital-gains excise (the flat rate
+                      never applies), and for any other
+                      residence it is the flat-rate tax. The
+                      generic row therefore stands down for a
+                      WA resident and the excise row below —
+                      which carries the base breakdown as its
+                      sub-text — is the year's one state-tax
+                      row; before this fix the two rows listed
+                      the identical dollars side by side and a
+                      reader summing the card double-counted
+                      the whole excise. */}
+                  {pg.stateTax > 0 && pgResidence !== "WA" &&
+                    stackRow("State tax", fmtDollars(pg.stateTax))}
+                  {pgResidence === "WA" &&
+                    stackRow(
+                      "Washington capital-gains excise",
+                      fmtDollars(pg.stateTax),
+                      `${fmtDollars(pg.waGains)} of gains − ${fmtDollars(pg.waStandardDeduction)} standard deduction = ${fmtDollars(pg.waTaxableGains)} taxable`,
+                    )}
+                  {stackRow("MAGI", fmtDollars(pg.magi))}
+                  {pg.acaMagi !== pg.magi &&
+                    stackRow(
+                      "ACA household income",
+                      fmtDollars(pg.acaMagi),
+                      "MAGI plus the untaxed part of Social Security",
+                    )}
+                  {/* Dial split of the pre-tax money out: the
+                      year's pre-tax money out sits on TWO dials
+                      in the Pre-tax money out section above —
+                      the Conversion to Roth dial and the Pre-tax
+                      draw for spending dial — and the two are
+                      priced the same as income but opposite as
+                      cash. Naming both amounts here, on the card
+                      itself, is what keeps a year whose money
+                      out is all conversion from reading as a
+                      cash shortfall: the conversion is real
+                      income (it is inside MAGI above) but it
+                      lands in Roth, so the cash-left rows below
+                      never count it, while a draw is cash in
+                      hand and they do. Shown whenever either
+                      dial is non-zero, both rows together, so
+                      the empty dial reads $0 beside the filled
+                      one. Figures are the priced result's own
+                      echoes (pg.conversion / pg.spendingDraw);
+                      no figure changes. */}
+                  {(pg.conversion > 0 || pg.spendingDraw > 0) &&
+                    stackRow(
+                      "On the Conversion to Roth dial",
+                      fmtDollars(pg.conversion),
+                      "Goes to Roth — income, but not cash in hand, so it is not counted in the cash left below.",
+                    )}
+                  {(pg.conversion > 0 || pg.spendingDraw > 0) &&
+                    stackRow(
+                      "On the Pre-tax draw for spending dial",
+                      fmtDollars(pg.spendingDraw),
+                      "Cash in hand — counted in the cash left below.",
+                    )}
+                  {/* Cash left after tax (build v114, fixed
+                      text + ⓘ build v116): the
+                      engine-priced readout on the same pricing
+                      (pg.cashIn / pg.netTaxBill /
+                      pg.cashLeftAfterTax — never client
+                      arithmetic): all the year's cash in minus
+                      its net tax bill, before any spending. The
+                      fixed subtext carries no figure; the ⓘ
+                      (the 0% InfoNote pattern — live-composed
+                      figures, align by the label's position)
+                      names the cash in and the net tax bill as
+                      priced, and carries the filing sentence
+                      only when the net bill is a refund. In
+                      Month mode (the shared persisted
+                      spendPerMonth toggle) the value shows the
+                      same figure divided by 12 with a "/mo"
+                      suffix and the sub-line and ⓘ name the
+                      month instead of the year; the ⓘ's
+                      derivation figures stay annual, as
+                      priced. */}
+                  {stackRow(
+                    <>
+                      Cash left after tax
+                      <InfoNote
+                        text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — ${PLAYGROUND_CASH_LEFT_BASIS} It's what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.${pg.conversion > 0 || pg.spendingDraw > 0 ? ` Cash in counts the ${fmtDollars(pg.spendingDraw)} on the Pre-tax draw for spending dial and does not count the ${fmtDollars(pg.conversion)} on the Conversion to Roth dial — a conversion goes to Roth, not cash in hand.` : ""}${pg.cashDraw > 0 || pg.rothDraw > 0 ? ` Cash in also counts the funding dials in Spending: Cash drawn for spending ${fmtDollars(pg.cashDraw)} and Roth drawn for spending ${fmtDollars(pg.rothDraw)}.` : ""}${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                        ariaLabel="About the cash left after tax"
+                      />
+                    </>,
+                    spendPerMonth
+                      ? `${fmtDollarsExact(pg.cashLeftAfterTax / 12)}/mo`
+                      : fmtDollars(pg.cashLeftAfterTax),
+                    `Cash in minus the net tax bill — what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.`,
+                    true,
+                  )}
+                  {/* Left after a year's spending (contract
+                      v126, "enough for the year"; R3-M3): cash
+                      left after HEALTH PREMIUMS minus the
+                      annual spending — the engine-priced
+                      comparison (pg.cashLeftVsSpending, which
+                      the engine now derives from
+                      cashLeftAfterHealthPremium), positive =
+                      enough for the year, negative = short.
+                      The spending excludes health premiums, so
+                      the premium is charged before the
+                      comparison; before R3-M3 the comparison
+                      ran off the cash left after tax alone and
+                      overstated the verdict by the whole net
+                      premium whenever one priced. The IRMAA
+                      surcharge payable this year (internal
+                      review round 3 SHOULD-2) is charged
+                      beside the premium in the same cash left
+                      after health premiums, and the ⓘ names
+                      it in the derivation whenever it prices
+                      — a year with a $0 net premium but a
+                      payable IRMAA takes the premium-charged
+                      branch too, since the comparison still
+                      runs off the reduced cash left. The spending
+                      is the Tax Plan record's annual spending
+                      (the Retirement calculator's default when
+                      the record has none), now editable in this
+                      view's Spending dial (build v145, one
+                      source); the row hides when no spending
+                      resolves. Since P-S2 a paste-load can hold
+                      the pasted year's own spending ahead of
+                      that resolution — the ⓘ then names the
+                      paste, not the Tax Plan, as the source —
+                      so a replayed year is judged against the
+                      spending it was priced with. No provenance tap: a tap to the
+                      income inputs would mislead — the
+                      comparison is driven by spending, not
+                      income — so the ⓘ names the spending and
+                      its source instead (and, when a premium
+                      or a payable IRMAA prices, the
+                      premium-charged derivation),
+                      and carries the refund-timing sentence
+                      whenever the net bill is a refund. The ⓘ
+                      and the visible sub-line also name the two
+                      pre-tax dials whenever either is non-zero —
+                      the comparison's cash counts the Pre-tax
+                      draw for spending dial and never the
+                      Conversion to Roth dial — so a shortfall
+                      priced off a conversion never reads as
+                      missing spendable cash. In
+                      Month mode (the shared persisted
+                      spendPerMonth toggle) the label, value,
+                      and sub-line name the month — the value
+                      is the same figure divided by 12 with a
+                      "/mo" suffix — while the ⓘ keeps naming
+                      the annual figures it is derived from. */}
+                  {pg.cashLeftVsSpending != null && pg.annualSpending != null && (
+                    stackRow(
+                      <>
+                        Left after a {spendPerMonth ? "month" : "year"}
+                        &rsquo;s spending
+                        <InfoNote
+                          text={(pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)}${pg.healthPremiumNet > 0 ? ` minus the net health premium ${fmtDollars(pg.healthPremiumNet)}` : ""}${pg.irmaaPayableAnnual > 0 ? ` minus the IRMAA payable this year ${fmtDollars(pg.irmaaPayableAnnual)}` : ""} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`) + (pg.conversion > 0 || pg.spendingDraw > 0 ? ` The cash this comparison runs on counts the Pre-tax draw for spending dial (${fmtDollars(pg.spendingDraw)}) and not the Conversion to Roth dial (${fmtDollars(pg.conversion)}) — a conversion goes to Roth, so it cannot pay this spending; money taken out to spend belongs on the draw dial.` : "")}
+                          ariaLabel={`About the amount left after a ${spendPerMonth ? "month" : "year"}'s spending`}
+                        />
+                      </>,
+                      <span
+                        className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                      >
+                        {spendPerMonth
+                          ? `${fmtDollarsExact(pg.cashLeftVsSpending / 12)}/mo`
+                          : fmtDollars(pg.cashLeftVsSpending)}
+                      </span>,
+                      (pg.cashLeftVsSpending > 0
+                        ? `Enough for the ${spendPerMonth ? "month" : "year"}.`
+                        : pg.cashLeftVsSpending < 0
+                          ? `Short of a ${spendPerMonth ? "month" : "year"}'s spending.`
+                          : `Exactly enough for the ${spendPerMonth ? "month" : "year"}.`) +
+                        (pg.conversion > 0
+                          ? ` The ${fmtDollars(pg.conversion)} on the Conversion to Roth dial goes to Roth — it is not cash for spending.`
+                          : ""),
+                    )
+                  )}
+                </dl>
+                {pg.conversion > 0 && (
+                  <p className="mt-2 text-sm">
+                    {pg.spendingDraw > 0 ? (
+                      <>
+                        The money on the Conversion to Roth dial itself costs{" "}
+                        <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
+                        of federal tax —{" "}
+                        {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
+                        of the amount on that dial
+                        {pg.conversionTotalCost !== pg.conversionFederalCost
+                          ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
+                          : ""}
+                        . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
+                        the same year priced at $0 on that dial — the money on the
+                        Pre-tax draw for spending dial still taken.
+                      </>
+                    ) : (
+                      <>
+                        The money on the Conversion to Roth dial itself costs{" "}
+                        <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
+                        of federal tax —{" "}
+                        {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
+                        of the amount on that dial
+                        {pg.conversionTotalCost !== pg.conversionFederalCost
+                          ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
+                          : ""}
+                        . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
+                        the same year priced at $0 on that dial. All of this
+                        year&rsquo;s pre-tax money out is on that dial — it goes to
+                        Roth, not to spending, so none of it is cash in hand.
+                        Money taken out to spend belongs on the Pre-tax draw
+                        for spending dial, which is $0 here.
+                      </>
+                    )}
+                  </p>
+                )}
+                {pg.saleAfterTax != null && (
+                  <p className="mt-2 text-sm" role="note">
+                    {(() => {
+                      // Sale-after-tax highlight: only the final
+                      // "{leftover} of it is left." segment is
+                      // emphasised — bold in the accent colour; the
+                      // rest of the sentence keeps its styling. The
+                      // split is taken from the engine's own composed
+                      // string at its final ", " (the one before the
+                      // leftover figure — grouped dollar figures
+                      // never contain ", "), so the displayed text
+                      // stays byte-identical. The variant where the
+                      // year's tax exceeds the proceeds phrases the
+                      // outcome differently (no "of it is left."
+                      // tail) and renders exactly as composed.
+                      const sat = pg.saleAfterTax;
+                      const cut =
+                        sat.leftover >= 0 &&
+                        sat.text.endsWith(" of it is left.")
+                          ? sat.text.lastIndexOf(", ") + 2
+                          : -1;
+                      if (cut < 2) return sat.text;
+                      return (
+                        <>
+                          {sat.text.slice(0, cut)}
+                          <span className="font-bold text-[var(--accent)]">
+                            {sat.text.slice(cut)}
+                          </span>
+                        </>
+                      );
+                    })()}
+                  </p>
+                )}
+
+                </section>
+
+                <section className={sectionCls} aria-label={`How ${pgYearNum} stacks up`}>
+                  {stackBlock}
+                </section>
+
+                <section className={sectionCls} aria-label="Gains stack">
+                <h3 className="text-sm font-semibold">
+                  Gains stack
+                  <InfoNote
+                    text="Net investment income tax is priced on interest, dividends and gains — the net investment income base."
+                    ariaLabel="About the gains stack and the net investment income tax"
+                  />
+                </h3>
+                {(() => {
+                  // Gains stack as a horizontal stacked bar
+                  // (build v69), in the income stack's visual
+                  // language: one segment per rate tier sized by
+                  // the dollars taxed there, with the unused 0%
+                  // room drawn first as an empty hatched segment
+                  // when there is any. Every figure is the priced
+                  // result's own (pg.gainsAt0 / At15 / At20 and
+                  // pg.gainsZeroRoomLeft).
+                  const segs = [
+                    { key: "room", label: "0% gains room left", amount: pg.gainsZeroRoomLeft, color: "", empty: true },
+                    { key: "at0", label: "Taxed at 0%", amount: pg.gainsAt0, color: "#65a30d", empty: false },
+                    { key: "at15", label: "Taxed at 15%", amount: pg.gainsAt15, color: "#5f6caf", empty: false },
+                    { key: "at20", label: "Taxed at 20%", amount: pg.gainsAt20, color: "#7a5c8f", empty: false },
+                  ].filter((g) => g.amount > 0);
+                  const total = segs.reduce((a, g) => a + g.amount, 0);
+                  if (total <= 0) {
+                    return (
+                      <p className="mt-1 text-sm text-[var(--dim)]">
+                        No gains priced for this year.
+                      </p>
+                    );
+                  }
+                  return (
+                    <>
+                      <div
+                        className="mt-2 flex h-6 w-full overflow-hidden rounded-sm"
+                        role="img"
+                        aria-label={`Gains stack bar: ${segs.map((g) => `${g.label} ${fmtDollars(g.amount)}`).join(", ")}`}
+                      >
+                        {segs.map((g) => (
+                          <div
+                            key={g.key}
+                            className="flex h-full min-w-0 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
+                            style={{
+                              width: `${(g.amount / total) * 100}%`,
+                              background: g.empty ? undefined : g.color,
+                              ...(g.empty ? STACK_HATCH_STYLE : {}),
+                            }}
+                          >
+                            {(g.amount / total) * 100 >= 14 && (
+                              <span className={`truncate px-1 text-[11px] font-medium ${g.empty ? "text-[var(--text)]" : "text-white"}`}>
+                                {fmtDollars(g.amount)}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                        {segs.map((g) => (
+                          <span key={g.key} className="inline-flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                              style={g.empty ? STACK_HATCH_STYLE : { background: g.color }}
+                              aria-hidden="true"
+                            />
+                            {g.label}{" "}
+                            <span className="tnum font-medium text-[var(--text)]">
+                              {fmtDollars(g.amount)}
+                            </span>
+                          </span>
+                        ))}
+                      </p>
+                    </>
+                  );
+                })()}
+                <p className="tnum mt-2 text-sm">
+                  Net investment income tax{" "}
+                  <span className="font-medium">{fmtDollars(pg.niit)}</span>
+                </p>
+
+                </section>
+              </div>
+              </>
+            );
+          })()}
     </div>
   );
 }
