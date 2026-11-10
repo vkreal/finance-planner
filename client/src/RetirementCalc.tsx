@@ -4505,7 +4505,7 @@ export function RetirementCalc({
               spending strategy's own mechanics from its real
               dials, and a residual line for the rest — so no fact
               the line carried is dropped. */}
-          <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <button
               type="button"
               aria-label="Go to the Starting portfolio field"
