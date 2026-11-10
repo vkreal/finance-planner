@@ -20,6 +20,20 @@
    is within it, so the allowance covers exactly that known
    near-tie and nothing else.
 
+   The base ranking and base costs are pinned LITERALLY
+   (EXPECTED_BASE_RANKING / EXPECTED_BASE_COSTS_CENTS
+   below): runSet fails immediately if the engine's base
+   ranking or any base cost differs from the pin by even a
+   cent, and every base-derived value (winner, gaps, pinned
+   pairs) is read from the pins, never from the base row
+   itself. A reference taken from the same response it
+   checks would silently absorb a total order reversal, so
+   the reference is independent by construction. The pins
+   are exact-cent pins against the current sample-household
+   fixture — a legitimate engine change that moves base
+   costs must update them deliberately; never adjust a pin
+   to make a failing check pass.
+
    Near-tie band: $5,000 (500,000 cents). The band exists
    because a pair separated by less than a rounding-scale
    planning difference is a coin flip under perturbation,
@@ -94,6 +108,28 @@ const STRATEGIES = [
 ] as const;
 
 type StrategyKey = (typeof STRATEGIES)[number]["key"];
+
+/* ---- Literal base pins (round 10, F4) ---------------------------
+   The base ranking and base net costs the engine must report
+   for the sample household, in exact cents. These are the
+   independent reference for runSet: the base row is checked
+   AGAINST them, and the base winner / gaps / pinned pairs
+   are derived FROM them. A total order reversal of the
+   engine's costs (e.g. a negated netCostCents) is caught
+   here, not absorbed. Any legitimate engine change that
+   moves base costs must update these pins deliberately. */
+const EXPECTED_BASE_RANKING: StrategyKey[] = [
+  "fill22",
+  "fillCliff",
+  "fill12",
+  "doNothing",
+];
+const EXPECTED_BASE_COSTS_CENTS: Record<StrategyKey, number> = {
+  fill22: 120026186,
+  fillCliff: 157740467,
+  fill12: 163192599,
+  doNothing: 163454821,
+};
 
 /* ---- The perturbation grid: 9 runs including base ---------------
    Spending ±$1,000/yr (annualSpendingCents 17,900,000 /
@@ -215,21 +251,49 @@ function runSet(corrupt?: Corrupt): {
       minGapLabel,
     };
   }
-  const baseRanking = baseRow.ranking;
+  // Base pins (round 10, F4): the engine's base ranking and
+  // base costs must match the literal pins exactly. This is
+  // the independent reference — reading the reference from
+  // the same base row it checks would absorb a total order
+  // reversal (a negated netCostCents ranks Do Nothing first
+  // and still "passes" against its own row). Every
+  // base-derived value below (winner, gaps, pinned pairs)
+  // comes from the pins, never from baseRow.
+  for (const s of STRATEGIES) {
+    if (baseRow.costs[s.key] !== EXPECTED_BASE_COSTS_CENTS[s.key]) {
+      failures.push(
+        `caps base pin: ${s.name} priced ${dollars(baseRow.costs[s.key])}, expected pinned ${dollars(EXPECTED_BASE_COSTS_CENTS[s.key])}`,
+      );
+    }
+  }
+  if (
+    baseRow.ranking.length !== EXPECTED_BASE_RANKING.length ||
+    baseRow.ranking.some((k, i) => k !== EXPECTED_BASE_RANKING[i])
+  ) {
+    failures.push(
+      `caps base pin: base ranking ${baseRow.ranking.join(" < ")} does not match pinned ${EXPECTED_BASE_RANKING.join(" < ")}`,
+    );
+  }
+  const baseRanking: StrategyKey[] = [...EXPECTED_BASE_RANKING];
   const baseWinner = baseRanking[0]!;
 
-  // Teeth: the first pinned pair, whose comparison is
-  // reversed when corrupt is set (see runCapsTeeth). The
-  // reversal happens inside the real pair-order loop below,
-  // never in a side-channel assertion — so if that loop were
-  // deleted or its comparison flipped, teeth would fail.
+  // Teeth: the first pinned pair (by the PINNED gaps — see
+  // runCapsTeeth), whose comparison is reversed when corrupt
+  // is set. The reversal happens inside the real pair-order
+  // loop below, never in a side-channel assertion — so if
+  // that loop were deleted or its comparison flipped, teeth
+  // would fail.
   let corruptPair: string | null = null;
   if (corrupt?.reverseFirstPinnedPair === true) {
     for (let i = 0; corruptPair === null && i < STRATEGIES.length; i++) {
       for (let j = i + 1; j < STRATEGIES.length; j++) {
         const a = STRATEGIES[i]!.key;
         const b = STRATEGIES[j]!.key;
-        if (Math.abs(baseRow.costs[a] - baseRow.costs[b]) > NEAR_TIE_BAND_CENTS) {
+        if (
+          Math.abs(
+            EXPECTED_BASE_COSTS_CENTS[a] - EXPECTED_BASE_COSTS_CENTS[b],
+          ) > NEAR_TIE_BAND_CENTS
+        ) {
           corruptPair = `${a}:${b}`;
           break;
         }
@@ -259,8 +323,13 @@ function runSet(corrupt?: Corrupt): {
         const b = STRATEGIES[j]!.key;
         const aName = STRATEGIES[i]!.name;
         const bName = STRATEGIES[j]!.name;
-        const baseGap = Math.abs(baseRow.costs[a] - baseRow.costs[b]);
-        const baseOrder = baseRow.costs[a] < baseRow.costs[b] ? -1 : 1;
+        const baseGap = Math.abs(
+          EXPECTED_BASE_COSTS_CENTS[a] - EXPECTED_BASE_COSTS_CENTS[b],
+        );
+        const baseOrder =
+          EXPECTED_BASE_COSTS_CENTS[a] < EXPECTED_BASE_COSTS_CENTS[b]
+            ? -1
+            : 1;
         const runOrder = row.costs[a] < row.costs[b] ? -1 : 1;
         if (baseGap <= NEAR_TIE_BAND_CENTS) {
           // Near-tie: a swap is allowed, but only within
@@ -299,7 +368,11 @@ function runSet(corrupt?: Corrupt): {
     for (let j = i + 1; j < STRATEGIES.length; j++) {
       const a = STRATEGIES[i]!.key;
       const b = STRATEGIES[j]!.key;
-      if (Math.abs(baseRow.costs[a] - baseRow.costs[b]) > NEAR_TIE_BAND_CENTS) {
+      if (
+        Math.abs(
+          EXPECTED_BASE_COSTS_CENTS[a] - EXPECTED_BASE_COSTS_CENTS[b],
+        ) > NEAR_TIE_BAND_CENTS
+      ) {
         pairsPinned++;
       } else {
         nearTies++;
