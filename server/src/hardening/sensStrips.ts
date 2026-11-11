@@ -103,7 +103,49 @@
    pass. The pins add no optimizer searches — a live
    full-search minimality check was measured at ~4s per
    point and would have put the full registry near the
-   120s cap, so the pins are the design.
+   120s cap, so the pins are the design. Teeth sets the
+   winner's cost to the measured scored[4] costs at all
+   six points (winnerAboveMinimum) — the round-11 mutation
+   values — and requires exactly ten failures: five
+   naming the minimality violation (the 6% return point
+   ties the minimum, so its corrupted cost equals the pin
+   and correctly does not fail) and five naming the
+   winner-agreement violation, because the corrupted
+   reported cost is not the winner spec's repriced cost
+   either — see (f).
+
+   (f) Winner-spec agreement (round 13, R13-F1): at every
+   point on BOTH strips the winner's SPEC is repriced
+   independently — the same two calls scoreAllCandidates
+   itself uses for a candidate (simulateRothPlan with the
+   candidate's own strategy, then planNetCost), with the
+   spec's window (windowStopAge), draw order, and flags
+   (guardrail, bunching, gainsHarvest) honored exactly as
+   the search prices them — and that repriced cost must
+   EQUAL, in integer cents, BOTH the reported winner cost
+   AND the pinned minimum for the point. The minimum
+   assertions alone compare only the reported number: a
+   helper returning a different strategy's specification
+   with the minimum cost attached passes every earlier
+   family. ChatGPT round 13 demonstrated exactly that —
+   the winner's spec replaced with Do Nothing's spec
+   (cost retained) passed all 26 checks, with the
+   response then computing a saving for Do Nothing
+   against itself. The reprice is one simulation per
+   point on top of the strips' own searches (sub-second
+   in total); a full scoreAllCandidates per point instead
+   would put the worker-run fast registry near its 120s
+   cap (F2 measured the same for the Do Nothing reprice).
+   Do Nothing's own spec is repriced through the literal
+   "none" strategy scoreAllCandidates uses for its Do
+   Nothing entry, never candidateStrategy — so a swapped
+   spec reprices to exactly the stored independently
+   repriced Do Nothing (verified to the cent at all six
+   points), which is what teeth substitutes for the
+   swapped reprice. Teeth swaps the winner's spec to Do
+   Nothing's at all six points and requires exactly
+   twelve failures naming the disagreement — six against
+   the reported cost, six against the pinned minimum.
 
    Runtime: ~3.4s per optimizer call on the sample household
    (probe). Fast prices the return strip only (3 searches,
@@ -120,7 +162,11 @@
    per point instead was measured at 19.9s / 36.7s / 37.5s
    for fast / full / teeth and put the worker-run fast
    registry at ~118s against its 120s cap, so the direct
-   two-call reprice is the design.
+   two-call reprice is the design. The winner-spec reprice
+   adds one simulation per point (sub-second in total) to
+   the clean run; the corrupted teeth evaluations reuse
+   the clean run's stored figures, so they cost no extra
+   engine calls.
 
    FICTIONAL SAMPLE DATA — every figure comes from
    sampleHousehold.ts; no figure here describes any actual
@@ -130,9 +176,12 @@ import {
   optimizerHeirSensitivity,
   optimizerSensitivity,
   planNetCost,
+  DO_NOTHING_SPEC,
+  candidateStrategy,
+  type OptimizerCandidateSpec,
 } from "../rothOptimizer";
 import { samplePlanInputs } from "../sampleHousehold";
-import { simulateRothPlan, type RothPlanInputs } from "../taxEngine";
+import { simulateRothPlan, drawOrderKey, type RothPlanInputs } from "../taxEngine";
 import type {
   HardeningCheckModule,
   HardeningCheckResult,
@@ -146,6 +195,10 @@ type ReturnPoint = {
   winnerName: string;
   winnerKey: string;
   netCost: number;
+  // The winner's spec, repriced independently (see
+  // repriceSpec) — the reference for the winner-spec
+  // agreement assertion (family (f), round 13, R13-F1).
+  winnerRepricedNetCost: number;
   // Do Nothing at this return point, repriced independently
   // (see repriceDoNothing) — the reference for the strict
   // winner-beats-DN assertion.
@@ -157,6 +210,10 @@ type HeirPoint = {
   winnerName: string;
   winnerKey: string;
   winnerNetCost: number;
+  // The winner's spec, repriced independently (see
+  // repriceSpec) — the reference for the winner-spec
+  // agreement assertion (family (f), round 13, R13-F1).
+  winnerRepricedNetCost: number;
   doNothingNetCost: number;
   // Do Nothing at this heir rate, repriced independently
   // (see repriceDoNothing) — the reference for the
@@ -172,7 +229,7 @@ type Strips = {
   heirStrip: HeirPoint[];
 };
 
-type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean; winnerAboveMinimum?: boolean; reportedDoNothingInflated?: boolean };
+type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean; winnerAboveMinimum?: boolean; reportedDoNothingInflated?: boolean; winnerSpecSwapped?: boolean };
 
 const RETURN_DELTAS = [-1, 0, 1];
 const HEIR_RATES = [0, 22, 32];
@@ -251,6 +308,53 @@ function repriceDoNothing(inputs: RothPlanInputs): number {
   return planNetCost(dnResult, inputs).netCost;
 }
 
+// Price an arbitrary candidate SPEC independently of the
+// sensitivity helpers: the same two calls scoreAllCandidates
+// itself uses for a candidate — simulateRothPlan with the
+// candidate's own strategy, then planNetCost — applied
+// directly, without pricing every other candidate. The
+// spec's window, draw order, and flags are honored exactly
+// as the search prices them: a spec whose windowStopAge or
+// draw order differs from the plan's is priced on inputs
+// shifted the same way scoreAllCandidates shifts them, and
+// candidateStrategy carries the spec's ceilings, guardrail,
+// bunching, and gainsHarvest. planNetCost takes the
+// ORIGINAL inputs (as in scoreAllCandidates), so the heir
+// rate and preserve floor come from the point's own inputs.
+// Do Nothing's spec is the one exception: scoreAllCandidates
+// prices its Do Nothing entry with the literal "none"
+// strategy, never candidateStrategy, so this function does
+// the same — the repriced cost of a Do Nothing spec is then
+// identical to repriceDoNothing on the same inputs (verified
+// to the cent at all six points). One simulation per call;
+// a full scoreAllCandidates per point instead would put the
+// worker-run fast registry near its 120s cap (the same
+// measurement F2 recorded for the Do Nothing reprice).
+function repriceSpec(inputs: RothPlanInputs, spec: OptimizerCandidateSpec): number {
+  if (spec.key === DO_NOTHING_SPEC.key) {
+    const dnResult = simulateRothPlan(
+      inputs,
+      {
+        id: "none",
+        name: "Do Nothing",
+        ceilings: null,
+      },
+      undefined,
+      { leanDetail: true },
+    );
+    return planNetCost(dnResult, inputs).netCost;
+  }
+  const candidateInputs =
+    spec.windowStopAge === inputs.windowStopAge &&
+    drawOrderKey(spec.drawOrder) === drawOrderKey(inputs.drawOrder)
+      ? inputs
+      : { ...inputs, windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
+  const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), undefined, {
+    leanDetail: true,
+  });
+  return planNetCost(result, inputs).netCost;
+}
+
 function priceReturnStrip(): ReturnPoint[] {
   const inputs = samplePlanInputs();
   return RETURN_DELTAS.map((delta) => {
@@ -261,6 +365,7 @@ function priceReturnStrip(): ReturnPoint[] {
       winnerName: r.winner.spec.name,
       winnerKey: r.winner.spec.key,
       netCost: r.winner.cost.netCost,
+      winnerRepricedNetCost: repriceSpec(shifted, r.winner.spec),
       doNothingNetCost: repriceDoNothing(shifted),
     };
   });
@@ -276,6 +381,7 @@ function priceHeirStrip(): HeirPoint[] {
       winnerName: r.winner.spec.name,
       winnerKey: r.winner.spec.key,
       winnerNetCost: r.winner.cost.netCost,
+      winnerRepricedNetCost: repriceSpec(shifted, r.winner.spec),
       doNothingNetCost: r.doNothing.cost.netCost,
       doNothingRepricedNetCost: repriceDoNothing(shifted),
     };
@@ -306,10 +412,14 @@ function priceHeirStrip(): HeirPoint[] {
 //   minimum for that point (EXPECTED_MIN_COSTS_CENTS).
 //   Teeth sets the winner's cost to the measured scored[4]
 //   costs at all six points (winnerAboveMinimum) — the
-//   round-11 mutation values — and requires exactly five
-//   failures naming the violation: the 6% return point
-//   ties the minimum, so its corrupted cost equals the pin
-//   and correctly does not fail.
+//   round-11 mutation values — and requires exactly ten
+//   failures: five naming the minimality violation and
+//   five naming the winner-agreement violation (family
+//   (f) below), because a reported cost that is not the
+//   winner spec's repriced cost fires that assertion too;
+//   the 6% return point ties the minimum, so its
+//   corrupted cost equals the pin and correctly does not
+//   fail either assertion.
 //   (4) Reported-versus-repriced Do Nothing agreement
 //   (round 12, R12-F1; heir strip only — the return strip
 //   collects no reported Do Nothing): at every heir point
@@ -319,6 +429,24 @@ function priceHeirStrip(): HeirPoint[] {
 //   figure by $1,000,000 at all three points
 //   (reportedDoNothingInflated) and requires exactly
 //   three failures naming the disagreement.
+//   (5) Winner-spec agreement (round 13, R13-F1; both
+//   strips): at every point the independently repriced
+//   winner-spec cost (winnerRepricedNetCost, priced in
+//   priceReturnStrip / priceHeirStrip via repriceSpec)
+//   must equal, in integer cents, BOTH the reported
+//   winner cost AND the pinned minimum for that point.
+//   Teeth swaps the winner's spec to Do Nothing's at all
+//   six points (winnerSpecSwapped) — the round-13
+//   mutation — and requires exactly twelve failures:
+//   six naming the reported-cost disagreement and six
+//   naming the pinned-minimum disagreement. The swapped
+//   repriced cost is the stored independently repriced Do
+//   Nothing (return strip: doNothingNetCost; heir strip:
+//   doNothingRepricedNetCost), which is exactly what the
+//   swapped spec reprices to, because repriceSpec prices
+//   a Do Nothing spec through the literal "none"
+//   strategy — verified to the cent at all six points
+//   before the fix was written.
 function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
   const failures: PinFailure[] = [];
   const reversed = corrupt?.reverseMonotone === true;
@@ -397,6 +525,59 @@ function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
       );
     }
   }
+  // Family (f): the winner's spec, repriced independently,
+  // must agree with the reported winner cost AND with the
+  // pinned minimum, in integer cents, at every point. Under
+  // the spec-swap corruption the repriced cost is the Do
+  // Nothing cost the swapped spec reprices to (the stored
+  // independently repriced Do Nothing on each strip). The
+  // reported cost is read through the same winnerAboveMinimum
+  // substitution as the minimality loops, so a corrupted
+  // reported cost — the round-11 mutation's form — fires
+  // this assertion too (leg (3) produces five minimality
+  // failures and five agreement failures).
+  for (const p of ret) {
+    const repricedCents =
+      corrupt?.winnerSpecSwapped === true
+        ? Math.round(p.doNothingNetCost * 100)
+        : Math.round(p.winnerRepricedNetCost * 100);
+    const reportedCents =
+      corrupt?.winnerAboveMinimum === true
+        ? MUTATED_WINNER_COSTS_CENTS.return[p.returnPct]!
+        : Math.round(p.netCost * 100);
+    const expectedCents = EXPECTED_MIN_COSTS_CENTS.return[p.returnPct]!;
+    if (repricedCents !== reportedCents) {
+      failures.push(
+        `return strip: reported winner netCost ${fmt(reportedCents / 100)} @${p.returnPct}% does not agree with independently repriced winner ${fmt(repricedCents / 100)}`,
+      );
+    }
+    if (repricedCents !== expectedCents) {
+      failures.push(
+        `return strip: independently repriced winner netCost ${fmt(repricedCents / 100)} @${p.returnPct}% does not attain the pinned minimum ${fmt(expectedCents / 100)}`,
+      );
+    }
+  }
+  for (const p of heir) {
+    const repricedCents =
+      corrupt?.winnerSpecSwapped === true
+        ? Math.round(p.doNothingRepricedNetCost * 100)
+        : Math.round(p.winnerRepricedNetCost * 100);
+    const reportedCents =
+      corrupt?.winnerAboveMinimum === true
+        ? MUTATED_WINNER_COSTS_CENTS.heir[p.heirRatePct]!
+        : Math.round(p.winnerNetCost * 100);
+    const expectedCents = EXPECTED_MIN_COSTS_CENTS.heir[p.heirRatePct]!;
+    if (repricedCents !== reportedCents) {
+      failures.push(
+        `heir strip: reported winner netCost ${fmt(reportedCents / 100)} @${p.heirRatePct}% does not agree with independently repriced winner ${fmt(repricedCents / 100)}`,
+      );
+    }
+    if (repricedCents !== expectedCents) {
+      failures.push(
+        `heir strip: independently repriced winner netCost ${fmt(repricedCents / 100)} @${p.heirRatePct}% does not attain the pinned minimum ${fmt(expectedCents / 100)}`,
+      );
+    }
+  }
   for (const p of heir) {
     const reportedCents =
       corrupt?.reportedDoNothingInflated === true
@@ -433,6 +614,7 @@ function runSet(opts?: { includeHeir?: boolean; corrupt?: Corrupt }): {
       heirPoints: strips.heirStrip.length,
       minimumPins: strips.returnStrip.length + strips.heirStrip.length,
       doNothingAgreementPins: strips.heirStrip.length,
+      winnerAgreementPins: strips.returnStrip.length + strips.heirStrip.length,
       failures: failures.length,
     },
     strips,
@@ -459,7 +641,7 @@ function resultFrom(
     name,
     pass,
     detail: pass
-      ? `Sensitivity strips monotone in net cost, every winner strictly beats an independently repriced Do Nothing, every winner attains the pinned minimum net cost at its point, and every reported Do Nothing agrees with its independently repriced Do Nothing to the cent. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
+      ? `Sensitivity strips monotone in net cost, every winner strictly beats an independently repriced Do Nothing, every winner attains the pinned minimum net cost at its point, every reported winner net cost agrees with the independently repriced winner specification to the cent and that repriced cost attains the pinned minimum, and every reported Do Nothing agrees with its independently repriced Do Nothing to the cent. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
       : `${set.failures.length} strip violation(s) — return strip: ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText} See failures.`,
     failures: set.failures.slice(0, 25),
     counts: set.counts,
@@ -489,7 +671,7 @@ function runSensStripsTeeth(): HardeningTeethResult {
   // — the heir strip has teeth too, so teeth cannot run on
   // the return strip alone. Both corrupted evaluations reuse
   // the clean run's priced strips — no extra optimizer
-  // searches for the evaluation itself. Four legs:
+  // searches for the evaluation itself. Five legs:
   //   (1) the monotonicity reversed inside the real loops,
   //   so every adjacent pair in both strips (2 return + 2
   //   heir-winner + 2 heir-Do-Nothing) must fail and
@@ -501,13 +683,21 @@ function runSensStripsTeeth(): HardeningTeethResult {
   //   must appear.
   //   (3) the winner's cost set to the measured scored[4]
   //   costs at all six points (the round-11 mid-pack
-  //   substitution values), so exactly five failures naming
-  //   the minimality violation must appear — the 6% return
-  //   point ties the minimum and correctly does not fail.
+  //   substitution values), so exactly ten failures must
+  //   appear — five naming the minimality violation and
+  //   five naming the winner-agreement violation, because
+  //   the corrupted reported cost is not the winner spec's
+  //   repriced cost either (family (f)); the 6% return
+  //   point ties the minimum and correctly fails neither.
   //   (4) the reported Do Nothing inflated by $1,000,000 at
   //   all three heir points (the round-12 reviewer's
   //   mutation), so exactly three failures naming the
   //   agreement violation must appear — and nothing else.
+  //   (5) the winner's spec swapped to Do Nothing's at all
+  //   six points (the round-13 reviewer's mutation), so
+  //   exactly twelve failures must appear — six naming the
+  //   reported-cost disagreement and six naming the
+  //   pinned-minimum disagreement, and nothing else.
   const clean = runSet();
   if (clean.failures.length !== 0) {
     return {
@@ -531,13 +721,19 @@ function runSensStripsTeeth(): HardeningTeethResult {
   const reportedDnInflatedFailures = evaluateStrips(clean.strips, {
     reportedDoNothingInflated: true,
   });
+  const winnerSpecSwappedCaseId =
+    "strips winner spec swapped to Do Nothing (both strips)";
+  const winnerSpecSwappedFailures = evaluateStrips(clean.strips, {
+    winnerSpecSwapped: true,
+  });
   return {
-    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId} | ${minAboveCaseId} | ${reportedDnInflatedCaseId}`,
+    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId} | ${minAboveCaseId} | ${reportedDnInflatedCaseId} | ${winnerSpecSwappedCaseId}`,
     failedCount:
       reversedFailures.length +
       winnerEqualsDnFailures.length +
       minAboveFailures.length +
-      reportedDnInflatedFailures.length,
+      reportedDnInflatedFailures.length +
+      winnerSpecSwappedFailures.length,
     pass:
       reversedFailures.length === 6 &&
       reversedFailures.every((f) => f.includes("(reversed expectation)")) &&
@@ -545,12 +741,28 @@ function runSensStripsTeeth(): HardeningTeethResult {
       winnerEqualsDnFailures.every((f) =>
         f.includes("does not strictly beat independently repriced Do Nothing"),
       ) &&
-      minAboveFailures.length === 5 &&
-      minAboveFailures.every((f) => f.includes("does not attain the pinned minimum")) &&
+      minAboveFailures.length === 10 &&
+      minAboveFailures.filter(
+        (f) =>
+          f.includes("does not attain the pinned minimum") &&
+          !f.includes("independently repriced winner"),
+      ).length === 5 &&
+      minAboveFailures.filter((f) =>
+        f.includes("does not agree with independently repriced winner"),
+      ).length === 5 &&
       reportedDnInflatedFailures.length === 3 &&
       reportedDnInflatedFailures.every((f) =>
         f.includes("does not agree with independently repriced Do Nothing"),
-      ),
+      ) &&
+      winnerSpecSwappedFailures.length === 12 &&
+      winnerSpecSwappedFailures.filter((f) =>
+        f.includes("does not agree with independently repriced winner"),
+      ).length === 6 &&
+      winnerSpecSwappedFailures.filter(
+        (f) =>
+          f.includes("independently repriced winner netCost") &&
+          f.includes("does not attain the pinned minimum"),
+      ).length === 6,
   };
 }
 
