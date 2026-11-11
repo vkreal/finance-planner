@@ -56,12 +56,30 @@
    identical entry — verified to the cent — at one
    simulation instead of a full search.)
 
-   Residual limitation (recorded, not built): strict-beats-DN
-   does not catch a mid-pack substitution — a winner that
-   is not Do Nothing but is not the cheapest candidate
-   still beats Do Nothing. Full minimality would require
-   pinning a known-good winner spec (the 32% bracket key);
-   that is an option, not part of this check.
+   (d) Minimality (round 11, R11-F1): at every point the
+   reported winner's net cost must EQUAL the pinned
+   minimum net cost for that point (EXPECTED_MIN_COSTS_CENTS
+   below, exact cents, derived from the verified-correct
+   engine on the sample household). This closes the
+   residual limitation the round-10 F2 fix recorded:
+   strict-beats-DN alone does not catch a mid-pack
+   substitution — ChatGPT round 11 demonstrated a
+   sensitivity helper returning scored[4] as the winner
+   passing all 26 checks (return excess $12,494.53 @4%,
+   $9,717.37 @5%, $0 @6% where scored[4] ties the winner;
+   heir excess $9,717.37 at all three rates). The pins are
+   the independent reference, as in sensCaps (F4): a
+   reference taken from the same response it checks would
+   absorb the substitution. Exact winner NAMES are not
+   pinned — when candidates tie at the minimum (6% return,
+   where several candidates share the winner's cost) any
+   winner attaining the minimum passes. A legitimate engine
+   change that moves a minimum must update the pins
+   deliberately; never adjust a pin to make a failing check
+   pass. The pins add no optimizer searches — a live
+   full-search minimality check was measured at ~4s per
+   point and would have put the full registry near the
+   120s cap, so the pins are the design.
 
    Runtime: ~3.4s per optimizer call on the sample household
    (probe). Fast prices the return strip only (3 searches,
@@ -128,7 +146,7 @@ type Strips = {
   heirStrip: HeirPoint[];
 };
 
-type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean };
+type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean; winnerAboveMinimum?: boolean };
 
 const RETURN_DELTAS = [-1, 0, 1];
 const HEIR_RATES = [0, 22, 32];
@@ -136,6 +154,37 @@ const HEIR_RATES = [0, 22, 32];
 function fmt(n: number): string {
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+/* ---- Literal minimum-cost pins (round 11, R11-F1) ------------
+   The minimum net cost the engine must report for the sample
+   household at each strip point, in exact cents — the
+   independent reference for the minimality assertion. The
+   winner's cost at a point must equal its pin; a mid-pack
+   substitution (a winner that beats Do Nothing but is not
+   the cheapest) fails. MUTATED_WINNER_COSTS_CENTS holds the
+   measured costs of the round-11 reviewer's mutation
+   (sensitivity helpers returning scored[4] as the winner)
+   at the same points — teeth sets the winner's cost to
+   these values and requires the minimality assertion to
+   fire. Note the 6% return point: the mutated cost equals
+   the minimum there (scored[4] ties the winner), so that
+   point correctly does not fail under the mutation. Any
+   legitimate engine change that moves a minimum must
+   update these pins deliberately. */
+const EXPECTED_MIN_COSTS_CENTS: {
+  return: Record<number, number>;
+  heir: Record<number, number>;
+} = {
+  return: { 4: 49359430, 5: 57632507, 6: 69966065 },
+  heir: { 0: 57632507, 22: 57632507, 32: 57632507 },
+};
+const MUTATED_WINNER_COSTS_CENTS: {
+  return: Record<number, number>;
+  heir: Record<number, number>;
+} = {
+  return: { 4: 50608883, 5: 58604244, 6: 69966065 },
+  heir: { 0: 58604244, 22: 58604244, 32: 58604244 },
+};
 
 // Price Do Nothing INDEPENDENTLY of the sensitivity helpers:
 // the same two calls scoreAllCandidates itself uses for its
@@ -218,6 +267,15 @@ function priceHeirStrip(): HeirPoint[] {
 //   Do Nothing's cost at all three points
 //   (winnerEqualsDoNothing) — the equality case — and
 //   requires exactly three failures naming the violation.
+//   (3) Minimality (round 11, R11-F1): at every point the
+//   reported winner's net cost must EQUAL the pinned
+//   minimum for that point (EXPECTED_MIN_COSTS_CENTS).
+//   Teeth sets the winner's cost to the measured scored[4]
+//   costs at all six points (winnerAboveMinimum) — the
+//   round-11 mutation values — and requires exactly five
+//   failures naming the violation: the 6% return point
+//   ties the minimum, so its corrupted cost equals the pin
+//   and correctly does not fail.
 function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
   const failures: PinFailure[] = [];
   const reversed = corrupt?.reverseMonotone === true;
@@ -272,6 +330,30 @@ function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
       );
     }
   }
+  for (const p of ret) {
+    const reportedCents =
+      corrupt?.winnerAboveMinimum === true
+        ? MUTATED_WINNER_COSTS_CENTS.return[p.returnPct]!
+        : Math.round(p.netCost * 100);
+    const expectedCents = EXPECTED_MIN_COSTS_CENTS.return[p.returnPct]!;
+    if (reportedCents !== expectedCents) {
+      failures.push(
+        `return strip: winner netCost ${fmt(reportedCents / 100)} @${p.returnPct}% does not attain the pinned minimum ${fmt(expectedCents / 100)}`,
+      );
+    }
+  }
+  for (const p of heir) {
+    const reportedCents =
+      corrupt?.winnerAboveMinimum === true
+        ? MUTATED_WINNER_COSTS_CENTS.heir[p.heirRatePct]!
+        : Math.round(p.winnerNetCost * 100);
+    const expectedCents = EXPECTED_MIN_COSTS_CENTS.heir[p.heirRatePct]!;
+    if (reportedCents !== expectedCents) {
+      failures.push(
+        `heir strip: winner netCost ${fmt(reportedCents / 100)} @${p.heirRatePct}% does not attain the pinned minimum ${fmt(expectedCents / 100)}`,
+      );
+    }
+  }
   return failures;
 }
 
@@ -294,6 +376,7 @@ function runSet(opts?: { includeHeir?: boolean; corrupt?: Corrupt }): {
       searches: strips.returnStrip.length + strips.heirStrip.length,
       returnPoints: strips.returnStrip.length,
       heirPoints: strips.heirStrip.length,
+      minimumPins: strips.returnStrip.length + strips.heirStrip.length,
       failures: failures.length,
     },
     strips,
@@ -320,7 +403,7 @@ function resultFrom(
     name,
     pass,
     detail: pass
-      ? `Sensitivity strips monotone in net cost, and every winner strictly beats an independently repriced Do Nothing. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
+      ? `Sensitivity strips monotone in net cost, every winner strictly beats an independently repriced Do Nothing, and every winner attains the pinned minimum net cost at its point. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
       : `${set.failures.length} strip violation(s) — return strip: ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText} See failures.`,
     failures: set.failures.slice(0, 25),
     counts: set.counts,
@@ -360,6 +443,11 @@ function runSensStripsTeeth(): HardeningTeethResult {
   //   winner-beats-DN assertion must catch), so exactly
   //   three failures naming the violation and nothing else
   //   must appear.
+  //   (3) the winner's cost set to the measured scored[4]
+  //   costs at all six points (the round-11 mid-pack
+  //   substitution values), so exactly five failures naming
+  //   the minimality violation must appear — the 6% return
+  //   point ties the minimum and correctly does not fail.
   const clean = runSet();
   if (clean.failures.length !== 0) {
     return {
@@ -374,16 +462,23 @@ function runSensStripsTeeth(): HardeningTeethResult {
   const winnerEqualsDnFailures = evaluateStrips(clean.strips, {
     winnerEqualsDoNothing: true,
   });
+  const minAboveCaseId = "strips winner set to the mid-pack scored[4] cost (both strips)";
+  const minAboveFailures = evaluateStrips(clean.strips, {
+    winnerAboveMinimum: true,
+  });
   return {
-    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId}`,
-    failedCount: reversedFailures.length + winnerEqualsDnFailures.length,
+    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId} | ${minAboveCaseId}`,
+    failedCount:
+      reversedFailures.length + winnerEqualsDnFailures.length + minAboveFailures.length,
     pass:
       reversedFailures.length === 6 &&
       reversedFailures.every((f) => f.includes("(reversed expectation)")) &&
       winnerEqualsDnFailures.length === 3 &&
       winnerEqualsDnFailures.every((f) =>
         f.includes("does not strictly beat independently repriced Do Nothing"),
-      ),
+      ) &&
+      minAboveFailures.length === 5 &&
+      minAboveFailures.every((f) => f.includes("does not attain the pinned minimum")),
   };
 }
 

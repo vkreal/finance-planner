@@ -124,7 +124,10 @@
      Do Nothing repriced independently (the same two calls
      scoreAllCandidates uses for its Do Nothing entry,
      applied directly), never the sensitivity helper's own
-     doNothing field. Fast runs the return strip only
+     doNothing field. The winner must also attain the
+     pinned minimum net cost at every point (literal
+     cent-pins per point; a mid-pack substitution is the
+     third teeth leg). Fast runs the return strip only
      (~10s); full runs both (~20s); teeth re-prices both
      strips (~18s) in either mode, so the module costs the
      suite ~28s fast / ~37s full.
