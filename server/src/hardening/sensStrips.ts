@@ -46,9 +46,33 @@
    would still pass. The repriced Do Nothing is a second
    pricing of the same candidate through the same code
    path, so on a clean tree it agrees with the strip's own
-   Do Nothing to the cent; any disagreement between the two
-   legs is itself a failure of the strict comparison only
-   when the winner does not beat the repriced figure.
+   Do Nothing to the cent. That agreement is now asserted
+   directly by family (e) below (round 12, R12-F1): the
+   strict comparison alone cannot catch a wrong reported
+   Do Nothing that still loses to the winner — ChatGPT
+   round 12 demonstrated the helper's reported Do Nothing
+   inflated by $1,000,000 at every heir point passing all
+   26 checks.
+
+   (e) Reported-versus-repriced Do Nothing agreement (round
+   12, R12-F1): at every heir point the reported Do
+   Nothing netCost (the sensitivity helper's own doNothing
+   field) must EQUAL, in integer cents, the independently
+   repriced Do Nothing for the same shifted inputs. The
+   reported figure is not decorative: actions.ts computes
+   savingVsDoNothing from it, so a wrong reported Do
+   Nothing overstates conversion savings without bound
+   while every other assertion still passes — the winner
+   still beats the repriced figure, still attains the
+   pinned minimum, and the strips stay monotone. The
+   assertion is integer cents, no tolerance: on a clean
+   tree the two pricings of the same candidate agree
+   exactly. Teeth inflates the reported Do Nothing by
+   $1,000,000 at all three heir points (the round-12
+   reviewer's mutation values) and requires exactly three
+   failures naming the disagreement. No additional
+   optimizer searches — the F2 independent reprice
+   already runs.
    (The direct two-call reprice, rather than a full
    scoreAllCandidates per point, is deliberate: the full
    search per point put the worker-run fast registry at
@@ -137,7 +161,9 @@ type HeirPoint = {
   // Do Nothing at this heir rate, repriced independently
   // (see repriceDoNothing) — the reference for the
   // strict winner-beats-DN assertion. On a clean tree it
-  // agrees with doNothingNetCost to the cent.
+  // agrees with doNothingNetCost to the cent; that
+  // agreement itself is asserted by family (e) below
+  // (round 12, R12-F1).
   doNothingRepricedNetCost: number;
 };
 
@@ -146,7 +172,7 @@ type Strips = {
   heirStrip: HeirPoint[];
 };
 
-type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean; winnerAboveMinimum?: boolean };
+type Corrupt = { reverseMonotone?: boolean; winnerEqualsDoNothing?: boolean; winnerAboveMinimum?: boolean; reportedDoNothingInflated?: boolean };
 
 const RETURN_DELTAS = [-1, 0, 1];
 const HEIR_RATES = [0, 22, 32];
@@ -185,6 +211,14 @@ const MUTATED_WINNER_COSTS_CENTS: {
   return: { 4: 50608883, 5: 58604244, 6: 69966065 },
   heir: { 0: 58604244, 22: 58604244, 32: 58604244 },
 };
+
+/* The round-12 reviewer's mutation value for the reported
+   Do Nothing benchmark: the helper's reported doNothing
+   cost inflated by exactly $1,000,000 (100,000,000 cents)
+   at every heir point. Teeth adds this offset to the
+   reported figure and requires the agreement assertion
+   to fire once per point. */
+const REPORTED_DN_INFLATION_CENTS = 100_000_000;
 
 // Price Do Nothing INDEPENDENTLY of the sensitivity helpers:
 // the same two calls scoreAllCandidates itself uses for its
@@ -276,6 +310,15 @@ function priceHeirStrip(): HeirPoint[] {
 //   failures naming the violation: the 6% return point
 //   ties the minimum, so its corrupted cost equals the pin
 //   and correctly does not fail.
+//   (4) Reported-versus-repriced Do Nothing agreement
+//   (round 12, R12-F1; heir strip only — the return strip
+//   collects no reported Do Nothing): at every heir point
+//   the reported Do Nothing netCost must equal, in
+//   integer cents, the independently repriced Do Nothing
+//   for the same inputs. Teeth inflates the reported
+//   figure by $1,000,000 at all three points
+//   (reportedDoNothingInflated) and requires exactly
+//   three failures naming the disagreement.
 function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
   const failures: PinFailure[] = [];
   const reversed = corrupt?.reverseMonotone === true;
@@ -354,6 +397,18 @@ function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
       );
     }
   }
+  for (const p of heir) {
+    const reportedCents =
+      corrupt?.reportedDoNothingInflated === true
+        ? Math.round(p.doNothingNetCost * 100) + REPORTED_DN_INFLATION_CENTS
+        : Math.round(p.doNothingNetCost * 100);
+    const repricedCents = Math.round(p.doNothingRepricedNetCost * 100);
+    if (reportedCents !== repricedCents) {
+      failures.push(
+        `heir strip: reported Do Nothing netCost ${fmt(reportedCents / 100)} @${p.heirRatePct}% does not agree with independently repriced Do Nothing ${fmt(repricedCents / 100)}`,
+      );
+    }
+  }
   return failures;
 }
 
@@ -377,6 +432,7 @@ function runSet(opts?: { includeHeir?: boolean; corrupt?: Corrupt }): {
       returnPoints: strips.returnStrip.length,
       heirPoints: strips.heirStrip.length,
       minimumPins: strips.returnStrip.length + strips.heirStrip.length,
+      doNothingAgreementPins: strips.heirStrip.length,
       failures: failures.length,
     },
     strips,
@@ -403,7 +459,7 @@ function resultFrom(
     name,
     pass,
     detail: pass
-      ? `Sensitivity strips monotone in net cost, every winner strictly beats an independently repriced Do Nothing, and every winner attains the pinned minimum net cost at its point. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
+      ? `Sensitivity strips monotone in net cost, every winner strictly beats an independently repriced Do Nothing, every winner attains the pinned minimum net cost at its point, and every reported Do Nothing agrees with its independently repriced Do Nothing to the cent. Return strip (winner netCost non-decreasing): ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText}`
       : `${set.failures.length} strip violation(s) — return strip: ${returnText}. Do Nothing (independently repriced): ${returnDnText}.${heirText} See failures.`,
     failures: set.failures.slice(0, 25),
     counts: set.counts,
@@ -433,7 +489,7 @@ function runSensStripsTeeth(): HardeningTeethResult {
   // — the heir strip has teeth too, so teeth cannot run on
   // the return strip alone. Both corrupted evaluations reuse
   // the clean run's priced strips — no extra optimizer
-  // searches for the evaluation itself. Two legs:
+  // searches for the evaluation itself. Four legs:
   //   (1) the monotonicity reversed inside the real loops,
   //   so every adjacent pair in both strips (2 return + 2
   //   heir-winner + 2 heir-Do-Nothing) must fail and
@@ -448,6 +504,10 @@ function runSensStripsTeeth(): HardeningTeethResult {
   //   substitution values), so exactly five failures naming
   //   the minimality violation must appear — the 6% return
   //   point ties the minimum and correctly does not fail.
+  //   (4) the reported Do Nothing inflated by $1,000,000 at
+  //   all three heir points (the round-12 reviewer's
+  //   mutation), so exactly three failures naming the
+  //   agreement violation must appear — and nothing else.
   const clean = runSet();
   if (clean.failures.length !== 0) {
     return {
@@ -466,10 +526,18 @@ function runSensStripsTeeth(): HardeningTeethResult {
   const minAboveFailures = evaluateStrips(clean.strips, {
     winnerAboveMinimum: true,
   });
+  const reportedDnInflatedCaseId =
+    "strips reported Do Nothing inflated by $1,000,000 (all three heir points)";
+  const reportedDnInflatedFailures = evaluateStrips(clean.strips, {
+    reportedDoNothingInflated: true,
+  });
   return {
-    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId} | ${minAboveCaseId}`,
+    corruptedCaseId: `${reversedCaseId} | ${winnerEqualsDnCaseId} | ${minAboveCaseId} | ${reportedDnInflatedCaseId}`,
     failedCount:
-      reversedFailures.length + winnerEqualsDnFailures.length + minAboveFailures.length,
+      reversedFailures.length +
+      winnerEqualsDnFailures.length +
+      minAboveFailures.length +
+      reportedDnInflatedFailures.length,
     pass:
       reversedFailures.length === 6 &&
       reversedFailures.every((f) => f.includes("(reversed expectation)")) &&
@@ -478,7 +546,11 @@ function runSensStripsTeeth(): HardeningTeethResult {
         f.includes("does not strictly beat independently repriced Do Nothing"),
       ) &&
       minAboveFailures.length === 5 &&
-      minAboveFailures.every((f) => f.includes("does not attain the pinned minimum")),
+      minAboveFailures.every((f) => f.includes("does not attain the pinned minimum")) &&
+      reportedDnInflatedFailures.length === 3 &&
+      reportedDnInflatedFailures.every((f) =>
+        f.includes("does not agree with independently repriced Do Nothing"),
+      ),
   };
 }
 
