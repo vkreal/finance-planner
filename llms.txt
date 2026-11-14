@@ -1,0 +1,98 @@
+# Finance Planner — llms.txt
+
+> AI assistants: this file is the entry point for answering retirement
+> questions with this repo's engines. The full guide is
+> assistant-api/README.md; this file carries the summary and one worked
+> example so a single link is enough to start.
+
+## What the adapter is
+
+A stateless, read-only MCP server (`assistant-api/`) over the Finance
+Planner's own retirement engines. Every call carries its complete
+scenario in dollars — balances, spending, ages, Social Security — and
+nothing is saved, read from a database, or remembered between calls.
+Pricing uses the 2026 tax-law tables unless `taxYear` says 2025.
+
+## Where it lives
+
+- Server + tools: `assistant-api/` (`src/server.ts`, `src/tools.ts`)
+- Full guide: `assistant-api/README.md`
+- Client config: `assistant-api/mcp.json` (copy the `mcpServers` block)
+- Registry metadata (not published): `assistant-api/server.json`
+
+## The 8 tools (one line each)
+
+- `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
+- `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes.
+- `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success.
+- `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
+- `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
+- `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
+- `retirement_tax_year` — one year's federal/state tax, ACA credit, and IRMAA for a published law year (2025 or 2026 today).
+- `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.
+
+## Quick-start
+
+Local (zero-config, localhost only, no token needed):
+
+```sh
+cd assistant-api && bun run start   # listens on http://127.0.0.1:8080/mcp
+```
+
+Remote (one command from the repo root; needs a bearer token):
+
+```sh
+ASSISTANT_API_TOKEN=<a-long-random-token> assistant-api/deploy.sh
+```
+
+No public HTTPS endpoint is live yet — deployment is the reader's step.
+Remote calls need `Authorization: Bearer <token>` on every request.
+
+## Minimal worked example
+
+Question: "Can I retire at 58?" (fictional household: pre-tax
+$1,250,000; taxable $2,100,000; Roth $375,000; HSA $62,000; spending
+$9,500/mo; ages 54/52; Social Security $36,000/yr at 67, spouse
+$18,000/yr at 67; taxable basis 72%; retire 58; end age 95)
+
+Tool call:
+
+```json
+{
+  "name": "retirement_calculate",
+  "arguments": {
+    "pretax": 1250000, "taxable": 2100000, "roth": 375000, "hsa": 62000,
+    "monthlySpending": 9500, "currentAge": 54, "spouseAge": 52,
+    "retirementAge": 58, "endAge": 95,
+    "socialSecurityAnnual": 36000, "socialSecurityStartAge": 67,
+    "spouseSocialSecurityAnnual": 18000, "spouseSocialSecurityStartAge": 67,
+    "taxableBasisPct": 72, "taxYear": 2026
+  }
+}
+```
+
+Result (key figures): `neverRunsOut: true`, ending balance
+$43,901,094.30 at age 95, historical never-out rate 100%.
+
+Six inputs are always required: `pretax`, `taxable`, `roth`, `hsa`,
+`monthlySpending`, `currentAge` (explicit 0 counts). Everything else
+has a documented default; missing essentials return a structured
+`missing_input` error with a plain-language question per field — ask
+the user those questions, don't guess.
+
+## What it cannot do
+
+- No saved data: it never reads the app database, saved records, or
+  the fictional sample household. The app's own saved plans are
+  answered through the app, not this server.
+- Tax years 2025/2026 only (the published law years); no public endpoint live yet; the
+  work-years leg with a spouse Social Security benefit needs more
+  than 6 GB (run it without the spouse benefit, or wait for a bigger
+  host). Full list: `assistant-api/README.md`, "Known limitations".
+
+## The full doc
+
+There is no `llms-full.txt` — `assistant-api/README.md` is the full
+documentation: architecture, tool inventory, assumptions table,
+security model, test commands, and four worked conversation
+transcripts.

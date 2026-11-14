@@ -1,0 +1,1 @@
+{"description":"Stateless read-only AI adapter over the Finance Planner engines (MCP Streamable HTTP).","engines":{"bun":">=1.2"},"name":"finance-planner-assistant-api","private":true,"scripts":{"cli":"bun src/cli.ts","start":"bun src/server.ts","test":"bun test tests/","typecheck":"bun x tsc --noEmit -p tsconfig.json"},"type":"module","version":"0.1.0"}
