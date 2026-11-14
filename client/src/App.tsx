@@ -41,11 +41,13 @@ EMPTY_IMPORT_SETTINGS,
 buildCashOutProposals,
 combineDebitCreditAmount,
 compareCashOutProposal,
-detectImportHeader,
+deriveTradeAmountCents,
 findImportProfile,
+findImportSections,
 flagExactFitIdDuplicates,
 flagImportDuplicates,
 guessImportMapping,
+guessPositionalMapping,
 importHeaderFingerprint,
 normalizeImportDate,
 parseImportAmount,
@@ -8519,7 +8521,7 @@ function ImportPanel({
     if (looksLikeOfx(csvText)) {
       const res = parseOfx(csvText);
       if (!res.ok) {
-        return { error: res.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null };
+        return { error: res.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null, sections: [] as { headerLower: string[] | null; body: string[][] }[], positionalMapping: null as ImportColumnMapping | null };
       }
       const account =
         res.accounts.find((a) => a.transactions.length > 0) ??
@@ -8534,6 +8536,8 @@ function ImportPanel({
         headerLower: null as string[] | null,
         body: [] as string[][],
         columnCount: 0,
+        sections: [] as { headerLower: string[] | null; body: string[][] }[],
+        positionalMapping: null as ImportColumnMapping | null,
         ofx: {
           accounts: res.accounts,
           account,
@@ -8543,17 +8547,51 @@ function ImportPanel({
     }
     const parsed = parseCsvChecked(csvText);
     if ("error" in parsed) {
-      return { error: parsed.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null };
+      return { error: parsed.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null, sections: [] as { headerLower: string[] | null; body: string[][] }[], positionalMapping: null as ImportColumnMapping | null };
     }
     const raw = parsed.rows;
-    const first = raw[0] ?? [];
-    const hasHeader = raw.length > 0 && detectImportHeader(first);
+    // A file can hold several header sections — sectioned
+    // exports carry one header row per section, each with its
+    // own column layout — so find them all (findImportSections
+    // in importParseCore): each section's body runs from just
+    // after its header to just before the next, and rows before
+    // the first header (a title line, a summary preamble) are
+    // ignored. The first section's header is the file's header
+    // for the mapping selects and the profile fingerprint.
+    // When NO row scans as a header, the file is headerless:
+    // one section over the whole file, read under a positional
+    // mapping guessed from how its rows actually parse
+    // (guessPositionalMapping) rather than a fixed layout.
+    const found = findImportSections(raw);
+    if (found.length > 0) {
+      const sections = found.map((f, i) => {
+        const headerRow = raw[f.headerIndex] ?? [];
+        const next = found[i + 1]?.headerIndex ?? raw.length;
+        return {
+          headerLower: headerRow.map((c) => c.trim().toLowerCase()) as string[] | null,
+          body: raw.slice(f.headerIndex + 1, next),
+        };
+      });
+      const firstHeader = raw[found[0]?.headerIndex ?? 0] ?? [];
+      return {
+        error: "",
+        header: firstHeader.map((c) => c.trim()),
+        headerLower: firstHeader.map((c) => c.trim().toLowerCase()),
+        body: sections[0]?.body ?? [],
+        columnCount: raw.reduce((n, r) => Math.max(n, r.length), 0),
+        sections,
+        positionalMapping: null as ImportColumnMapping | null,
+        ofx: null,
+      };
+    }
     return {
       error: "",
-      header: hasHeader ? first.map((c) => c.trim()) : null,
-      headerLower: hasHeader ? first.map((c) => c.trim().toLowerCase()) : null,
-      body: hasHeader ? raw.slice(1) : raw,
+      header: null,
+      headerLower: null,
+      body: raw,
       columnCount: raw.reduce((n, r) => Math.max(n, r.length), 0),
+      sections: [{ headerLower: null as string[] | null, body: raw }],
+      positionalMapping: guessPositionalMapping(raw),
       ofx: null,
     };
   }, [csvText]);
@@ -8570,7 +8608,7 @@ function ImportPanel({
     const ofxAccount = parsedFile?.ofx?.account ?? null;
     const key = ofxAccount
       ? `ofx|${ofxAccountKey(ofxAccount)}|${settingsLoaded ? "loaded" : "pending"}`
-      : `${header ? importHeaderFingerprint(header) : "no-header"}|${settingsLoaded ? "loaded" : "pending"}`;
+      : `${header ? importHeaderFingerprint(header) : `no-header|${JSON.stringify(parsedFile?.positionalMapping ?? null)}`}|${settingsLoaded ? "loaded" : "pending"}`;
     if (appliedKeyRef.current === key) return;
     appliedKeyRef.current = key;
     setPreview(null);
@@ -8609,7 +8647,11 @@ function ImportPanel({
     }
     setOfxNotice("");
     if (!header) {
-      setMapping(guessImportMapping(null));
+      /* Headerless file: the positional mapping guessed from
+         the file's own rows (its columns are unlabelled, so
+         there is no profile to apply). Falls back to the fixed
+         positional default when no guess was made. */
+      setMapping(parsedFile?.positionalMapping ?? guessImportMapping(null));
       setProfileNotice("");
       return;
     }
@@ -8797,21 +8839,40 @@ function ImportPanel({
       }
       return { rows: out, skipped: parsedFile.ofx.skippedTxns, bothFilled: 0 };
     }
-    const body = parsedFile.body;
-    if (body.length === 0) {
+    // Rows come from every section of the file, in file order.
+    // The first section (or a headerless file's single section)
+    // reads under the mapping on screen — the user's overrides
+    // and any saved profile live there; each later section of a
+    // sectioned file reads under its own header's guessed
+    // mapping, since its columns need not line up with the
+    // first section's.
+    const sections = parsedFile.sections;
+    const totalBodyRows = sections.reduce((n, s) => n + s.body.length, 0);
+    if (totalBodyRows === 0) {
       setError("That file has no data rows to import.");
       return null;
     }
     // Money comes from one amount column, or from a debit/credit
     // pair (IM-2): a mapped amount column wins; with none mapped,
     // a mapped debit or credit column switches the row reading
-    // to the pair rule in importParseCore.
+    // to the pair rule in importParseCore. With no money column
+    // at all, a complete quantity / price / action triple
+    // derives the amount per row (deriveTradeAmountCents). The
+    // explicit choose-a-column errors below guard the on-screen
+    // mapping; a later section whose own guess finds no money
+    // source simply contributes skipped rows.
     const pairMode = mapping.amount < 0 && (mapping.debit >= 0 || mapping.credit >= 0);
-    if (mapping.amount < 0 && !pairMode) {
+    const tradeMode =
+      mapping.amount < 0 &&
+      !pairMode &&
+      mapping.quantity >= 0 &&
+      mapping.price >= 0 &&
+      mapping.action >= 0;
+    if (sections.length <= 1 && mapping.amount < 0 && !pairMode && !tradeMode) {
       setError("Choose which column holds the amount — or map a debit and/or credit column instead.");
       return null;
     }
-    if (mapping.date < 0 || mapping.description < 0) {
+    if (sections.length <= 1 && (mapping.date < 0 || mapping.description < 0)) {
       setError("Choose which columns hold the date and the description.");
       return null;
     }
@@ -8833,56 +8894,65 @@ function ImportPanel({
     const out: TxnInput[] = [];
     let skipped = 0;
     let bothFilled = 0;
-    for (const r of body) {
-      const date = normalizeImportDate(r[mapping.date] ?? "");
-      const desc = (r[mapping.description] ?? "").trim();
-      let amount: number | null;
-      if (pairMode) {
-        const combined = combineDebitCreditAmount(
-          mapping.debit >= 0 ? (r[mapping.debit] ?? "") : "",
-          mapping.credit >= 0 ? (r[mapping.credit] ?? "") : "",
-        );
-        amount = combined?.cents ?? null;
-        if (combined?.bothFilled) bothFilled++;
-      } else {
-        amount = parseImportAmount(r[mapping.amount] ?? "");
+    sections.forEach((sec, secIndex) => {
+      const m =
+        secIndex === 0 || sec.headerLower == null
+          ? mapping
+          : guessImportMapping(sec.headerLower);
+      const secPairMode = m.amount < 0 && (m.debit >= 0 || m.credit >= 0);
+      for (const r of sec.body) {
+        const date = normalizeImportDate(r[m.date] ?? "");
+        const desc = (r[m.description] ?? "").trim();
+        let amount: number | null;
+        if (secPairMode) {
+          const combined = combineDebitCreditAmount(
+            m.debit >= 0 ? (r[m.debit] ?? "") : "",
+            m.credit >= 0 ? (r[m.credit] ?? "") : "",
+          );
+          amount = combined?.cents ?? null;
+          if (combined?.bothFilled) bothFilled++;
+        } else if (m.amount >= 0) {
+          amount = parseImportAmount(r[m.amount] ?? "");
+        } else {
+          amount = deriveTradeAmountCents(r, m);
+        }
+        // A description over the server's 200-character limit can never
+        // import: left in, it would reject its whole 500-row batch and
+        // every retry of it. Count it as skipped here, like an
+        // unreadable date, so the rest of the file still imports.
+        if (!date || !desc || desc.length > 200 || amount == null) {
+          skipped++;
+          continue;
+        }
+        let kind: TxnInput["kind"] = "spending";
+        const explicit = m.kind >= 0 ? (r[m.kind] ?? "").trim().toLowerCase() : "";
+        if (explicit === "card_payment" || explicit === "transfer" || explicit === "spending") {
+          kind = explicit;
+        } else if (template === "checking") {
+          const d = desc.toLowerCase();
+          if (cardKeys.some((k) => d.includes(k))) kind = "card_payment";
+          else if (transferKeys.some((k) => d.includes(k))) kind = "transfer";
+        }
+        const signed = outSign === "positive" ? amount : -amount;
+        out.push({
+          date,
+          description: desc,
+          amountCents: signed,
+          sourceType: kind === "spending" ? template : "checking",
+          accountName: kind === "spending" ? acctName : "Checking",
+          kind,
+          // Category is a grouping label only; the server caps it at
+          // 40 characters, so trim a longer one to the cap rather than
+          // lose the whole transaction over its label.
+          fitId: null,
+          category:
+            m.category >= 0 && (r[m.category] ?? "").trim()
+              ? (r[m.category] ?? "").trim().slice(0, 40)
+              : "Other",
+          yearlyExpenseId: null,
+        });
       }
-      // A description over the server's 200-character limit can never
-      // import: left in, it would reject its whole 500-row batch and
-      // every retry of it. Count it as skipped here, like an
-      // unreadable date, so the rest of the file still imports.
-      if (!date || !desc || desc.length > 200 || amount == null) {
-        skipped++;
-        continue;
-      }
-      let kind: TxnInput["kind"] = "spending";
-      const explicit = mapping.kind >= 0 ? (r[mapping.kind] ?? "").trim().toLowerCase() : "";
-      if (explicit === "card_payment" || explicit === "transfer" || explicit === "spending") {
-        kind = explicit;
-      } else if (template === "checking") {
-        const d = desc.toLowerCase();
-        if (cardKeys.some((k) => d.includes(k))) kind = "card_payment";
-        else if (transferKeys.some((k) => d.includes(k))) kind = "transfer";
-      }
-      const signed = outSign === "positive" ? amount : -amount;
-      out.push({
-        date,
-        description: desc,
-        amountCents: signed,
-        sourceType: kind === "spending" ? template : "checking",
-        accountName: kind === "spending" ? acctName : "Checking",
-        kind,
-        // Category is a grouping label only; the server caps it at
-        // 40 characters, so trim a longer one to the cap rather than
-        // lose the whole transaction over its label.
-        fitId: null,
-        category:
-          mapping.category >= 0 && (r[mapping.category] ?? "").trim()
-            ? (r[mapping.category] ?? "").trim().slice(0, 40)
-            : "Other",
-        yearlyExpenseId: null,
-      });
-    }
+    });
     if (out.length === 0) {
       setError(
         `No usable rows found (${skipped} skipped). Check the column mapping below — each row needs a readable date, a description, and an amount.`,
@@ -9089,6 +9159,9 @@ function ImportPanel({
     { role: "credit", label: "Credit (money in)", optional: true },
     { role: "category", label: "Category", optional: true },
     { role: "kind", label: "Kind / type", optional: true },
+    { role: "quantity", label: "Quantity", optional: true },
+    { role: "price", label: "Price", optional: true },
+    { role: "action", label: "Action / side", optional: true },
   ];
 
   return (
@@ -9103,11 +9176,15 @@ function ImportPanel({
         id, so a re-imported file is recognised exactly (see the
         preview). For a CSV, the usual columns are <code>date, description, amount</code>{" "}
         (a header row is fine; category and kind columns are used if
-        present). Files with separate <strong>debit</strong> and{" "}
+        present). Title or summary rows above the header row, within
+        the first 8 rows, are skipped. Files with separate <strong>debit</strong> and{" "}
         <strong>credit</strong> columns work too — each row's amount comes
         from whichever of the two is filled, and a row with both is
         combined as debit minus credit. Two-digit-year dates (like
-        10/3/26) are read as 20YY. For a <strong>checking</strong> export,
+        10/3/26) are read as 20YY. Bare month/day dates are read as
+        the most recent such date, and when a file has no Amount
+        column the amount is worked out as Quantity × Price (Buy =
+        money out, Sell = money in). For a <strong>checking</strong> export,
         rows whose description matches a card-payment keyword below are
         imported as card payments — cash out only, never double-counted
         as spending. For a <strong>card</strong> export, every row is

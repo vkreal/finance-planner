@@ -26,6 +26,7 @@ daysInMonthOf,
 monthlyBillUpdateOutcome,
 monthlyBillUpdateSet,
 monthsBetween,
+settlementLineDetail,
 shiftMonth,
 sortCashOutItems,
 versionInEffect,
@@ -47,6 +48,7 @@ EMPTY_IMPORT_SETTINGS,
 buildCashOutProposals,
 combineDebitCreditAmount,
 compareCashOutProposal,
+findImportHeaderIndex,
 findImportProfile,
 flagExactFitIdDuplicates,
 flagImportDuplicates,
@@ -1433,6 +1435,133 @@ const PG_VS_SPENDING_BASE: PlaygroundYearInputs = {
   acaBenchmarkAnnual: null,
   stateRatePct: 0,
 };
+
+/* ---------------- Import-panel parse mirror ----------------
+   The generic-mapping-upgrade fixtures below run a file's rows
+   through the import panel's exact CSV pipeline — header scan
+   (findImportHeaderIndex), the automatic mapping guess, then
+   per-row date / amount / debit-credit reading with the panel's
+   kind rules (an explicit kind cell wins; otherwise, for a
+   checking file, the panel's default card-payment and transfer
+   keyword lists classify the description) and its sign
+   convention — so the fixtures pin the behaviour the panel
+   itself will show, not a parallel reimplementation. The
+   keyword lists are the panel's out-of-the-box defaults. */
+type PanelParsedRow = {
+  date: string;
+  description: string;
+  amountCents: number;
+  kind: string;
+  category: string;
+};
+type PanelParseResult = {
+  headerIndex: number;
+  mapping: ImportColumnMapping;
+  rows: PanelParsedRow[];
+  skipped: number;
+};
+
+const IMPORT_PANEL_CARD_KEYS = ["card payment", "visa", "mastercard", "amex"];
+const IMPORT_PANEL_TRANSFER_KEYS = ["transfer", "savings"];
+
+function parseImportRowsLikePanel(
+  raw: string[][],
+  template: "checking" | "card",
+  outSign: "positive" | "negative",
+): PanelParseResult {
+  const headerIndex = findImportHeaderIndex(raw);
+  const headerRow = headerIndex >= 0 ? (raw[headerIndex] ?? []) : null;
+  const headerLower = headerRow
+    ? headerRow.map((c) => c.trim().toLowerCase())
+    : null;
+  const body = headerRow ? raw.slice(headerIndex + 1) : raw;
+  const mapping = guessImportMapping(headerLower);
+  const pairMode =
+    mapping.amount < 0 && (mapping.debit >= 0 || mapping.credit >= 0);
+  const rows: PanelParsedRow[] = [];
+  let skipped = 0;
+  for (const r of body) {
+    const date = normalizeImportDate(r[mapping.date] ?? "");
+    const desc = (r[mapping.description] ?? "").trim();
+    let amount: number | null;
+    if (pairMode) {
+      const combined = combineDebitCreditAmount(
+        mapping.debit >= 0 ? (r[mapping.debit] ?? "") : "",
+        mapping.credit >= 0 ? (r[mapping.credit] ?? "") : "",
+      );
+      amount = combined?.cents ?? null;
+    } else if (mapping.amount >= 0) {
+      amount = parseImportAmount(r[mapping.amount] ?? "");
+    } else {
+      amount = null;
+    }
+    if (!date || !desc || desc.length > 200 || amount == null) {
+      skipped++;
+      continue;
+    }
+    let kind = "spending";
+    const explicit =
+      mapping.kind >= 0 ? (r[mapping.kind] ?? "").trim().toLowerCase() : "";
+    if (
+      explicit === "card_payment" ||
+      explicit === "transfer" ||
+      explicit === "spending"
+    ) {
+      kind = explicit;
+    } else if (template === "checking") {
+      const d = desc.toLowerCase();
+      if (IMPORT_PANEL_CARD_KEYS.some((k) => d.includes(k))) {
+        kind = "card_payment";
+      } else if (IMPORT_PANEL_TRANSFER_KEYS.some((k) => d.includes(k))) {
+        kind = "transfer";
+      }
+    }
+    rows.push({
+      date,
+      description: desc,
+      amountCents: outSign === "positive" ? amount : -amount,
+      kind,
+      category:
+        mapping.category >= 0 && (r[mapping.category] ?? "").trim()
+          ? (r[mapping.category] ?? "").trim().slice(0, 40)
+          : "Other",
+    });
+  }
+  return { headerIndex, mapping, rows, skipped };
+}
+
+/* Flatten one verified-layout leg into fixture fields: the
+   header index, all seven mapping indices, the parsed-row and
+   skipped counts, and per expected row a 0/1 agreement flag
+   for date / description / kind / category plus the parsed
+   amount in exact cents. */
+function importLegFields(
+  prefix: string,
+  res: PanelParseResult,
+  expectedRows: PanelParsedRow[],
+): Record<string, number | null> {
+  const out: Record<string, number | null> = {
+    [`${prefix}Header`]: res.headerIndex,
+    [`${prefix}MapDate`]: res.mapping.date,
+    [`${prefix}MapDescription`]: res.mapping.description,
+    [`${prefix}MapAmount`]: res.mapping.amount,
+    [`${prefix}MapDebit`]: res.mapping.debit,
+    [`${prefix}MapCredit`]: res.mapping.credit,
+    [`${prefix}MapCategory`]: res.mapping.category,
+    [`${prefix}MapKind`]: res.mapping.kind,
+    [`${prefix}Rows`]: res.rows.length,
+    [`${prefix}Skipped`]: res.skipped,
+  };
+  expectedRows.forEach((exp, i) => {
+    const got = res.rows[i];
+    out[`${prefix}R${i + 1}Date`] = got?.date === exp.date ? 1 : 0;
+    out[`${prefix}R${i + 1}Desc`] = got?.description === exp.description ? 1 : 0;
+    out[`${prefix}R${i + 1}Amount`] = got ? got.amountCents : null;
+    out[`${prefix}R${i + 1}Kind`] = got?.kind === exp.kind ? 1 : 0;
+    out[`${prefix}R${i + 1}Category`] = got?.category === exp.category ? 1 : 0;
+  });
+  return out;
+}
 
 export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
@@ -4046,6 +4175,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       const header = ["Date", "Description", "Debit", "Credit", "Balance"];
       const mapping: ImportColumnMapping = {
         date: 0, description: 1, amount: -1, debit: 2, credit: 3, category: 4, kind: -1,
+        quantity: -1, price: -1, action: -1,
       };
       const settings: ImportFileSettings = {
         template: "checking",
@@ -4097,6 +4227,287 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
             ? 1
             : 0,
         profilesAfterLastOnly: relast.profiles.length,
+      };
+    },
+  },
+  {
+    id: "import-header-scan-skips-title-line",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived: a file with a one-line title above its header — title row, then the header [Date, Action, Symbol, Description, Quantity, Price, Fees & Comm, Amount], then two data rows. The header scan finds the header at index 1 (the title names no date/money columns in separate cells), the guess maps date 0 / description 3 / amount 7 / kind −1 (no kind or type column), the body holds exactly the 2 data rows, and the first data row reads 2026-10-03 / FICTIONAL EXAMPLE CORP / −42180 raw cents (the file's own signed amount, before any sign convention). Before the scan existed, a file of this shape found no header at row 0 and every row was skipped.",
+    expected: {
+      headerIndex: 1, mapDate: 0, mapDescription: 3, mapAmount: 7, mapKind: -1,
+      bodyRows: 2, firstDate: 1, firstDesc: 1, firstAmountCents: -42180,
+    },
+    actual: () => {
+      const rows: string[][] = [
+        ["Transactions for an account"],
+        ["Date", "Action", "Symbol", "Description", "Quantity", "Price", "Fees & Comm", "Amount"],
+        ["10/03/2026", "Buy", "XMPL", "FICTIONAL EXAMPLE CORP", "10", "42.18", "0.00", "-421.80"],
+        ["10/05/2026", "Dividend", "XMPL", "FICTIONAL EXAMPLE CORP", "0", "0.00", "0.00", "12.34"],
+      ];
+      const headerIndex = findImportHeaderIndex(rows);
+      const headerRow = headerIndex >= 0 ? (rows[headerIndex] ?? []) : [];
+      const mapping = guessImportMapping(headerRow.map((c) => c.trim().toLowerCase()));
+      const body = headerIndex >= 0 ? rows.slice(headerIndex + 1) : rows;
+      const first = body[0] ?? [];
+      return {
+        headerIndex,
+        mapDate: mapping.date,
+        mapDescription: mapping.description,
+        mapAmount: mapping.amount,
+        mapKind: mapping.kind,
+        bodyRows: body.length,
+        firstDate: normalizeImportDate(first[0] ?? "") === "2026-10-03" ? 1 : 0,
+        firstDesc: (first[3] ?? "").trim() === "FICTIONAL EXAMPLE CORP" ? 1 : 0,
+        firstAmountCents: parseImportAmount(first[7] ?? ""),
+      };
+    },
+  },
+  {
+    id: "import-header-scan-skips-preamble-block",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived: six preamble rows (summary lines naming no date/money columns in separate cells), then the header [Date, Description, Amount] at index 6 — inside the 8-row scan cap — then one data row. The body is exactly that data row: the preamble rows are above the header, so they are not body rows and never reach the row parser at all.",
+    expected: {
+      headerIndex: 6, bodyRows: 1, firstDate: 1, firstDesc: 1, firstAmountCents: -4218,
+    },
+    actual: () => {
+      const rows: string[][] = [
+        ["Account summary"],
+        ["Prepared for a fictional household"],
+        ["Reporting period: October 2026"],
+        ["All figures in this file are fictional"],
+        ["Page 1 of 1"],
+        ["Generated at export time"],
+        ["Date", "Description", "Amount"],
+        ["10/03/2026", "CORNER GROCERY", "-42.18"],
+      ];
+      const headerIndex = findImportHeaderIndex(rows);
+      const body = headerIndex >= 0 ? rows.slice(headerIndex + 1) : rows;
+      const first = body[0] ?? [];
+      return {
+        headerIndex,
+        bodyRows: body.length,
+        firstDate: normalizeImportDate(first[0] ?? "") === "2026-10-03" ? 1 : 0,
+        firstDesc: (first[1] ?? "").trim() === "CORNER GROCERY" ? 1 : 0,
+        firstAmountCents: parseImportAmount(first[2] ?? ""),
+      };
+    },
+  },
+  {
+    id: "import-date-as-of-suffix",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived: normalizeImportDate strips a trailing \" as of ...\" suffix before matching, so the FIRST date — the transaction date — is the one read: \"10/03/2026 as of 10/02/2026\" is 2026-10-03, the two-digit-year form \"10/03/26 as of 10/02/26\" agrees, and the suffix match is case-insensitive (\"AS OF\"). The real-calendar refusals are untouched: month 13 / day 45 (\"13/45/2026\") and the ISO impossible date \"2026-02-31\" still return null.",
+    expected: {
+      fullFour: 1, shortTwo: 1, upperCase: 1,
+      impossibleRefused: 1, isoImpossibleRefused: 1,
+    },
+    actual: () => ({
+      fullFour: normalizeImportDate("10/03/2026 as of 10/02/2026") === "2026-10-03" ? 1 : 0,
+      shortTwo: normalizeImportDate("10/03/26 as of 10/02/26") === "2026-10-03" ? 1 : 0,
+      upperCase: normalizeImportDate("10/03/2026 AS OF 10/02/2026") === "2026-10-03" ? 1 : 0,
+      impossibleRefused: normalizeImportDate("13/45/2026") === null ? 1 : 0,
+      isoImpossibleRefused: normalizeImportDate("2026-02-31") === null ? 1 : 0,
+    }),
+  },
+  {
+    id: "import-amount-prefers-net-amount",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived from the staged amount preference: for the header [Trade Date, Settlement Date, Transaction Type, Transaction Description, Investment Name, Symbol, Shares, Share Price, Principal Amount, Commission and Fees, Net Amount, Accrued Interest] no cell IS exactly \"amount\", so the net-amount stage fires and the guess maps amount 10 (Net Amount — the money-movement figure), NOT Principal Amount at 8, which the old first-contains-\"amount\" rule picked. Date maps 0 (Trade Date, the first date-named column), description 3 (Transaction Description), kind 2 (Transaction Type).",
+    expected: { mapDate: 0, mapDescription: 3, mapAmount: 10, mapKind: 2 },
+    actual: () => {
+      const header = [
+        "Trade Date", "Settlement Date", "Transaction Type", "Transaction Description",
+        "Investment Name", "Symbol", "Shares", "Share Price", "Principal Amount",
+        "Commission and Fees", "Net Amount", "Accrued Interest",
+      ];
+      const mapping = guessImportMapping(header.map((h) => h.toLowerCase()));
+      return {
+        mapDate: mapping.date,
+        mapDescription: mapping.description,
+        mapAmount: mapping.amount,
+        mapKind: mapping.kind,
+      };
+    },
+  },
+  {
+    id: "import-memo-fallback-description",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived: with the header [Date, Memo, Amount] no description-like column exists, so the memo fallback fires and description maps 1 (date 0, amount 2). The fallback is LAST: with a real description column present — [Date, Description, Memo, Amount] — description still maps 1, the Description column, and the memo column is not picked (descWithMemoPresent). The fallback stays LAST even when Memo sits left of Description — the case v405's column-order rule got wrong (it picked Memo at 1) and the v406 fixed-order synonym loop fixes: with [date, memo, description, amount], description resolves to the Description column (index 2), not Memo (index 1) (descMemoLeftOfDescription). This leg closes review finding SHOULD-1 (behavior already fixed in v406; the leg pins it).",
+    expected: { mapDate: 0, mapDescription: 1, mapAmount: 2, descWithMemoPresent: 1, descMemoLeftOfDescription: 1 },
+    actual: () => {
+      const mapping = guessImportMapping(["date", "memo", "amount"]);
+      const withDesc = guessImportMapping(["date", "description", "memo", "amount"]);
+      const memoLeft = guessImportMapping(["date", "memo", "description", "amount"]);
+      return {
+        mapDate: mapping.date,
+        mapDescription: mapping.description,
+        mapAmount: mapping.amount,
+        descWithMemoPresent: withDesc.description === 1 ? 1 : 0,
+        descMemoLeftOfDescription: memoLeft.description === 2 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "import-amount-dollar-parens",
+    kind: "spending",
+    note: "Hand-derived from parseImportAmount's decoration rule ($, commas and whitespace are decoration; parentheses or a leading minus make the value negative): \"$1,234.56\" is 123456, \"($45.00)\" is −4500, \"$-45.00\" is −4500, the bare \"1,234.56\" is 123456, and an empty cell holds no number (null, so its row is skipped). Pinned alongside the mapping upgrade because amount columns in the verified layouts carry exactly these decorations.",
+    expected: {
+      dollars: 123456, parens: -4500, dollarMinus: -4500, plain: 123456, emptyIsNull: 1,
+    },
+    actual: () => ({
+      dollars: parseImportAmount("$1,234.56"),
+      parens: parseImportAmount("($45.00)"),
+      dollarMinus: parseImportAmount("$-45.00"),
+      plain: parseImportAmount("1,234.56"),
+      emptyIsNull: parseImportAmount("") === null ? 1 : 0,
+    }),
+  },
+  {
+    id: "import-sectioned-file-tolerated",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived tolerance pin: a sectioned file — a \"Cash Transactions\" section line, the header [Date, Description, Amount], two data rows, a \"Trades\" section line, a second identical header row, one more data row. The scan finds the first header at index 1; under that one mapping the 3 data rows parse with the file's own signed amounts (money out shown positive here, so the file's −42.18 / −86.40 / +15.99 read as −4218 / −8640 / +1599) and the 2 section/header rows count as skipped (neither yields a readable date + amount). Full per-section mapping — re-reading the second header as its own section's mapping — is future work; this pins tolerance only.",
+    expected: {
+      headerIndex: 1, parsedRows: 3, skipped: 2,
+      r1Date: 1, r1Amount: -4218, r2Date: 1, r2Amount: -8640, r3Date: 1, r3Amount: 1599,
+    },
+    actual: () => {
+      const rows: string[][] = [
+        ["Cash Transactions"],
+        ["Date", "Description", "Amount"],
+        ["10/03/2026", "CORNER GROCERY", "-42.18"],
+        ["10/05/2026", "CITY POWER", "-86.40"],
+        ["Trades"],
+        ["Date", "Description", "Amount"],
+        ["10/07/2026", "ONLINE BOOKSHOP", "15.99"],
+      ];
+      const res = parseImportRowsLikePanel(rows, "checking", "positive");
+      return {
+        headerIndex: res.headerIndex,
+        parsedRows: res.rows.length,
+        skipped: res.skipped,
+        r1Date: res.rows[0]?.date === "2026-10-03" ? 1 : 0,
+        r1Amount: res.rows[0]?.amountCents ?? null,
+        r2Date: res.rows[1]?.date === "2026-10-05" ? 1 : 0,
+        r2Amount: res.rows[1]?.amountCents ?? null,
+        r3Date: res.rows[2]?.date === "2026-10-07" ? 1 : 0,
+        r3Amount: res.rows[2]?.amountCents ?? null,
+      };
+    },
+  },
+  {
+    id: "import-verified-layouts-map-cleanly",
+    kind: "spending",
+    note: "Generic mapping upgrade, hand-derived: six fictional sample files, one per documented or third-party-evidenced export layout shape, each transcribed inline below (all merchants, figures and the XMPL ticker invented) and parsed through the panel's exact pipeline — header scan, mapping guess, per-row reading with the layout's template and sign convention (money out positive in the expected rows). Each leg pins the header index, all seven mapping indices, every parsed row's date / description / amountCents / kind / category, and the skipped count. The six shapes: (1) a card layout with category and type columns and money out negative — the type values (Sale / Return / Payment) are not import kinds, so every row stays spending, and the payment row keeps its Payment category; (2) a checking layout whose first column is a debit/credit DETAILS label (not a money column — the signed Amount at index 3 is the money) with money out negative — the card-payment-looking last row still previews as spending, because classifying it needs the keyword in the remembered card-payment list, a settings matter, not mapping; (3) a card layout with separate Debit / Credit columns and no Amount column — the pair maps (amount −1, debit 3, credit 4) and each row's amount comes from whichever side is filled; (4) a plain date / description / signed-amount checking layout (the BECU shape — third-party-sourced; no column docs found), money out negative; (5) a brokerage history layout — Security Description is the description, the parenthesised \"Amount ($)\" is the amount (the staged exact-amount preference), Type is the kind column, money out negative — whose two disclaimer footer lines count as skipped; (6) a file with a one-line title above its header and a trailing total row — the header scans at index 1, the \"as of\"-suffixed date reads as its first date (2026-10-08), and the total row counts as the 1 skipped row. NOT covered, plainly: E*TRADE, Vanguard and Apple Cash — no agreed documented layout exists for them, so each needs a real file before any sample is built; their layouts are not guessed here or anywhere in the importer.",
+    expected: {
+      cardTypedHeader: 0, cardTypedMapDate: 0, cardTypedMapDescription: 2, cardTypedMapAmount: 5, cardTypedMapDebit: -1, cardTypedMapCredit: -1, cardTypedMapCategory: 3, cardTypedMapKind: 4, cardTypedRows: 4, cardTypedSkipped: 0,
+      cardTypedR1Date: 1, cardTypedR1Desc: 1, cardTypedR1Amount: 4218, cardTypedR1Kind: 1, cardTypedR1Category: 1,
+      cardTypedR2Date: 1, cardTypedR2Desc: 1, cardTypedR2Amount: 8640, cardTypedR2Kind: 1, cardTypedR2Category: 1,
+      cardTypedR3Date: 1, cardTypedR3Desc: 1, cardTypedR3Amount: -1599, cardTypedR3Kind: 1, cardTypedR3Category: 1,
+      cardTypedR4Date: 1, cardTypedR4Desc: 1, cardTypedR4Amount: -25000, cardTypedR4Kind: 1, cardTypedR4Category: 1,
+      checkingDetailsHeader: 0, checkingDetailsMapDate: 1, checkingDetailsMapDescription: 2, checkingDetailsMapAmount: 3, checkingDetailsMapDebit: -1, checkingDetailsMapCredit: -1, checkingDetailsMapCategory: -1, checkingDetailsMapKind: 4, checkingDetailsRows: 4, checkingDetailsSkipped: 0,
+      checkingDetailsR1Date: 1, checkingDetailsR1Desc: 1, checkingDetailsR1Amount: 4218, checkingDetailsR1Kind: 1, checkingDetailsR1Category: 1,
+      checkingDetailsR2Date: 1, checkingDetailsR2Desc: 1, checkingDetailsR2Amount: -185000, checkingDetailsR2Kind: 1, checkingDetailsR2Category: 1,
+      checkingDetailsR3Date: 1, checkingDetailsR3Desc: 1, checkingDetailsR3Amount: 8640, checkingDetailsR3Kind: 1, checkingDetailsR3Category: 1,
+      checkingDetailsR4Date: 1, checkingDetailsR4Desc: 1, checkingDetailsR4Amount: 25000, checkingDetailsR4Kind: 1, checkingDetailsR4Category: 1,
+      cardPairHeader: 0, cardPairMapDate: 1, cardPairMapDescription: 2, cardPairMapAmount: -1, cardPairMapDebit: 3, cardPairMapCredit: 4, cardPairMapCategory: -1, cardPairMapKind: -1, cardPairRows: 4, cardPairSkipped: 0,
+      cardPairR1Date: 1, cardPairR1Desc: 1, cardPairR1Amount: 4218, cardPairR1Kind: 1, cardPairR1Category: 1,
+      cardPairR2Date: 1, cardPairR2Desc: 1, cardPairR2Amount: 8640, cardPairR2Kind: 1, cardPairR2Category: 1,
+      cardPairR3Date: 1, cardPairR3Desc: 1, cardPairR3Amount: -1599, cardPairR3Kind: 1, cardPairR3Category: 1,
+      cardPairR4Date: 1, cardPairR4Desc: 1, cardPairR4Amount: -25000, cardPairR4Kind: 1, cardPairR4Category: 1,
+      checkingPlainHeader: 0, checkingPlainMapDate: 0, checkingPlainMapDescription: 1, checkingPlainMapAmount: 2, checkingPlainMapDebit: -1, checkingPlainMapCredit: -1, checkingPlainMapCategory: -1, checkingPlainMapKind: -1, checkingPlainRows: 3, checkingPlainSkipped: 0,
+      checkingPlainR1Date: 1, checkingPlainR1Desc: 1, checkingPlainR1Amount: 4218, checkingPlainR1Kind: 1, checkingPlainR1Category: 1,
+      checkingPlainR2Date: 1, checkingPlainR2Desc: 1, checkingPlainR2Amount: -185000, checkingPlainR2Kind: 1, checkingPlainR2Category: 1,
+      checkingPlainR3Date: 1, checkingPlainR3Desc: 1, checkingPlainR3Amount: 8640, checkingPlainR3Kind: 1, checkingPlainR3Category: 1,
+      historyLayoutHeader: 0, historyLayoutMapDate: 0, historyLayoutMapDescription: 3, historyLayoutMapAmount: 10, historyLayoutMapDebit: -1, historyLayoutMapCredit: -1, historyLayoutMapCategory: -1, historyLayoutMapKind: 4, historyLayoutRows: 3, historyLayoutSkipped: 2,
+      historyLayoutR1Date: 1, historyLayoutR1Desc: 1, historyLayoutR1Amount: 42180, historyLayoutR1Kind: 1, historyLayoutR1Category: 1,
+      historyLayoutR2Date: 1, historyLayoutR2Desc: 1, historyLayoutR2Amount: -1234, historyLayoutR2Kind: 1, historyLayoutR2Category: 1,
+      historyLayoutR3Date: 1, historyLayoutR3Desc: 1, historyLayoutR3Amount: -22435, historyLayoutR3Kind: 1, historyLayoutR3Category: 1,
+      titledLayoutHeader: 1, titledLayoutMapDate: 0, titledLayoutMapDescription: 3, titledLayoutMapAmount: 7, titledLayoutMapDebit: -1, titledLayoutMapCredit: -1, titledLayoutMapCategory: -1, titledLayoutMapKind: -1, titledLayoutRows: 4, titledLayoutSkipped: 1,
+      titledLayoutR1Date: 1, titledLayoutR1Desc: 1, titledLayoutR1Amount: 42180, titledLayoutR1Kind: 1, titledLayoutR1Category: 1,
+      titledLayoutR2Date: 1, titledLayoutR2Desc: 1, titledLayoutR2Amount: -1234, titledLayoutR2Kind: 1, titledLayoutR2Category: 1,
+      titledLayoutR3Date: 1, titledLayoutR3Desc: 1, titledLayoutR3Amount: -22435, titledLayoutR3Kind: 1, titledLayoutR3Category: 1,
+      titledLayoutR4Date: 1, titledLayoutR4Desc: 1, titledLayoutR4Amount: 8000, titledLayoutR4Kind: 1, titledLayoutR4Category: 1,
+    },
+    actual: () => {
+      const cardTypedFile: string[][] = [
+        ["Transaction Date", "Post Date", "Description", "Category", "Type", "Amount", "Memo"],
+        ["10/03/2026", "10/04/2026", "CORNER GROCERY", "Food & Household", "Sale", "-42.18", ""],
+        ["10/05/2026", "10/05/2026", "CITY POWER", "Utilities", "Sale", "-86.40", ""],
+        ["10/07/2026", "10/07/2026", "ONLINE BOOKSHOP", "Shopping", "Return", "15.99", ""],
+        ["10/09/2026", "10/10/2026", "PAYMENT THANK YOU", "Payment", "Payment", "250.00", ""],
+      ];
+      const checkingDetailsFile: string[][] = [
+        ["Details", "Posting Date", "Description", "Amount", "Type", "Balance", "Check or Slip #"],
+        ["DEBIT", "10/03/2026", "CORNER GROCERY", "-42.18", "ACH_DEBIT", "5123.44", ""],
+        ["CREDIT", "10/05/2026", "PAYROLL DEPOSIT", "1850.00", "ACH_CREDIT", "6973.44", ""],
+        ["DEBIT", "10/06/2026", "CITY POWER", "-86.40", "ACH_DEBIT", "6887.04", ""],
+        ["DEBIT", "10/08/2026", "CHASE CREDIT CRD EPAY", "-250.00", "ACH_DEBIT", "6637.04", ""],
+      ];
+      const cardPairFile: string[][] = [
+        ["Status", "Date", "Description", "Debit", "Credit"],
+        ["Posted", "10/03/2026", "CORNER GROCERY", "42.18", ""],
+        ["Posted", "10/05/2026", "CITY POWER", "86.40", ""],
+        ["Posted", "10/07/2026", "ONLINE BOOKSHOP", "", "15.99"],
+        ["Posted", "10/09/2026", "PAYMENT THANK YOU", "", "250.00"],
+      ];
+      const checkingPlainFile: string[][] = [
+        ["Date", "Description", "Amount", "Balance", "Check Number"],
+        ["10/03/2026", "CORNER GROCERY", "-42.18", "5123.44", ""],
+        ["10/05/2026", "PAYROLL DEPOSIT", "1850.00", "6973.44", ""],
+        ["10/06/2026", "CITY POWER", "-86.40", "6887.04", ""],
+      ];
+      const historyLayoutFile: string[][] = [
+        ["Run Date", "Action", "Symbol", "Security Description", "Type", "Quantity", "Price ($)", "Commission ($)", "Fees ($)", "Accrued Interest ($)", "Amount ($)", "Settlement Date"],
+        ["10/03/2026", "YOU BOUGHT", "XMPL", "FICTIONAL EXAMPLE CORP", "TRADES", "10", "42.18", "0.00", "0.00", "0.00", "-421.80", "10/06/2026"],
+        ["10/05/2026", "DIVIDEND RECEIVED", "XMPL", "FICTIONAL EXAMPLE CORP", "DIVIDENDS", "0", "0.00", "0.00", "0.00", "0.00", "12.34", "10/05/2026"],
+        ["10/07/2026", "YOU SOLD", "XMPL", "FICTIONAL EXAMPLE CORP", "TRADES", "5", "45.00", "0.00", "0.65", "0.00", "224.35", "10/08/2026"],
+        ["This information is provided for your convenience and is not a statement."],
+        ["Data as of 10/07/2026. Please consult your official statement for details."],
+      ];
+      const titledLayoutFile: string[][] = [
+        ["Transactions for account ending 0000"],
+        ["Date", "Action", "Symbol", "Description", "Quantity", "Price", "Fees & Comm", "Amount"],
+        ["10/03/2026", "Buy", "XMPL", "FICTIONAL EXAMPLE CORP", "10", "42.18", "0.00", "-421.80"],
+        ["10/05/2026", "Dividend", "XMPL", "FICTIONAL EXAMPLE CORP", "0", "0.00", "0.00", "12.34"],
+        ["10/07/2026", "Sell", "XMPL", "FICTIONAL EXAMPLE CORP", "5", "45.00", "0.65", "224.35"],
+        ["10/08/2026 as of 10/07/2026", "Buy", "XMPL", "FICTIONAL EXAMPLE CORP", "2", "40.00", "0.00", "-80.00"],
+        ["Transactions Total", "", "", "", "", "", "", "-265.11"],
+      ];
+      return {
+        ...importLegFields("cardTyped", parseImportRowsLikePanel(cardTypedFile, "card", "negative"), [
+          { date: "2026-10-03", description: "CORNER GROCERY", amountCents: 4218, kind: "spending", category: "Food & Household" },
+          { date: "2026-10-05", description: "CITY POWER", amountCents: 8640, kind: "spending", category: "Utilities" },
+          { date: "2026-10-07", description: "ONLINE BOOKSHOP", amountCents: -1599, kind: "spending", category: "Shopping" },
+          { date: "2026-10-09", description: "PAYMENT THANK YOU", amountCents: -25000, kind: "spending", category: "Payment" },
+        ]),
+        ...importLegFields("checkingDetails", parseImportRowsLikePanel(checkingDetailsFile, "checking", "negative"), [
+          { date: "2026-10-03", description: "CORNER GROCERY", amountCents: 4218, kind: "spending", category: "Other" },
+          { date: "2026-10-05", description: "PAYROLL DEPOSIT", amountCents: -185000, kind: "spending", category: "Other" },
+          { date: "2026-10-06", description: "CITY POWER", amountCents: 8640, kind: "spending", category: "Other" },
+          { date: "2026-10-08", description: "CHASE CREDIT CRD EPAY", amountCents: 25000, kind: "spending", category: "Other" },
+        ]),
+        ...importLegFields("cardPair", parseImportRowsLikePanel(cardPairFile, "card", "positive"), [
+          { date: "2026-10-03", description: "CORNER GROCERY", amountCents: 4218, kind: "spending", category: "Other" },
+          { date: "2026-10-05", description: "CITY POWER", amountCents: 8640, kind: "spending", category: "Other" },
+          { date: "2026-10-07", description: "ONLINE BOOKSHOP", amountCents: -1599, kind: "spending", category: "Other" },
+          { date: "2026-10-09", description: "PAYMENT THANK YOU", amountCents: -25000, kind: "spending", category: "Other" },
+        ]),
+        ...importLegFields("checkingPlain", parseImportRowsLikePanel(checkingPlainFile, "checking", "negative"), [
+          { date: "2026-10-03", description: "CORNER GROCERY", amountCents: 4218, kind: "spending", category: "Other" },
+          { date: "2026-10-05", description: "PAYROLL DEPOSIT", amountCents: -185000, kind: "spending", category: "Other" },
+          { date: "2026-10-06", description: "CITY POWER", amountCents: 8640, kind: "spending", category: "Other" },
+        ]),
+        ...importLegFields("historyLayout", parseImportRowsLikePanel(historyLayoutFile, "checking", "negative"), [
+          { date: "2026-10-03", description: "FICTIONAL EXAMPLE CORP", amountCents: 42180, kind: "spending", category: "Other" },
+          { date: "2026-10-05", description: "FICTIONAL EXAMPLE CORP", amountCents: -1234, kind: "spending", category: "Other" },
+          { date: "2026-10-07", description: "FICTIONAL EXAMPLE CORP", amountCents: -22435, kind: "spending", category: "Other" },
+        ]),
+        ...importLegFields("titledLayout", parseImportRowsLikePanel(titledLayoutFile, "checking", "negative"), [
+          { date: "2026-10-03", description: "FICTIONAL EXAMPLE CORP", amountCents: 42180, kind: "spending", category: "Other" },
+          { date: "2026-10-05", description: "FICTIONAL EXAMPLE CORP", amountCents: -1234, kind: "spending", category: "Other" },
+          { date: "2026-10-07", description: "FICTIONAL EXAMPLE CORP", amountCents: -22435, kind: "spending", category: "Other" },
+          { date: "2026-10-08", description: "FICTIONAL EXAMPLE CORP", amountCents: 8000, kind: "spending", category: "Other" },
+        ]),
       };
     },
   },
