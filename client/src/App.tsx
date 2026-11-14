@@ -5352,7 +5352,7 @@ export function App() {
     <div
       role="group"
       aria-label="View"
-      className="flex flex-wrap justify-center overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
+      className="flex min-w-0 flex-wrap justify-center overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
     >
       <button
         type="button"
@@ -5405,10 +5405,13 @@ export function App() {
   /* The top bar shared by every view: the view switcher centered,
      with the GitHub icon button at the right end of the same row.
      The spacer on the left mirrors the icon's footprint so the
-     switcher stays optically centered on wide screens; on narrow
-     screens the row wraps and the icon sits beside the switcher. */
+     switcher stays optically centered on wide screens. The row
+     itself never wraps (flex-nowrap): on narrow screens the
+     switcher shrinks and wraps its own buttons inside its box,
+     so the icon stays on the switcher's row, vertically centred
+     beside it, instead of dropping to a row of its own. */
   const topBar = (
-    <div className="flex flex-wrap items-center justify-center gap-2 pt-4">
+    <div className="flex flex-nowrap items-center justify-center gap-2 pt-4">
       <span aria-hidden="true" className="hidden w-[38px] shrink-0 sm:block" />
       {topSwitch}
       {githubLink}
@@ -5583,12 +5586,15 @@ export function App() {
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
-      <main className="mx-auto w-full max-w-3xl px-4 pb-16">
+      <main className="mx-auto w-full max-w-5xl px-4 pb-16">
         {topBar}
-        {/* month nav — in Year mode the month picker is replaced by
-            the year flipper; the viewed month itself is untouched, so
-            the rest of the dashboard keeps showing it. */}
         <h2 className="display mt-5 text-3xl font-semibold">Spending</h2>
+        {/* month nav — in Month mode the month picker lives in the
+            Quick view section header below (the header row itself is
+            the picker control), so there is no separate picker row;
+            in Year mode the month picker is replaced by the year
+            flipper. The viewed month itself is untouched by the mode,
+            so the rest of the dashboard keeps showing it. */}
         {quickMode === "year" ? (
           <div className="flex items-center justify-between gap-2 pt-4">
             <button
@@ -5636,30 +5642,7 @@ export function App() {
               →
             </button>
           </div>
-        ) : (
-          <div className="flex items-center justify-between gap-2 pt-4">
-            <div className="flex items-center gap-2">
-              <input
-                type="month"
-                aria-label="Select month"
-                className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-2 py-2 text-base text-[var(--text)]"
-                value={month}
-                onChange={(e) => {
-                  if (e.target.value) setMonth(e.target.value);
-                }}
-              />
-              {month !== currentMonth() && (
-                <button
-                  type="button"
-                  className={btnGhost}
-                  onClick={() => setMonth(currentMonth())}
-                >
-                  This month
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        ) : null}
 
         {dash.isPending && <p className="py-10 text-center text-[var(--dim)]">Loading…</p>}
         {dash.error && (
@@ -5711,9 +5694,44 @@ export function App() {
             {/* quick view — summary strip of equal tiles, first section */}
             <section id="quick-view" aria-label="Quick view" className="mt-5 scroll-mt-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
-                  Quick view — {inYearMode ? viewYear : monthLabel(month)}
-                </p>
+                {inYearMode ? (
+                  <p className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
+                    Quick view — {viewYear}
+                  </p>
+                ) : (
+                  /* Month mode: the header row IS the page's month
+                     picker. The native month input itself — the same
+                     control the old standalone button carried, same
+                     value and change handling — sits in the header
+                     row styled as header text: borderless, with its
+                     own calendar indicator icon at the viewed month's
+                     right, so the month shows once and tapping the
+                     control opens the same picker as before. The
+                     "This month" button lives in the same row. */
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
+                      <span aria-hidden="true">Quick view —</span>
+                      <input
+                        type="month"
+                        aria-label="Select month"
+                        className="w-auto cursor-pointer rounded-[var(--radius)] border-0 bg-transparent px-1 py-2 text-xs font-medium tracking-wide text-[var(--dim)] uppercase transition-colors hover:text-[var(--accent)] focus-visible:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-1"
+                        value={month}
+                        onChange={(e) => {
+                          if (e.target.value) setMonth(e.target.value);
+                        }}
+                      />
+                    </label>
+                    {month !== currentMonth() && (
+                      <button
+                        type="button"
+                        className={btnGhost}
+                        onClick={() => setMonth(currentMonth())}
+                      >
+                        This month
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
