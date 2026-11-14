@@ -4424,12 +4424,24 @@ export function RetirementCalc({
                   {spendingUnit === "month" ? "Spending per month" : "Annual spending"}
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
+                {/* The textbox is content-sized: its width follows
+                    the displayed value's length, floored so the
+                    longest yearly figure shows in full, instead of
+                    stretching to fill the block. */}
                 <div className="shrink-0">
                 <input
                   id="rc-spending"
                   type="text"
                   inputMode="decimal"
                   className={inputCls}
+                  style={{
+                    // One ch per displayed character (digits and
+                    // grouping commas) plus one of slack, floored
+                    // at eight; the fixed part covers the horizontal
+                    // padding (px-3) and the borders. No $ prefix
+                    // here — the label carries it.
+                    width: `calc(${Math.max((spendingUnit === "month" ? (focusField === "spending" && spendingMonthlyDraft != null ? spendingMonthlyDraft : formatMonthlyDisplay(spending)) : focusField === "spending" ? spending : formatMoneyDisplay(spending)).length + 1, 8)}ch + 1.625rem)`,
+                  }}
                   value={
                     spendingUnit === "month"
                       ? focusField === "spending" && spendingMonthlyDraft != null

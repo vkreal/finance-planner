@@ -6059,9 +6059,13 @@ export function App() {
                   and Playground spending fields carry. It writes
                   through to the record via saveRothInputs with
                   CAS, so editing it here updates the Tax Plan,
-                  Retirement, and Playground too. */}
-              <div className="mt-4 max-w-xs">
-                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  Retirement, and Playground too. The textbox is
+                  content-sized: its width follows the displayed
+                  value's length (see the input's style below), with
+                  a floor wide enough for the longest yearly figure,
+                  instead of stretching to fill the block. */}
+              <div className="mt-4 max-w-md">
+                <div className="mb-1 flex items-center gap-2">
                   <span className="flex items-center gap-1.5">
                     <label
                       className="block text-sm font-medium text-[var(--text)]"
@@ -6093,6 +6097,15 @@ export function App() {
                         : "Spending target per year"
                     }
                     className="w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 pl-7 text-base text-[var(--text)]"
+                    style={{
+                      // One ch per displayed character (digits and
+                      // grouping commas) plus one of slack, floored
+                      // at eight so the longest yearly figure shows
+                      // in full; the fixed part covers the $ prefix
+                      // padding (pl-7), the right padding (px-3),
+                      // and the borders.
+                      width: `calc(${Math.max((spendingTargetUnit === "month" ? (spendingTargetMonthlyDraft ?? spendingTargetMonthlyDisplay()) : spendingTarget).length + 1, 8)}ch + 2.625rem)`,
+                    }}
                     inputMode="decimal"
                     value={
                       spendingTargetUnit === "month"

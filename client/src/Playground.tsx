@@ -6707,6 +6707,10 @@ export function Playground({
             </label>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+          {/* The textbox is content-sized: its width follows the
+              displayed value's length, floored so the longest
+              yearly figure shows in full, instead of stretching
+              to fill the block. */}
           <div className="relative shrink-0">
             <span
               aria-hidden="true"
@@ -6722,6 +6726,15 @@ export function Playground({
                   : "Playground — spending per year"
               }
               className={`${inputCls} pl-7`}
+              style={{
+                // One ch per displayed character (digits and
+                // grouping commas) plus one of slack, floored at
+                // eight so the longest yearly figure shows in
+                // full; the fixed part covers the $ prefix
+                // padding (pl-7), the right padding (px-3), and
+                // the borders.
+                width: `calc(${Math.max((pgSpendingUnit === "month" ? (pgSpendingMonthlyDraft ?? pgMonthlySpendingDisplay()) : pgSpending).length + 1, 8)}ch + 2.625rem)`,
+              }}
               inputMode="decimal"
               value={
                 pgSpendingUnit === "month"
