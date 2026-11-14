@@ -164,8 +164,9 @@ function lightsOnMonthlyCents(
 
 /* Wording for a True cost minus Target difference (cents):
    positive is over the target, negative is under it, zero is
-   exactly on it. Shared by the spending charts' tooltips and
-   their vs-target summary lines so the two always agree. */
+   exactly on it. Shared by the spending charts' month detail
+   (the Month-mode detail panel and the Year-mode tooltip) and
+   their vs-target summary lines so they always agree. */
 function vsTargetWord(diffCents: number): string {
   if (diffCents > 0) return "over target";
   if (diffCents < 0) return "under target";
@@ -2044,6 +2045,13 @@ function SpendingTrueCostChart({
   const chartData: SpendingChartDatum[] = [
     ...months.map((m) => {
       const split = splitCashOut(m.cashOutCents, m.oneOffTotalCents);
+      const keepLightsOnCents = m.keepLightsOnCents ?? 0;
+      const trueCostCents = m.smoothedCents;
+      const trueCostLightsOnCents = Math.max(0, Math.min(keepLightsOnCents, trueCostCents));
+      const trueCostRestCents = trueCostCents - trueCostLightsOnCents;
+      const oneOffCents = split.oneOffCents;
+      const cashOutLightsOnCents = Math.max(0, Math.min(keepLightsOnCents, m.cashOutCents - oneOffCents));
+      const cashOutRegularCents = m.cashOutCents - cashOutLightsOnCents - oneOffCents;
       return {
         name: m.estimate
           ? `${shortMonthLabel(m.month)} (est.)`
@@ -2149,13 +2157,103 @@ function SpendingTrueCostChart({
         : "var(--accent)"
       : "var(--dim)";
 
+  /* Month detail below the chart: tapping a bar selects its
+     month and the detail panel under the chart shows that
+     month's figures — the same lines and values the floating
+     tooltip used to show, rendered from the same chartData
+     datum the tooltip read, so the figures can never disagree
+     with the bars. Tapping the selected month's bar again
+     closes the panel; tapping another month's bar switches to
+     it. No month is selected by default, so the chart opens
+     with no detail panel, as before. Escape closes the panel
+     too, and the panel carries its own close button; the month
+     buttons that appear on keyboard focus below let a keyboard
+     user select a month without a pointer. Tapping or clicking
+     away closes it too: a pointer down anywhere outside this
+     chart section closes the panel; a click on the chart
+     surface outside the plot (above or below the bars) closes
+     it as well, while a click inside the plot resolves to that
+     month's band and switches the panel, as a bar tap does.
+     A pointer down on the section's own background — its
+     padding and the gutter beside the plot, where the section
+     element itself is the event target and no descendant
+     handler ever fires — closes the panel too. The tap-away
+     listener only runs while the panel is open, and never
+     stops or swallows the event itself — so bar taps (inside
+     the section, handled by the chart's own click handler),
+     the panel's close button, and the keyboard month buttons
+     all keep working exactly as before, and whatever was
+     tapped outside still receives its tap. */
+  const [selectedMonthStr, setSelectedMonthStr] = useState<string | null>(
+    null,
+  );
+  const selectedDatum =
+    selectedMonthStr != null
+      ? (chartData.find((d) => d.monthStr === selectedMonthStr) ?? null)
+      : null;
+  const chartSectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (selectedDatum == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedMonthStr(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedDatum]);
+  useEffect(() => {
+    if (selectedDatum == null) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const section = chartSectionRef.current;
+      if (section == null) return;
+      if (e.target instanceof Node && section.contains(e.target)) {
+        // The one inside-the-section target no descendant handler
+        // ever sees: the section's own background (its padding,
+        // the gutter beside the plot). A pointer down there has
+        // the section element itself as its target — the chart's
+        // click handler never fires for it, so without this
+        // branch the tap does nothing at all. Close the panel.
+        // Any other inside target (a bar, a button, text) is a
+        // descendant and is left entirely to its own handler.
+        if (e.target === section) setSelectedMonthStr(null);
+        return;
+      }
+      setSelectedMonthStr(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [selectedDatum]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleChartClick = (state: any) => {
+    const datum = state?.activePayload?.[0]?.payload as
+      | SpendingChartDatum
+      | undefined;
+    // A click on the chart surface that resolves to no month
+    // (above or below the plot) carries no datum: it is a
+    // tap-away, so it closes the panel instead of doing
+    // nothing. A click inside the plot resolves to that
+    // month's band and switches, as a bar tap does.
+    if (!datum) {
+      setSelectedMonthStr(null);
+      return;
+    }
+    setSelectedMonthStr((prev) =>
+      prev === datum.monthStr ? null : datum.monthStr,
+    );
+  };
+
   return (
     <section
+      ref={chartSectionRef}
       aria-label="True cost vs Cash out by month"
-      className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
+      className={
+        bare
+          ? undefined
+          : "mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
+      }
     >
       <div className="flex items-center gap-2">
-        <h3 className="display text-lg font-semibold">True cost vs Cash out</h3>
+        <h3 className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">True cost vs Cash out</h3>
         {/* All of this section's explanatory text lives in this
             ⓘ tooltip (moved from the wall of text that used to
             sit under the title, 2026-11-03): the title, legend,
@@ -2387,6 +2485,7 @@ function SpendingTrueCostChart({
                   margin={{ top: 36, right: 8, bottom: 4, left: 4 }}
                   barCategoryGap="22%"
                   barGap={3}
+                  onClick={handleChartClick}
                 >
                   <defs>
                     <pattern
@@ -2441,58 +2540,6 @@ function SpendingTrueCostChart({
                         ? `$${Number((value / 1000).toFixed(1)).toLocaleString("en-US")}k`
                         : `$${value.toLocaleString("en-US")}`
                     }
-                  />
-                  <Tooltip
-                    cursor={{ fill: "var(--surface-alt)", opacity: 0.5 }}
-                    content={(tooltipProps: {
-                      active?: boolean;
-                      label?: string;
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      payload?: any[];
-                    }) => {
-                      if (!tooltipProps.active) return null;
-                      const datum = (tooltipProps.payload?.[0]?.payload ??
-                        chartData.find(
-                          (d) => d.name === tooltipProps.label,
-                        )) as SpendingChartDatum | undefined;
-                      if (!datum) return null;
-                      return (
-                        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm shadow-lg">
-                          <p className="font-semibold">{datum.name}</p>
-                          <p className="tnum mt-0.5 text-[var(--text)]">
-                            True cost {fmt(datum.trueCostCents)} · Cash out{" "}
-                            {fmt(datum.cashOutCents)}
-                          </p>
-                          {datum.cashOutOneOffCents > 0 && (
-                            <p className="tnum mt-0.5 text-[var(--dim)]">
-                              Regular {fmt(datum.cashOutRegularCents)} ·
-                              One-offs {fmt(datum.cashOutOneOffCents)}
-                            </p>
-                          )}
-                          {targetMonthlyCents != null && (
-                            <p className="tnum mt-0.5 text-[var(--dim)]">
-                              Target {fmt(targetMonthlyCents)}/mo
-                            </p>
-                          )}
-                          {targetMonthlyCents != null &&
-                            (() => {
-                              const diffCents =
-                                datum.trueCostCents - targetMonthlyCents;
-                              return (
-                                <p className="tnum mt-0.5 font-medium text-[var(--text)]">
-                                  Difference {fmtSigned(diffCents)}{" "}
-                                  {vsTargetWord(diffCents)}
-                                </p>
-                              );
-                            })()}
-                          {averageMonthlyCents != null && (
-                            <p className="tnum mt-0.5 text-[var(--dim)]">
-                              Average {fmt(averageMonthlyCents)}/mo
-                            </p>
-                          )}
-                        </div>
-                      );
-                    }}
                   />
                   <Bar
                     cursor="pointer"
@@ -2605,6 +2652,7 @@ function SpendingTrueCostChart({
                     ))}
                   </Bar>
                   <Bar
+                    cursor="pointer"
                     dataKey="cashOutRegular"
                     name="Cash out"
                     stackId="cashOut"
@@ -2718,6 +2766,109 @@ function SpendingTrueCostChart({
               </ResponsiveContainer>
             </div>
           </div>
+          {/* Keyboard access to the month detail: one button per
+              plotted month, hidden until it receives keyboard
+              focus, so a keyboard user can open, switch, and
+              close the detail panel below without a pointer.
+              Pointer users tap the bars themselves; these buttons
+              call the same toggle. */}
+          <div className="flex flex-wrap gap-2">
+            {chartData.map((d) => (
+              <button
+                key={d.monthStr}
+                type="button"
+                aria-pressed={selectedMonthStr === d.monthStr}
+                aria-label={`Show detail for ${d.name}`}
+                className="sr-only focus:not-sr-only focus:inline-flex focus:items-center focus:rounded-[var(--radius)] focus:border focus:border-[var(--border)] focus:bg-[var(--surface)] focus:px-3 focus:py-1.5 focus:text-sm focus:text-[var(--text)]"
+                onClick={() =>
+                  setSelectedMonthStr((prev) =>
+                    prev === d.monthStr ? null : d.monthStr,
+                  )
+                }
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
+          {/* Month detail panel, directly under the chart: the
+              full detail for the tapped month, full width, in
+              the page flow — nothing floats over the bars. The
+              lines and figures are exactly the ones the floating
+              tooltip used to render, from the same datum, with
+              the same conditions, so no figure changes. */}
+          {selectedDatum != null &&
+            (() => {
+              const datum = selectedDatum;
+              return (
+                <div
+                  role="region"
+                  aria-label={`Detail for ${datum.name}`}
+                  className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-4 text-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="font-semibold">{datum.name}</p>
+                    <button
+                      type="button"
+                      aria-label={`Close detail for ${datum.name}`}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
+                      onClick={() => setSelectedMonthStr(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="tnum mt-0.5 text-[var(--text)]">
+                    True cost {fmt(datum.trueCostCents)} · Cash out{" "}
+                    {fmt(datum.cashOutCents)}
+                  </p>
+                  {datum.trueCostLightsOnCents > 0 &&
+                    datum.trueCostRestCents > 0 && (
+                      <p className="tnum mt-0.5 text-[var(--dim)]">
+                        True cost — Lights on{" "}
+                        {fmt(datum.trueCostLightsOnCents)} · Rest{" "}
+                        {fmt(datum.trueCostRestCents)}
+                      </p>
+                    )}
+                  {(() => {
+                    const parts: string[] = [];
+                    if (datum.cashOutLightsOnCents > 0)
+                      parts.push(
+                        `Lights on ${fmt(datum.cashOutLightsOnCents)}`,
+                      );
+                    if (datum.cashOutRegularCents > 0)
+                      parts.push(`Regular ${fmt(datum.cashOutRegularCents)}`);
+                    if (datum.cashOutOneOffCents > 0)
+                      parts.push(`One-offs ${fmt(datum.cashOutOneOffCents)}`);
+                    if (parts.length < 2) return null;
+                    return (
+                      <p className="tnum mt-0.5 text-[var(--dim)]">
+                        Cash out — {parts.join(" · ")}
+                      </p>
+                    );
+                  })()}
+                  {targetMonthlyCents != null && (
+                    <p className="tnum mt-0.5 text-[var(--dim)]">
+                      Target {fmt(targetMonthlyCents)}/mo
+                    </p>
+                  )}
+                  {targetMonthlyCents != null &&
+                    (() => {
+                      const diffCents =
+                        datum.trueCostCents - targetMonthlyCents;
+                      return (
+                        <p className="tnum mt-0.5 font-medium text-[var(--text)]">
+                          Difference {fmtSigned(diffCents)}{" "}
+                          {vsTargetWord(diffCents)}
+                        </p>
+                      );
+                    })()}
+                  {averageMonthlyCents != null && (
+                    <p className="tnum mt-0.5 text-[var(--dim)]">
+                      Average {fmt(averageMonthlyCents)}/mo
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           {/* Vs-target summary line, under the chart: the total
               and the per-month average of (True cost − Target)
               over the recorded months only — the same months
