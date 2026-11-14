@@ -4260,8 +4260,8 @@ export function RetirementCalc({
           </div>
         )}
         {inputsOpen && (
-          <div id="retirement-inputs-panel">
-        <div className="flex flex-wrap items-center gap-2">
+          <div id="retirement-inputs-panel" className="mt-5">
+        <div className="flex flex-wrap items-center gap-3">
           {!confirmReset ? (
             <button
               type="button"
