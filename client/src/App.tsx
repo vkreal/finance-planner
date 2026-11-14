@@ -5927,6 +5927,10 @@ export function App() {
                   <SpendingTrueCostChart
                     months={data.trailingMonths}
                     aheadMonths={data.enteredAheadMonths}
+                    onTargetTap={flashSpendingTargetField}
+                    onRecordedMonthsTap={() =>
+                      scrollToSection("section-cash-out")
+                    }
                     targetMonthlyCents={spendingTargetMonthlyCents}
                     averageMonthlyCents={
                       showAvgStrip ? data.avgSmoothedCents : null
@@ -5938,10 +5942,6 @@ export function App() {
                     }
                   />
                 </>
-                    onTargetTap={flashSpendingTargetField}
-                    onRecordedMonthsTap={() =>
-                      scrollToSection("section-cash-out")
-                    }
               )}
               {inYearMode && yv && !yv.hasAnyData && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
