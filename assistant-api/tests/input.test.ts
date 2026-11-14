@@ -363,7 +363,7 @@ describe("effectiveInputs echo and assumption provenance", () => {
     expect(byField.get("expectedRealReturnPct")?.provenance).toBe(
       "engine_constant",
     );
-    expect(byField.get("expectedRealReturnPct")?.value).toBe(6.75);
+    expect(byField.get("expectedRealReturnPct")?.value).toBe(5);
     expect(byField.get("volatilityPct")?.provenance).toBe("engine_constant");
     expect(byField.get("volatilityPct")?.value).toBe(17.4);
     expect(byField.get("filingStatus")?.provenance).toBe("assumption");

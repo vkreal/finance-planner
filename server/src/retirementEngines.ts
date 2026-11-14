@@ -262,6 +262,62 @@ export function phasedGrossCents(inputs: SimInputs, age: number): number {
   return Math.round(inputs.spendingCents * factor);
 }
 
+// One future fixed income stream in the portfolio simulation
+// (a Social Security benefit, a pension, any fixed annual income
+// that starts in a known year). startAge is on the PRIMARY's age
+// timeline — the age the primary person is in the calendar year
+// the stream starts (a spouse's claiming age converted through
+// the two birth years); null means the stream starts at
+// retirementAge. Amounts are integer cents per year.
+export type IncomeStream = {
+  amountCents: number;
+  startAge: number | null;
+};
+
+// The income active in a modeled year (age on the primary's
+// timeline). With a schedule present, the sum of its streams
+// whose start age has been reached; without one, the legacy
+// single stream. THE single income rule for the simulation —
+// simulateDetailed, runNeverRunsOut, and every path built on
+// them read income only through here, so the deterministic,
+// historical, Monte Carlo, success-only, and solver paths can
+// never disagree about what a year pays.
+export function incomeCentsAt(inputs: SimInputs, age: number): number {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (age >= start) total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null &&
+    age >= inputs.extraIncomeStartAge
+    ? inputs.extraIncomeCents
+    : 0;
+}
+
+// The income eventually active within the plan horizon — the
+// amount the max-spending solver's scan ceiling adds to the best
+// balance at retirement. A stream starting after the end age
+// never pays within the plan and is excluded; a null startAge
+// stream starts at retirement, so it counts. Without a schedule,
+// the legacy rule: the single stream's amount whenever it has a
+// start age.
+export function eventualIncomeCents(inputs: SimInputs): number {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (start <= inputs.endAge) total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null ? inputs.extraIncomeCents : 0;
+}
+
 export type SimInputs = {
   startCents: number;
   spendingCents: number;
@@ -270,6 +326,16 @@ export type SimInputs = {
   endAge: number;
   extraIncomeCents: number; // 0 = none
   extraIncomeStartAge: number | null;
+  // Optional multi-stream income schedule. When present and
+  // non-empty it REPLACES the legacy single extraIncome stream
+  // for the simulation (see incomeCentsAt): a household with two
+  // Social Security benefits, or a pension plus SS, is modeled
+  // here, each stream starting at its own start age on the
+  // primary's age timeline. Callers that omit it keep the exact
+  // legacy behavior. The legacy fields stay populated (earliest
+  // stream) so readers that do not know the schedule see the
+  // same values as before.
+  incomeSchedule?: IncomeStream[];
   strategy: SpendingStrategy;
   percentOfPortfolio: number; // e.g. 5 = 5% of the start-of-year balance
   // Guardrails knobs, EFFECTIVE values (blank already resolved to
@@ -342,10 +408,7 @@ export function simulateDetailed(inputs: SimInputs, returns: number[]): SimDetai
     let gross = 0;
     let net = 0;
     if (age >= inputs.retirementAge) {
-      const income =
-        inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge
-          ? inputs.extraIncomeCents
-          : 0;
+      const income = incomeCentsAt(inputs, age);
       if (inputs.strategy === "percent") {
         gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
       } else if (inputs.strategy === "guardrails") {
@@ -407,10 +470,7 @@ export function runNeverRunsOut(inputs: SimInputs, returns: number[]): boolean {
   for (let i = 0; i < years; i++) {
     const age = inputs.currentAge + i;
     if (age >= inputs.retirementAge) {
-      const income =
-        inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge
-          ? inputs.extraIncomeCents
-          : 0;
+      const income = incomeCentsAt(inputs, age);
       let gross: number;
       if (inputs.strategy === "percent") {
         gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
@@ -909,7 +969,9 @@ function solveGuardrailsScan(
   // NOT just the income active in the first retired year: a
   // later-starting income larger than the spending revives a
   // zeroed balance, so a first-year-income ceiling would cut
-  // the scan short and understate the maximum.
+  // the scan short and understate the maximum. With an income
+  // schedule the eventual income is the sum of every stream
+  // starting within the horizon (see eventualIncomeCents).
   // preYears is a window count, not an end-age count: the
   // years strictly before the first retired year, grown to
   // find the best balance AT retirement. The inclusive
@@ -922,8 +984,7 @@ function solveGuardrailsScan(
     0,
     Math.min(planYears, base.retirementAge - base.currentAge),
   );
-  const eventualIncome =
-    base.extraIncomeStartAge != null ? base.extraIncomeCents : 0;
+  const eventualIncome = eventualIncomeCents(base);
   let maxRetBal = 0;
   for (const returns of runReturns) {
     let b = base.startCents;

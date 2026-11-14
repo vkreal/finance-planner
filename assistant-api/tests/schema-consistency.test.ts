@@ -261,9 +261,9 @@ describe("canonical names land; old names are stripped", () => {
     // No Social Security was modeled (the old name was dropped).
     expect(n.scenario.ssPrimaryAnnual).toBe(0);
     expect(n.scenario.ssPrimaryStartAge).toBeNull();
-    // The return fell back to the blended default at 95% stocks (6.75),
-    // not the 9 the caller wrote under the old name.
-    expect(n.scenario.expectedReturnPct).toBe(6.75);
+    // The return fell back to the engine's flat factory default
+    // (5%), not the 9 the caller wrote under the old name.
+    expect(n.scenario.expectedReturnPct).toBe(5);
   });
 
   test("taxYear 2027 is invalid_input, not a silent clamp", () => {

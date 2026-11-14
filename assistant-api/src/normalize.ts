@@ -30,8 +30,9 @@
 // its static historical-returns table); everything else is a local
 // mirror):
 // - server/src/retirementEngines.ts: STOCKS_PCT_DEFAULT = 95,
-//   EXPECTED_RETURN_DEFAULT = 5 (flat default, NOT used here — see the
-//   expected-return rule below), RETIREMENT_AGE_DEFAULT = 57,
+//   EXPECTED_RETURN_DEFAULT = 5 (flat factory default, used here
+//   for an omitted expected return — see the expected-return rule
+//   below), RETIREMENT_AGE_DEFAULT = 57,
 //   MONTE_CARLO_TAB_SEED_DEFAULT = 12345, MONTE_CARLO_TAB_RUNS = 1000,
 //   blendedExpected(s) = s/100*7 + (1-s/100)*2,
 //   blendedVol(s) = s/100*18 + (1-s/100)*6,
@@ -43,6 +44,7 @@
 
 import { RetirementQuestionInputs } from "./schema.js";
 import {
+  EXPECTED_RETURN_DEFAULT,
   GUARDRAILS_ADJUSTMENT_DEFAULT,
   GUARDRAILS_CUT_DEFAULT,
   GUARDRAILS_RAISE_DEFAULT,
@@ -173,9 +175,11 @@ export function dollarsToCents(dollars: number): number {
 /**
  * Local mirror of the engine's blendedExpected(stocksPct) in
  * server/src/retirementEngines.ts: stocks% × 7% + bonds% × 2%.
- * Kept local (not imported) so this layer has no server/ dependency;
- * the formula was verified against the tree copy and the adapter
- * re-derives it through the real engine function.
+ * Kept (and parity-tested against the engine) for reference, but
+ * NOT the default for an omitted expected return: the app's
+ * factory default is the flat EXPECTED_RETURN_DEFAULT (5%),
+ * which replaced the more optimistic blend in build v132, so a
+ * missing return resolves to that constant, not to this blend.
  */
 export function blendedExpectedPct(stocksPct: number): number {
   return (stocksPct / 100) * 7 + (1 - stocksPct / 100) * 2;
@@ -491,24 +495,29 @@ export function normalizeInputs(
     record("stocksPct", stocksPct, "user", "Provided by caller.");
   }
   // NOTE: an omitted expected return resolves to the engine's
-  // blendedExpected(stocksPct), NOT the flat EXPECTED_RETURN_DEFAULT
-  // (5%) — the blend is what the engine prices with when no return is
-  // saved, and the adapter re-derives it via the real engine function.
+  // flat factory default EXPECTED_RETURN_DEFAULT (5%) — the
+  // value a fresh Retirement view seeds and a saved plan falls
+  // back to — NOT the stock-mix blend (6.75% at 95% stocks):
+  // the blend proved too optimistic and was replaced as the
+  // default in build v132. An explicit return (including 0% and
+  // negative) is always used exactly as given, and changing the
+  // stock mix never moves the default. Volatility still follows
+  // the blend (see below).
   const expectedReturnPct =
-    input.expectedRealReturnPct ?? blendedExpectedPct(stocksPct);
+    input.expectedRealReturnPct ?? EXPECTED_RETURN_DEFAULT;
   if (input.expectedRealReturnPct === undefined) {
     record(
       "expectedRealReturnPct",
       expectedReturnPct,
       "engine_constant",
-      "Derived from the stock mix by the engine's blendedExpected: stocks% × 7% + bonds% × 2%.",
+      "Engine factory default 5% (retirementEngines.ts EXPECTED_RETURN_DEFAULT) — the flat default that replaced the stock-mix blend in build v132.",
     );
   } else {
     record(
       "expectedRealReturnPct",
       expectedReturnPct,
       "user",
-      "Provided by caller — the engine's stock-mix blend derivation is bypassed.",
+      "Provided by caller — the engine's factory default is bypassed.",
     );
   }
   const volatilityPct =

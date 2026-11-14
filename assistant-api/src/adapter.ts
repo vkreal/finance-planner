@@ -108,6 +108,7 @@ import {
   runNeverRunsOut,
   simulateDetailed,
   solveMaxSpending,
+  type IncomeStream,
   type SimInputs,
   type SpendingStrategy,
 } from "../../server/src/retirementEngines";
@@ -278,61 +279,67 @@ function validStrategy(raw: string): SpendingStrategy {
 }
 
 /**
- * The sim engine has ONE extra-income stream (amount + start age) but a
- * household may have two Social Security streams. Rule: streams that
- * start the same year sum exactly (same timing, one amount); otherwise
- * model the earliest-starting stream and say so in a warning — the
- * second stream is still priced by the tax-aware Roth compare.
+ * The sim engine prices an income SCHEDULE (retirementEngines.ts
+ * incomeSchedule): one entry per Social Security stream, each
+ * starting in the calendar year its person claims. Claiming ages
+ * are per-person, measured against their own birth years — the
+ * spouse's claiming age is converted into the primary's age
+ * timeline (the timeline the sim loop runs on) through the two
+ * birth years: spouseStartOnPrimaryTimeline =
+ * ssSpouseStartAge + (birthYearSpouse − birthYearPrimary). A
+ * stream with no start age starts at the retirement age, the
+ * same rule the single-stream path applied. No positive stream
+ * is ever dropped: both benefits are priced by the
+ * deterministic, historical, Monte Carlo, success-only, and
+ * max-spending paths alike, because they all read the same
+ * schedule through incomeCentsAt.
+ *
+ * The legacy single-stream fields stay populated with the
+ * earliest-starting stream — exactly what the old adapter
+ * modeled — so any reader that does not know the schedule sees
+ * the same values as before; the schedule is what the engine
+ * prices, so the two can never double-count.
  */
-function simExtraIncome(scenario: NormalizedScenario): {
+function simIncomeStreams(scenario: NormalizedScenario): {
+  schedule: IncomeStream[];
   extraIncomeCents: number;
   extraIncomeStartAge: number | null;
-  warning: string | null;
 } {
-  const streams: { amountCents: number; startAge: number | null }[] = [];
+  const streams: IncomeStream[] = [];
   if (scenario.ssPrimaryAnnual > 0) {
     streams.push({
       amountCents: dollarsToCents(scenario.ssPrimaryAnnual),
-      startAge: scenario.ssPrimaryStartAge,
+      startAge: scenario.ssPrimaryStartAge ?? scenario.retirementAge,
     });
   }
   if (
     scenario.ssSpouseAnnual > 0 &&
     scenario.birthYearSpouse != null
   ) {
+    // A missing spouse start age means "starts at retirement":
+    // the retirement age is already on the primary timeline, so
+    // it needs no birth-year conversion; a given claiming age is
+    // the spouse's own age and is converted.
+    const startAge =
+      scenario.ssSpouseStartAge == null
+        ? scenario.retirementAge
+        : scenario.ssSpouseStartAge +
+          (scenario.birthYearSpouse - scenario.birthYearPrimary);
     streams.push({
       amountCents: dollarsToCents(scenario.ssSpouseAnnual),
-      startAge: scenario.ssSpouseStartAge,
+      startAge,
     });
   }
   if (streams.length === 0) {
-    return { extraIncomeCents: 0, extraIncomeStartAge: null, warning: null };
+    return { schedule: [], extraIncomeCents: 0, extraIncomeStartAge: null };
   }
-  const resolveStart = (s: { startAge: number | null }): number =>
-    s.startAge ?? scenario.retirementAge;
-  if (streams.length === 1) {
-    const only = streams[0]!;
-    return {
-      extraIncomeCents: only.amountCents,
-      extraIncomeStartAge: resolveStart(only),
-      warning: null,
-    };
-  }
-  const a = streams[0]!;
-  const b = streams[1]!;
-  if (resolveStart(a) === resolveStart(b)) {
-    return {
-      extraIncomeCents: a.amountCents + b.amountCents,
-      extraIncomeStartAge: resolveStart(a),
-      warning: null,
-    };
-  }
-  const earliest = resolveStart(a) <= resolveStart(b) ? a : b;
+  const earliest = [...streams].sort(
+    (a, b) => (a.startAge ?? 0) - (b.startAge ?? 0),
+  )[0]!;
   return {
+    schedule: streams,
     extraIncomeCents: earliest.amountCents,
-    extraIncomeStartAge: resolveStart(earliest),
-    warning:
-      "The deterministic projection models one Social Security stream (the earliest-starting); the second stream is included in the tax-aware Roth comparison, not here.",
+    extraIncomeStartAge: earliest.startAge,
   };
 }
 
@@ -347,8 +354,7 @@ export function toSimInputs(
       `Unknown spending strategy "${scenario.strategy}" — priced as constant spending.`,
     );
   }
-  const income = simExtraIncome(scenario);
-  if (income.warning) warnings.push(income.warning);
+  const income = simIncomeStreams(scenario);
   const inputs: SimInputs = {
     startCents: scenario.portfolioCents,
     spendingCents: scenario.annualSpendingCents,
@@ -357,6 +363,8 @@ export function toSimInputs(
     endAge: scenario.endAge,
     extraIncomeCents: income.extraIncomeCents,
     extraIncomeStartAge: income.extraIncomeStartAge,
+    incomeSchedule:
+      income.schedule.length > 0 ? income.schedule : undefined,
     strategy,
     percentOfPortfolio: strategy === "percent" ? 5 : 0,
     guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
