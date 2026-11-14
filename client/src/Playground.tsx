@@ -5559,7 +5559,6 @@ export function Playground({
      additional income, so they are never added again. */
   const pgInterestDollars = Math.max(0, parseDollars(pgInterest) ?? 0);
   const pgOrdinaryDollars = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
-  const pgQualifiedDollars = Math.max(0, parseDollars(pgQualDiv) ?? 0);
   /* Single-year group header summary — display ONLY, derived
      live from the same dials the section summaries above read:
      the tax year, the pre-tax draw for spending, the conversion,
@@ -5576,21 +5575,6 @@ export function Playground({
     `conversion ${pgMoneySummary(pgConversion)}`,
     `income ${fmtDollars(pgInterestDollars + pgOrdinaryDollars)}`,
   ].join(" · ");
-  /* The PRICED qualified figure (N-2, engines review round
-     2): the engine clamps the qualified part to the total
-     before pricing (min(qualified, ordinary) — audit S-8 +
-     S-11), so on an impossible pair the qualified part
-     prices AS the total and the excess is counted nowhere.
-     The income strip below shows THIS figure, not the raw
-     dial, so the strip names what the year actually prices
-     — before N-2 it printed the raw dial ($15,000 shown
-     against $10,000 priced on such a pair) and only the
-     dial note disclosed the clamp. On a possible pair the
-     two are identical. Display only; pricing is untouched. */
-  const pgQualifiedPricedDollars = Math.min(
-    pgQualifiedDollars,
-    pgOrdinaryDollars,
-  );
   const pgYearIncomeTotal = pgInterestDollars + pgOrdinaryDollars;
   const pgIncomeIsZero = pgYearIncomeTotal === 0;
   /* Income-dial source words (build v150): each dial's
