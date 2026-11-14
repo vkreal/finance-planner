@@ -7202,6 +7202,34 @@ export function RothConversion({
       </button>
     );
 
+  /* Balances-by-bucket legend links: each legend label is a tap to
+     its bucket's balance field in the Your money section, in the
+     same dotted-underline provenance style as the plan-face summary
+     numbers. Recharts' Legend formatter renders the label inside
+     the default text span, so the icon, order, wording, and layout
+     stay exactly the default legend's — only the label becomes a
+     button. An unknown label falls back to plain text. */
+  const bucketLegendFormatter = (value: string) => {
+    const target = {
+      "Pre-tax": { fieldId: "roth-Pre-tax-You", label: "Pre-tax balance" },
+      Roth: { fieldId: "roth-Roth", label: "Roth balance" },
+      Taxable: { fieldId: "roth-Taxable-brokerage-bank-", label: "Taxable balance" },
+      HSA: { fieldId: "roth-HSA", label: "HSA balance" },
+    }[value];
+    if (!target) return value;
+    return (
+      <button
+        type="button"
+        aria-label={`Go to the ${target.label} field`}
+        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+        style={{ background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}
+        onClick={() => jumpToField(target.fieldId, "money")}
+      >
+        {value}
+      </button>
+    );
+  };
+
   /* The fill-to clause's 400% is the ACA cliff cap's number: it
      lives inside the joined ceilings summary string, so split the
      clause on the number and link just the number to the cliff
@@ -12228,7 +12256,7 @@ export function RothConversion({
                     color: "var(--text)",
                   }}
                 />
-                <Legend />
+                <Legend formatter={bucketLegendFormatter} />
                 <Area type="monotone" dataKey="Pre-tax" stackId="1" stroke={BUCKET_COLORS["Pre-tax"]} fill={BUCKET_COLORS["Pre-tax"]} fillOpacity={0.75} />
                 <Area type="monotone" dataKey="Roth" stackId="1" stroke={BUCKET_COLORS.Roth} fill={BUCKET_COLORS.Roth} fillOpacity={0.75} />
                 <Area type="monotone" dataKey="Taxable" stackId="1" stroke={BUCKET_COLORS.Taxable} fill={BUCKET_COLORS.Taxable} fillOpacity={0.75} />
