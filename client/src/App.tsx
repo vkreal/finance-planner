@@ -5822,11 +5822,6 @@ export function App() {
                       }
                     }}
                   />
-                {spendingTargetUnit === "month" && (
-                  <p className="mt-1 text-xs text-[var(--dim)]">
-                    = {fmt(parseDollars(spendingTarget) ?? 0)}/yr
-                  </p>
-                )}
                     </div>
                     <div
                       role="group"
@@ -5852,6 +5847,11 @@ export function App() {
                         Per month
                       </button>
                     </div>
+                    {spendingTargetUnit === "month" && (
+                      <p className="shrink-0 whitespace-nowrap text-xs text-[var(--dim)]">
+                        = {fmt(parseDollars(spendingTarget) ?? 0)}/yr
+                      </p>
+                    )}
                   </div>
                 {spendingTargetMsg != null && (
                   <p className="mt-1 text-xs text-[var(--bad)]" role="note">
