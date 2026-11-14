@@ -5,8 +5,13 @@ Planner's retirement engines under plain Node.js — no MCP server, no
 hosting, no install, no network, no database.
 
 The file is `assistant-api/dist/finance-planner-cli.mjs`
-(491,813 bytes, sha256
-`806eead4b440fe1aae5458179e0a76b05d869b051060554b38bc9a109cba1f42`).
+(506,733 bytes, sha256
+`dc0dcfa153bf864e4c088b3a05fb48cde3bda5ff5e50b1957bbe81e3af497744`),
+built from source commit `19ea743` (main at the Review 6 merge; the
+bundle commit also carries the Review 2 5%-default and two-stream-SS
+fixes). Size and hash change with every rebuild from a new source
+commit — verify the copy you hold with the `.sha256` file next to it,
+not with the numbers in this paragraph.
 It calls the same `dispatchTool()` the MCP server and the bun CLI
 use, with the same validation, normalization, assumptions, engines,
 and output envelopes. The only difference is the entry point: this
@@ -21,6 +26,25 @@ the bundle ships as a release artifact alongside its `.sha256`
 checksum file, under the stable filename
 `finance-planner-cli.mjs`. No release has been published yet; until
 the first release, the committed copy in `dist/` is the live path.
+
+### How to publish a release (maintainer step — no release exists yet)
+
+1. Pick the source commit the bundle was built from and record it in
+   the release notes (immutable reference, e.g. `19ea743` plus the
+   bundle commit). Rebuild from that exact commit if the committed
+   copy is not already byte-identical to a fresh build from it.
+2. Tag the commit, e.g. `git tag -a standalone-v0.1.0 -m "Standalone
+   bundle, built from <commit>"` and push the tag.
+3. Create a GitHub Release from the tag and attach exactly two files:
+   `assistant-api/dist/finance-planner-cli.mjs` and
+   `assistant-api/dist/finance-planner-cli.mjs.sha256`, under the
+   stable filename `finance-planner-cli.mjs`.
+4. Record in the release notes the sha256 from the `.sha256` file and
+   the source commit it was built from, so any holder can rebuild and
+   compare hashes. Do not attach any other file, and never attach
+   `server.json` or any household data.
+5. Versioning is by tag; a later source commit gets a new tag and a
+   new release — old releases stay immutable.
 
 ## Node versions
 

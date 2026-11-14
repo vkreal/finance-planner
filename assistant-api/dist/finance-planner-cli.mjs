@@ -159,11 +159,38 @@ function guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs) {
 var PHASE_START_AGE_DEFAULT = 75;
 var PHASE_DECLINE_PCT_DEFAULT = 1;
 var STOCKS_PCT_DEFAULT = 95;
+var EXPECTED_RETURN_DEFAULT = 5;
 function phasedGrossCents(inputs, age) {
   if (age <= inputs.phaseStartAge)
     return inputs.spendingCents;
   const factor = Math.pow(1 - inputs.phaseDeclinePct / 100, age - inputs.phaseStartAge);
   return Math.round(inputs.spendingCents * factor);
+}
+function incomeCentsAt(inputs, age) {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (age >= start)
+        total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge ? inputs.extraIncomeCents : 0;
+}
+function eventualIncomeCents(inputs) {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (start <= inputs.endAge)
+        total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null ? inputs.extraIncomeCents : 0;
 }
 function simulateDetailed(inputs, returns) {
   const years = horizonYears(inputs.currentAge, inputs.endAge);
@@ -178,7 +205,7 @@ function simulateDetailed(inputs, returns) {
     let gross = 0;
     let net = 0;
     if (age >= inputs.retirementAge) {
-      const income = inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge ? inputs.extraIncomeCents : 0;
+      const income = incomeCentsAt(inputs, age);
       if (inputs.strategy === "percent") {
         gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
       } else if (inputs.strategy === "guardrails") {
@@ -216,7 +243,7 @@ function runNeverRunsOut(inputs, returns) {
   for (let i = 0;i < years; i++) {
     const age = inputs.currentAge + i;
     if (age >= inputs.retirementAge) {
-      const income = inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge ? inputs.extraIncomeCents : 0;
+      const income = incomeCentsAt(inputs, age);
       let gross;
       if (inputs.strategy === "percent") {
         gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
@@ -456,7 +483,7 @@ function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, 
     return succ >= needed;
   };
   const preYears = Math.max(0, Math.min(planYears, base.retirementAge - base.currentAge));
-  const eventualIncome = base.extraIncomeStartAge != null ? base.extraIncomeCents : 0;
+  const eventualIncome = eventualIncomeCents(base);
   let maxRetBal = 0;
   for (const returns of runReturns) {
     let b = base.startCents;
@@ -11157,6 +11184,7 @@ var string = (params) => {
 };
 var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
+var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
@@ -12033,6 +12061,26 @@ var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
 var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
   $ZodCheckNumberFormat.init(inst, def);
   $ZodNumber.init(inst, def);
+});
+var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
+  $ZodType.init(inst, def);
+  inst._zod.pattern = boolean;
+  inst._zod.parse = (payload, _ctx) => {
+    if (def.coerce)
+      try {
+        payload.value = Boolean(payload.value);
+      } catch (_) {}
+    const input = payload.value;
+    if (typeof input === "boolean")
+      return payload;
+    payload.issues.push({
+      expected: "boolean",
+      code: "invalid_type",
+      input,
+      inst
+    });
+    return payload;
+  };
 });
 var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
   $ZodType.init(inst, def);
@@ -13138,6 +13186,12 @@ function _int(Class, params) {
     ...normalizeParams(params)
   });
 }
+function _boolean(Class, params) {
+  return new Class({
+    type: "boolean",
+    ...normalizeParams(params)
+  });
+}
 function _unknown(Class) {
   return new Class({
     type: "unknown"
@@ -13743,6 +13797,9 @@ var numberProcessor = (schema, ctx, _json, _params) => {
   }
   if (typeof multipleOf === "number")
     json.multipleOf = multipleOf;
+};
+var booleanProcessor = (_schema, _ctx, json, _params) => {
+  json.type = "boolean";
 };
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
@@ -14430,6 +14487,14 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
+var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
+  $ZodBoolean.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean2(params) {
+  return _boolean(ZodBoolean, params);
+}
 var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
   $ZodUnknown.init(inst, def);
   ZodType.init(inst, def);
@@ -14840,6 +14905,12 @@ var RetirementQuestionInputs = strictObject({
   spendingDrawAnnual: dollars.optional(),
   cashDrawAnnual: dollars.optional(),
   rothDrawAnnual: dollars.optional(),
+  stockSoldAnnual: dollars.optional(),
+  stockBasisAnnual: dollars.optional(),
+  pretaxPriorYearEndAnnual: dollars.optional(),
+  pretaxSpousePriorYearEndAnnual: dollars.optional(),
+  rmdAlreadyReceivedAnnual: dollars.optional(),
+  primarySoleBeneficiaryOfSpouse: boolean2().optional(),
   mcSeed: number2().int().finite().optional(),
   mcRuns: number2().int().finite().min(10).max(5000).optional(),
   compareAges: array(age).min(2).max(5).optional()
@@ -14875,9 +14946,6 @@ function dollarsToCents(dollars) {
     throw new Error("dollarsToCents: non-finite dollar amount");
   }
   return Math.round(dollars * 100);
-}
-function blendedExpectedPct(stocksPct) {
-  return stocksPct / 100 * 7 + (1 - stocksPct / 100) * 2;
 }
 function blendedVolPct(stocksPct) {
   return stocksPct / 100 * 18 + (1 - stocksPct / 100) * 6;
@@ -14931,7 +14999,7 @@ function normalizeInputs(raw) {
       if (issue.code === "unrecognized_keys") {
         return issue.keys.map((key) => ({
           field: key,
-          message: issue.message
+          message: `Unrecognized key: "${key}"`
         }));
       }
       return [
@@ -15060,11 +15128,11 @@ function normalizeInputs(raw) {
   } else {
     record("stocksPct", stocksPct, "user", "Provided by caller.");
   }
-  const expectedReturnPct = input.expectedRealReturnPct ?? blendedExpectedPct(stocksPct);
+  const expectedReturnPct = input.expectedRealReturnPct ?? EXPECTED_RETURN_DEFAULT;
   if (input.expectedRealReturnPct === undefined) {
-    record("expectedRealReturnPct", expectedReturnPct, "engine_constant", "Derived from the stock mix by the engine's blendedExpected: stocks% × 7% + bonds% × 2%.");
+    record("expectedRealReturnPct", expectedReturnPct, "engine_constant", "Engine factory default 5% (retirementEngines.ts EXPECTED_RETURN_DEFAULT) — the flat default that replaced the stock-mix blend in build v132.");
   } else {
-    record("expectedRealReturnPct", expectedReturnPct, "user", "Provided by caller — the engine's stock-mix blend derivation is bypassed.");
+    record("expectedRealReturnPct", expectedReturnPct, "user", "Provided by caller — the engine's factory default is bypassed.");
   }
   const volatilityPct = input.volatilityPct ?? blendedVolPct(stocksPct);
   if (input.volatilityPct === undefined) {
@@ -15237,7 +15305,13 @@ function normalizeInputs(raw) {
     conversion: input.conversionAnnual ?? 0,
     spendingDraw: input.spendingDrawAnnual ?? 0,
     cashDraw: input.cashDrawAnnual ?? 0,
-    rothDraw: input.rothDrawAnnual ?? 0
+    rothDraw: input.rothDrawAnnual ?? 0,
+    stockSold: input.stockSoldAnnual ?? null,
+    stockBasis: input.stockBasisAnnual ?? null,
+    pretaxPriorYearEnd: input.pretaxPriorYearEndAnnual ?? null,
+    pretaxSpousePriorYearEnd: input.pretaxSpousePriorYearEndAnnual ?? null,
+    rmdAlreadyReceived: input.rmdAlreadyReceivedAnnual ?? null,
+    primarySoleBeneficiaryOfSpouse: input.primarySoleBeneficiaryOfSpouse ?? null
   };
   const singleYearInputs = [
     ["singleYear.interest", input.interestAnnual, singleYear.interest],
@@ -15263,6 +15337,51 @@ function normalizeInputs(raw) {
   for (const [field, rawValue, value] of singleYearInputs) {
     if (rawValue === undefined) {
       record(field, value, "assumption", "No amount entered — $0.");
+    } else {
+      record(field, value, "user", "Provided by caller.");
+    }
+  }
+  const singleYearNullableInputs = [
+    [
+      "singleYear.stockSold",
+      input.stockSoldAnnual,
+      singleYear.stockSold,
+      "No sale entered — no taxable share sale is priced."
+    ],
+    [
+      "singleYear.stockBasis",
+      input.stockBasisAnnual,
+      singleYear.stockBasis,
+      "No basis entered — a sale prices with $0 basis (whole proceeds as gain) unless a basis is given."
+    ],
+    [
+      "singleYear.pretaxPriorYearEnd",
+      input.pretaxPriorYearEndAnnual,
+      singleYear.pretaxPriorYearEnd,
+      "No prior-Dec-31 pre-tax balance entered — no RMD is priced from the primary's balance."
+    ],
+    [
+      "singleYear.pretaxSpousePriorYearEnd",
+      input.pretaxSpousePriorYearEndAnnual,
+      singleYear.pretaxSpousePriorYearEnd,
+      "No prior-Dec-31 spouse pre-tax balance entered — no spouse RMD is priced."
+    ],
+    [
+      "singleYear.rmdAlreadyReceived",
+      input.rmdAlreadyReceivedAnnual,
+      singleYear.rmdAlreadyReceived,
+      "No RMD already received entered — $0 (the full computed RMD is added)."
+    ],
+    [
+      "singleYear.primarySoleBeneficiaryOfSpouse",
+      input.primarySoleBeneficiaryOfSpouse,
+      singleYear.primarySoleBeneficiaryOfSpouse,
+      "Not established whether the primary is the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table."
+    ]
+  ];
+  for (const [field, rawValue, value, omittedNote] of singleYearNullableInputs) {
+    if (rawValue === undefined) {
+      record(field, value, "assumption", omittedNote);
     } else {
       record(field, value, "user", "Provided by caller.");
     }
@@ -15465,46 +15584,29 @@ function validStrategy(raw) {
   }
   return "constant";
 }
-function simExtraIncome(scenario) {
+function simIncomeStreams(scenario) {
   const streams = [];
   if (scenario.ssPrimaryAnnual > 0) {
     streams.push({
       amountCents: dollarsToCents2(scenario.ssPrimaryAnnual),
-      startAge: scenario.ssPrimaryStartAge
+      startAge: scenario.ssPrimaryStartAge ?? scenario.retirementAge
     });
   }
   if (scenario.ssSpouseAnnual > 0 && scenario.birthYearSpouse != null) {
+    const startAge = scenario.ssSpouseStartAge == null ? scenario.retirementAge : scenario.ssSpouseStartAge + (scenario.birthYearSpouse - scenario.birthYearPrimary);
     streams.push({
       amountCents: dollarsToCents2(scenario.ssSpouseAnnual),
-      startAge: scenario.ssSpouseStartAge
+      startAge
     });
   }
   if (streams.length === 0) {
-    return { extraIncomeCents: 0, extraIncomeStartAge: null, warning: null };
+    return { schedule: [], extraIncomeCents: 0, extraIncomeStartAge: null };
   }
-  const resolveStart = (s) => s.startAge ?? scenario.retirementAge;
-  if (streams.length === 1) {
-    const only = streams[0];
-    return {
-      extraIncomeCents: only.amountCents,
-      extraIncomeStartAge: resolveStart(only),
-      warning: null
-    };
-  }
-  const a = streams[0];
-  const b = streams[1];
-  if (resolveStart(a) === resolveStart(b)) {
-    return {
-      extraIncomeCents: a.amountCents + b.amountCents,
-      extraIncomeStartAge: resolveStart(a),
-      warning: null
-    };
-  }
-  const earliest = resolveStart(a) <= resolveStart(b) ? a : b;
+  const earliest = [...streams].sort((a, b) => (a.startAge ?? 0) - (b.startAge ?? 0))[0];
   return {
+    schedule: streams,
     extraIncomeCents: earliest.amountCents,
-    extraIncomeStartAge: resolveStart(earliest),
-    warning: "The deterministic projection models one Social Security stream (the earliest-starting); the second stream is included in the tax-aware Roth comparison, not here."
+    extraIncomeStartAge: earliest.startAge
   };
 }
 function toSimInputs(scenario, overrides) {
@@ -15513,9 +15615,7 @@ function toSimInputs(scenario, overrides) {
   if (strategy !== scenario.strategy) {
     warnings.push(`Unknown spending strategy "${scenario.strategy}" — priced as constant spending.`);
   }
-  const income = simExtraIncome(scenario);
-  if (income.warning)
-    warnings.push(income.warning);
+  const income = simIncomeStreams(scenario);
   const inputs = {
     startCents: scenario.portfolioCents,
     spendingCents: scenario.annualSpendingCents,
@@ -15524,6 +15624,7 @@ function toSimInputs(scenario, overrides) {
     endAge: scenario.endAge,
     extraIncomeCents: income.extraIncomeCents,
     extraIncomeStartAge: income.extraIncomeStartAge,
+    incomeSchedule: income.schedule.length > 0 ? income.schedule : undefined,
     strategy,
     percentOfPortfolio: strategy === "percent" ? 5 : 0,
     guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
@@ -16054,8 +16155,82 @@ function calculateSingleYearTax(scenario) {
     if (scenario.taxableDividendYieldPct != null || scenario.taxableInterestYieldPct != null) {
       warnings.push("Taxable yields are modeled in multi-year plans; this single-year price uses the typed interest/dividends only.");
     }
-    warnings.push("No prior-year pre-tax balance is carried in the single-year inputs, so no RMD is priced in this year.");
-    warnings.push("This price does not model selling taxable shares to fund the year's spending — cashLeftVsSpending counts only the typed draws and income.");
+    const sy = scenario.singleYear;
+    const fmtMoney = (n) => `$${n.toLocaleString("en-US")}`;
+    const stockSold = sy.stockSold ?? 0;
+    const stockBasis = stockSold > 0 ? sy.stockBasis ?? 0 : 0;
+    const stockGain = stockSold - stockBasis;
+    if (sy.stockSold == null) {
+      warnings.push("No taxable share sale was entered for this year, so no sale is priced — cashLeftVsSpending counts no sale proceeds and no capital gain or loss.");
+      if (sy.stockBasis != null && sy.stockBasis > 0) {
+        warnings.push("Cost basis was entered with no sale — it has no effect; a basis prices only against a sale.");
+      }
+    } else if (stockSold === 0) {
+      warnings.push("An explicit $0 share sale was entered — no sale is priced, no gain or loss.");
+      if (sy.stockBasis != null && sy.stockBasis > 0) {
+        warnings.push("Cost basis was entered with no sale — it has no effect; a basis prices only against a sale.");
+      }
+    } else {
+      if (sy.stockBasis == null) {
+        warnings.push(`No cost basis was entered for the ${fmtMoney(stockSold)} sale — basis prices at $0, so the whole proceeds price as gain. Enter stockBasisAnnual to price the actual gain.`);
+      } else if (stockGain < 0) {
+        warnings.push(`The sale realizes a loss of ${fmtMoney(-stockGain)} (basis above proceeds) — the engine prices it as a net capital loss: up to $3,000 offsets ordinary income this year and the rest carries forward (lossCarryOutSt / lossCarryOutLt in the result).`);
+      } else if (stockGain === 0) {
+        warnings.push(`The ${fmtMoney(stockSold)} sale realizes no gain or loss (basis equals proceeds) — the proceeds still count as cash in, with no capital-gains tax.`);
+      }
+      warnings.push(`Sale proceeds of ${fmtMoney(stockSold)} count in cashIn (cashLeftVsSpending); only the ${fmtMoney(stockGain)} gain is income — proceeds and gain are different figures.`);
+      if (stockSold > scenario.taxableDollars) {
+        warnings.push(`The ${fmtMoney(stockSold)} sale exceeds the typed taxable balance of ${fmtMoney(scenario.taxableDollars)} — check the sale amount; the price still counts the full proceeds.`);
+      }
+    }
+    const priorDec31Year = scenario.taxYear - 1;
+    const primaryBalance = sy.pretaxPriorYearEnd;
+    const spouseBalance = sy.pretaxSpousePriorYearEnd;
+    const rmdAgePrimary = rmdAgeForBirthYear(scenario.birthYearPrimary);
+    const rmdAgeSpouse = joint && scenario.birthYearSpouse != null ? rmdAgeForBirthYear(scenario.birthYearSpouse) : null;
+    if (primaryBalance == null && spouseBalance == null) {
+      warnings.push("No prior-year pre-tax balance is carried in the single-year inputs, so no RMD is priced in this year.");
+    } else {
+      if (primaryBalance != null) {
+        if (primaryBalance === 0) {
+          warnings.push("An explicit $0 prior-Dec-31 pre-tax balance was entered for the primary — the primary's RMD is $0.");
+        } else {
+          warnings.push(`The primary's RMD prices from the prior-Dec-31 (Dec 31, ${priorDec31Year}) pre-tax balance of ${fmtMoney(primaryBalance)}.`);
+        }
+        if (agePrimary < rmdAgePrimary) {
+          warnings.push(`The primary is ${agePrimary} in ${scenario.taxYear}, below RMD age ${rmdAgePrimary} for a ${scenario.birthYearPrimary} birth year — the primary's RMD is $0 this year.`);
+        }
+      } else {
+        warnings.push("No prior-Dec-31 pre-tax balance was entered for the primary — the primary's RMD is $0; only a spouse balance was entered.");
+      }
+      if (spouseBalance != null) {
+        if (!joint) {
+          warnings.push("A spouse prior-Dec-31 balance was entered on a non-joint return — the engine ignores it: no spouse RMD is priced.");
+        } else if (spouseBalance === 0) {
+          warnings.push("An explicit $0 prior-Dec-31 pre-tax balance was entered for the spouse — the spouse's RMD is $0.");
+        } else {
+          warnings.push(`The spouse's RMD prices from the spouse's own prior-Dec-31 (Dec 31, ${priorDec31Year}) pre-tax balance of ${fmtMoney(spouseBalance)}, on the spouse's own age clock.`);
+          if (ageSpouse != null && rmdAgeSpouse != null && ageSpouse < rmdAgeSpouse) {
+            warnings.push(`The spouse is ${ageSpouse} in ${scenario.taxYear}, below RMD age ${rmdAgeSpouse} for a ${scenario.birthYearSpouse} birth year — the spouse's RMD is $0 this year.`);
+          }
+          if (sy.primarySoleBeneficiaryOfSpouse === true) {
+            warnings.push("The primary is the spouse's sole beneficiary (primarySoleBeneficiaryOfSpouse) — the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table.");
+          } else if (sy.primarySoleBeneficiaryOfSpouse === false) {
+            warnings.push("The primary is not the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table.");
+          } else {
+            warnings.push("Whether the primary is the spouse's sole beneficiary was not established — the spouse's RMD prices on the Uniform Lifetime Table (the conservative direction).");
+          }
+        }
+      }
+    }
+    const rmdAlreadyReceived = sy.rmdAlreadyReceived ?? 0;
+    if (rmdAlreadyReceived > 0) {
+      if (primaryBalance == null && spouseBalance == null) {
+        warnings.push("An RMD already received was entered, but no prior-Dec-31 balance was entered — there is no computed RMD to net it against, so it has no effect on this price.");
+      } else {
+        warnings.push(`${fmtMoney(rmdAlreadyReceived)} of this year's RMD was already received and already counted in the entered income — the engine nets it out of the RMD it adds (floored at $0), so it is not counted twice.`);
+      }
+    }
     const benchmarkAnnual = scenario.filingStatus === "single" ? scenario.acaBenchmarkSingle : scenario.householdSize >= 3 ? scenario.acaBenchmarkFamily ?? scenario.acaBenchmarkCouple : scenario.acaBenchmarkCouple;
     const inputs = {
       taxYear: scenario.taxYear,
@@ -16075,10 +16250,13 @@ function calculateSingleYearTax(scenario) {
       cashDraw: scenario.singleYear.cashDraw,
       rothDraw: scenario.singleYear.rothDraw,
       inflationPct: scenario.inflationPct,
-      stockSold: 0,
-      stockBasis: 0,
+      stockSold,
+      stockBasis,
       qualifiedDividends: scenario.singleYear.qualifiedDividends,
-      pretaxBalance: null,
+      pretaxBalance: primaryBalance,
+      pretaxBalanceSpouse: spouseBalance,
+      rmdAlreadyReceived,
+      primarySoleBeneficiaryOfSpouse: sy.primarySoleBeneficiaryOfSpouse,
       spouseSoleBeneficiary: joint,
       acaHouseholdSize: scenario.householdSize,
       acaBenchmarkAnnual: benchmarkAnnual,
@@ -16087,8 +16265,20 @@ function calculateSingleYearTax(scenario) {
       annualSpending: centsToDollars(scenario.annualSpendingCents)
     };
     const priced = pricePlaygroundYear(inputs);
+    if (priced.rmd > 0 && (scenario.singleYear.spendingDraw > 0 || scenario.singleYear.conversion > 0)) {
+      const parts = [];
+      if (scenario.singleYear.spendingDraw > 0)
+        parts.push("spending draw");
+      if (scenario.singleYear.conversion > 0)
+        parts.push("conversion");
+      warnings.push(`The RMD (${fmtMoney(priced.rmd)}) is priced as income in addition to the typed ${parts.join(" and ")} — if that draw already includes part of the RMD, pass the included amount as rmdAlreadyReceivedAnnual so it is not counted twice.`);
+    }
+    if (rmdAlreadyReceived > priced.rmdGross && priced.rmdGross >= 0) {
+      warnings.push(`rmdAlreadyReceivedAnnual (${fmtMoney(rmdAlreadyReceived)}) exceeds the computed RMD (${fmtMoney(priced.rmdGross)}) — only ${fmtMoney(priced.rmdGross)} is netted; the excess has no effect.`);
+    }
     const extraAssumptions = joint ? [
-      assumption("spouseSoleBeneficiary", true, "assumption", "The spouse is modeled as the primary's sole beneficiary, so the primary's RMD prices on the Joint and Last Survivor Table.")
+      assumption("spouseSoleBeneficiary", true, "assumption", "The spouse is modeled as the primary's sole beneficiary, so the primary's RMD prices on the Joint and Last Survivor Table."),
+      assumption("primarySoleBeneficiaryOfSpouse", sy.primarySoleBeneficiaryOfSpouse, sy.primarySoleBeneficiaryOfSpouse == null ? "assumption" : "user", sy.primarySoleBeneficiaryOfSpouse === true ? "The primary is the spouse's sole beneficiary, so the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table." : sy.primarySoleBeneficiaryOfSpouse === false ? "The primary is not the spouse's sole beneficiary, so the spouse's RMD prices on the Uniform Lifetime Table." : "Whether the primary is the spouse's sole beneficiary was not established — the spouse's RMD prices on the Uniform Lifetime Table.")
     ] : [];
     return respond(scenario, roundDeep(priced), warnings, extraAssumptions, scenario.taxYear);
   });
@@ -16159,7 +16349,7 @@ var BASE_INPUT_SCHEMA = {
       type: "number",
       minimum: -50,
       maximum: 50,
-      description: "Expected real portfolio return, as a percent per year (e.g. 5 = 5%)."
+      description: "Expected real portfolio return, as a percent per year (e.g. 5 = 5%). Defaults to the engine's flat factory default of 5% when omitted; an explicit value (including 0% and negative) is used as given."
     },
     volatilityPct: {
       ...PCT,
@@ -16274,6 +16464,30 @@ var BASE_INPUT_SCHEMA = {
       ...MONEY,
       description: "Draw from Roth for the single-year tax calculation, in dollars."
     },
+    stockSoldAnnual: {
+      ...MONEY,
+      description: "Taxable shares sold in the single-year tax year, in dollars of proceeds. The realized gain (proceeds minus stockBasisAnnual) prices on the capital-gains stack; the full proceeds count as cash in. A basis above the proceeds is a realized loss (up to $3,000 offsets ordinary income, the rest carries forward). Omitted means no sale is priced; explicit 0 means a $0 sale."
+    },
+    stockBasisAnnual: {
+      ...MONEY,
+      description: "Cost basis of the shares sold (stockSoldAnnual), in dollars. Only prices against a sale — a basis with no sale has no effect. Omitted with a sale means basis $0 (the whole proceeds price as gain)."
+    },
+    pretaxPriorYearEndAnnual: {
+      ...MONEY,
+      description: "Primary person's pre-tax balance at December 31 of the year BEFORE the priced tax year, in dollars. The RMD for the priced year prices from this balance and the owner's age. Omitted means no RMD is priced from the primary's balance; explicit 0 means a $0 RMD. Never today's balance — the Dec-31 date matters."
+    },
+    pretaxSpousePriorYearEndAnnual: {
+      ...MONEY,
+      description: "Spouse's own pre-tax balance at December 31 of the year BEFORE the priced tax year, in dollars. The spouse's RMD prices from this balance on the spouse's own age clock. Omitted means no spouse RMD is priced; explicit 0 means a $0 spouse RMD. Only counts on a joint (mfj) return."
+    },
+    rmdAlreadyReceivedAnnual: {
+      ...MONEY,
+      description: "Part of this year's computed RMD already received AND already counted in the entered income, in dollars. The engine nets it out of the RMD it adds (floored at $0), so a paid RMD is never counted twice. Omitted means $0."
+    },
+    primarySoleBeneficiaryOfSpouse: {
+      type: "boolean",
+      description: "Is the primary person the sole beneficiary of the spouse's pre-tax accounts? Gates ONLY the spouse's RMD table: true lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table. Absent means not established — the spouse's RMD prices on the Uniform table (the conservative direction). This is a separate fact from the spouse being the primary's sole beneficiary; one never implies the other."
+    },
     mcSeed: {
       type: "integer",
       description: "Random seed for the Monte Carlo run, for reproducibility."
@@ -16373,7 +16587,13 @@ var TAX_YEAR_OPTIONAL_INPUTS = [
   "conversionAnnual",
   "spendingDrawAnnual",
   "cashDrawAnnual",
-  "rothDrawAnnual"
+  "rothDrawAnnual",
+  "stockSoldAnnual",
+  "stockBasisAnnual",
+  "pretaxPriorYearEndAnnual",
+  "pretaxSpousePriorYearEndAnnual",
+  "rmdAlreadyReceivedAnnual",
+  "primarySoleBeneficiaryOfSpouse"
 ];
 var EXAMPLE_BASE = {
   pretax: 1250000,
@@ -16419,24 +16639,26 @@ var EXAMPLE_TAX_YEAR = {
   conversionAnnual: 20000,
   spendingDrawAnnual: 114000,
   cashDrawAnnual: 0,
-  rothDrawAnnual: 0
+  rothDrawAnnual: 0,
+  stockSoldAnnual: 20000,
+  stockBasisAnnual: 12000
 };
 var TOOLS = [
   {
     name: "retirement_calculate",
-    description: `Use when the user asks whether they can retire now, or when they can afford to retire. ` + `Required: pretax, taxable, roth, hsa (account balances in dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), spouseAge, Social Security amounts and start ages (default none), and portfolio assumptions expectedRealReturnPct, stocksPct and strategy (defaults from the engine). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. mcRuns, mcSeed and volatilityPct do not change it either — there is no Monte Carlo leg here; the historical cross-check is deterministic. ` + `Example call: ${JSON.stringify(EXAMPLE_CALCULATE)}. ` + `Returns: whether the money lasts (neverRunsOut), the ending balance, and a year-by-year balance table, plus the historical cross-check of the same plan.`,
+    description: `Use when the user asks whether they can retire now, or when they can afford to retire. ` + `Required: pretax, taxable, roth, hsa (account balances in dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), spouseAge, Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), and portfolio assumptions expectedRealReturnPct, stocksPct and strategy (defaults from the engine). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. mcRuns, mcSeed and volatilityPct do not change it either — there is no Monte Carlo leg here; the historical cross-check is deterministic. ` + `Example call: ${JSON.stringify(EXAMPLE_CALCULATE)}. ` + `Returns: whether the money lasts (neverRunsOut), the ending balance, and a year-by-year balance table, plus the historical cross-check of the same plan.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateRetirement)
   },
   {
     name: "retirement_monte_carlo",
-    description: `Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` + `Example call: ${JSON.stringify(EXAMPLE_MONTE_CARLO)}. ` + `Returns: the success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations.`,
+    description: `Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` + `Example call: ${JSON.stringify(EXAMPLE_MONTE_CARLO)}. ` + `Returns: the success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, runRetirementMonteCarlo)
   },
   {
     name: "retirement_max_spending",
-    description: `Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). monthlySpending is still required: give current spending (e.g. 9500) as the starting point; the tool reports the highest sustainable level, which may differ. ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` + `Example call: ${JSON.stringify(EXAMPLE_MAX_SPENDING)}. ` + `Returns: the maximum sustainable monthly spending in dollars at 85% Monte Carlo success over 1,000 simulations, with a historical cross-check of that spending level.`,
+    description: `Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). monthlySpending is still required: give current spending (e.g. 9500) as the starting point; the tool reports the highest sustainable level, which may differ. ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` + `Example call: ${JSON.stringify(EXAMPLE_MAX_SPENDING)}. ` + `Returns: the maximum sustainable monthly spending in dollars at 85% Monte Carlo success over 1,000 simulations, with a historical cross-check of that spending level.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateMaxSpending)
   },
@@ -16460,7 +16682,7 @@ var TOOLS = [
   },
   {
     name: "retirement_tax_year",
-    description: `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but no prior-year balance is carried in — so no RMD is priced either. ` + `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` + `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year. It does not model selling taxable shares to fund the year's spending — cashLeftVsSpending counts only the typed draws and income.`,
+    description: `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` + `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` + `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateSingleYearTax)
   },
@@ -16492,6 +16714,7 @@ var CAPABILITY_LIMITATIONS = [
   `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
   "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
+  "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
   "Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more. A long call stalls the whole server — including /health — until it finishes.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
   "Standalone bundle: the same eight tools ship as a single finance-planner-cli.mjs file that runs under plain Node.js 20+ with no server, no install, and no network — see assistant-api/STANDALONE.md."
@@ -16557,7 +16780,7 @@ var TOOL_GUIDE = [
     required: REQUIRED_INPUTS_GLOBAL,
     optional: TAX_YEAR_OPTIONAL_INPUTS,
     exampleCall: EXAMPLE_TAX_YEAR,
-    resultSummary: "The single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year."
+    resultSummary: "The single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced share sale (gain/loss, proceeds as cash in) and any priced RMD (from the prior-Dec-31 balances)."
   },
   {
     name: "retirement_describe_capabilities",
