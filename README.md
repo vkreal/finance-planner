@@ -40,6 +40,8 @@ Finance Planner connects the questions households actually ask when retirement g
 
 If you're an AI assistant analyzing a household's plan with this repo, start with [HANDOVER.md](HANDOVER.md). It carries the operating model, the engine quirks that trip people up, how to answer questions, and a checklist of what a household's handover should record — with no household figures in it. Every figure lives in the saved record, retrievable through the API; the version log ([DATA-PLAN.md](DATA-PLAN.md)) is figure-free, and [AGENTS.md](AGENTS.md) carries the build rules. For reviewing the engine itself, see the [reviewer guide](docs/REVIEWER_GUIDE.md), which covers its semantics, invariants, test suites, and describeApi.
 
+If you're an AI assistant answering a retirement question — "can I retire?", "how likely is my plan to succeed?", "how much can I spend?" — start with [llms.txt](llms.txt) and the [Assistant API guide](assistant-api/README.md). It is a stateless, read-only MCP server over the same engines: 8 tools, no saved data, no sign-in, a one-command local start (`bun run start` from `assistant-api/`), and a worked example in the first section.
+
 ## 🧭 The five views
 
 ### 💸 Spending

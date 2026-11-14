@@ -30,3 +30,5 @@ scripts against the file.
 HANDOVER.md at the repo root carries the operating model, standing decisions,
 and engine quirks for a household's plan, figure-free. An AI analyzing a
 household's plan should read it first (the README links it too).
+
+Assistant API: the stateless MCP adapter over the same engines lives in `assistant-api/` — entry point `assistant-api/README.md` (8 tools, `bun run start` locally); AI-facing index at repo-root `llms.txt`.
