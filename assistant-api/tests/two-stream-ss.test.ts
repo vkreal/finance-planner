@@ -482,7 +482,11 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(maxTwo.maxAnnualSpending).toBeGreaterThan(
       maxOne.maxAnnualSpending,
     );
-  });
+    // This test runs calculate + a 200-run Monte Carlo + two
+    // max-spending solver calls (~4–6s on this VM), over Bun's
+    // 5s default per-test timeout — the allowance is the fix for
+    // the flake, not a change to anything asserted.
+  }, 120_000);
 
   test("no benefit is assumed when an amount is omitted", () => {
     const s = normalizedScenario({
