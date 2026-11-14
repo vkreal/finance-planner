@@ -3824,6 +3824,15 @@ export function App() {
     setCashOutFoldOverrides((prev) => ({ ...prev, [m]: next }));
     setFold.mutate({ id: `spending.cashout.${m}`, open: next });
   };
+  /* Monthly cash out list window + year filter (display only):
+     the month list shows one selected year's months, newest
+     first, with only the latest 6 rows until "Show older months"
+     is tapped. The year defaults to the current year (falling
+     back to the newest year present when the current year has
+     no months yet). Neither control changes any data — they
+     only choose which of the already-computed rows render. */
+  const [cashOutYearSel, setCashOutYearSel] = useState<string | null>(null);
+  const [cashOutShowOlder, setCashOutShowOlder] = useState(false);
   const [showItemForm, setShowItemForm] = useState(false);
   // Where the item form renders, relative to the control that
   // opened it — the form opens right where the user tapped:
@@ -5555,6 +5564,52 @@ export function App() {
   const itemFormHasRow = (data?.cashOutMonths ?? []).some(
     (cm) => cm.month === itemFormMonth,
   );
+  // The viewed month's cash-out summary is folded into the
+  // Monthly cash out section header below (its month · items ·
+  // total rides in dim text after the title, the Monthly bills
+  // header pattern). The list under the header holds EVERY month
+  // with a cash-out entry — the viewed month included, in its
+  // place in the list's newest-first order, marked "Viewing" —
+  // each as the same row with its own Hide/Show items toggle,
+  // so the viewed month's items open inside its row exactly
+  // like every other month's.
+  const viewedCashOutMonth =
+    (data?.cashOutMonths ?? []).find((cm) => cm.month === month) ?? null;
+  const cashOutListedMonths = [...(data?.cashOutMonths ?? [])].reverse();
+  // Year filter + recent-6 window over the listed months
+  // (display only): the years present in the data, newest
+  // first; the selected year defaults to the current year,
+  // or to the newest year present when the current year has
+  // no months. Within the selected year only the latest 6
+  // rows render until "Show older months" is tapped.
+  const cashOutYears = [
+    ...new Set(cashOutListedMonths.map((cm) => cm.month.slice(0, 4))),
+  ];
+  const cashOutThisYear = currentMonth().slice(0, 4);
+  const cashOutSelectedYear =
+    cashOutYearSel != null && cashOutYears.includes(cashOutYearSel)
+      ? cashOutYearSel
+      : cashOutYears.includes(cashOutThisYear)
+        ? cashOutThisYear
+        : (cashOutYears[0] ?? cashOutThisYear);
+  const cashOutYearMonths = cashOutListedMonths.filter(
+    (cm) => cm.month.slice(0, 4) === cashOutSelectedYear,
+  );
+  const CASH_OUT_RECENT_COUNT = 6;
+  const cashOutWindowMonths = cashOutShowOlder
+    ? cashOutYearMonths
+    : cashOutYearMonths.slice(0, CASH_OUT_RECENT_COUNT);
+  // A month whose summary or item form is open keeps its row
+  // rendered even when the window or the year filter would
+  // hide it, so an open form never loses the row it renders in.
+  const cashOutVisibleMonthKeys = new Set(
+    cashOutWindowMonths.map((cm) => cm.month),
+  );
+  if (showSummaryForm) cashOutVisibleMonthKeys.add(sMonth);
+  if (showItemForm) cashOutVisibleMonthKeys.add(itemFormMonth);
+  const cashOutVisibleMonths = cashOutListedMonths.filter((cm) =>
+    cashOutVisibleMonthKeys.has(cm.month),
+  );
   const summaryFormEl = showSummaryForm ? (
     <form onSubmit={submitSummary} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
       <h3 className="display text-lg font-semibold">
@@ -6496,29 +6551,66 @@ export function App() {
 
             {/* monthly cash out — one number per month */}
             <section id="section-cash-out" aria-label="Monthly cash out" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-cash-out")}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-xl font-semibold">Monthly cash out</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={btnGhost}
-                    onClick={() => openNewItem(month)}
-                  >
-                    + Itemize a month
-                  </button>
-                  <button
-                    type="button"
-                    className={btnAdd}
-                    onClick={() =>
-                      openSummaryForm(
-                        month,
-                        data.summaries.find((s) => s.month === month)?.cashOutCents,
-                      )
-                    }
-                  >
-                    {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
-                  </button>
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="display flex min-w-0 flex-wrap items-baseline gap-x-2 text-xl font-semibold">
+                  <span className="shrink-0">Monthly cash out</span>
+                  <span className="tnum whitespace-nowrap text-base font-normal text-[var(--dim)]">
+                    {monthLabel(month)}
+                    {viewedCashOutMonth && viewedCashOutMonth.itemsCount > 0 && (
+                      <>
+                        {" "}
+                        · {viewedCashOutMonth.itemsCount} item
+                        {viewedCashOutMonth.itemsCount === 1 ? "" : "s"}
+                      </>
+                    )}
+                    {viewedCashOutMonth && (
+                      <> · {fmt(viewedCashOutMonth.resolvedCashOutCents)}</>
+                    )}
+                  </span>
+                </h2>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={btnGhost}
+                  onClick={() => openNewItem(month)}
+                >
+                  + Itemize a month
+                </button>
+                <button
+                  type="button"
+                  className={btnAdd}
+                  onClick={() =>
+                    openSummaryForm(
+                      month,
+                      data.summaries.find((s) => s.month === month)?.cashOutCents,
+                    )
+                  }
+                >
+                  {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
+                </button>
+                {cashOutListedMonths.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="cash-out-year" className="text-sm font-medium">
+                      Year
+                    </label>
+                    <select
+                      id="cash-out-year"
+                      className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text)]"
+                      value={cashOutSelectedYear}
+                      onChange={(e) => {
+                        setCashOutYearSel(e.target.value);
+                        setCashOutShowOlder(false);
+                      }}
+                    >
+                      {cashOutYears.map((y) => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
               <Explainer
                 id="spending.cashOut"
@@ -6552,9 +6644,10 @@ export function App() {
                   up to it.
                 </p>
               )}
-              {data.cashOutMonths.length > 0 && (
+              {cashOutListedMonths.length > 0 && (
+                <>
                 <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
-                  {[...data.cashOutMonths].reverse().map((cm) => {
+                  {cashOutVisibleMonths.map((cm) => {
                     const expanded = cashOutMonthExpanded(cm.month);
                     const hasBoth =
                       cm.enteredCashOutCents != null && cm.itemsCount > 0;
@@ -6735,6 +6828,17 @@ export function App() {
                     );
                   })}
                 </ul>
+                {cashOutYearMonths.length > CASH_OUT_RECENT_COUNT && (
+                  <button
+                    type="button"
+                    className={`${btnGhost} mt-3`}
+                    aria-expanded={cashOutShowOlder}
+                    onClick={() => setCashOutShowOlder((v) => !v)}
+                  >
+                    {cashOutShowOlder ? "Hide older months" : "Show older months"}
+                  </button>
+                )}
+                </>
               )}
             </section>
 
