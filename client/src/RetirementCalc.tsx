@@ -3943,35 +3943,6 @@ export function RetirementCalc({
     );
   })();
 
-  /* Plain-text twin of planSummary for the "Plan inputs" fold
-     header: the same sentence, derived from the same live
-     inputs under the same guard (nothing while the inputs are
-     invalid or there is no Projection result), but rendered as
-     plain text — no taps, no links, no buttons (explicit pick:
-     the figures already tap from the verdict panel's summary
-     line and the Calculated-with tiles). Because both lines
-     read the same values, they always agree; the header line
-     shows whether the inputs panel is folded or open. */
-  const planSummaryText: string | null = (() => {
-    if (!inputs || !projection) return null;
-    const spendPart =
-      inputs.strategy === "percent"
-        ? `spend ${percentOfPortfolio}% of portfolio/yr (Percent of portfolio)`
-        : inputs.strategy === "guardrails"
-          ? `spend ${formatMoneyDisplay(spending)}/yr (Guardrails)`
-          : inputs.strategy === "phased"
-            ? `spend ${formatMoneyDisplay(spending)}/yr, stepping down ${phaseDeclinePct}%/yr from age ${phaseStartAge}`
-            : `spend ${formatMoneyDisplay(spending)}/yr`;
-    const showExtraIncomeInput =
-      inputs.extraIncomeCents > 0 ||
-      focusField === "extraIncome" ||
-      focusField === "extraStartAge";
-    const incomePart = showExtraIncomeInput
-      ? `+ ${formatMoneyDisplay(extraIncome)}/yr from age ${extraStartAge}`
-      : "no extra income";
-    return `Retire at ${retirementAge} · ${spendPart} · ${formatMoneyDisplay(portfolio)} portfolio at ${stocksPct}/${bondsPct} · ${incomePart}.`;
-  })();
-
   return (
     <div className="mt-5">
       <h2 className="display text-3xl font-semibold">Retirement calculator</h2>
@@ -4109,14 +4080,6 @@ export function RetirementCalc({
               </span>
             )}
           </p>
-          {planSummary && (
-            <p
-              aria-label="Plan summary"
-              className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
-            >
-              {planSummary}
-            </p>
-          )}
           {!projection.hasRetiredYears && (
             <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
               The retirement age is past the end age, so no year&rsquo;s
@@ -4133,15 +4096,15 @@ export function RetirementCalc({
       {/* inputs: the header row is the fold header and stays
           visible whether the form is open or hidden — it
           carries the "Plan inputs" title, the live
-          plan-summary line under it (plain text, the same
-          sentence the verdict panel carries with taps — no
-          taps here), and the fold chevron. Everything under
-          it hides when folded, starting with the action row
-          (Reset / plan status / Save controls) at the top of
-          the panel body, then the autosave note, the baseline
-          notes, and the fields grouped You / Money /
-          Assumptions. Display only, every field keeps its
-          control and behavior exactly as before. */}
+          plan-summary line under it (the single linked copy —
+          its numbers are taps to their fields), and the fold
+          chevron. Everything under it hides when folded,
+          starting with the action row (Reset / plan status /
+          Save controls) at the top of the panel body, then the
+          autosave note, the baseline notes, and the fields
+          grouped You / Money / Assumptions. Display only,
+          every field keeps its control and behavior exactly
+          as before. */}
       <section
         aria-label="Retirement inputs"
         className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
@@ -4149,9 +4112,9 @@ export function RetirementCalc({
         <div className="flex flex-wrap items-start gap-2">
           <div className="min-w-0">
             <h2 className="display text-base font-semibold">Plan inputs</h2>
-            {planSummaryText && (
+            {planSummary && (
               <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
-                {planSummaryText}
+                {planSummary}
               </span>
             )}
           </div>
