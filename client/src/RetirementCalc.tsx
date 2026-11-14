@@ -545,9 +545,9 @@ export function RetirementCalc({
   // or plain text, except the header summary's values, which
   // are taps back to the fields below (build v146). The
   // Calculated-with tiles are taps to where each number lives
-  // — Portfolio to the field below, Spending / Ages / Expected
-  // return across to the Tax Plan record — taps only, they
-  // edit nothing in place.)
+  // — Portfolio and Spending to the fields below, Ages /
+  // Expected return across to the Tax Plan record — taps only,
+  // they edit nothing in place.)
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -617,16 +617,16 @@ export function RetirementCalc({
   const rcTapCls =
     "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
   /* Calculated-with tile taps: each tile is a tap to where its
-     number lives — Portfolio to this view's own Retirement
-     record field (jumpToRcField above), Spending / Ages /
+     number lives — Portfolio and Spending to this view's own
+     Retirement record fields (jumpToRcField above), Ages /
      Expected return to the Tax Plan record via App's cross-view
      jump (the same jumpTarget mechanism the Playground's Plan
      total tap uses). Spending is the one strategy-aware tile:
      in the percent strategy the tile shows this record's own
      percentOfPortfolio, so it taps to this view's rc-percent
-     field instead of the Tax Plan's Annual spending (which is
-     not an input to that strategy's calculation). Taps only —
-     the tiles edit nothing. */
+     field instead of the rc-spending field (the Tax Plan's
+     Annual spending is not an input to that strategy's
+     calculation). Taps only — the tiles edit nothing. */
   const jumpToTaxPlan = (fieldId: string, section: RothSectionId) => {
     onJumpToTaxPlan?.({ fieldId, section, nonce: Date.now() });
   };
@@ -4048,8 +4048,8 @@ export function RetirementCalc({
               {/* The Spending tile carries two taps, so it is a
                   framed div rather than one whole-tile button:
                   the figure keeps its strategy-aware jump (the
-                  percent field, or the Tax Plan's Annual
-                  spending), and the subtitle — now naming the
+                  percent field, or this view's spending field),
+                  and the subtitle — now naming the
                   strategy ("Constant strategy", etc.) — is its
                   own tap to this view's spending-strategy
                   selector (rc-strategy), styled like the other
@@ -4060,13 +4060,15 @@ export function RetirementCalc({
                   aria-label={
                     inputs.strategy === "percent"
                       ? "Go to the % of portfolio per year field"
-                      : "Go to the Annual spending field in the Tax Plan"
+                      : spendingUnit === "month"
+                        ? "Go to the Spending per month field"
+                        : "Go to the Annual spending field"
                   }
                   className="block w-full text-left"
                   onClick={() =>
                     inputs.strategy === "percent"
                       ? jumpToRcField("rc-percent")
-                      : jumpToTaxPlan("roth-Annual-spending", "household")
+                      : jumpToRcField("rc-spending")
                   }
                 >
                   <p className="text-xs text-[var(--dim)]">Spending</p>
