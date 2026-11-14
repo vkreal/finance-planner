@@ -8041,6 +8041,8 @@ export function App() {
                         </button>
                       </div>
                     )}
+                    {(yearlyBillsCollapsedAll ? expandedYearlyBillId === y.id : collapsedYearlyBillId !== y.id) && (
+                      <div id={`yearly-bill-details-${y.id}`}>
                     <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                       <span className="text-[var(--dim)]">Category</span>
                       <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
@@ -8237,7 +8239,7 @@ export function App() {
                         onSaved={invalidate}
                       />
                     )}
-                      </>
+                      </div>
                     )}
                   </li>
                     ))}
