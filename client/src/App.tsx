@@ -2001,6 +2001,8 @@ function SpendingTrueCostChart({
   averageLine,
   targetMonthlyCents,
   averageMonthlyCents,
+  onTargetTap,
+  onRecordedMonthsTap,
   bare,
 }: {
   months: SpendingMonthRow[];
@@ -2041,6 +2043,13 @@ function SpendingTrueCostChart({
   // 2026-10-25 it was a standalone highlighted banner between
   // the tiles and this card: right numbers, wrong place).
   averageLine: string | null;
+  // Figure taps: the legend's Target label goes to the Spending
+  // target field (the input this target comes from); the Vs-target
+  // caption's recorded-months count goes to the Monthly cash out
+  // section (the rows those months are recorded in). Taps only —
+  // neither changes any figure.
+  onTargetTap: () => void;
+  onRecordedMonthsTap: () => void;
   // Bare: render without the card's own border and padding, for
   // Month mode where the chart sits inside the combined
   // tiles+chart card below the divider — the divider block
@@ -2453,7 +2462,14 @@ function SpendingTrueCostChart({
                     strokeOpacity="0.75"
                   />
                 </svg>
-                {`Target ${fmt(targetMonthlyCents)}/mo`}
+                <button
+                  type="button"
+                  aria-label={`Go to the Spending target field — target ${fmt(targetMonthlyCents)} per month`}
+                  className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                  onClick={onTargetTap}
+                >
+                  {`Target ${fmt(targetMonthlyCents)}/mo`}
+                </button>
               </span>
             )}
             {averageMonthlyCents != null && (
@@ -2885,7 +2901,16 @@ function SpendingTrueCostChart({
               figure. */}
           {targetTotalDiffCents != null && targetAvgDiffCents != null && (
             <p className="tnum mt-3 text-sm text-[var(--dim)]">
-              {`Vs target · ${targetRangeLabel} · ${recordedMonths.length} recorded month${recordedMonths.length === 1 ? "" : "s"} — total ${fmtSigned(targetTotalDiffCents)} ${vsTargetWord(targetTotalDiffCents)} · average ${fmtSigned(targetAvgDiffCents)}/mo ${vsTargetWord(targetAvgDiffCents)}${hasEstimate ? " · (est.) months not counted" : ""}`}
+              {`Vs target · ${targetRangeLabel} · `}
+              <button
+                type="button"
+                aria-label={`Go to Monthly cash out — the ${recordedMonths.length} recorded month${recordedMonths.length === 1 ? "" : "s"} behind this summary`}
+                className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                onClick={onRecordedMonthsTap}
+              >
+                {`${recordedMonths.length} recorded month${recordedMonths.length === 1 ? "" : "s"}`}
+              </button>
+              {` — total ${fmtSigned(targetTotalDiffCents)} ${vsTargetWord(targetTotalDiffCents)} · average ${fmtSigned(targetAvgDiffCents)}/mo ${vsTargetWord(targetAvgDiffCents)}${hasEstimate ? " · (est.) months not counted" : ""}`}
             </p>
           )}
         </>
@@ -3950,11 +3975,15 @@ export function App() {
     null,
   );
   const highlightTimer = useRef<number | null>(null);
+  const targetFlashTimer = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       if (highlightTimer.current != null) {
         window.clearTimeout(highlightTimer.current);
+      }
+      if (targetFlashTimer.current != null) {
+        window.clearTimeout(targetFlashTimer.current);
       }
     };
   }, []);
@@ -4086,6 +4115,30 @@ export function App() {
       () => setHighlightedSection(null),
       1600,
     );
+  }
+
+  /* Spending target figure taps (the True cost vs Cash out chart
+     legend's Target label and the True cost panel's Target figure):
+     scroll to the Spending target field in the True cost section,
+     flash an accent outline on the field itself for ~1.6s, and
+     focus it — the field-level counterpart of scrollToSection's
+     section highlight, modelled on NetWorth's flashNwField. */
+  function flashSpendingTargetField() {
+    const el = document.getElementById("spending-target-per-year");
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const prevOutline = el.style.outline;
+    const prevOffset = el.style.outlineOffset;
+    el.style.outline = "2px solid var(--accent)";
+    el.style.outlineOffset = "2px";
+    if (targetFlashTimer.current != null) {
+      window.clearTimeout(targetFlashTimer.current);
+    }
+    targetFlashTimer.current = window.setTimeout(() => {
+      el.style.outline = prevOutline;
+      el.style.outlineOffset = prevOffset;
+    }, 1600);
+    el.focus({ preventScroll: true });
   }
 
   /* Smoothed spend breakdown provenance taps (taps only — nothing
@@ -5830,6 +5883,10 @@ export function App() {
                     }
                   />
                 </>
+                    onTargetTap={flashSpendingTargetField}
+                    onRecordedMonthsTap={() =>
+                      scrollToSection("section-cash-out")
+                    }
               )}
               {inYearMode && yv && !yv.hasAnyData && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
@@ -6029,8 +6086,16 @@ export function App() {
               </p>
               {spendingTargetMonthlyCents != null && (
                 <p className="tnum mt-2 text-base">
-                  True monthly cost {fmt(data.smoothedCents)} · Target{" "}
-                  {fmt(spendingTargetMonthlyCents)} ·{" "}
+                  True monthly cost {fmt(data.smoothedCents)} ·{" "}
+                  <button
+                    type="button"
+                    aria-label={`Go to the Spending target field — target ${fmt(spendingTargetMonthlyCents)}`}
+                    className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                    onClick={flashSpendingTargetField}
+                  >
+                    Target {fmt(spendingTargetMonthlyCents)}
+                  </button>{" "}
+                  ·{" "}
                   {(() => {
                     const gapCents =
                       data.smoothedCents - spendingTargetMonthlyCents;
