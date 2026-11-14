@@ -12710,7 +12710,7 @@ export function RothConversion({
                   )}
                   {firstDrawYear && (
                     <div
-                      className="mx-auto mt-4 max-w-xl rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3"
+                      className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-4 text-sm"
                       aria-label="First draw year tax bill"
                     >
                       <p className="text-sm font-semibold">
