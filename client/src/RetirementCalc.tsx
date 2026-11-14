@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 Area,
@@ -3797,179 +3797,6 @@ export function RetirementCalc({
     return parts.length > 0 ? parts.join(" · ") : null;
   };
 
-  /* ----- One-sentence plan summary -----
-     A single quiet line at the top of the view that states the
-     current plan and its headline outcome in plain words. It is
-     display only and introduces no new math: every value is one
-     the view already computes and shows — the retirement age,
-     spending, effective starting portfolio and mix from the live
-     effective inputs (the same ones the Calculated-with strip
-     lists: a Net Worth-following portfolio already has the 529
-     exclusion applied, a typed value is used as-is), the extra
-     income exactly as entered (blank / $0 reads "no extra
-     income"). (The sentence once ended with an outcome tail
-     from the Projection result — "→ money lasts past age …";
-     that clause was cut on 2026-11-09 because the verdict
-     headline directly above it in the panel already states
-     the outcome.) Because it reads the live inputs, it always
-     describes the current (possibly edited) inputs, and it
-     renders nothing while the inputs are invalid, when there is
-     no Projection result to state truthfully. Spending names its
-     strategy whenever the strategy changes what the figure
-     means: Guardrails spends the entered amount as its base, and
-     Percent of portfolio has no fixed dollar amount, so its
-     entered figure is the percent itself. */
-  /* Plan summary (build v119; editable in place v140,
-     reverted to taps v146): the same figures the "Calculated
-     with" tiles carry, as one sentence — each input figure is a
-     dotted-underlined tap that jumps to its field below (scroll
-     + flash, via jumpToRcField), unfolding the inputs panel
-     first if it is folded shut. The fields below stay editable
-     in place (build v140, one source with multiple edit
-     locations); the sentence itself edits nothing. The
-     extra-income taps only exist while the extra-income inputs
-     are shown — otherwise the sentence reads "no extra income"
-     as before. Mapping correction, recorded plainly: the
-     sentence's "95/5" is the portfolio mix (stocks % / bonds
-     %), not the end age or the expected return — the sentence
-     carries no end-age or expected-return figure, so those edit
-     where they appear (end age in You, expected return in
-     Assumptions) and have no tap here. */
-  const planSummary: ReactNode = (() => {
-    if (!inputs || !projection) return null;
-    const spendPart =
-      inputs.strategy === "percent" ? (
-        <>
-          spend{" "}
-          <button
-            type="button"
-            aria-label="Go to the % of portfolio per year field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-percent")}
-          >
-            {percentOfPortfolio}
-          </button>
-          % of portfolio/yr (Percent of portfolio)
-        </>
-      ) : inputs.strategy === "guardrails" ? (
-        <>
-          spend{" "}
-          <button
-            type="button"
-            aria-label="Go to the Annual spending field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
-          >
-            {formatMoneyDisplay(spending)}
-          </button>
-          /yr (Guardrails)
-        </>
-      ) : inputs.strategy === "phased" ? (
-        <>
-          spend{" "}
-          <button
-            type="button"
-            aria-label="Go to the Annual spending field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
-          >
-            {formatMoneyDisplay(spending)}
-          </button>
-          /yr, stepping down{" "}
-          <button
-            type="button"
-            aria-label="Go to the Step down by percent per year field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-phase-decline")}
-          >
-            {phaseDeclinePct}
-          </button>
-          %/yr from age{" "}
-          <button
-            type="button"
-            aria-label="Go to the Step-down starts at age field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-phase-start")}
-          >
-            {phaseStartAge}
-          </button>
-        </>
-      ) : (
-        <>
-          spend{" "}
-          <button
-            type="button"
-            aria-label="Go to the Annual spending field"
-            className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
-          >
-            {formatMoneyDisplay(spending)}
-          </button>
-          /yr
-        </>
-      );
-    const showExtraIncomeInput =
-      inputs.extraIncomeCents > 0 ||
-      focusField === "extraIncome" ||
-      focusField === "extraStartAge";
-    const incomePart = showExtraIncomeInput ? (
-      <>
-        +{" "}
-        <button
-          type="button"
-          aria-label="Go to the Extra income per year field"
-          className={rcTapCls}
-          onClick={() => jumpToRcField("rc-extra-income")}
-        >
-          {formatMoneyDisplay(extraIncome)}
-        </button>
-        /yr from age{" "}
-        <button
-          type="button"
-          aria-label="Go to the Extra income starts at age field"
-          className={rcTapCls}
-          onClick={() => jumpToRcField("rc-extra-start")}
-        >
-          {extraStartAge}
-        </button>
-      </>
-    ) : (
-      "no extra income"
-    );
-    return (
-      <>
-        Retire at{" "}
-        <button
-          type="button"
-          aria-label="Go to the Retirement age field"
-          className={rcTapCls}
-          onClick={() => jumpToRcField("rc-retirement-age")}
-        >
-          {retirementAge}
-        </button>{" "}
-        · {spendPart} ·{" "}
-        <button
-          type="button"
-          aria-label="Go to the Starting portfolio field"
-          className={rcTapCls}
-          onClick={() => jumpToRcField("rc-portfolio")}
-        >
-          {formatMoneyDisplay(portfolio)}
-        </button>{" "}
-        portfolio at{" "}
-        <button
-          type="button"
-          aria-label="Go to the Portfolio mix stocks percent field"
-          className={rcTapCls}
-          onClick={() => jumpToRcField("rc-stocks")}
-        >
-          {stocksPct}
-        </button>
-        /{bondsPct} · {incomePart}.
-      </>
-    );
-  })();
-
   return (
     <div className="mt-5">
       <h2 className="display flex items-center gap-2 text-3xl font-semibold">
@@ -4186,6 +4013,245 @@ export function RetirementCalc({
             <FoldChevron open={inputsOpen} />
           </button>
         </div>
+        {/* Calculated-with content (2026-11-09, merged into
+            this card from its own strip — the strip is gone):
+            the results below always declare the exact
+            effective inputs that produced them, whether they
+            match the fresh-open defaults, and — briefly, after
+            an edit changes them — that they just updated (the
+            pill in the header). Tiles for the headline
+            numbers, a band picturing the spending strategy's
+            own mechanics from its real dials, and a residual
+            line for the rest — so no fact the old strip
+            carried is dropped. */}
+        {inputs && (
+          <div aria-label="What the results are calculated with" className="mt-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <button
+                type="button"
+                aria-label="Go to the Starting portfolio field"
+                className={calcTileCls}
+                onClick={() => jumpToRcField("rc-portfolio")}
+              >
+                <p className="text-xs text-[var(--dim)]">Portfolio</p>
+                <p className={`${keyFigureCls} underline decoration-dotted underline-offset-4`}>
+                  {fmt(inputs.startCents)}
+                </p>
+              </button>
+              {/* The Spending tile carries two taps, so it is a
+                  framed div rather than one whole-tile button:
+                  the figure keeps its strategy-aware jump (the
+                  percent field, or the Tax Plan's Annual
+                  spending), and the subtitle — now naming the
+                  strategy ("Constant strategy", etc.) — is its
+                  own tap to this view's spending-strategy
+                  selector (rc-strategy), styled like the other
+                  tile figures. */}
+              <div className={calcTileCls}>
+                <button
+                  type="button"
+                  aria-label={
+                    inputs.strategy === "percent"
+                      ? "Go to the % of portfolio per year field"
+                      : "Go to the Annual spending field in the Tax Plan"
+                  }
+                  className="block w-full text-left"
+                  onClick={() =>
+                    inputs.strategy === "percent"
+                      ? jumpToRcField("rc-percent")
+                      : jumpToTaxPlan("roth-Annual-spending", "household")
+                  }
+                >
+                  <p className="text-xs text-[var(--dim)]">Spending</p>
+                  <p className={calcTileValueCls}>
+                    {inputs.strategy === "percent" ? (
+                      <>
+                        {inputs.percentOfPortfolio}% of portfolio/yr
+                      </>
+                    ) : (
+                      <>
+                        {fmt(inputs.spendingCents)}
+                        /yr
+                      </>
+                    )}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Spending strategy: ${
+                    inputs.strategy === "percent"
+                      ? "Percent"
+                      : inputs.strategy === "guardrails"
+                        ? "Guardrails"
+                        : inputs.strategy === "phased"
+                          ? "Phased"
+                          : "Constant"
+                  } — change`}
+                  className={`text-xs text-[var(--dim)] ${rcTapCls}`}
+                  onClick={() => jumpToRcField("rc-strategy")}
+                >
+                  {inputs.strategy === "percent"
+                    ? "Percent strategy"
+                    : inputs.strategy === "guardrails"
+                      ? "Guardrails strategy"
+                      : inputs.strategy === "phased"
+                        ? "Phased strategy"
+                        : "Constant strategy"}
+                </button>
+              </div>
+              <button
+                type="button"
+                aria-label="Go to the Your birth year field in the Tax Plan"
+                className={calcTileCls}
+                onClick={() => jumpToTaxPlan("roth-Your-birth-year", "household")}
+              >
+                <p className="text-xs text-[var(--dim)]">Ages</p>
+                <p className={calcTileValueCls}>
+                  {inputs.currentAge} → retire {inputs.retirementAge} → end{" "}
+                  {inputs.endAge}
+                </p>
+              </button>
+              <button
+                type="button"
+                aria-label="Go to the Expected return field in the Tax Plan"
+                className={calcTileCls}
+                onClick={() => jumpToTaxPlan("roth-Expected-return", "advanced")}
+              >
+                <p className="text-xs text-[var(--dim)]">Expected return</p>
+                <p className={calcTileValueCls}>
+                  {(expected * 100).toFixed(2)}%
+                </p>
+              </button>
+            </div>
+            {inputs.strategy === "guardrails" &&
+              (() => {
+                const raise = inputs.guardrailsRaisePct;
+                const cut = inputs.guardrailsCutPct;
+                const adj = inputs.guardrailsAdjustmentPct;
+                const hi = Math.max(cut * 1.2, raise * 1.6, 100);
+                const raisePos = (raise / hi) * 100;
+                const cutPos = (cut / hi) * 100;
+                const startPos = (100 / hi) * 100;
+                return (
+                  <div className="mt-3">
+                    <p className="text-xs text-[var(--dim)]">
+                      Guardrails corridor — each year&rsquo;s withdrawal rate against its starting rate
+                    </p>
+                    {/* Provenance taps (2026-11-09): each
+                        number on the band taps to the field it
+                        comes from — Raise to the Raise trigger,
+                        Cut to the Cut trigger, the pill to the
+                        Adjustment size — with the same dotted
+                        underline + scroll-and-flash as the other
+                        provenance taps. "start 100%" is the
+                        corridor's definition baseline, not a
+                        field, so it stays plain. The band's
+                        description moves to an sr-only paragraph:
+                        the bar itself is now decorative segments
+                        plus a real button, so it no longer wears
+                        role="img". */}
+                    <p className="sr-only">
+                      {`Guardrails corridor: spending rises by ${adj}% when the withdrawal rate falls below ${raise}% of its starting rate, and falls by ${adj}% when the rate rises above ${cut}% of its starting rate; between ${raise}% and ${cut}% spending is unchanged.`}
+                    </p>
+                    <div className="relative mt-1 flex h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
+                      <div aria-hidden="true" className="h-full bg-[var(--surface-alt)]" style={{ width: `${raisePos}%` }} />
+                      <div aria-hidden="true" className="h-full bg-[var(--accent-soft)]" style={{ width: `${Math.max(0, cutPos - raisePos)}%` }} />
+                      <div aria-hidden="true" className="h-full flex-1 bg-[var(--warn-soft)]" />
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
+                        style={{ left: `${startPos}%` }}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Go to the Adjustment size field"
+                        onClick={() => jumpToRcField("rc-guardrails-adjustment")}
+                        className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        style={{ left: `${(raisePos + cutPos) / 2}%` }}
+                      >
+                        Adjust ±{adj}%
+                      </button>
+                    </div>
+                    <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
+                      <button
+                        type="button"
+                        aria-label="Go to the Raise trigger field"
+                        onClick={() => jumpToRcField("rc-guardrails-raise")}
+                        className={`absolute -translate-x-1/2 ${rcTapCls}`}
+                        style={{ left: `${raisePos}%` }}
+                      >
+                        Raise {raise}%
+                      </button>
+                      <span className="absolute -translate-x-1/2" style={{ left: `${startPos}%` }}>
+                        start 100%
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Go to the Cut trigger field"
+                        onClick={() => jumpToRcField("rc-guardrails-cut")}
+                        className={`absolute -translate-x-1/2 ${rcTapCls}`}
+                        style={{ left: `${cutPos}%` }}
+                      >
+                        Cut {cut}%
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            <p className="tnum mt-2 text-sm">
+              <button
+                type="button"
+                aria-label="Go to the Portfolio mix stocks percent field"
+                className={rcTapCls}
+                onClick={() => jumpToRcField("rc-stocks")}
+              >
+                {stocks}% stocks
+              </button>
+              {" · "}
+              <button
+                type="button"
+                aria-label="Go to the Volatility field"
+                className={rcTapCls}
+                onClick={() => {
+                  // The Assumptions group defaults to collapsed, so
+                  // rc-vol is not in the DOM until it opens — expand
+                  // it first (persisted, the same as tapping Expand),
+                  // then jump with the usual scroll-and-flash.
+                  if (assumptionsCollapsed) {
+                    handleAssumptionsCollapsedChange(false);
+                  }
+                  jumpToRcField("rc-vol");
+                }}
+              >
+                Volatility {(vol * 100).toFixed(2)}%
+              </button>
+              {inputs.extraIncomeCents > 0 ? (
+                <>
+                  {" · Extra income "}
+                  {fmt(inputs.extraIncomeCents)}
+                  /yr from age {inputs.extraIncomeStartAge ?? inputs.retirementAge}
+                </>
+              ) : (
+                " · no extra income"
+              )}
+              {defaultDiffLabels.length > 0 && (
+                <>
+                  {" "}
+                  <ExplainerInfoTip id="retirement.customInputs" label="Custom inputs" align="center">
+                    <p>
+                      {`Custom inputs — differs from the defaults in: ${defaultDiffLabels.join(", ")}.`}
+                    </p>
+                  </ExplainerInfoTip>
+                </>
+              )}
+            </p>
+            {defaultDiffLabels.length === 0 && (
+              <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
+                These are the defaults — the same values Reset to defaults restores.
+              </p>
+            )}
+          </div>
+        )}
         {inputsOpen && (
           <div id="retirement-inputs-panel">
         <div className="flex flex-wrap items-center gap-2">
@@ -4549,293 +4615,6 @@ export function RetirementCalc({
           </div>
         )}
       </section>
-
-      {/* Calculated-with strip: the results below always declare
-          the exact effective inputs that produced them, whether
-          they match the fresh-open defaults, and — briefly, after
-          an edit changes them — that they just updated. */}
-      {inputs && (
-        <div
-          aria-label="What the results are calculated with"
-          className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3${flashCls}`}
-        >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <p className="text-sm">
-              <strong>Calculated with:</strong>
-            </p>
-            {resultsFlash && (
-              <span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-semibold text-white">
-                Results updated
-              </span>
-            )}
-          </div>
-          {/* Tiles + strategy band (2026-10-25, option B): the
-              strip's old bold text line, re-presented. Every value
-              below is the exact expression the line rendered —
-              tiles for the headline numbers, a band picturing the
-              spending strategy's own mechanics from its real
-              dials, and a residual line for the rest — so no fact
-              the line carried is dropped. */}
-          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <button
-              type="button"
-              aria-label="Go to the Starting portfolio field"
-              className={calcTileCls}
-              onClick={() => jumpToRcField("rc-portfolio")}
-            >
-              <p className="text-xs text-[var(--dim)]">Portfolio</p>
-              <p className={`${keyFigureCls} underline decoration-dotted underline-offset-4`}>
-                {fmt(inputs.startCents)}
-              </p>
-            </button>
-            <button
-              type="button"
-              aria-label={
-                inputs.strategy === "percent"
-                  ? "Go to the % of portfolio per year field"
-                  : "Go to the Annual spending field in the Tax Plan"
-              }
-              className={calcTileCls}
-              onClick={() =>
-                inputs.strategy === "percent"
-                  ? jumpToRcField("rc-percent")
-                  : jumpToTaxPlan("roth-Annual-spending", "household")
-              }
-            >
-              <p className="text-xs text-[var(--dim)]">Spending</p>
-              <p className={calcTileValueCls}>
-                {inputs.strategy === "percent" ? (
-                  <>
-                    {inputs.percentOfPortfolio}% of portfolio/yr
-                  </>
-                ) : (
-                  <>
-                    {fmt(inputs.spendingCents)}
-                    /yr
-                  </>
-                )}
-              </p>
-              <p className="text-xs text-[var(--dim)]">
-                {inputs.strategy === "percent"
-                  ? "Percent of portfolio"
-                  : inputs.strategy === "guardrails"
-                    ? "Guardrails base"
-                    : inputs.strategy === "phased"
-                      ? "Phased start"
-                      : "Constant"}
-              </p>
-            </button>
-            <button
-              type="button"
-              aria-label="Go to the Your birth year field in the Tax Plan"
-              className={calcTileCls}
-              onClick={() => jumpToTaxPlan("roth-Your-birth-year", "household")}
-            >
-              <p className="text-xs text-[var(--dim)]">Ages</p>
-              <p className={calcTileValueCls}>
-                {inputs.currentAge} → retire {inputs.retirementAge} → end{" "}
-                {inputs.endAge}
-              </p>
-            </button>
-            <button
-              type="button"
-              aria-label="Go to the Expected return field in the Tax Plan"
-              className={calcTileCls}
-              onClick={() => jumpToTaxPlan("roth-Expected-return", "advanced")}
-            >
-              <p className="text-xs text-[var(--dim)]">Expected return</p>
-              <p className={calcTileValueCls}>
-                {(expected * 100).toFixed(2)}%
-              </p>
-            </button>
-          </div>
-          {inputs.strategy === "guardrails" ? (
-            (() => {
-              const raise = inputs.guardrailsRaisePct;
-              const cut = inputs.guardrailsCutPct;
-              const adj = inputs.guardrailsAdjustmentPct;
-              const hi = Math.max(cut * 1.2, raise * 1.6, 100);
-              const raisePos = (raise / hi) * 100;
-              const cutPos = (cut / hi) * 100;
-              const startPos = (100 / hi) * 100;
-              return (
-                <div className="mt-3">
-                  <p className="text-xs text-[var(--dim)]">
-                    Guardrails corridor — each year&rsquo;s withdrawal rate against its starting rate
-                  </p>
-                  {/* Provenance taps (2026-11-09): each
-                      number on the band taps to the field it
-                      comes from — Raise to the Raise trigger,
-                      Cut to the Cut trigger, the pill to the
-                      Adjustment size — with the same dotted
-                      underline + scroll-and-flash as the other
-                      provenance taps. "start 100%" is the
-                      corridor's definition baseline, not a
-                      field, so it stays plain. The band's
-                      description moves to an sr-only paragraph:
-                      the bar itself is now decorative segments
-                      plus a real button, so it no longer wears
-                      role="img". */}
-                  <p className="sr-only">
-                    {`Guardrails corridor: spending rises by ${adj}% when the withdrawal rate falls below ${raise}% of its starting rate, and falls by ${adj}% when the rate rises above ${cut}% of its starting rate; between ${raise}% and ${cut}% spending is unchanged.`}
-                  </p>
-                  <div className="relative mt-1 flex h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
-                    <div aria-hidden="true" className="h-full bg-[var(--surface-alt)]" style={{ width: `${raisePos}%` }} />
-                    <div aria-hidden="true" className="h-full bg-[var(--accent-soft)]" style={{ width: `${Math.max(0, cutPos - raisePos)}%` }} />
-                    <div aria-hidden="true" className="h-full flex-1 bg-[var(--warn-soft)]" />
-                    <div
-                      aria-hidden="true"
-                      className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
-                      style={{ left: `${startPos}%` }}
-                    />
-                    <button
-                      type="button"
-                      aria-label="Go to the Adjustment size field"
-                      onClick={() => jumpToRcField("rc-guardrails-adjustment")}
-                      className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                      style={{ left: `${(raisePos + cutPos) / 2}%` }}
-                    >
-                      Adjust ±{adj}%
-                    </button>
-                  </div>
-                  <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
-                    <button
-                      type="button"
-                      aria-label="Go to the Raise trigger field"
-                      onClick={() => jumpToRcField("rc-guardrails-raise")}
-                      className={`absolute -translate-x-1/2 ${rcTapCls}`}
-                      style={{ left: `${raisePos}%` }}
-                    >
-                      Raise {raise}%
-                    </button>
-                    <span className="absolute -translate-x-1/2" style={{ left: `${startPos}%` }}>
-                      start 100%
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="Go to the Cut trigger field"
-                      onClick={() => jumpToRcField("rc-guardrails-cut")}
-                      className={`absolute -translate-x-1/2 ${rcTapCls}`}
-                      style={{ left: `${cutPos}%` }}
-                    >
-                      Cut {cut}%
-                    </button>
-                  </div>
-                </div>
-              );
-            })()
-          ) : inputs.strategy === "phased" ? (
-            (() => {
-              const span = Math.max(1, inputs.endAge - inputs.currentAge);
-              const levelAt = (age: number): number =>
-                age <= inputs.phaseStartAge
-                  ? 1
-                  : Math.pow(1 - inputs.phaseDeclinePct / 100, age - inputs.phaseStartAge);
-              const points: string[] = [];
-              for (let i = 0; i <= 20; i++) {
-                const age = inputs.currentAge + (span * i) / 20;
-                const x = (i / 20) * 100;
-                const y = 33 - levelAt(age) * 27;
-                points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-              }
-              const startX = Math.min(100, Math.max(0, ((inputs.phaseStartAge - inputs.currentAge) / span) * 100));
-              return (
-                <div className="mt-3">
-                  <p className="text-xs text-[var(--dim)]">
-                    Phased — spending level until age {inputs.phaseStartAge}
-                    , then steps down {inputs.phaseDeclinePct}%/yr
-                  </p>
-                  <div
-                    className="relative mt-1 h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)]"
-                    role="img"
-                    aria-label={`Phased spending shape: level until age ${inputs.phaseStartAge}, then declining ${inputs.phaseDeclinePct}% per year, ending at ${Math.round(levelAt(inputs.endAge) * 100)}% of the starting spending at age ${inputs.endAge}.`}
-                  >
-                    <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
-                      <polyline points={points.join(" ")} fill="none" stroke="var(--accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-                    </svg>
-                    <div
-                      aria-hidden="true"
-                      className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
-                      style={{ left: `${startX}%` }}
-                    />
-                  </div>
-                  <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
-                    <span className="absolute left-0">age {inputs.currentAge}</span>
-                    <span className="absolute -translate-x-1/2" style={{ left: `${startX}%` }}>
-                      steps down from {inputs.phaseStartAge}
-                    </span>
-                    <span className="absolute right-0">
-                      age {inputs.endAge} · {Math.round(levelAt(inputs.endAge) * 100)}% of start
-                    </span>
-                  </div>
-                </div>
-              );
-            })()
-          ) : (
-            <div className="mt-3">
-              <p className="text-xs text-[var(--dim)]">
-                {inputs.strategy === "percent"
-                  ? "Percent of portfolio — spending moves with the portfolio balance"
-                  : "Constant — spending stays level in today's dollars"}
-              </p>
-              <div
-                className="relative mt-1 flex h-10 w-full items-center overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)]"
-                role="img"
-                aria-label={
-                  inputs.strategy === "percent"
-                    ? `Spending shape: ${inputs.percentOfPortfolio}% of the portfolio balance each year.`
-                    : "Spending shape: a level amount every year, in today's dollars."
-                }
-              >
-                <div
-                  aria-hidden="true"
-                  className={`mx-3 h-[3px] w-full rounded bg-[var(--accent)]${inputs.strategy === "percent" ? " opacity-70" : ""}`}
-                />
-              </div>
-            </div>
-          )}
-          <p className="tnum mt-2 text-sm">
-            <button
-              type="button"
-              aria-label="Go to the Portfolio mix stocks percent field"
-              className={rcTapCls}
-              onClick={() => jumpToRcField("rc-stocks")}
-            >
-              {stocks}% stocks
-            </button>
-            {" · "}
-            <button
-              type="button"
-              aria-label="Go to the Volatility field"
-              className={rcTapCls}
-              onClick={() => {
-                // The Assumptions group defaults to collapsed, so
-                // rc-vol is not in the DOM until it opens — expand
-                // it first (persisted, the same as tapping Expand),
-                // then jump with the usual scroll-and-flash.
-                if (assumptionsCollapsed) {
-                  handleAssumptionsCollapsedChange(false);
-                }
-                jumpToRcField("rc-vol");
-              }}
-            >
-              Volatility {(vol * 100).toFixed(2)}%
-            </button>
-            {inputs.extraIncomeCents > 0 && (
-              <>
-                {" · Extra income "}
-                {fmt(inputs.extraIncomeCents)}
-                /yr from age {inputs.extraIncomeStartAge ?? inputs.retirementAge}
-              </>
-            )}
-          </p>
-          <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
-            {defaultDiffLabels.length === 0
-              ? "These are the defaults — the same values Reset to defaults restores."
-              : `Custom inputs — differs from the defaults in: ${defaultDiffLabels.join(", ")}.`}
-          </p>
-        </div>
-      )}
 
       {/* tabs — Option C (underline text tabs): all four modes in one
           row, active mode bold with a teal underline, inactive modes
