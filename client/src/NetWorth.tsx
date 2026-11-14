@@ -3295,7 +3295,8 @@ export function NetWorthView() {
      editor that holds the field first (snapshot editor, single-
      balance editor, or the target editor), scroll on a later
      frame, then flash an outline on the field for ~1.6s
-     (applied to the element directly and restored afterwards).
+     (applied to the element directly and restored afterwards)
+     and focus the field so the tap puts the cursor in it.
      The editors are fixed modals with scrollable forms, so the
      scroll lands inside the open editor. (The flash timer ref
      lives with the other hooks at the top of this component.) */
@@ -3310,6 +3311,12 @@ export function NetWorthView() {
       const prevOffset = el.style.outlineOffset;
       el.style.outline = "2px solid var(--accent)";
       el.style.outlineOffset = "2px";
+      // Tile taps put the cursor in the field too: focus the
+      // field itself (preventScroll so the focus does not fight
+      // the smooth scroll above). Focus happens only on a tap —
+      // never on load or render — and every flashNwField target
+      // is a focusable input, so plain focus is enough.
+      el.focus({ preventScroll: true });
       if (nwFlashTimer.current != null) {
         window.clearTimeout(nwFlashTimer.current);
       }

@@ -2127,7 +2127,8 @@ export function Playground({
      face, group, and section first, scroll on a later frame,
      then mark the field itself for ~3s with a 2px accent
      outline plus a soft accent background tint, so the landing
-     is unmistakable (applied to the element directly and
+     is unmistakable, and focus the field so the tap puts the
+     cursor in it (applied to the element directly and
      restored afterwards, so the shared field helpers do not
      change). A fixed 3s duration — not until-edit — so the
      mark always clears on its own and the rendered check can
@@ -2164,6 +2165,12 @@ export function Playground({
       el.style.outline = "2px solid var(--accent)";
       el.style.outlineOffset = "2px";
       el.style.background = "color-mix(in srgb, var(--accent) 15%, transparent)";
+      // Tile taps put the cursor in the field too: focus the
+      // field itself (preventScroll so the focus does not fight
+      // the smooth scroll above). Focus happens only on a tap —
+      // never on load or render — and every jumpToPgField target
+      // is a focusable input, so plain focus is enough.
+      el.focus({ preventScroll: true });
       pgFlashTimer.current = window.setTimeout(() => {
         el.style.outline = prev.outline;
         el.style.outlineOffset = prev.outlineOffset;

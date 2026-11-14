@@ -585,7 +585,8 @@ export function RetirementCalc({
      mirror the Playground's jumpToPgField. The inputs panel is
      folded shut, the target fields are not rendered, so unfold it
      first, then scroll on a later frame and flash an outline +
-     tint on the field for a fixed 3s. A new jump restores the
+     tint on the field for a fixed 3s, and focus the field so
+     the tile tap puts the cursor in it. A new jump restores the
      previous field first, so a highlight can never stick. */
   const rcFlashTimer = useRef<number | null>(null);
   const rcFlashEl = useRef<HTMLElement | null>(null);
@@ -620,6 +621,12 @@ export function RetirementCalc({
       el.style.outlineOffset = "2px";
       el.style.background =
         "color-mix(in srgb, var(--accent) 15%, transparent)";
+      // Tile taps put the cursor in the field too: focus the
+      // field itself (preventScroll so the focus does not fight
+      // the smooth scroll above). Focus happens only on a tap —
+      // never on load or render — and every jumpToRcField target
+      // is a focusable input or select, so plain focus is enough.
+      el.focus({ preventScroll: true });
       rcFlashTimer.current = window.setTimeout(() => {
         el.style.outline = prev.outline;
         el.style.outlineOffset = prev.outlineOffset;

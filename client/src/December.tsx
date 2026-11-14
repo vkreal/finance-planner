@@ -1515,7 +1515,8 @@ export function December() {
      mechanism modelled on Spending's scrollToSection — scroll
      on a later frame, then flash an outline on the field for
      ~1.6s (applied to the element directly and restored
-     afterwards). The console's fields are in always-rendered
+     afterwards) and focus the field so the tap puts the cursor
+     in it. The console's fields are in always-rendered
      sections, so no fold needs opening. */
   const decFlashTimer = useRef<number | null>(null);
   const jumpToDecField = (fieldId: string) => {
@@ -1527,6 +1528,12 @@ export function December() {
       const prevOffset = el.style.outlineOffset;
       el.style.outline = "2px solid var(--accent)";
       el.style.outlineOffset = "2px";
+      // Tile taps put the cursor in the field too: focus the
+      // field itself (preventScroll so the focus does not fight
+      // the smooth scroll above). Focus happens only on a tap —
+      // never on load or render — and every jumpToDecField target
+      // is a focusable input, so plain focus is enough.
+      el.focus({ preventScroll: true });
       if (decFlashTimer.current != null) {
         window.clearTimeout(decFlashTimer.current);
       }
