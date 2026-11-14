@@ -3871,9 +3871,11 @@ export function NetWorthView() {
         </div>
       </div>
 
-      {/* combined stat strip — one full-width strip: prominent
-          net worth with its date, plus the two deltas as compact
-          lines beside it on wide screens and below it on phones */}
+      {/* combined net worth card — one full-width card: the headline
+          stat strip (prominent net worth with its date, plus the two
+          deltas as compact lines beside it on wide screens and below
+          it on phones) on top, the "Net worth over time" chart below,
+          separated by a divider */}
       <section
         aria-label="Net worth summary"
         className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
@@ -3981,13 +3983,10 @@ export function NetWorthView() {
             </p>
           )}
         </div>
-      </section>
 
-      {/* main chart */}
-      <section
-        aria-label="Net worth over time"
-        className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
-      >
+      {/* main chart — inside the combined card now, so this is a
+          divider-separated block, not its own card */}
+      <div className="mt-5 border-t border-[var(--border)] pt-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 className="display text-lg font-semibold">Net worth over time</h3>
@@ -4609,6 +4608,7 @@ export function NetWorthView() {
             </ResponsiveContainer>
           </div>
         </div>
+      </div>
       </section>
 
       {/* current bucket mix — one stacked bar from the latest
