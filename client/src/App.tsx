@@ -75,7 +75,7 @@ import { usePersistedChoice } from "./persistedChoice";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion, type RothSectionId } from "./RothConversion";
-import { Playground } from "./Playground";
+import { Playground, SpendPeriodPills } from "./Playground";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
 
@@ -3106,7 +3106,7 @@ export function App() {
   // rewrites it. The unit itself is a remembered display
   // preference in the generic server-side fold store (the
   // "spending.targetPerMonth" flag, the same store and pattern
-  // the Playground's Month / Year pills use): a stored entry
+  // the Playground's Year / Month pills use): a stored entry
   // means the user last left it on per month; no entry is the
   // per-year default, so the field opens per year for a user
   // who has never toggled it, and the last pick comes back
@@ -5251,35 +5251,17 @@ export function App() {
                   >
                     Slice &amp; dice <span aria-hidden="true">→</span>
                   </button>
-                <div
-                  role="group"
-                  aria-label="Quick view mode"
-                  className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
-                >
-                  <button
-                    type="button"
-                    aria-label="Month view"
-                    aria-pressed={!inYearMode}
-                    onClick={() => setQuickMode("month")}
-                    className={`px-3 py-1.5 text-sm font-medium ${!inYearMode ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                  >
-                    Month
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Year view"
-                    aria-pressed={inYearMode}
-                    onClick={() => {
-                      if (!inYearMode) {
-                        setViewYear(Number(month.slice(0, 4)));
-                        setQuickMode("year");
-                      }
-                    }}
-                    className={`px-3 py-1.5 text-sm font-medium ${inYearMode ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                  >
-                    Year
-                  </button>
-                </div>
+                <SpendPeriodPills
+                  perMonth={!inYearMode}
+                  onChange={(perMonth) => {
+                    if (perMonth) {
+                      setQuickMode("month");
+                    } else if (!inYearMode) {
+                      setViewYear(Number(month.slice(0, 4)));
+                      setQuickMode("year");
+                    }
+                  }}
+                />
                 </div>
               </div>
               {inYearMode && yearView.isPending && (

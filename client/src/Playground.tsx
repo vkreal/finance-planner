@@ -516,7 +516,7 @@ function fmtDollarsExact(dollars: number): string {
   return neg ? `−${s}` : s;
 }
 
-/* Month / Year pills for the two spend readouts ("Cash left
+/* Year / Month pills for the two spend readouts ("Cash left
    after tax" and "Left after a year's spending"): ONE shared
    persisted state (the "playground.spendPerMonth" fold-store
    flag — see the hook in the Playground component), rendered
@@ -527,8 +527,10 @@ function fmtDollarsExact(dollars: number): string {
    precision with a "/mo" suffix and its label / sub-line
    names the month; the underlying priced figures, the dials,
    and every stored figure are untouched. Mirrors the
-   Spending view's per-year / per-month pill styling. */
-function SpendPeriodPills({
+   Spending view's per-year / per-month pill styling, Year
+   first like every spending entry field's Per year / Per
+   month pills. */
+export function SpendPeriodPills({
   perMonth,
   onChange,
 }: {
@@ -545,21 +547,21 @@ function SpendPeriodPills({
     >
       <button
         type="button"
-        aria-label="Show spend per month"
-        aria-pressed={perMonth}
-        onClick={() => onChange(true)}
-        className={pillCls(perMonth)}
-      >
-        Month
-      </button>
-      <button
-        type="button"
         aria-label="Show spend per year"
         aria-pressed={!perMonth}
         onClick={() => onChange(false)}
         className={pillCls(!perMonth)}
       >
         Year
+      </button>
+      <button
+        type="button"
+        aria-label="Show spend per month"
+        aria-pressed={perMonth}
+        onClick={() => onChange(true)}
+        className={pillCls(perMonth)}
+      >
+        Month
       </button>
     </div>
   );
