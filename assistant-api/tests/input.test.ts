@@ -459,6 +459,12 @@ describe("effectiveInputs echo and assumption provenance", () => {
       "singleYear.spendingDraw",
       "singleYear.cashDraw",
       "singleYear.rothDraw",
+      "singleYear.stockSold",
+      "singleYear.stockBasis",
+      "singleYear.pretaxPriorYearEnd",
+      "singleYear.pretaxSpousePriorYearEnd",
+      "singleYear.rmdAlreadyReceived",
+      "singleYear.primarySoleBeneficiaryOfSpouse",
       "mcSeed",
       "mcRuns",
     ];

@@ -173,6 +173,48 @@ export const RetirementQuestionInputs = z.strictObject({
   cashDrawAnnual: dollars.optional(),
   /** Roth draw for the single-year tax calculation. */
   rothDrawAnnual: dollars.optional(),
+  // --- Single-year taxable-sale inputs (R6-S1; dollars). ---
+  // stockSoldAnnual / stockBasisAnnual price the year's realized
+  // gain (sold − basis) through the engine's capital-gains stack.
+  // A basis above the proceeds is a realized LOSS, not an error:
+  // the engine prices it as a net capital loss (§1211(b) allowance
+  // up to $3,000, remainder carried forward — see
+  // pricePlaygroundYear in server/src/rothOptimizer.ts), so no
+  // basis ≤ proceeds rule is imposed here. Omitted → no sale is
+  // priced (the adapter distinguishes omitted from explicit $0).
+  /** Taxable shares sold in the single-year tax year, $ proceeds. */
+  stockSoldAnnual: dollars.optional(),
+  /** Cost basis of the shares sold, $. Only prices against a sale. */
+  stockBasisAnnual: dollars.optional(),
+  // --- Single-year RMD inputs (R6-S2; dollars / boolean). ---
+  // Prior-Dec-31 pre-tax balances: the balance at December 31 of
+  // the year BEFORE the priced tax year (pretaxPriorYearEndAnnual
+  // is the primary's own; pretaxSpousePriorYearEndAnnual the
+  // spouse's own — never today's balance, never an inferred one).
+  // Omitted → null → no RMD is priced from that balance; explicit
+  // $0 → a $0 balance, whose RMD is $0. The engine's RMD age comes
+  // from each owner's birth year (rmdAgeForBirthYear).
+  /** Primary's pre-tax balance at Dec 31 of the year before the
+   *  priced tax year, $. Omitted → no RMD priced from it. */
+  pretaxPriorYearEndAnnual: dollars.optional(),
+  /** Spouse's own pre-tax balance at Dec 31 of the year before
+   *  the priced tax year, $. Omitted → no spouse RMD priced.
+   *  Only counts on a joint (mfj) return. */
+  pretaxSpousePriorYearEndAnnual: dollars.optional(),
+  /** Part of this year's computed RMD already received AND already
+   *  counted in the entered income, $. The engine nets it out of
+   *  the RMD it adds (floored at $0), so a paid RMD is never
+   *  counted twice. Omitted → $0. */
+  rmdAlreadyReceivedAnnual: dollars.optional(),
+  /** Is the primary the SOLE beneficiary of the spouse's pre-tax
+   *  accounts? Gates ONLY the spouse's RMD Joint-table selection
+   *  (engine: primarySoleBeneficiaryOfSpouse). Absent → not
+   *  established → the spouse's RMD prices on the Uniform
+   *  Lifetime Table (the conservative direction). This is a
+   *  separate fact from spouseSoleBeneficiary (the spouse is the
+   *  primary's sole beneficiary, which the adapter already assumes
+   *  for mfj); one never implies the other. */
+  primarySoleBeneficiaryOfSpouse: z.boolean().optional(),
 
   // --- Monte Carlo. ---
   /** Monte Carlo seed. Default (in normalize): 12345

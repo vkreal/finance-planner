@@ -262,6 +262,36 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       ...MONEY,
       description: "Draw from Roth for the single-year tax calculation, in dollars.",
     },
+    stockSoldAnnual: {
+      ...MONEY,
+      description:
+        "Taxable shares sold in the single-year tax year, in dollars of proceeds. The realized gain (proceeds minus stockBasisAnnual) prices on the capital-gains stack; the full proceeds count as cash in. A basis above the proceeds is a realized loss (up to $3,000 offsets ordinary income, the rest carries forward). Omitted means no sale is priced; explicit 0 means a $0 sale.",
+    },
+    stockBasisAnnual: {
+      ...MONEY,
+      description:
+        "Cost basis of the shares sold (stockSoldAnnual), in dollars. Only prices against a sale — a basis with no sale has no effect. Omitted with a sale means basis $0 (the whole proceeds price as gain).",
+    },
+    pretaxPriorYearEndAnnual: {
+      ...MONEY,
+      description:
+        "Primary person's pre-tax balance at December 31 of the year BEFORE the priced tax year, in dollars. The RMD for the priced year prices from this balance and the owner's age. Omitted means no RMD is priced from the primary's balance; explicit 0 means a $0 RMD. Never today's balance — the Dec-31 date matters.",
+    },
+    pretaxSpousePriorYearEndAnnual: {
+      ...MONEY,
+      description:
+        "Spouse's own pre-tax balance at December 31 of the year BEFORE the priced tax year, in dollars. The spouse's RMD prices from this balance on the spouse's own age clock. Omitted means no spouse RMD is priced; explicit 0 means a $0 spouse RMD. Only counts on a joint (mfj) return.",
+    },
+    rmdAlreadyReceivedAnnual: {
+      ...MONEY,
+      description:
+        "Part of this year's computed RMD already received AND already counted in the entered income, in dollars. The engine nets it out of the RMD it adds (floored at $0), so a paid RMD is never counted twice. Omitted means $0.",
+    },
+    primarySoleBeneficiaryOfSpouse: {
+      type: "boolean",
+      description:
+        "Is the primary person the sole beneficiary of the spouse's pre-tax accounts? Gates ONLY the spouse's RMD table: true lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table. Absent means not established — the spouse's RMD prices on the Uniform table (the conservative direction). This is a separate fact from the spouse being the primary's sole beneficiary; one never implies the other.",
+    },
     mcSeed: {
       type: "integer",
       description: "Random seed for the Monte Carlo run, for reproducibility.",
@@ -406,6 +436,12 @@ const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
   "spendingDrawAnnual",
   "cashDrawAnnual",
   "rothDrawAnnual",
+  "stockSoldAnnual",
+  "stockBasisAnnual",
+  "pretaxPriorYearEndAnnual",
+  "pretaxSpousePriorYearEndAnnual",
+  "rmdAlreadyReceivedAnnual",
+  "primarySoleBeneficiaryOfSpouse",
 ];
 
 const EXAMPLE_BASE: Record<string, unknown> = {
@@ -460,6 +496,8 @@ const EXAMPLE_TAX_YEAR: Record<string, unknown> = {
   spendingDrawAnnual: 114000,
   cashDrawAnnual: 0,
   rothDrawAnnual: 0,
+  stockSoldAnnual: 20000,
+  stockBasisAnnual: 12000,
 };
 
 // Every tool description is self-describing: WHEN to call it, the inputs in
@@ -540,9 +578,9 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but no prior-year balance is carried in — so no RMD is priced either. ` +
+      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
       `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` +
-      `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year. It does not model selling taxable shares to fund the year's spending — cashLeftVsSpending counts only the typed draws and income.`,
+      `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateSingleYearTax),
   },
@@ -584,6 +622,7 @@ const CAPABILITY_LIMITATIONS: string[] = [
   `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
   "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
+  "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
   "Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more. A long call stalls the whole server — including /health — until it finishes.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
 ];
@@ -675,7 +714,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     optional: TAX_YEAR_OPTIONAL_INPUTS,
     exampleCall: EXAMPLE_TAX_YEAR,
     resultSummary:
-      "The single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year.",
+      "The single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced share sale (gain/loss, proceeds as cash in) and any priced RMD (from the prior-Dec-31 balances).",
   },
   {
     name: "retirement_describe_capabilities",

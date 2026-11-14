@@ -114,6 +114,18 @@ export interface NormalizedScenario {
     spendingDraw: number;
     cashDraw: number;
     rothDraw: number;
+    // R6-S1/R6-S2: null = omitted (never a defaulted 0), so the
+    // adapter can tell "not entered" from an explicit $0 / false.
+    // stockSold/stockBasis price only when a sale is entered;
+    // pretaxPriorYearEnd* are prior-Dec-31 balances (null = no
+    // RMD from that balance); rmdAlreadyReceived null = $0;
+    // primarySoleBeneficiaryOfSpouse null = not established.
+    stockSold: number | null;
+    stockBasis: number | null;
+    pretaxPriorYearEnd: number | null;
+    pretaxSpousePriorYearEnd: number | null;
+    rmdAlreadyReceived: number | null;
+    primarySoleBeneficiaryOfSpouse: boolean | null;
   };
   mcSeed: number;
   mcRuns: number;
@@ -986,6 +998,20 @@ export function normalizeInputs(
     spendingDraw: input.spendingDrawAnnual ?? 0,
     cashDraw: input.cashDrawAnnual ?? 0,
     rothDraw: input.rothDrawAnnual ?? 0,
+    // R6-S1/R6-S2: null when omitted — the adapter must tell
+    // "not entered" from an explicit $0 (a $0 sale prices no
+    // gain/loss; no balance entered prices no RMD; a $0 balance
+    // prices a $0 RMD). A basis entered with no sale is kept
+    // here and zeroed at the engine boundary in the adapter:
+    // pricePlaygroundYear computes stockGain = sold − basis, so
+    // a lone basis would otherwise invent a loss.
+    stockSold: input.stockSoldAnnual ?? null,
+    stockBasis: input.stockBasisAnnual ?? null,
+    pretaxPriorYearEnd: input.pretaxPriorYearEndAnnual ?? null,
+    pretaxSpousePriorYearEnd: input.pretaxSpousePriorYearEndAnnual ?? null,
+    rmdAlreadyReceived: input.rmdAlreadyReceivedAnnual ?? null,
+    primarySoleBeneficiaryOfSpouse:
+      input.primarySoleBeneficiaryOfSpouse ?? null,
   };
   const singleYearInputs = [
     ["singleYear.interest", input.interestAnnual, singleYear.interest],
@@ -1011,6 +1037,54 @@ export function normalizeInputs(
   for (const [field, rawValue, value] of singleYearInputs) {
     if (rawValue === undefined) {
       record(field, value, "assumption", "No amount entered — $0.");
+    } else {
+      record(field, value, "user", "Provided by caller.");
+    }
+  }
+  // The nullable single-year inputs record null (not $0) when
+  // omitted, with a note naming what the omission means.
+  const singleYearNullableInputs = [
+    [
+      "singleYear.stockSold",
+      input.stockSoldAnnual,
+      singleYear.stockSold,
+      "No sale entered — no taxable share sale is priced.",
+    ],
+    [
+      "singleYear.stockBasis",
+      input.stockBasisAnnual,
+      singleYear.stockBasis,
+      "No basis entered — a sale prices with $0 basis (whole proceeds as gain) unless a basis is given.",
+    ],
+    [
+      "singleYear.pretaxPriorYearEnd",
+      input.pretaxPriorYearEndAnnual,
+      singleYear.pretaxPriorYearEnd,
+      "No prior-Dec-31 pre-tax balance entered — no RMD is priced from the primary's balance.",
+    ],
+    [
+      "singleYear.pretaxSpousePriorYearEnd",
+      input.pretaxSpousePriorYearEndAnnual,
+      singleYear.pretaxSpousePriorYearEnd,
+      "No prior-Dec-31 spouse pre-tax balance entered — no spouse RMD is priced.",
+    ],
+    [
+      "singleYear.rmdAlreadyReceived",
+      input.rmdAlreadyReceivedAnnual,
+      singleYear.rmdAlreadyReceived,
+      "No RMD already received entered — $0 (the full computed RMD is added).",
+    ],
+    [
+      "singleYear.primarySoleBeneficiaryOfSpouse",
+      input.primarySoleBeneficiaryOfSpouse,
+      singleYear.primarySoleBeneficiaryOfSpouse,
+      "Not established whether the primary is the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table.",
+    ],
+  ] as const;
+  for (const [field, rawValue, value, omittedNote] of
+    singleYearNullableInputs) {
+    if (rawValue === undefined) {
+      record(field, value, "assumption", omittedNote);
     } else {
       record(field, value, "user", "Provided by caller.");
     }

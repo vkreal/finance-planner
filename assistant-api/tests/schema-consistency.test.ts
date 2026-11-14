@@ -149,6 +149,12 @@ describe("advertised schema == accepting schema", () => {
       "spendingDrawAnnual",
       "cashDrawAnnual",
       "rothDrawAnnual",
+      "stockSoldAnnual",
+      "stockBasisAnnual",
+      "pretaxPriorYearEndAnnual",
+      "pretaxSpousePriorYearEndAnnual",
+      "rmdAlreadyReceivedAnnual",
+      "primarySoleBeneficiaryOfSpouse",
     ];
     const expected: Record<string, string[]> = {
       retirement_calculate: sim.filter((f) => f !== "volatilityPct"),
@@ -236,7 +242,63 @@ describe("canonical names land; old names are rejected", () => {
       spendingDraw: 114000,
       cashDraw: 0,
       rothDraw: 0,
+      stockSold: null,
+      stockBasis: null,
+      pretaxPriorYearEnd: null,
+      pretaxSpousePriorYearEnd: null,
+      rmdAlreadyReceived: null,
+      primarySoleBeneficiaryOfSpouse: null,
     });
+  });
+
+  test("the new single-year fields land in the scenario, with provenance", () => {
+    const n = normalizeInputs(
+      fictionalScenario({
+        stockSoldAnnual: 20000,
+        stockBasisAnnual: 12000,
+        pretaxPriorYearEndAnnual: 500000,
+        pretaxSpousePriorYearEndAnnual: 300000,
+        rmdAlreadyReceivedAnnual: 5000,
+        primarySoleBeneficiaryOfSpouse: true,
+      }),
+    );
+    expect(n.ok).toBe(true);
+    if (!n.ok) throw new Error("fixture failed");
+    expect(n.scenario.singleYear.stockSold).toBe(20000);
+    expect(n.scenario.singleYear.stockBasis).toBe(12000);
+    expect(n.scenario.singleYear.pretaxPriorYearEnd).toBe(500000);
+    expect(n.scenario.singleYear.pretaxSpousePriorYearEnd).toBe(300000);
+    expect(n.scenario.singleYear.rmdAlreadyReceived).toBe(5000);
+    expect(n.scenario.singleYear.primarySoleBeneficiaryOfSpouse).toBe(true);
+    const byField = new Map(n.scenario.assumptions.map((a) => [a.field, a]));
+    for (const field of [
+      "singleYear.stockSold",
+      "singleYear.stockBasis",
+      "singleYear.pretaxPriorYearEnd",
+      "singleYear.pretaxSpousePriorYearEnd",
+      "singleYear.rmdAlreadyReceived",
+      "singleYear.primarySoleBeneficiaryOfSpouse",
+    ]) {
+      expect(byField.get(field)?.provenance).toBe("user");
+    }
+    // Omitted, the same fields read null with assumption provenance.
+    const omitted = normalizeInputs(fictionalScenario({}));
+    expect(omitted.ok).toBe(true);
+    if (!omitted.ok) throw new Error("fixture failed");
+    const byFieldOmitted = new Map(
+      omitted.scenario.assumptions.map((a) => [a.field, a]),
+    );
+    for (const field of [
+      "singleYear.stockSold",
+      "singleYear.stockBasis",
+      "singleYear.pretaxPriorYearEnd",
+      "singleYear.pretaxSpousePriorYearEnd",
+      "singleYear.rmdAlreadyReceived",
+      "singleYear.primarySoleBeneficiaryOfSpouse",
+    ]) {
+      expect(byFieldOmitted.get(field)?.provenance).toBe("assumption");
+      expect(byFieldOmitted.get(field)?.value).toBeNull();
+    }
   });
 
   test("old advertised names are rejected, not honored", () => {

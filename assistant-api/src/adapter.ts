@@ -1380,17 +1380,161 @@ export function calculateSingleYearTax(
         "Taxable yields are modeled in multi-year plans; this single-year price uses the typed interest/dividends only.",
       );
     }
-    // No prior-year pre-tax balance rides the single-year inputs,
-    // so no RMD is priced in this year.
-    warnings.push(
-      "No prior-year pre-tax balance is carried in the single-year inputs, so no RMD is priced in this year.",
-    );
-    // Taxable sales are not an input (stockSold is fixed at 0), so
-    // the year's spending can only be funded by the typed draws and
-    // income — cashLeftVsSpending does not count selling shares.
-    warnings.push(
-      "This price does not model selling taxable shares to fund the year's spending — cashLeftVsSpending counts only the typed draws and income.",
-    );
+    // R6-S1: a taxable share sale. The engine prices the realized
+    // gain (sold − basis) on the capital-gains stack, and the
+    // proceeds as cash in (cashIn counts stockSold in full — the
+    // proceeds fund spending, only the gain is income). A basis
+    // above the proceeds is a realized LOSS, not an error: the
+    // engine prices it as a net capital loss (§1211(b) allowance
+    // up to $3,000, remainder carried forward), so no basis ≤
+    // proceeds rule is imposed. A basis entered with NO sale is
+    // zeroed here: pricePlaygroundYear computes stockGain =
+    // sold − basis, so a lone basis would invent a loss. Omitted
+    // (null) and explicit $0 are different facts and warn
+    // differently below.
+    const sy = scenario.singleYear;
+    const fmtMoney = (n: number): string =>
+      `$${n.toLocaleString("en-US")}`;
+    const stockSold = sy.stockSold ?? 0;
+    const stockBasis = stockSold > 0 ? (sy.stockBasis ?? 0) : 0;
+    const stockGain = stockSold - stockBasis;
+    if (sy.stockSold == null) {
+      warnings.push(
+        "No taxable share sale was entered for this year, so no sale is priced — cashLeftVsSpending counts no sale proceeds and no capital gain or loss.",
+      );
+      if (sy.stockBasis != null && sy.stockBasis > 0) {
+        warnings.push(
+          "Cost basis was entered with no sale — it has no effect; a basis prices only against a sale.",
+        );
+      }
+    } else if (stockSold === 0) {
+      warnings.push(
+        "An explicit $0 share sale was entered — no sale is priced, no gain or loss.",
+      );
+      if (sy.stockBasis != null && sy.stockBasis > 0) {
+        warnings.push(
+          "Cost basis was entered with no sale — it has no effect; a basis prices only against a sale.",
+        );
+      }
+    } else {
+      if (sy.stockBasis == null) {
+        warnings.push(
+          `No cost basis was entered for the ${fmtMoney(stockSold)} sale — basis prices at $0, so the whole proceeds price as gain. Enter stockBasisAnnual to price the actual gain.`,
+        );
+      } else if (stockGain < 0) {
+        warnings.push(
+          `The sale realizes a loss of ${fmtMoney(-stockGain)} (basis above proceeds) — the engine prices it as a net capital loss: up to $3,000 offsets ordinary income this year and the rest carries forward (lossCarryOutSt / lossCarryOutLt in the result).`,
+        );
+      } else if (stockGain === 0) {
+        warnings.push(
+          `The ${fmtMoney(stockSold)} sale realizes no gain or loss (basis equals proceeds) — the proceeds still count as cash in, with no capital-gains tax.`,
+        );
+      }
+      warnings.push(
+        `Sale proceeds of ${fmtMoney(stockSold)} count in cashIn (cashLeftVsSpending); only the ${fmtMoney(stockGain)} gain is income — proceeds and gain are different figures.`,
+      );
+      if (stockSold > scenario.taxableDollars) {
+        warnings.push(
+          `The ${fmtMoney(stockSold)} sale exceeds the typed taxable balance of ${fmtMoney(scenario.taxableDollars)} — check the sale amount; the price still counts the full proceeds.`,
+        );
+      }
+    }
+    // R6-S2: RMDs from prior-Dec-31 pre-tax balances. The balance
+    // is the balance at December 31 of the year BEFORE the priced
+    // tax year — never today's balance, never inferred from it.
+    // Omitted (null) prices no RMD from that balance; explicit $0
+    // prices a $0 RMD. The spouse's balance is the spouse's OWN
+    // (the engine prices the spouse's RMD on the spouse's own
+    // clock, roles swapped) and only counts on a joint return.
+    const priorDec31Year = scenario.taxYear - 1;
+    const primaryBalance = sy.pretaxPriorYearEnd;
+    const spouseBalance = sy.pretaxSpousePriorYearEnd;
+    const rmdAgePrimary = rmdAgeForBirthYear(scenario.birthYearPrimary);
+    const rmdAgeSpouse =
+      joint && scenario.birthYearSpouse != null
+        ? rmdAgeForBirthYear(scenario.birthYearSpouse)
+        : null;
+    if (primaryBalance == null && spouseBalance == null) {
+      warnings.push(
+        "No prior-year pre-tax balance is carried in the single-year inputs, so no RMD is priced in this year.",
+      );
+    } else {
+      if (primaryBalance != null) {
+        if (primaryBalance === 0) {
+          warnings.push(
+            "An explicit $0 prior-Dec-31 pre-tax balance was entered for the primary — the primary's RMD is $0.",
+          );
+        } else {
+          warnings.push(
+            `The primary's RMD prices from the prior-Dec-31 (Dec 31, ${priorDec31Year}) pre-tax balance of ${fmtMoney(primaryBalance)}.`,
+          );
+        }
+        if (agePrimary < rmdAgePrimary) {
+          warnings.push(
+            `The primary is ${agePrimary} in ${scenario.taxYear}, below RMD age ${rmdAgePrimary} for a ${scenario.birthYearPrimary} birth year — the primary's RMD is $0 this year.`,
+          );
+        }
+      } else {
+        warnings.push(
+          "No prior-Dec-31 pre-tax balance was entered for the primary — the primary's RMD is $0; only a spouse balance was entered.",
+        );
+      }
+      if (spouseBalance != null) {
+        if (!joint) {
+          warnings.push(
+            "A spouse prior-Dec-31 balance was entered on a non-joint return — the engine ignores it: no spouse RMD is priced.",
+          );
+        } else if (spouseBalance === 0) {
+          warnings.push(
+            "An explicit $0 prior-Dec-31 pre-tax balance was entered for the spouse — the spouse's RMD is $0.",
+          );
+        } else {
+          warnings.push(
+            `The spouse's RMD prices from the spouse's own prior-Dec-31 (Dec 31, ${priorDec31Year}) pre-tax balance of ${fmtMoney(spouseBalance)}, on the spouse's own age clock.`,
+          );
+          if (
+            ageSpouse != null &&
+            rmdAgeSpouse != null &&
+            ageSpouse < rmdAgeSpouse
+          ) {
+            warnings.push(
+              `The spouse is ${ageSpouse} in ${scenario.taxYear}, below RMD age ${rmdAgeSpouse} for a ${scenario.birthYearSpouse} birth year — the spouse's RMD is $0 this year.`,
+            );
+          }
+          if (sy.primarySoleBeneficiaryOfSpouse === true) {
+            warnings.push(
+              "The primary is the spouse's sole beneficiary (primarySoleBeneficiaryOfSpouse) — the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table.",
+            );
+          } else if (sy.primarySoleBeneficiaryOfSpouse === false) {
+            warnings.push(
+              "The primary is not the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table.",
+            );
+          } else {
+            warnings.push(
+              "Whether the primary is the spouse's sole beneficiary was not established — the spouse's RMD prices on the Uniform Lifetime Table (the conservative direction).",
+            );
+          }
+        }
+      }
+    }
+    // rmdAlreadyReceived: the part of this year's computed RMD
+    // already received AND already counted in the entered income.
+    // The engine nets it out of the RMD it adds (floored at $0),
+    // so a paid RMD is never counted twice — but only against a
+    // computed RMD: with no balance entered there is nothing to
+    // net it against.
+    const rmdAlreadyReceived = sy.rmdAlreadyReceived ?? 0;
+    if (rmdAlreadyReceived > 0) {
+      if (primaryBalance == null && spouseBalance == null) {
+        warnings.push(
+          "An RMD already received was entered, but no prior-Dec-31 balance was entered — there is no computed RMD to net it against, so it has no effect on this price.",
+        );
+      } else {
+        warnings.push(
+          `${fmtMoney(rmdAlreadyReceived)} of this year's RMD was already received and already counted in the entered income — the engine nets it out of the RMD it adds (floored at $0), so it is not counted twice.`,
+        );
+      }
+    }
     // One benchmark premium drives the ACA credit: single filer ->
     // single; household of 3+ -> family (falling back to couple);
     // otherwise couple.
@@ -1418,10 +1562,13 @@ export function calculateSingleYearTax(
       cashDraw: scenario.singleYear.cashDraw,
       rothDraw: scenario.singleYear.rothDraw,
       inflationPct: scenario.inflationPct,
-      stockSold: 0,
-      stockBasis: 0,
+      stockSold,
+      stockBasis,
       qualifiedDividends: scenario.singleYear.qualifiedDividends,
-      pretaxBalance: null,
+      pretaxBalance: primaryBalance,
+      pretaxBalanceSpouse: spouseBalance,
+      rmdAlreadyReceived,
+      primarySoleBeneficiaryOfSpouse: sy.primarySoleBeneficiaryOfSpouse,
       spouseSoleBeneficiary: joint,
       acaHouseholdSize: scenario.householdSize,
       acaBenchmarkAnnual: benchmarkAnnual,
@@ -1430,6 +1577,34 @@ export function calculateSingleYearTax(
       annualSpending: centsToDollars(scenario.annualSpendingCents),
     };
     const priced: PlaygroundYearResult = pricePlaygroundYear(inputs);
+    // Post-price overlap checks (need the computed RMD, which
+    // only the engine knows): the RMD is priced as income IN
+    // ADDITION to the typed draws. A draw that already includes
+    // the RMD would double-count it — rmdAlreadyReceivedAnnual
+    // is the way to say so. The warning is conditional ("if …"),
+    // because a draw beyond the RMD is a legitimate separate
+    // distribution. It keys on the NET RMD actually added
+    // (priced.rmd, gross minus rmdAlreadyReceived): when the
+    // RMD is fully netted away there is nothing added beside
+    // the draw, so no overlap warning fires, and a partially
+    // netted RMD quotes only the net amount added.
+    if (
+      priced.rmd > 0 &&
+      (scenario.singleYear.spendingDraw > 0 ||
+        scenario.singleYear.conversion > 0)
+    ) {
+      const parts: string[] = [];
+      if (scenario.singleYear.spendingDraw > 0) parts.push("spending draw");
+      if (scenario.singleYear.conversion > 0) parts.push("conversion");
+      warnings.push(
+        `The RMD (${fmtMoney(priced.rmd)}) is priced as income in addition to the typed ${parts.join(" and ")} — if that draw already includes part of the RMD, pass the included amount as rmdAlreadyReceivedAnnual so it is not counted twice.`,
+      );
+    }
+    if (rmdAlreadyReceived > priced.rmdGross && priced.rmdGross >= 0) {
+      warnings.push(
+        `rmdAlreadyReceivedAnnual (${fmtMoney(rmdAlreadyReceived)}) exceeds the computed RMD (${fmtMoney(priced.rmdGross)}) — only ${fmtMoney(priced.rmdGross)} is netted; the excess has no effect.`,
+      );
+    }
     const extraAssumptions: Assumption[] = joint
       ? [
           assumption(
@@ -1437,6 +1612,18 @@ export function calculateSingleYearTax(
             true,
             "assumption",
             "The spouse is modeled as the primary's sole beneficiary, so the primary's RMD prices on the Joint and Last Survivor Table.",
+          ),
+          assumption(
+            "primarySoleBeneficiaryOfSpouse",
+            sy.primarySoleBeneficiaryOfSpouse,
+            sy.primarySoleBeneficiaryOfSpouse == null
+              ? "assumption"
+              : "user",
+            sy.primarySoleBeneficiaryOfSpouse === true
+              ? "The primary is the spouse's sole beneficiary, so the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table."
+              : sy.primarySoleBeneficiaryOfSpouse === false
+                ? "The primary is not the spouse's sole beneficiary, so the spouse's RMD prices on the Uniform Lifetime Table."
+                : "Whether the primary is the spouse's sole beneficiary was not established — the spouse's RMD prices on the Uniform Lifetime Table.",
           ),
         ]
       : [];
