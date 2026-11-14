@@ -5299,6 +5299,7 @@ export function App() {
         {/* month nav — in Year mode the month picker is replaced by
             the year flipper; the viewed month itself is untouched, so
             the rest of the dashboard keeps showing it. */}
+        <h2 className="display mt-5 text-3xl font-semibold">Spending</h2>
         {quickMode === "year" ? (
           <div className="flex items-center justify-between gap-2 pt-4">
             <button

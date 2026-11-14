@@ -7371,13 +7371,13 @@ export function RothConversion({
         firePendingSave();
       }}
     >
-      <h1 className="pt-5 text-xl font-semibold">
+      <h2 className="display flex items-center gap-2 pt-5 text-3xl font-semibold">
         Tax Plan
         <InfoNote
           ariaLabel="About the Tax Plan view"
           text={`Plans year-by-year Roth conversions in the lower-income years after retirement, before RMDs begin. Every year is priced with the real rules — RMDs first, then the conversion, Social Security by the provisional-income formula, IRMAA on the two-year lookback, and the ACA credit while anyone is on the marketplace. The strategy: ${tooltipStrategyText}.`}
         />
-      </h1>
+      </h2>
 
       {rq.data?.recordUnreadable && (
         <p
