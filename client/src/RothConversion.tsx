@@ -6965,6 +6965,7 @@ export function RothConversion({
       const prevOffset = el.style.outlineOffset;
       el.style.outline = "2px solid var(--accent)";
       el.style.outlineOffset = "2px";
+      el.focus({ preventScroll: true });
       if (fieldFlashTimer.current != null) {
         window.clearTimeout(fieldFlashTimer.current);
       }
@@ -7178,6 +7179,47 @@ export function RothConversion({
      what-if is showing, the row is hidden entirely. Inside the
      row nothing changed: the revert action, the mismatch text,
      and the save note behave exactly as before. */
+  /* Plan-face summary number links: the same dotted-underline
+     provenance tap the header summary line uses — a button that
+     jumps to the field the number comes from.
+     An empty value renders as plain text, not a button, so a blanked field leaves no invisible tab stop. */
+  const planSummaryNumLink = (
+    text: string,
+    fieldId: string,
+    section: RothSectionId,
+    fieldLabel: string,
+  ) =>
+    text === "" ? (
+      text
+    ) : (
+      <button
+        type="button"
+        aria-label={`Go to the ${fieldLabel} field`}
+        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+        onClick={() => jumpToField(fieldId, section)}
+      >
+        {text}
+      </button>
+    );
+
+  /* The fill-to clause's 400% is the ACA cliff cap's number: it
+     lives inside the joined ceilings summary string, so split the
+     clause on the number and link just the number to the cliff
+     checkbox. Every other ceiling clause stays plain text. */
+  const fillToClauseLinks = ceilingsSummary.split(" · ").map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && " · "}
+      {part.includes("400%") ? (
+        <>
+          {part.split("400%")[0]}
+          {planSummaryNumLink("400%", "roth-ceil-aca", "advanced", "ACA cliff cap")}
+          {part.split("400%")[1]}
+        </>
+      ) : (
+        part
+      )}
+    </Fragment>
+  ));
   const summaryLine =
     shortSummaryClauses.length > 0 ? (
       <p
@@ -7203,6 +7245,181 @@ export function RothConversion({
         ))}
       </p>
     ) : null;
+
+  /* The "Calculated with" body — the stacked starting-balance
+     bar, the bucket legend, the plan summary paragraph, and
+     the Custom inputs note — as two shared fragments
+     (combine build): on the plan face they render inside
+     the Plan total card, bar and legend above the summary
+     line and paragraph and note below it; on the other
+     faces they render inside the standalone Calculated
+     with card further down, in the same order. Defined
+     once here so the two render sites cannot drift apart.
+     Null until the plan inputs exist, the same guard the
+     standalone card has always applied. */
+  const calcWithBarLegend = planInputs ? (
+    <>
+      <div
+        className={`mt-2 flex h-9 w-full overflow-hidden rounded-[var(--radius)]${calcStartTotal > 0 ? "" : " items-center justify-center border border-[var(--border)] bg-[var(--surface-alt)]"}`}
+        role="img"
+        aria-label={
+          calcStartTotal > 0
+            ? `Starting balances: ${calcStartSegs
+                .map(
+                  (s) =>
+                    `${s.label} ${fmtDollars(s.dollars)}, ${((s.dollars / calcStartTotal) * 100).toFixed(1)} percent`,
+                )
+                .join("; ")}`
+            : "Starting balances: none yet — all five balances are $0"
+        }
+      >
+        {calcStartTotal <= 0 && (
+          // Zero state (2026-10-25): with every balance at $0
+          // no segment draws, and the bare container used to
+          // read as a blank void between the heading and the
+          // legend. The empty track keeps the bar's exact
+          // height and outline, labelled, so the strip's
+          // layout never jumps; the legend below still echoes
+          // each $0 balance, unchanged.
+          <span className="text-xs text-[var(--dim)]">
+            No starting balances yet
+          </span>
+        )}
+        {calcStartSegs
+          .filter((s) => s.dollars > 0)
+          .map((s) => (
+            <div
+              key={s.key}
+              className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
+              style={{
+                width: `${calcStartTotal > 0 ? (s.dollars / calcStartTotal) * 100 : 0}%`,
+                background: s.color,
+              }}
+            >
+              {calcStartTotal > 0 && (s.dollars / calcStartTotal) * 100 >= 7 && (
+                <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+                  {s.label}
+                </span>
+              )}
+            </div>
+          ))}
+      </div>
+      <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1.5">
+        {calcStartSegs.map((s) => (
+          <li
+            key={s.key}
+            className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+          >
+            <span
+              aria-hidden="true"
+              className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+              style={{ background: s.color }}
+            />
+            <span className="font-medium">{s.label}</span>
+            <span>{fmtDollars(s.dollars)}</span>
+            <span className="text-[var(--dim)]">
+              ·{" "}
+              {calcStartTotal > 0
+                ? ((s.dollars / calcStartTotal) * 100).toFixed(1)
+                : "0.0"}
+              %
+            </span>
+            {s.key === "taxable" &&
+            !balanceOverrides.taxable &&
+            (parseDollars(taxableExclude) ?? 0) > 0 ? (
+              <span className="text-[var(--dim)]">
+                (after excluding{" "}
+                {fmtDollars(Math.max(0, parseDollars(taxableExclude) ?? 0))}{" "}
+                from the plan)
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </>
+  ) : null;
+  // The summary's conversion line mirrors the takeaway line's own
+  // definition of a converts-nothing plan: in plan mode, with a
+  // priced result, the "additional" conversion (priced conversion
+  // minus the already-made part) sums to zero over the window
+  // years. Only then does the line read "No Roth conversions";
+  // with no priced plan result it falls back to showing the
+  // window ages, which stay editable in All settings.
+  const planConvertsNothing =
+    effMode === "plan" &&
+    mainResult != null &&
+    mainResult.years.reduce(
+      (a, y) => a + (y.conversion - y.conversionAlready),
+      0,
+    ) === 0;
+  const calcWithSummaryNote = planInputs ? (
+    <>
+      <div className="tnum mt-2 space-y-1 text-sm">
+        <p>
+          Spending {planSummaryNumLink(fmtDollars(planInputs.annualSpending), "roth-Annual-spending", "household", "Annual spending")}/yr
+        </p>
+        {planConvertsNothing ? (
+          <p>No Roth conversions</p>
+        ) : (
+          <p>
+            Roth conversion ages{" "}
+            {planSummaryNumLink(String(planInputs.windowStartAge ?? ""), "roth-Convert-from-age", "household", "Convert from age")} → {planSummaryNumLink(String(planInputs.windowStopAge ?? ""), "roth-Convert-until-age", "household", "Convert until age")}
+          </p>
+        )}
+        <p>Fill to: {fillToClauseLinks}</p>
+        <p>
+          Draw order {drawOrderLabel(planInputs.drawOrder)}
+          {planInputs.drawOrderSwitchAge != null && planInputs.drawOrderAfter != null
+            ? `, then ${drawOrderLabel(planInputs.drawOrderAfter)} from ${planInputs.drawOrderSwitchAge}`
+            : ""}
+        </p>
+        <p>
+          Return {planSummaryNumLink(`${planInputs.expectedReturnPct ?? ""}%`, "roth-Expected-return", "advanced", "Expected return")}
+        </p>
+        <p>{FILING_LABELS[planInputs.filingStatus]}</p>
+        {planInputs.survivorEnabled && planInputs.survivorDeathYear != null ? (
+          <p>
+            Survivor scenario: {planInputs.survivorWho === "spouse" ? "spouse dies" : "you die"} in {planInputs.survivorDeathYear} — single filer from {planInputs.survivorDeathYear + 1}
+          </p>
+        ) : null}
+        {reserveSet ? (
+          <p>
+            Pre-tax reserve{" "}
+            {planSummaryNumLink(fmtDollars(planInputs.preservePretax ?? 0), "roth-Pre-tax-to-preserve-never-convert-", "household", "Pre-tax to preserve")}
+            {" never converted, scored at the "}
+            {planSummaryNumLink(`${reserveExitPct}%`, "roth-Expected-tax-on-the-preserved-amount", "household", "Expected tax on the preserved amount")}
+            {" exit rate"}
+          </p>
+        ) : null}
+      </div>
+      <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
+        {diffLabels.length === 0 ? (
+          "These are the seeded defaults for this view."
+        ) : (
+          <>
+            Custom inputs — differs from the seeded defaults
+            {/* placement="above" + align="right": this note is
+                the summary card's LAST line and its text is
+                long (every differing field is named), so the
+                default below/left bubble hung down over the
+                next card's "Balances by bucket" heading and,
+                starting from this right-edge button, ran off
+                the phone screen's right edge with its own
+                text clipped. Above/right keeps the whole
+                bubble on screen, over this card's own
+                summary text, and the heading below is never
+                covered. */}
+            <InfoNote
+              ariaLabel="Which inputs differ from the seeded defaults"
+              align="right"
+              placement="above"
+              text={`Custom inputs — differs from the seeded defaults in: ${diffLabels.join(", ")}.`}
+            />
+          </>
+        )}
+      </p>
+    </>
+  ) : null;
   const showSavedStatusRow = changedCount > 0 || whatIfResult != null;
   const savedStatusRow = showSavedStatusRow ? (
     <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -8950,7 +9167,14 @@ export function RothConversion({
           the shortened summary line and the saved-status row sit
           inside it, under the figure, instead of loose above the
           tabs — on the other faces they still render in their old
-          spot, since the card only exists here. */}
+          spot, since the card only exists here. The card also
+          carries the Calculated with body (combine build): the
+          starting-balance bar and bucket legend under the figure,
+          then the summary line, the plan summary paragraph, and
+          the Custom inputs note above the saved-status row — the
+          standalone Calculated with card no longer renders on
+          this face, and still renders in its old spot on the
+          other faces. */}
       {face === "plan" && planTotalCents != null && (
         <section className={sectionCls} aria-label="Plan total">
           <button
@@ -8965,7 +9189,7 @@ export function RothConversion({
             </span>
             <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
             {exclusionSummary && (
-              <span className="text-sm text-[var(--dim)]">
+              <span className="text-sm text-[var(--dim)] underline decoration-dotted underline-offset-4">
                 {exclusionSummary}
               </span>
             )}
@@ -8973,7 +9197,9 @@ export function RothConversion({
               Edit the exclusion in Your money
             </span>
           </button>
+          {calcWithBarLegend}
           {init && summaryLine}
+          {calcWithSummaryNote}
           {init && savedStatusRow}
         </section>
       )}
@@ -11196,7 +11422,7 @@ export function RothConversion({
         </section>
       )}
 
-      {showPlanWorkspace && planInputs && (
+      {showPlanWorkspace && planInputs && !(face === "plan" && planTotalCents != null) && (
         <div
           aria-label="What the results are calculated with"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
@@ -11204,112 +11430,8 @@ export function RothConversion({
           <p className="text-sm">
             <strong>Calculated with:</strong>
           </p>
-          <div
-            className={`mt-2 flex h-9 w-full overflow-hidden rounded-[var(--radius)]${calcStartTotal > 0 ? "" : " items-center justify-center border border-[var(--border)] bg-[var(--surface-alt)]"}`}
-            role="img"
-            aria-label={
-              calcStartTotal > 0
-                ? `Starting balances: ${calcStartSegs
-                    .map(
-                      (s) =>
-                        `${s.label} ${fmtDollars(s.dollars)}, ${((s.dollars / calcStartTotal) * 100).toFixed(1)} percent`,
-                    )
-                    .join("; ")}`
-                : "Starting balances: none yet — all five balances are $0"
-            }
-          >
-            {calcStartTotal <= 0 && (
-              // Zero state (2026-10-25): with every balance at $0
-              // no segment draws, and the bare container used to
-              // read as a blank void between the heading and the
-              // legend. The empty track keeps the bar's exact
-              // height and outline, labelled, so the strip's
-              // layout never jumps; the legend below still echoes
-              // each $0 balance, unchanged.
-              <span className="text-xs text-[var(--dim)]">
-                No starting balances yet
-              </span>
-            )}
-            {calcStartSegs
-              .filter((s) => s.dollars > 0)
-              .map((s) => (
-                <div
-                  key={s.key}
-                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
-                  style={{
-                    width: `${calcStartTotal > 0 ? (s.dollars / calcStartTotal) * 100 : 0}%`,
-                    background: s.color,
-                  }}
-                >
-                  {calcStartTotal > 0 && (s.dollars / calcStartTotal) * 100 >= 7 && (
-                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
-                      {s.label}
-                    </span>
-                  )}
-                </div>
-              ))}
-          </div>
-          <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1.5">
-            {calcStartSegs.map((s) => (
-              <li
-                key={s.key}
-                className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
-              >
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
-                  style={{ background: s.color }}
-                />
-                <span className="font-medium">{s.label}</span>
-                <span>{fmtDollars(s.dollars)}</span>
-                <span className="text-[var(--dim)]">
-                  ·{" "}
-                  {calcStartTotal > 0
-                    ? ((s.dollars / calcStartTotal) * 100).toFixed(1)
-                    : "0.0"}
-                  %
-                </span>
-                {s.key === "taxable" &&
-                !balanceOverrides.taxable &&
-                (parseDollars(taxableExclude) ?? 0) > 0 ? (
-                  <span className="text-[var(--dim)]">
-                    (after excluding{" "}
-                    {fmtDollars(Math.max(0, parseDollars(taxableExclude) ?? 0))}{" "}
-                    from the plan)
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          <p className="tnum mt-2 text-sm">
-            Spending {fmtDollars(planInputs.annualSpending)}/yr · Convert ages{" "}
-            {planInputs.windowStartAge} → {planInputs.windowStopAge} · Fill to:{" "}
-            {ceilingsSummary} · Draw order {drawOrderLabel(planInputs.drawOrder)}
-            {planInputs.drawOrderSwitchAge != null && planInputs.drawOrderAfter != null
-              ? `, then ${drawOrderLabel(planInputs.drawOrderAfter)} from ${planInputs.drawOrderSwitchAge}`
-              : ""}{" "}
-            · Return {planInputs.expectedReturnPct}% ·{" "}
-            {FILING_LABELS[planInputs.filingStatus]}
-            {planInputs.survivorEnabled && planInputs.survivorDeathYear != null
-              ? ` · Survivor scenario: ${planInputs.survivorWho === "spouse" ? "spouse dies" : "you die"} in ${planInputs.survivorDeathYear} — single filer from ${planInputs.survivorDeathYear + 1}`
-              : ""}
-            {reserveSet
-              ? ` · Pre-tax reserve ${fmtDollars(planInputs.preservePretax ?? 0)} never converted, scored at the ${reserveExitPct}% exit rate`
-              : ""}
-          </p>
-          <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
-            {diffLabels.length === 0 ? (
-              "These are the seeded defaults for this view."
-            ) : (
-              <>
-                Custom inputs — differs from the seeded defaults
-                <InfoNote
-                  ariaLabel="Which inputs differ from the seeded defaults"
-                  text={`Custom inputs — differs from the seeded defaults in: ${diffLabels.join(", ")}.`}
-                />
-              </>
-            )}
-          </p>
+          {calcWithBarLegend}
+          {calcWithSummaryNote}
         </div>
       )}
 
