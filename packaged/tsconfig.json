@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowJs":true,"checkJs":false,"module":"esnext","moduleResolution":"bundler","noEmit":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"strict":true,"target":"es2022","types":["bun"]},"include":["audit-views.ts"]}
