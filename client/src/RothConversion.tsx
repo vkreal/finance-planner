@@ -6721,9 +6721,19 @@ export function RothConversion({
     planTotalCents != null ? (
       <span className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
         <span className="text-sm text-[var(--dim)]">Plan total</span>
-        <span className="tnum text-xl font-bold text-[var(--accent)]">
+        <button
+          type="button"
+          aria-label="Go to the balance fields in Your money"
+          className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4"
+          onClick={(e) => {
+            // The header is itself the section's fold button: stop
+            // the tap here so it jumps instead of folding.
+            e.stopPropagation();
+            jumpToField("roth-Pre-tax-You", "money");
+          }}
+        >
           {fmtCentsExact(planTotalCents)}
-        </span>
+        </button>
         <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
       </span>
     ) : null;
@@ -6732,11 +6742,34 @@ export function RothConversion({
     (headerEffectiveInputs.taxableExcludeCents ?? 0) > 0
       ? ` · ${fmtCentsExact(headerEffectiveInputs.taxableExcludeCents ?? 0)} excluded from the plan`
       : "";
-  const moneySummary =
-    (allBalancesFollow
-      ? "Balances follow Net Worth"
-      : `Pre-tax — You ${moneySummaryText(pretax)} · Pre-tax — wife ${moneySummaryText(pretaxSpouse)} · Roth ${moneySummaryText(rothBal)} · Taxable ${moneySummaryText(taxableBal)} · HSA ${moneySummaryText(hsaBal)}`) +
-    exclusionSummary;
+  // The Your money header's exclusion figure is a tap to the
+  // Exclude from plan field, so the summary is JSX, not a string:
+  // the section header is itself the fold button, so the tap stops
+  // propagation and jumps instead of folding.
+  const moneySummary = (
+    <>
+      {allBalancesFollow
+        ? "Balances follow Net Worth"
+        : `Pre-tax — You ${moneySummaryText(pretax)} · Pre-tax — wife ${moneySummaryText(pretaxSpouse)} · Roth ${moneySummaryText(rothBal)} · Taxable ${moneySummaryText(taxableBal)} · HSA ${moneySummaryText(hsaBal)}`}
+      {!balanceOverrides.taxable && (headerEffectiveInputs.taxableExcludeCents ?? 0) > 0 && (
+        <>
+          {" · "}
+          <button
+            type="button"
+            aria-label="Go to the Exclude from plan field"
+            className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+            onClick={(e) => {
+              e.stopPropagation();
+              jumpToField("roth-Exclude-from-plan", "money");
+            }}
+          >
+            {fmtCentsExact(headerEffectiveInputs.taxableExcludeCents ?? 0)}
+          </button>
+          {" excluded from the plan"}
+        </>
+      )}
+    </>
+  );
   const ssSummaryText = (amt: string, age: string, who: string, declared: boolean): string => {
     if (declared) return `${who} SS — no benefit`;
     const d = parseDollars(amt);
@@ -7003,7 +7036,11 @@ export function RothConversion({
   const rothSection = (
     id: RothSectionId,
     title: string,
-    summary: string,
+    // ReactNode, not string: the Your money summary carries a tap
+    // on its exclusion figure. Every other call site passes a
+    // plain string, which is a valid ReactNode, so nothing else
+    // changes.
+    summary: ReactNode,
     children: ReactNode,
     headerExtra?: ReactNode,
   ) => (
@@ -8032,7 +8069,7 @@ export function RothConversion({
 
       {face === "settings" && (
         <>
-      {rothSection("money", "Your money", moneySummary + (sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"]) > 0 ? ` · ${sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"])} changed` : ""), (
+      {rothSection("money", "Your money", (<>{moneySummary}{sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"]) > 0 ? ` · ${sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"])} changed` : ""}</>), (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Pre-tax — You", pretax, setPretax, {
