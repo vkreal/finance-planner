@@ -11976,17 +11976,8 @@ export function RothConversion({
               ) : (
                 <>
                   <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <div>
-                      <label className={labelCls} htmlFor="roth-mc-volatility">
-                        Volatility for this check (%)
-                      </label>
-                      <input
-                        id="roth-mc-volatility"
-                        className={`${inputCls} w-32`}
-                        value={mcVolatility}
-                        inputMode="decimal"
-                        onChange={(e) => setMcVolatility(e.target.value)}
-                      />
+                    <div className="w-32">
+                      {pctField("Volatility for this check", mcVolatility, setMcVolatility)}
                     </div>
                     <button
                       type="button"
