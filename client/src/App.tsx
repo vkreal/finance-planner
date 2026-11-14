@@ -3820,6 +3820,15 @@ export function App() {
   const [confirmDeleteOneOffId, setConfirmDeleteOneOffId] = useState<number | null>(null);
   const [versionDeleteError, setVersionDeleteError] = useState("");
   const [recordingYearlyId, setRecordingYearlyId] = useState<number | null>(null);
+  // Per-item expansion for the Yearly roster rows, layered on top
+  // of the Expand all / Collapse all flag: in collapsed-all mode,
+  // expandedYearlyBillId is the one bill whose details are open
+  // inline (null = none); in Expand-all mode, collapsedYearlyBillId
+  // is the one bill individually folded shut (null = none). The
+  // Expand all / Collapse all button clears both, so its behavior
+  // is exactly as before. Display only — never changes any amount.
+  const [expandedYearlyBillId, setExpandedYearlyBillId] = useState<number | null>(null);
+  const [collapsedYearlyBillId, setCollapsedYearlyBillId] = useState<number | null>(null);
 
   useEffect(() => {
     setRecordingYearlyId(null);
@@ -4404,6 +4413,11 @@ export function App() {
     }
   }
   const handleYearlyBillsCollapsedAllChange = (collapsed: boolean) => {
+    // Expand all / Collapse all resets any per-item row expansion,
+    // so the button always lands on a uniform all-open / all-shut
+    // roster exactly as it did before per-item expansion existed.
+    setExpandedYearlyBillId(null);
+    setCollapsedYearlyBillId(null);
     setYearlyBillsCollapsedAllOverride(collapsed);
     setYearlyBillsCollapsedAll.mutate({ collapsed });
   };
@@ -6948,8 +6962,11 @@ export function App() {
             <section id="section-monthly-bills" aria-label="Monthly bills" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-monthly-bills")}`}>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {/* The ⓘ sits right after the bold title, ahead of the
-                    summary figure; the fold toggle stays alone at the
-                    far right. No summary sentence on the face: the
+                    summary figure; the fold toggle is pinned to the
+                    far right end of the header row (ml-auto on its
+                    wrapper), so the Spending section headers' toggles
+                    all line up at the same right edge however long
+                    their summaries run. No summary sentence on the face: the
                     "already included in cash out, never added a second
                     time" point lives in the info tooltip, whose full
                     text is the former "More" text, verbatim. The tip
@@ -7354,7 +7371,9 @@ export function App() {
                     then the ⓘ, then the quick summary — here the
                     month's cash out, the same figure the Monthly
                     bills footer reconciles against — and the fold
-                    toggle alone at the far right. The tip sits near
+                    toggle pinned to the far right end of the header
+                    row, lined up with the other section headers'
+                    toggles. The tip sits near
                     the left edge now, so its bubble opens
                     left-aligned (align="start"). */}
                 <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
@@ -7598,10 +7617,11 @@ export function App() {
             <section id="section-yearly-expenses" aria-label="Yearly & periodic expenses" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-yearly-expenses")}`}>
               {/* Header follows the settled single-row pattern (same as
                   Monthly bills above): title, then the ⓘ, then the
-                  summary on the left; the fold toggle alone at the far
-                  right. The row never wraps — the long summary wraps
-                  within the left side instead, so the toggle stays on
-                  the title row at every width. */}
+                  summary, then the fold toggle pinned to the far
+                  right end of the header row, lined up with the
+                  other section headers' toggles. At narrow
+                  widths the summary wraps within the heading
+                  instead of pushing the toggle off the row. */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
                   Yearly &amp; periodic expenses
@@ -7829,7 +7849,31 @@ export function App() {
                     {data.yearly.map((y) => (
                   <li key={y.id} className="px-3 py-2">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      {/* Tapping the row (name + figures, with the
+                          shared +/− fold chip as the affordance)
+                          expands just this bill's details inline
+                          below the row — one bill at a time: tapping
+                          another row switches to it, tapping the
+                          open row closes it. In Expand-all mode the
+                          same tap folds just this bill shut. The
+                          Edit and ✕ buttons sit outside this button
+                          and keep their own behavior. */}
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                        aria-expanded={yearlyBillsCollapsedAll ? expandedYearlyBillId === y.id : collapsedYearlyBillId !== y.id}
+                        aria-controls={`yearly-bill-details-${y.id}`}
+                        aria-label={`${y.name} details`}
+                        onClick={() => {
+                          if (yearlyBillsCollapsedAll) {
+                            setExpandedYearlyBillId(expandedYearlyBillId === y.id ? null : y.id);
+                          } else {
+                            setCollapsedYearlyBillId(collapsedYearlyBillId === y.id ? null : y.id);
+                          }
+                        }}
+                      >
+                        <FoldChevron open={yearlyBillsCollapsedAll ? expandedYearlyBillId === y.id : collapsedYearlyBillId !== y.id} />
+                        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
                         <span className="text-base font-semibold">{y.name}</span>
                         {y.inEffectForMonth === false ? (
                           <span className="tnum text-sm text-[var(--dim)]">
@@ -7909,22 +7953,34 @@ export function App() {
                             {y.paidByName}
                           </span>
                         )}
-                      </div>
-                      {!yearlyBillsCollapsedAll && (
-                        <div className="ml-auto flex shrink-0 gap-1">
-                          <button type="button" aria-label={`Edit ${y.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditYearly(y)}>
-                            Edit
+                        </span>
+                      </button>
+                      {/* Edit (and delete) sit at the right end of
+                          every row, ALWAYS — the same spot, label
+                          and size as the Transactions rows' Edit
+                          buttons — so any one bill can be opened
+                          from the collapsed list without Expand
+                          all. Edit opens just that bill in the
+                          edit form above the roster. Previously
+                          these only showed in Expand-all mode,
+                          which left a collapsed row with no way
+                          to open its bill. */}
+                      <div className="ml-auto flex shrink-0 gap-1">
+                        <button type="button" aria-label={`Edit ${y.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditYearly(y)}>
+                          Edit
+                        </button>
+                        {confirmDeleteYearlyId !== y.id && (
+                          <button type="button" aria-label={`Delete ${y.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteYearlyId(y.id)}>
+                            ✕
                           </button>
-                          {confirmDeleteYearlyId !== y.id && (
-                            <button type="button" aria-label={`Delete ${y.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteYearlyId(y.id)}>
-                              ✕
-                            </button>
-                          )}
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
-                    {!yearlyBillsCollapsedAll && (
-                      <>
+                    {/* The delete confirmation lives outside the
+                        collapsed-all details below: the row's ✕
+                        is always visible now, so its confirmation
+                        must be able to show while the row's
+                        details stay collapsed. */}
                     {confirmDeleteYearlyId === y.id && (
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <span className="text-sm text-[var(--bad)]">
