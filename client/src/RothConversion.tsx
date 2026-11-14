@@ -6517,23 +6517,35 @@ export function RothConversion({
 
                   {detailRow.detail.amti > 0 && (
                     <>
-                      <h4 className="mt-4 text-sm font-semibold">Alternative minimum tax</h4>
+                      <h4 className="mt-4 flex items-center gap-1.5 text-sm font-semibold">
+                        Alternative minimum tax (AMT)
+                        <ExplainerInfoTip
+                          id="roth.yearAmt"
+                          label="the alternative minimum tax"
+                          align="start"
+                        >
+                          <p>
+                            AMT income{" "}
+                            <span className="tnum">{fmtDollars(detailRow.detail.amti)}</span>
+                            , exemption{" "}
+                            <span className="tnum">{fmtDollars(detailRow.detail.amtExemption)}</span>
+                            , tentative minimum tax{" "}
+                            <span className="tnum">{fmtDollars(detailRow.detail.amtTentativeTax)}</span>
+                            {detailRow.detail.amtOwed > 0 ? (
+                              <>
+                                {" "}— AMT owed{" "}
+                                <span className="tnum font-medium">{fmtDollars(detailRow.detail.amtOwed)}</span>
+                                , already inside the federal tax above.
+                              </>
+                            ) : (
+                              <> — no AMT owed; the tentative tax did not beat the regular tax.</>
+                            )}
+                          </p>
+                        </ExplainerInfoTip>
+                      </h4>
                       <p className="mt-1.5 text-sm">
-                        AMT income{" "}
-                        <span className="tnum">{fmtDollars(detailRow.detail.amti)}</span>
-                        , exemption{" "}
-                        <span className="tnum">{fmtDollars(detailRow.detail.amtExemption)}</span>
-                        , tentative minimum tax{" "}
-                        <span className="tnum">{fmtDollars(detailRow.detail.amtTentativeTax)}</span>
-                        {detailRow.detail.amtOwed > 0 ? (
-                          <>
-                            {" "}— AMT owed{" "}
-                            <span className="tnum font-medium">{fmtDollars(detailRow.detail.amtOwed)}</span>
-                            , already inside the federal tax above.
-                          </>
-                        ) : (
-                          <> — no AMT owed; the tentative tax did not beat the regular tax.</>
-                        )}
+                        AMT owed{" "}
+                        <span className="tnum font-medium">{fmtDollars(detailRow.detail.amtOwed)}</span>
                       </p>
                     </>
                   )}
