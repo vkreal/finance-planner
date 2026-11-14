@@ -8331,10 +8331,92 @@ export function RothConversion({
             hint: "Already converted some this calendar year? Enter it — the first year's fill tops it up instead of starting over.",
             changed: changedFields.convertedAlready,
           })}
-          {moneyField("Annual spending", spending, setSpending, {
-            hint: "Seeded from the Retirement calculator's spending figure.",
-            changed: changedFields.spending,
-          })}
+          {/* Per year / per month pills on the Annual spending field:
+              mirrors the Change-the-plan spending field — same shared
+              spending state, same roth.spendingPerMonth unit flag, same
+              monthly draft and conversion. The label stays "Annual
+              spending" (not the plan face's Yearly/Monthly spending)
+              and the hint stays. */}
+          <div>
+            <label className={labelCls} htmlFor="roth-Annual-spending">
+              Annual spending
+              {changedFields.spending && <ChangedMark />}
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+            <div className="relative shrink-0">
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+              >
+                $
+              </span>
+              <input
+                id="roth-Annual-spending"
+                aria-label="Annual spending"
+                className={`${inputCls} pl-7`}
+                style={{
+                  width: `calc(${Math.max((spendingUnit === "month" ? (spendingMonthlyDraft ?? monthlySpendingDisplay()) : spending).length + 1, 8)}ch + 2.625rem)`,
+                }}
+                inputMode="decimal"
+                value={
+                  spendingUnit === "month"
+                    ? (spendingMonthlyDraft ?? monthlySpendingDisplay())
+                    : spending
+                }
+                onFocus={() => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(monthlyRaw(spending));
+                  }
+                }}
+                onBlur={() => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(null);
+                  }
+                  const d = parseDollars(spending);
+                  if (d != null) setSpending(fmtMoneyInput(d));
+                }}
+                onChange={(e) => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(e.target.value);
+                    setSpending(monthlyToAnnual(e.target.value));
+                  } else {
+                    setSpending(e.target.value);
+                  }
+                }}
+              />
+            </div>
+            <div
+              role="group"
+              aria-label="Spending display period"
+              className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+            >
+              <button
+                type="button"
+                aria-label="Show spending per year"
+                aria-pressed={spendingUnit === "year"}
+                onClick={() => setSpendingUnit("year")}
+                className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per year
+              </button>
+              <button
+                type="button"
+                aria-label="Show spending per month"
+                aria-pressed={spendingUnit === "month"}
+                onClick={() => setSpendingUnit("month")}
+                className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per month
+              </button>
+            </div>
+            {spendingUnit === "month" && (
+              <p className="shrink-0 whitespace-nowrap text-xs text-[var(--dim)]">
+                = ${fmtMoneyInput((parseMoney(spending) ?? 0) / 100)}/yr
+              </p>
+            )}
+            </div>
+            <p className={hintCls}>Seeded from the Retirement calculator's spending figure.</p>
+          </div>
           {numField("College years — first fall (optional)", collegeFromYear, setCollegeFromYear, { changed: changedFields.collegeFromYear })}
           {numField("College years — last fall (optional)", collegeThroughYear, setCollegeThroughYear, {
             hint: "Fall years college starts and ends (a Sep-2027 start is fall 2027; 4 years = falls 2027–2030). Drives only the FAFSA watch-out — a conversion counts as FAFSA income two years later. Leave blank if no college in the household.",
