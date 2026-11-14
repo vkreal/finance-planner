@@ -2129,9 +2129,27 @@ function SpendingTrueCostChart({
     }),
   ];
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Phone-width anchor: the per-month width floor below makes
+     the strip wider than a phone screen, and left-anchored it
+     opened on the OLDEST months — the recent months, the ones
+     being checked, sat off-screen to the right (Oct–Dec on a
+     Jul–Dec strip) with nothing marking the cut. When the
+     strip overflows its scroller, open it scrolled to the
+     newest month instead; the older months stay one swipe to
+     the left, every bar keeps its full value label, and on
+     screens wide enough to fit the strip nothing scrolls at
+     all. Keyed on the plotted set (count + estimate flag),
+     not on every render, so a reader who has swiped back to
+     an older month is not yanked forward again. */
+  const chartScrollRef = useRef<HTMLDivElement>(null);
+  const chartMonthCount = chartData.length;
+  useEffect(() => {
+    const el = chartScrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [chartMonthCount, hasEstimate]);
   /* Whether any plotted month's Cash out bar is actually split —
-     drives the extra legend entry and the tooltip note, so both
-     appear only when a split is on screen. */
+     drives the extra legend entry and the detail-panel lines, so
+     both appear only when a split is on screen. */
   const hasOneOffSplit = chartData.some((d) => d.cashOutOneOffCents > 0);
   const hasLightsOnSplit = chartData.some((d) => d.trueCostLightsOnCents > 0 || d.cashOutLightsOnCents > 0);
   /* Vs-target summary over the recorded months only: the
@@ -2369,7 +2387,7 @@ function SpendingTrueCostChart({
               <span
                 aria-hidden="true"
                 className="inline-block h-[10px] w-[14px] rounded-[2px]"
-                style={{ background: "var(--accent)" }}
+                style={{ background: "linear-gradient(to bottom, var(--accent), var(--accent-deep))" }}
               />
               True cost
             </span>
@@ -2377,7 +2395,7 @@ function SpendingTrueCostChart({
               <span
                 aria-hidden="true"
                 className="inline-block h-[10px] w-[14px] rounded-[2px]"
-                style={{ background: "var(--warn)" }}
+                style={{ background: "linear-gradient(to bottom, var(--warn), var(--warn-deep))" }}
               />
               Cash out
             </span>
@@ -2496,7 +2514,7 @@ function SpendingTrueCostChart({
               </span>
             )}
           </div>
-          <div className="mt-3 max-w-full overflow-x-auto">
+          <div ref={chartScrollRef} className="mt-3 max-w-full overflow-x-auto">
             <div
               className="h-[300px]"
               style={{
@@ -2511,7 +2529,44 @@ function SpendingTrueCostChart({
                   barGap={3}
                   onClick={handleChartClick}
                 >
+                  {/* Vertical gradients for the bars, and the
+                      diagonal-stripe patterns for the lights-on
+                      bottom segments: each bar deepens toward its
+                      base — the rest/regular segment runs its
+                      series color at the top to its deep token at
+                      the bottom, and the striped base below it
+                      uses that same deep token, so there is no
+                      step at the segment boundary. The stripe
+                      lines use the dedicated
+                      --lights-on-stripes-* tokens, a bit darker
+                      than --accent-deep / --lights-on-orange, so
+                      the estimate months' outline strokes (which
+                      use those shared variables) keep their color.
+                      Only the two lights-on Bars (and their Cells)
+                      reference the stripe fills; only the
+                      rest/regular Bars (and their Cells) reference
+                      the gradients. */}
                   <defs>
+                    <linearGradient
+                      id="trueCostBarGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="0%" stopColor="var(--accent)" />
+                      <stop offset="100%" stopColor="var(--accent-deep)" />
+                    </linearGradient>
+                    <linearGradient
+                      id="cashOutBarGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="0%" stopColor="var(--warn)" />
+                      <stop offset="100%" stopColor="var(--warn-deep)" />
+                    </linearGradient>
                     <pattern
                       id="lightsOnStripesTeal"
                       width="7"
@@ -2588,14 +2643,14 @@ function SpendingTrueCostChart({
                     cursor="pointer"
                     dataKey="trueCostRest"
                     name="True cost"
-                    fill="var(--accent)"
                     stackId="trueCost"
+                    fill="url(#trueCostBarGradient)"
                     radius={[3, 3, 0, 0]}
                   >
                     {chartData.map((d) => (
                       <Cell
                         key={d.monthStr}
-                        fill="var(--accent)"
+                        fill="url(#trueCostBarGradient)"
                         fillOpacity={d.estimate ? 0.3 : 1}
                         stroke={d.estimate ? "var(--accent)" : "none"}
                         strokeWidth={d.estimate ? 1.5 : 0}
@@ -2680,13 +2735,13 @@ function SpendingTrueCostChart({
                     dataKey="cashOutRegular"
                     name="Cash out"
                     stackId="cashOut"
-                    fill="var(--warn)"
+                    fill="url(#cashOutBarGradient)"
                     shape={cashOutBaseShape}
                   >
                     {chartData.map((d) => (
                       <Cell
                         key={d.monthStr}
-                        fill="var(--warn)"
+                        fill="url(#cashOutBarGradient)"
                         fillOpacity={d.estimate ? 0.3 : 1}
                         stroke={d.estimate ? "var(--warn)" : "none"}
                         strokeWidth={d.estimate ? 1.5 : 0}
@@ -3020,7 +3075,7 @@ function YearTrueCostChart({
       aria-label={`True cost vs Cash out chart for ${year}`}
       className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
     >
-      <h3 className="display text-lg font-semibold">
+      <h3 className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
         True cost vs Cash out — {year}
       </h3>
       <p className="mt-0.5 text-sm text-[var(--dim)]">
@@ -3068,7 +3123,7 @@ function YearTrueCostChart({
           <span
             aria-hidden="true"
             className="inline-block h-[10px] w-[14px] rounded-[2px]"
-            style={{ background: "var(--accent)" }}
+            style={{ background: "linear-gradient(to bottom, var(--accent), var(--accent-deep))" }}
           />
           True cost
         </span>
@@ -3076,7 +3131,7 @@ function YearTrueCostChart({
           <span
             aria-hidden="true"
             className="inline-block h-[10px] w-[14px] rounded-[2px]"
-            style={{ background: "var(--warn)" }}
+            style={{ background: "linear-gradient(to bottom, var(--warn), var(--warn-deep))" }}
           />
           Cash out
         </span>
@@ -3114,8 +3169,16 @@ function YearTrueCostChart({
           </span>
         )}
       </div>
+      {/* Below the sm breakpoint the 620px floor is dropped so
+          the whole year fits the phone's width on the first
+          screen — with the floor, the chart scrolled sideways
+          and the autumn/winter months sat off-screen (Dec by
+          ~260px) with nothing marking the cut. The bars carry
+          no value labels here (figures ride the tap tooltip
+          and the text fallback above), so the squeezed pairs
+          stay legible; from sm up the roomy floor returns. */}
       <div className="mt-3 max-w-full overflow-x-auto">
-        <div className="h-[300px] min-w-[620px]">
+        <div className="h-[300px] sm:min-w-[620px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}
@@ -3124,6 +3187,33 @@ function YearTrueCostChart({
               barGap={3}
               onClick={handleChartClick}
             >
+              {/* Same vertical gradients as the Month-mode chart,
+                  under year-only ids so the two charts never share
+                  a gradient definition: each bar deepens toward
+                  its base, series color at the top to its deep
+                  token at the bottom. */}
+              <defs>
+                <linearGradient
+                  id="trueCostBarGradientYear"
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="0%" stopColor="var(--accent)" />
+                  <stop offset="100%" stopColor="var(--accent-deep)" />
+                </linearGradient>
+                <linearGradient
+                  id="cashOutBarGradientYear"
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="0%" stopColor="var(--warn)" />
+                  <stop offset="100%" stopColor="var(--warn-deep)" />
+                </linearGradient>
+              </defs>
               <CartesianGrid
                 stroke="var(--border)"
                 strokeDasharray="3 3"
@@ -3226,14 +3316,14 @@ function YearTrueCostChart({
               <Bar
                 dataKey="trueCost"
                 name="True cost"
-                fill="var(--accent)"
+                fill="url(#trueCostBarGradientYear)"
                 radius={[3, 3, 0, 0]}
                 cursor="pointer"
               >
                 {chartData.map((d) => (
                   <Cell
                     key={d.monthStr}
-                    fill="var(--accent)"
+                    fill="url(#trueCostBarGradientYear)"
                     fillOpacity={d.estimate ? 0.3 : 1}
                     stroke={d.estimate ? "var(--accent)" : "none"}
                     strokeWidth={d.estimate ? 1.5 : 0}
