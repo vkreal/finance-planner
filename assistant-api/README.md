@@ -694,6 +694,19 @@ more — the server answers nothing else, not even `/health`
 A worker thread or timeout is future work; for now, don't rely on
 the server answering anything else during a work-years call.
 
+(xii) **The app still prices a blank expected return at the
+stock-mix blend in a few places.** The adapter's omitted-return
+default (5%, `EXPECTED_RETURN_DEFAULT`) matches the fresh-plan
+seed and the saved-plan reload. But a manually blanked field
+prices live at the blend (`RetirementCalc.tsx:2488`, transient
+until the next save + reload restores 5), and the engine-side
+loader (`buildSimInputs`, `retirementEngines.ts:1225`) and the
+Tax Plan / Playground fallbacks still substitute the blend for a
+null saved return — a pre-existing app inconsistency, out of
+scope for this branch. (The `RetirementCalc.tsx:2488` comment's
+claim that a save + reload produces the blend is stale: the
+reload path substitutes 5 via the view's sourced memo.)
+
 ## Source layout
 
 ```
