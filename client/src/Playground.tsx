@@ -977,8 +977,8 @@ export function Playground({
   // The spending the comparison prices, in dollars: the
   // held paste figure while one is held, else the dial /
   // record resolution (pgSpendingCents). buildPgInputs and
-  // the play strip both read this one value, so the strip
-  // and the Tax-for-the-year card can never show two
+  // the At a glance card both read this one value, so the
+  // card and the Tax-for-the-year card can never show two
   // different verdicts for a pasted year either (the S-7
   // invariant, extended to the paste hold).
   const pgResolvedSpendingDollars =
@@ -3603,6 +3603,32 @@ export function Playground({
     pgSpendingCents, pgPastedSpending, pgPastedHarvest, pgPrefillSource,
   ]);
 
+  // Left after a year's spending — the play strip's second
+  // figure, folded into the "At a glance" card (the strip
+  // itself is gone): the cash left after health premiums
+  // minus the same spending resolution the priced result —
+  // and therefore the Tax-for-the-year card — reads
+  // (pgResolvedSpendingDollars). S-7: the strip read the
+  // SAME spending resolution the priced result reads, so
+  // the card and the Tax-for-the-year card price the same
+  // spending and their "Left after a year's spending"
+  // figures agree to the cent. R3-M3: the base is the cash
+  // left after health premiums (the priced
+  // cashLeftAfterHealthPremium), because the spending
+  // excludes health premiums. P-S2: while a paste-load
+  // holds the pasted year's spending, that figure is the
+  // resolution. Display arithmetic only, the same
+  // comparison the Tax-for-the-year card carries, with the
+  // same colour rule: red when the year falls short of
+  // spending, teal when it covers it. The strip's names
+  // are kept deliberately, so the fold reads against the
+  // strip it replaces.
+  const stripSpendingDollars = pgResolvedSpendingDollars;
+  const stripLeftAfterSpending =
+    playgroundResult != null && stripSpendingDollars != null
+      ? playgroundResult.cashLeftAfterHealthPremium - stripSpendingDollars
+      : null;
+
   // Zero-conversion pricing of the same dials — the hold
   // captions read their overage from it (display arithmetic
   // only, through the same pricePlaygroundYear the readout
@@ -5743,49 +5769,24 @@ export function Playground({
     ].join(" · ");
   })();
 
-  /* -------- Plain-English summary lines --------
-     One short headline line per face at the top of the view,
-     assembled live from the current dial values — display
-     ONLY, at normal text size, carrying just the figures
-     needed at a glance. The One year line reads
-     playgroundResult's own fields (the same figures the
-     readout and the play strip print — the total tax is the
-     engine's own total, pg.totalTax, at cent precision) and
-     names only the year's tax, MAGI, and the bracket landing.
-     The Projection line
-     reads the projection's setup dials and, while the panel
-     is open and priced, pgProjection's own ending balances:
+  /* -------- Plain-English summary line --------
+     One short headline line for the Projection face at the
+     top of the view, assembled live from the current dial
+     values — display ONLY, at normal text size. It reads
+     the projection's setup dials and, while the panel is
+     open and priced, pgProjection's own ending balances:
      which template year repeats, the age span, the return,
      and the ending balances, with the note that spending and
-     taxes are not taken out. The full mechanics behind both
+     taxes are not taken out. (The One year line — the year's
+     tax, MAGI, and bracket landing — was dropped in the
+     wall-of-text build: it duplicated the Tax for the year
+     and stacks-up cards below.) The full mechanics
      (income stacking, ACA/IRMAA positions, draw modes, stop
      rules, the captured-template rule) stay in the readouts
      below and the Projection panel's collapsed "More"
      explanation — they are not repeated on the face. Nothing
      here prices anything, writes anything, or touches the
      Hold/target state. */
-  const pgPlainYearSentence = ((): string => {
-    const pg = playgroundResult;
-    if (pg == null) {
-      // No priced year yet (no age typed): one short line
-      // naming what is missing.
-      return `For ${pgTaxYearNum} — enter your age for that year to price it.`;
-    }
-    const bits: string[] = [
-      `${pgTaxYearNum} tax ${fmtDollarsExact(pg.totalTax)}`,
-      `MAGI ${fmtDollars(pg.magi)}`,
-    ];
-    if (pg.conversion + pg.spendingDraw > 0) {
-      bits.push(
-        pg.landingBracketPct != null
-          ? pg.landingExactlyFilled
-            ? `fills the ${pg.landingBracketPct}% bracket exactly`
-            : `lands in the ${pg.landingBracketPct}% bracket`
-          : "pre-tax money out sheltered by deductions",
-      );
-    }
-    return `${bits.join(" · ")}.`;
-  })();
   const pgPlainProjSentence = ((): string => {
     const toAge = parseIntField(pgProjToAge) ?? 95;
     const fromAge = parseIntField(pgProjFromAge);
@@ -5814,240 +5815,214 @@ export function Playground({
     return `${head}. Spending and taxes are not taken out.`;
   })();
 
+  // At a glance tiles (2026-11-09 restyle): the card's four
+  // headline figures as tiles in the Spending view's Quick
+  // view pattern — small-caps label on top, big figure below,
+  // hairline dividers, four in one row on desktop and a 2x2
+  // grid on phone. Which tiles show follows the rows they
+  // replace: the two flow tiles (cash left after tax, left
+  // after spending) on the One year face only, the two total
+  // tiles (plan total, taxable pool) on both faces, the pool
+  // tile only while an exclusion is set. The divider each
+  // tile carries depends on its place among the tiles
+  // actually showing — the Spending cells' border-r /
+  // border-b pattern recomputed for the visible count — so
+  // a face or state with fewer tiles still divides cleanly,
+  // four in a row or 2x2, with no stranded cell.
+  const glanceShow: boolean[] = [
+    pgFace === "year",
+    pgFace === "year" && stripLeftAfterSpending != null,
+    pgPrefillSource != null,
+    pgPrefillSource != null && pgPrefillSource.taxableExclude > 0,
+  ];
+  const glanceCount = glanceShow.filter(Boolean).length;
+  const glanceDivider = (slot: number): string => {
+    const i = glanceShow.slice(0, slot).filter(Boolean).length;
+    const n = glanceCount;
+    const parts = ["border-[var(--border)]"];
+    if (i < n - 1) parts.push(i % 2 === 0 ? "border-r" : "sm:border-r");
+    if (n > 2 && i < (n % 2 === 0 ? n - 2 : n - 1))
+      parts.push("border-b", "sm:border-b-0");
+    return parts.join(" ");
+  };
+  const glanceCellCls = (slot: number) =>
+    `group relative flex flex-col p-3.5 sm:p-4 ${glanceDivider(slot)}`;
+  const glanceLabelCls =
+    "pr-6 text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase";
+  const glanceFigureCls =
+    "display tnum mt-1.5 text-xl leading-none font-semibold whitespace-nowrap";
+  const glanceSubCls =
+    "tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]";
+
   return (
-    <div>
-        {/* Sticky play strip — money outcomes only
-            (build v154): a pure render over the SAME priced
-            result (`playgroundResult`) the readout below renders:
-            no new state, no storage, no actions, and no pricing
-            of its own. It pins at the top of the Playground tab
-            while the tab scrolls so the live figures stay in
-            view next to the dials. The pinned figures are
-            ONLY the three money outcomes:
-            Cash left after tax (pg.cashLeftAfterTax — cash in
-            minus the net tax bill, before any spending),
-            Spending (pgSpendingCents — the one spending
-            resolution buildPgInputs prices: the Spending
-            dial's local figure while it parses, else the Tax
-            Plan record's figure the dial sources from), and
-            Left after a year's spending (cash left after
-            health premiums minus that same spending — display
-            arithmetic only, the same comparison the
-            Tax-for-the-year card carries, with the same colour
-            rule: red when the year falls short of spending,
-            teal when it covers it). Since S-7 the strip reads
-            the dial's resolution rather than the record alone,
-            so the strip and the card can never show two
-            different verdicts mid-edit. Since R3-M3 the base
-            is the cash left after health premiums (the priced
-            cashLeftAfterHealthPremium — cash left after tax
-            less the net premium the strip itself shows when
-            one prices), because the spending excludes health
-            premiums; before R3-M3 both surfaces compared the
-            spending against the cash left after tax alone and
-            overstated the verdict by the whole net premium. The total
-            federal tax, MAGI, taxable income, bracket landing,
-            ACA cliff room, buffer line, IRMAA,
-            sale, and estimated ACA credit details are NOT shown
-            here — they stay in the Tax-for-the-year card and
-            the other readouts below, unchanged. It is the One
-            year face's pinned answer, so it renders on that
-            face only; the Projection face pins nothing — its
-            charts carry their own readouts. The Month / Year
-            pills at the end of the strip switch the two spend
-            readouts (Cash left after tax, Left after
-            spending) between their annual figures and those
-            figures divided by 12 — the one persisted
-            spendPerMonth state the Tax-for-the-year card's
-            pills share, so both spots always agree. */}
-        {pgFace === "year" && (() => {
-          const pg = playgroundResult;
-          // S-7 (engines review round 2): the strip reads
-          // the SAME spending resolution the priced result
-          // — and therefore the Tax-for-the-year card —
-          // reads: pgSpendingCents, the Spending dial's
-          // local figure while it parses to a positive
-          // amount, else the record's figure. buildPgInputs
-          // feeds exactly this value to the pricing as
-          // annualSpending, so while the dial is being
-          // edited the strip and the card price the same
-          // spending and their "Left after a year's
-          // spending" figures agree to the cent (the
-          // strip's is display arithmetic over the priced
-          // cash left; the card's is the engine's own
-          // r2 of the same subtraction). Before this fix
-          // the strip read the record (pgAnnualSpendingCents)
-          // while the card priced the dial, so mid-edit the
-          // two disagreed by the whole edit — opposite
-          // verdicts on the same screen until blur + save
-          // + refetch converged them.
-          // R3-M3 (engines review round 3): the strip's
-          // Left figure is the cash left after HEALTH
-          // PREMIUMS minus that same spending — the priced
-          // cashLeftAfterHealthPremium, which the strip
-          // already renders beside the net premium when one
-          // prices — exactly the engine's cashLeftVsSpending
-          // the card prints, so strip = card still holds to
-          // the cent, now on the premium-charged base. The
-          // pre-R3-M3 strip read cashLeftAfterTax here and
-          // repeated the engine's omission.
-          // P-S2 (parity audit): while a paste-load holds
-          // the pasted year's spending, that figure is the
-          // resolution — the strip reads the same
-          // pgResolvedSpendingDollars buildPgInputs prices,
-          // so strip = card holds for a pasted year too.
-          const stripSpendingDollars = pgResolvedSpendingDollars;
-          const stripLeftAfterSpending =
-            pg != null && stripSpendingDollars != null
-              ? pg.cashLeftAfterHealthPremium - stripSpendingDollars
-              : null;
-          return (
-            <div
-              className="sticky z-30 mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-md"
-              style={{ top: "var(--twsa-safe-area-inset-top, 0px)" }}
-              aria-label="Play strip — live summary of the priced year"
-            >
-              <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-                <span>
-                  Cash left after tax{" "}
-                  <span className="font-bold text-[var(--accent)]">
-                    {spendPerMonth
-                      ? `${fmtDollarsExact((pg?.cashLeftAfterTax ?? 0) / 12)}/mo`
-                      : fmtDollars(pg?.cashLeftAfterTax ?? 0)}
-                  </span>
-                </span>
-                {pg != null && (pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0) && (
-                  <span className="contents">
-                    {pg.healthPremiumNet > 0 && (
-                      <span className="contents">
-                        <span aria-hidden="true" className="text-[var(--dim)]">
-                          ·
-                        </span>
-                        <span>
-                          Health premium (net){" "}
-                          <span className="font-bold">
-                            {fmtDollars(pg.healthPremiumNet)}
-                          </span>
-                        </span>
-                      </span>
-                    )}
-                    {/* IRMAA payable this year (internal review
-                        round 3 SHOULD-2): the surcharge actually
-                        payable in the priced year, beside the net
-                        premium — the block opens whenever either
-                        prices, so a year with a $0 net premium
-                        but a payable IRMAA still shows the cash
-                        left after health premiums it reduces. */}
-                    {pg.irmaaPayableAnnual > 0 && (
-                      <span className="contents">
-                        <span aria-hidden="true" className="text-[var(--dim)]">
-                          ·
-                        </span>
-                        <span>
-                          IRMAA payable{" "}
-                          <span className="font-bold">
-                            {fmtDollars(pg.irmaaPayableAnnual)}
-                          </span>
-                        </span>
-                      </span>
-                    )}
-                    <span aria-hidden="true" className="text-[var(--dim)]">
-                      ·
-                    </span>
-                    <span>
-                      Cash left after health premiums{" "}
-                      <span className="font-bold text-[var(--accent)]">
-                        {fmtDollars(pg.cashLeftAfterHealthPremium)}
-                      </span>
-                    </span>
-                  </span>
-                )}
-                {stripSpendingDollars != null && (
-                  <span className="contents">
-                    <span aria-hidden="true" className="text-[var(--dim)]">
-                      ·
-                    </span>
-                    <span>
-                      Spending{" "}
-                      <span className="font-bold">
-                        {fmtDollars(stripSpendingDollars)}
-                      </span>
-                    </span>
-                  </span>
-                )}
-                {stripLeftAfterSpending != null && (
-                  <span className="contents">
-                    <span aria-hidden="true" className="text-[var(--dim)]">
-                      ·
-                    </span>
-                    <span>
-                      Left after a {spendPerMonth ? "month" : "year"}
-                      &rsquo;s spending{" "}
-                      <span
-                        className={`font-bold ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
-                      >
-                        {spendPerMonth
-                          ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
-                          : fmtDollars(stripLeftAfterSpending)}
-                      </span>
-                    </span>
-                  </span>
-                )}
-              </p>
+    <div className="mt-5">
+        <h2 className="display flex items-center gap-2 text-3xl font-semibold">
+          Playground
+          <ExplainerInfoTip
+            id="playground.intro"
+            label="about the Playground"
+            align="start"
+          >
+            <p>
+              Price one year or a projection from your own numbers — your plan is never touched.
+            </p>
+          </ExplainerInfoTip>
+        </h2>
+        {/* At a glance (wall-of-text A+B build; the play
+            strip folded in 2026-11-09; tiles restyle
+            2026-11-09; outer panel removed 2026-11-10 at
+            the user's request): the top's headline figures
+            — cash left, plan total, taxable pool — with the
+            header row and the tiles grid sitting unboxed
+            (no outer card panel); the tiles grid keeps its
+            own border. The figures replace the plan-total
+            and pool loose lines. The figures sit as four tiles in the
+            Spending view's Quick view pattern, superseding
+            the short-lived merged cash-left row that carried
+            both flow figures on one line. The cash-left tile
+            reads the same priced result the play strip
+            printed (pg.cashLeftAfterTax), and the Month/Year
+            pills that switch it and the left-after-spending
+            tile sit in the card header — the same pills
+            state the strip and the Tax-for-the-year card
+            shared. The strip itself is gone — folded into
+            this card (its second figure is the
+            left-after-spending tile, and its conditional
+            health-premium / IRMAA block rides as conditional
+            rows below the tiles under the same condition, so
+            no figure is lost in any state). The plan-total
+            tile keeps its tap to the Tax Plan's Your money
+            panel; the "Edit the exclusion in Your money"
+            link shrinks to an "Edit the exclusion" caption
+            inside the same tap target — the total is the
+            same one the Tax Plan view carries (Pre-tax both
+            spouses + taxable pool after the exclusion + Roth
+            + HSA; the College / 529 and Non-Taxable buckets
+            are never counted). The pool tile carries just
+            the figure; the "Taxable plus Cash less the
+            exclusion" explainer rides the ⓘ at its
+            top-right. The card renders on both faces; the
+            two flow tiles, the header pills, and the premium
+            rows render on the One year face only, matching
+            the strip's gate, so the Projection face shows
+            the two total tiles. Display only — it reads the
+            resolved sources and writes nothing. */}
+        <section className="mt-4" aria-label="At a glance">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
+              At a glance
+            </h3>
+            {pgFace === "year" && (
               <SpendPeriodPills
                 perMonth={spendPerMonth}
                 onChange={setSpendPerMonth}
               />
-            </div>
-          );
-        })()}
-        <h2 className="text-base font-semibold">Playground</h2>
-        <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-          Price one year or a projection from your own numbers — your plan is never touched.
-        </p>
-        {/* Plan total at the top (PLAN TOTAL VISIBILITY build):
-            the same Plan total the Tax Plan view carries —
-            pgPrefillSource.planTotal, resolved from the one Tax
-            Plan record (Pre-tax both spouses + taxable pool
-            after the exclusion + Roth + HSA; the College / 529
-            and Non-Taxable buckets are never counted) — shown
-            here on the default
-            screen, above the income strip, so both views open
-            on the same figure. It is a tap target: tapping it
-            jumps to the Your money panel in the Tax Plan, on
-            the Exclude from plan field where the exclusion can
-            be edited (App owns the view switch; see
-            onJumpToYourMoney). Display only — it reads the
-            resolved source and writes nothing. */}
-        {pgPrefillSource && (
-          <p className="mt-2">
-            {onJumpToYourMoney ? (
-              <button
-                type="button"
-                aria-label={`Plan total ${fmtDollarsExact(pgPrefillSource.planTotal)} excluding 529 and Non-Taxable — go to Your money in the Tax Plan to edit the exclusion`}
-                className="flex flex-wrap items-baseline gap-x-2 text-left"
-                onClick={onJumpToYourMoney}
-              >
-                <span className="text-sm text-[var(--dim)]">Plan total</span>
-                <span className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
-                  {fmtDollarsExact(pgPrefillSource.planTotal)}
-                </span>
-                <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
-                <span className="text-sm text-[var(--dim)] underline underline-offset-2">
-                  Edit the exclusion in Your money
-                </span>
-              </button>
-            ) : (
-              <span className="flex flex-wrap items-baseline gap-x-2">
-                <span className="text-sm text-[var(--dim)]">Plan total</span>
-                <span className="tnum text-xl font-bold text-[var(--accent)]">
-                  {fmtDollarsExact(pgPrefillSource.planTotal)}
-                </span>
-                <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
-              </span>
             )}
-          </p>
-        )}
+          </div>
+          {glanceCount > 0 && (
+            <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+              <div className="grid grid-cols-2 sm:grid-cols-4">
+                {pgFace === "year" && (
+                  <div className={glanceCellCls(0)}>
+                    <p className={glanceLabelCls}>Cash left after tax</p>
+                    <p className={`${glanceFigureCls} text-[var(--accent)]`}>
+                      {spendPerMonth
+                        ? `${fmtDollarsExact((playgroundResult?.cashLeftAfterTax ?? 0) / 12)}/mo`
+                        : `${fmtDollars(playgroundResult?.cashLeftAfterTax ?? 0)}/yr`}
+                    </p>
+                  </div>
+                )}
+                {pgFace === "year" && stripLeftAfterSpending != null && (
+                  <div className={glanceCellCls(1)}>
+                    <p className={glanceLabelCls}>
+                      Left after a {spendPerMonth ? "month" : "year"}&rsquo;s spending
+                    </p>
+                    <p
+                      className={`${glanceFigureCls} ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                    >
+                      {spendPerMonth
+                        ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
+                        : `${fmtDollars(stripLeftAfterSpending)}/yr`}
+                    </p>
+                  </div>
+                )}
+                {pgPrefillSource && onJumpToYourMoney ? (
+                  <button
+                    type="button"
+                    aria-label={`Plan total ${fmtDollarsExact(pgPrefillSource.planTotal)} excluding 529 and Non-Taxable — go to Your money in the Tax Plan to edit the exclusion`}
+                    className={`${glanceCellCls(2)} text-left`}
+                    onClick={onJumpToYourMoney}
+                  >
+                    <p className={glanceLabelCls}>Plan total</p>
+                    <p
+                      className={`${glanceFigureCls} text-[var(--accent)] underline decoration-dotted underline-offset-4`}
+                    >
+                      {fmtDollarsExact(pgPrefillSource.planTotal)}
+                    </p>
+                    <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
+                    <p className={`${glanceSubCls} underline underline-offset-2`}>
+                      Edit the exclusion
+                    </p>
+                  </button>
+                ) : pgPrefillSource ? (
+                  <div className={glanceCellCls(2)}>
+                    <p className={glanceLabelCls}>Plan total</p>
+                    <p className={`${glanceFigureCls} text-[var(--accent)]`}>
+                      {fmtDollarsExact(pgPrefillSource.planTotal)}
+                    </p>
+                    <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
+                  </div>
+                ) : null}
+                {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
+                  <div className={glanceCellCls(3)}>
+                    <p className={glanceLabelCls}>Taxable pool after exclusion</p>
+                    <p className="display tnum mt-1.5 text-xl leading-none font-bold whitespace-nowrap text-[var(--text)]">
+                      {fmtDollarsExact(pgPrefillSource.taxableStart)}
+                    </p>
+                    <div className="absolute top-2 right-2">
+                      <InfoNote
+                        text={`Taxable plus Cash (${fmtDollarsExact(pgPrefillSource.taxablePoolGross)}) less the ${fmtDollarsExact(pgPrefillSource.taxableExclude)} excluded from the plan in the Tax Plan.`}
+                        ariaLabel="About the taxable pool after exclusion"
+                        align="right"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {pgFace === "year" &&
+            playgroundResult != null &&
+            (playgroundResult.healthPremiumNet > 0 ||
+              playgroundResult.irmaaPayableAnnual > 0) && (
+              <div className="mt-3 space-y-2">
+                <>
+                  {playgroundResult.healthPremiumNet > 0 && (
+                    <p className="tnum flex flex-wrap items-baseline gap-x-2 text-sm">
+                      <span className="text-[var(--dim)]">Health premium (net)</span>
+                      <span className="text-xl font-bold">
+                        {fmtDollars(playgroundResult.healthPremiumNet)}
+                      </span>
+                    </p>
+                  )}
+                  {playgroundResult.irmaaPayableAnnual > 0 && (
+                    <p className="tnum flex flex-wrap items-baseline gap-x-2 text-sm">
+                      <span className="text-[var(--dim)]">IRMAA payable</span>
+                      <span className="text-xl font-bold">
+                        {fmtDollars(playgroundResult.irmaaPayableAnnual)}
+                      </span>
+                    </p>
+                  )}
+                  <p className="tnum flex flex-wrap items-baseline gap-x-2 text-sm">
+                    <span className="text-[var(--dim)]">Cash left after health premiums</span>
+                    <span className="text-xl font-bold text-[var(--accent)]">
+                      {fmtDollars(playgroundResult.cashLeftAfterHealthPremium)}
+                    </span>
+                  </p>
+                </>
+              </div>
+            )}
+        </section>
         {/* Face switch — two faces, one tool at a time. Both
             faces share the one dial state, so switching loses
             nothing and changes no value; it only chooses
@@ -7662,61 +7637,27 @@ export function Playground({
           </>
         )}
 
-        {/* Plain-English summary — the sentence composed above
-            for the face on screen (pgPlainYearSentence on One
-            year, pgPlainProjSentence on Projection), updated
-            live from the dials on every render. */}
-        <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
-          {pgFace === "year" ? (
-            <p className="text-sm text-[var(--text)]">
-              {pgPlainYearSentence}
-            </p>
-          ) : (
+        {/* Plain-English summary — the Projection face's
+            sentence only (see the derivation above). The One
+            year sentence was dropped in the wall-of-text
+            build: it duplicated the Tax for the year and
+            stacks-up cards below. */}
+        {pgFace === "projection" && (
+          <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
             <p className="text-sm text-[var(--text)]">
               {pgPlainProjSentence}
             </p>
-          )}
-        </div>
-
-        {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
-            build): the resolved taxable pool this view prices
-            from the saved plan, with the Tax Plan record's
-            exclusion named beside it — the same pool
-            pgPrefillSourceFrom resolves (Taxable + Cash less
-            the exclusion). Shown only while an exclusion
-            actually applies; Net Worth balances never move. */}
-        {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
-          <p className="tnum mt-2 text-sm text-[var(--text)]">
-            <strong>
-              Taxable pool after exclusion:{" "}
-              {fmtDollarsExact(pgPrefillSource.taxableStart)}
-            </strong>{" "}
-            — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
-            less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
-            excluded from the plan in the Tax Plan.
-          </p>
+          </div>
         )}
 
-        {/* Income strip — one line naming the three income
-            figures for the selected Tax year, shown below
-            the dials with the other results (Playground
-            reorg A+C): a summary of the dial values, not a
-            dial itself. Display only:
-            it reads the dials exactly as priced (see
-            pgInterestDollars above) and writes nothing. The
-            Qualified figure is the PRICED one
-            (pgQualifiedPricedDollars — the dial clamped to
-            the total, as the engine prices it), so on an
-            impossible pair the strip shows the priced
-            figure, not the raw dial (N-2). */}
-        <div
-          aria-label={`${pgTaxYearNum} income summary`}
-          className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
-        >
-          <p className="tnum text-sm font-medium text-[var(--text)]">
-            {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
-          </p>
-        </div>
+
+        {/* (The income strip — the "2026 income: Interest ·
+            Ordinary · Qualified" line — was dropped in the
+            wall-of-text build: the dials summary already
+            carries the income total, and the breakdown lives
+            in the Income dial card. The $0 warning below
+            stays: it is the only signal when the year's
+            income is $0, and it jumps to the income dials.) */}
         {/* $0 income warning — only when the year's income
             (Interest + Ordinary dividends; Qualified is part
             of Ordinary, not added again) is $0. Tapping it
