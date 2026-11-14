@@ -15,7 +15,7 @@ XAxis,
 YAxis,
 } from "recharts";
 import { api, type ApiResponse } from "./api";
-import { Explainer } from "./Explainer";
+import { Explainer, ExplainerInfoTip } from "./Explainer";
 import { FoldChevron } from "./FoldChevron";
 import type { RothSectionId } from "./RothConversion";
 import { usePersistedFold } from "./foldState";
@@ -3945,7 +3945,23 @@ export function RetirementCalc({
 
   return (
     <div className="mt-5">
-      <h2 className="display text-3xl font-semibold">Retirement calculator</h2>
+      <h2 className="display flex items-center gap-2 text-3xl font-semibold">
+        Retirement calculator
+        <ExplainerInfoTip
+          id="retirement.intro"
+          label="Retirement calculator"
+          align="center"
+        >
+          <p>
+            Everything runs in <strong className="text-[var(--text)]">today&rsquo;s (real) dollars</strong> —
+            returns are inflation-adjusted, and spending and extra income stay flat in
+            today&rsquo;s dollars. Each year, once retired, the plan withdraws
+            spending minus extra income (any income above spending is added to
+            the portfolio), then that year&rsquo;s real return applies.
+            A plan succeeds if every year&rsquo;s spending is fully funded through the end age — the money never comes up short in any year. A run that lands at exactly $0 still counts as succeeding when that year&rsquo;s spending was fully funded by the money on hand: the portfolio is empty, but no year&rsquo;s spending went unfunded. A run counts as not succeeding when a year&rsquo;s spending exceeds the money on hand to fund it — even if the portfolio then sits at $0 and later income refills it, that year&rsquo;s spending was not fully funded, so the money did run out in the sense that matters here.
+          </p>
+        </ExplainerInfoTip>
+      </h2>
       {data?.savedUnreadable && (
         <p
           role="alert"
@@ -3968,26 +3984,6 @@ export function RetirementCalc({
           is paused while it is unreadable.
         </p>
       )}
-      <Explainer
-        id="retirement.intro"
-        label="Retirement calculator"
-        className="mt-1 max-w-2xl"
-        summary={
-          <>
-            Everything runs in <strong className="text-[var(--text)]">today&rsquo;s (real) dollars</strong> — a plan succeeds if every year&rsquo;s spending is fully funded through the end age, even a landing at exactly $0.
-          </>
-        }
-      >
-        <p>
-          Everything runs in <strong className="text-[var(--text)]">today&rsquo;s (real) dollars</strong> —
-          returns are inflation-adjusted, and spending and extra income stay flat in
-          today&rsquo;s dollars. Each year, once retired, the plan withdraws
-          spending minus extra income (any income above spending is added to
-          the portfolio), then that year&rsquo;s real return applies.
-          A plan succeeds if every year&rsquo;s spending is fully funded through the end age — the money never comes up short in any year. A run that lands at exactly $0 still counts as succeeding when that year&rsquo;s spending was fully funded by the money on hand: the portfolio is empty, but no year&rsquo;s spending went unfunded. A run counts as not succeeding when a year&rsquo;s spending exceeds the money on hand to fund it — even if the portfolio then sits at $0 and later income refills it, that year&rsquo;s spending was not fully funded, so the money did run out in the sense that matters here.
-        </p>
-      </Explainer>
-
       {/* Plan verdict (2026-11-09, "Both"): a glanceable
           verdict at the top of the view — a big "lasts until"
           headline with a verdict badge right after it
