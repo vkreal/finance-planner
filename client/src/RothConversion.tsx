@@ -9911,6 +9911,29 @@ export function RothConversion({
               . Open All settings to check the plan&rsquo;s inputs.
             </p>
           )}
+          {/* Plan summary line — footer of this card (moved here
+              2026-11-13; it used to float between this card and the
+              next section). Same line, same derivation, same ⓘ. */}
+          {takeawayText &&
+            (typeof takeawayText === "string" ? (
+              <p
+                aria-label="Plan summary"
+                className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
+              >
+                {takeawayText}
+              </p>
+            ) : (
+              <p
+                aria-label="Plan summary"
+                className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
+              >
+                {takeawayText.short}
+                <InfoNote
+                  ariaLabel="The full plan summary sentence"
+                  text={takeawayText.full}
+                />
+              </p>
+            ))}
         </section>
       )}
 
@@ -9964,7 +9987,8 @@ export function RothConversion({
       </div>
       )}
 
-      {takeawayText &&
+      {!(face === "plan" && savedPlanPayload) &&
+        takeawayText &&
         (typeof takeawayText === "string" ? (
           <p
             aria-label="Plan summary"
