@@ -83,7 +83,7 @@ export const RetirementQuestionInputs = z.strictObject({
    *  Default (in normalize): null (no yield modeled). */
   taxableInterestYieldPct: percent(0, 100).optional(),
   /** Expected real return, %/yr, -50–50. Default (in normalize):
-   *  the engine's blendedExpected(stocksPct). */
+   *  the engine's EXPECTED_RETURN_DEFAULT (5%). */
   expectedRealReturnPct: percent(-50, 50).optional(),
   /** Return volatility (std dev), %/yr, 0–100. Default (in
    *  normalize): the engine's blendedVol(stocksPct). */
