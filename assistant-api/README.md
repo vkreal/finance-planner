@@ -100,7 +100,7 @@ AI client ── JSON-RPC 2.0 / Streamable HTTP ──► server.ts (auth, rate 
 - **Dollars in, cents inside, dollars out.** Callers think in dollars;
   `normalize.ts` converts balances and spending to integer cents for
   the engines; results come back in dollars rounded to 2dp. Percents
-  are plain numbers outside (6.75 means 6.75%); the adapter divides
+  are plain numbers outside (5 means 5%); the adapter divides
   by 100 where an engine takes a decimal, and reports rates back as
   fractions 0–1 (a 97% success rate reads `0.97`, never `97`).
 - **Monte Carlo chart values are dollars**, passed through rounded —
@@ -261,7 +261,7 @@ example above, retiring now at 54:
         "monthlySpending": 9500, "annualSpending": 114000,
         "currentAge": 54, "spouseAge": 52, "retirementAge": 54, "endAge": 95,
         "filingStatus": "mfj", "householdSize": 2,
-        "stocksPct": 95, "expectedRealReturnPct": 6.75, "volatilityPct": 17.4,
+        "stocksPct": 95, "expectedRealReturnPct": 5, "volatilityPct": 17.4,
         "strategy": "constant",
         "socialSecurityAnnual": 36000, "socialSecurityStartAge": 67,
         "spouseSocialSecurityAnnual": 18000, "spouseSocialSecurityStartAge": 67,
@@ -333,7 +333,7 @@ authority for any single call.
 | `householdSize` | `2` for mfj, `1` for single/hoh | assumption |
 | `spouseAge` | **Required when mfj** (missing → `missing_input` + question) | user |
 | `stocksPct` | `95` | engine_constant |
-| `expectedRealReturnPct` | Engine blend: stocks% × 7% + bonds% × 2% (6.75 at 95% stocks) | engine_constant |
+| `expectedRealReturnPct` | `5` — the engine's flat factory default (`EXPECTED_RETURN_DEFAULT`); an explicit value (including 0% and negative) is used exactly as given, and changing the stock mix never moves the default | engine_constant |
 | `volatilityPct` | Engine blend: stocks% × 18% + bonds% × 6% (17.4 at 95% stocks) | engine_constant |
 | `strategy` | `"constant"` | assumption |
 | `percentOfPortfolio` | `5` — 5% of the start-of-year balance each year (only when `strategy` is `"percent"`) | engine_constant |
@@ -664,11 +664,14 @@ clone.
 (2025/2026 today).** Later tables are not yet published, so
 later-year pricing is not available.
 
-(vii) **The deterministic projection models one Social Security
-stream (the earliest-starting).** With two streams starting in
-different years, the second stream is priced in the tax-aware
-compares, not the sim; the response says so in a warning. Two
-streams starting the same year sum exactly.
+(vii) **Both Social Security streams are priced in the
+deterministic projection, Monte Carlo, and max-spending solver,
+each starting in its own claiming year.** The sim engine prices
+an income schedule (one entry per stream); claiming ages are
+per-person, measured against their own birth years, so a
+spouse's claiming age is converted into the primary's age
+timeline through the two birth years. Two streams starting the
+same calendar year sum exactly, as before.
 
 (viii) **Work-years ending balances are not like-for-like across
 quit ages** (different horizons — each quit age is priced as its own

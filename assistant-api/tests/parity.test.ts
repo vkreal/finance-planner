@@ -67,7 +67,11 @@ import {
 } from "./helpers";
 
 /** The SimInputs the adapter builds for the fictional scenario:
- *  constant strategy, both SS streams starting at 67 so they sum. */
+ *  constant strategy, primary SS $36,000/yr from 67 and spouse
+ *  SS $18,000/yr from the spouse's 67 — which is the primary's 69
+ *  (spouse is two years younger), so the schedule carries both
+ *  streams at their own start years and the legacy fields carry
+ *  the earliest stream. */
 function directSimInputs(): SimInputs {
   const s = normalizedScenario();
   return {
@@ -76,8 +80,12 @@ function directSimInputs(): SimInputs {
     currentAge: s.currentAge,
     retirementAge: s.retirementAge,
     endAge: s.endAge,
-    extraIncomeCents: (36000 + 18000) * 100,
+    extraIncomeCents: 36000 * 100,
     extraIncomeStartAge: 67,
+    incomeSchedule: [
+      { amountCents: 36000 * 100, startAge: 67 },
+      { amountCents: 18000 * 100, startAge: 69 },
+    ],
     strategy: "constant",
     percentOfPortfolio: 0,
     guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
@@ -138,7 +146,13 @@ describe("Monte Carlo", () => {
     );
     expect(res.successRate).toBeGreaterThanOrEqual(0);
     expect(res.successRate).toBeLessThanOrEqual(1);
-    expect(res.successRate).toBeCloseTo(0.99, 2);
+    // Pinned at 0.94, not the pre-fix 0.99: the two Review 2 fixes
+    // both lower it for this household — the omitted return now
+    // resolves to the 5% factory default (was the 6.75% blend),
+    // and the spouse's $18,000 now starts at the primary's 69
+    // (was $54,000 combined from 67). Verified against a direct
+    // runMonteCarlo call on the same inputs (0.94 exactly).
+    expect(res.successRate).toBeCloseTo(0.94, 2);
   });
 
   test("same seed twice is identical; a different seed (usually) differs", () => {
@@ -160,9 +174,8 @@ describe("Monte Carlo", () => {
   });
 
   test("the MC chart is dollars, not cents", () => {
-    const res = expectOk(
-      runRetirementMonteCarlo(normalizedScenario({ mcRuns: 200, mcSeed: 42 })),
-    );
+    const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
+    const res = expectOk(runRetirementMonteCarlo(s));
     // Every path starts at the same portfolio, so the first chart row
     // is exactly the starting portfolio in dollars ($3,787,000).
     expect(res.chart[0]?.age).toBe(54);
@@ -177,7 +190,7 @@ describe("Monte Carlo", () => {
     const inputs = directSimInputs();
     const mc = runMonteCarlo(
       inputs,
-      6.75 / 100,
+      s.expectedReturnPct / 100,
       17.4 / 100,
       42,
       200,
