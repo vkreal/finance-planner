@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { calculateRetirement } from "../src/adapter";
 import { latestTaxLawYear, normalizeInputs } from "../src/normalize";
+import { dispatchTool } from "../src/tools";
 import { TAX_LAW_YEARS } from "../../server/src/taxLaw";
 import {
   ESSENTIAL_KEYS,
@@ -214,6 +215,89 @@ describe("invalid values", () => {
     if (n.ok) return;
     expect(JSON.stringify(n.error)).not.toContain("1234567");
     expect(JSON.stringify(n.error)).not.toContain("-1234567");
+  });
+});
+
+describe("unknown fields are rejected (strict input schema)", () => {
+  // The schema is strict: an unrecognized field is an error naming
+  // the field, never a silent strip. A misspelled field must not
+  // silently drop the income it was meant to carry.
+
+  test("an unknown financial field is rejected with invalid_input", () => {
+    const n = normalizeInputs(fictionalScenario({ unknownBalance: 100000 }));
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.code).toBe("invalid_input");
+    expect(n.error.error.message).toContain("unknownBalance");
+    expect(JSON.stringify(n.error.error.details)).toContain("unknownBalance");
+  });
+
+  test("a misspelled Social Security field is rejected, naming it", () => {
+    const n = normalizeInputs(
+      fictionalScenario({ socialSecurityAnual: 48000 }),
+    );
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.code).toBe("invalid_input");
+    expect(n.error.error.message).toContain("socialSecurityAnual");
+    // The correctly spelled field still lands — the loss was the
+    // misspelling, not the value.
+    expect(
+      normalizeInputs(fictionalScenario({ socialSecurityAnnual: 48000 })).ok,
+    ).toBe(true);
+  });
+
+  test("a misspelled monthly spending field is rejected, naming it", () => {
+    const n = normalizeInputs(fictionalScenario({ monthlySpendin: 8000 }));
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.code).toBe("invalid_input");
+    expect(n.error.error.message).toContain("monthlySpendin");
+  });
+
+  test("an unknown field with value 0 is rejected, not ignored", () => {
+    const n = normalizeInputs(fictionalScenario({ unknownField: 0 }));
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.code).toBe("invalid_input");
+    expect(n.error.error.message).toContain("unknownField");
+  });
+
+  test("unknown fields never reach an engine: dispatch returns the error, no results", () => {
+    const res = dispatchTool(
+      "retirement_calculate",
+      fictionalScenario({ socialSecurityAnual: 48000 }),
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.code).toBe("invalid_input");
+    expect("results" in res).toBe(false);
+  });
+
+  test("error messages name fields only — no caller values leak", () => {
+    const n = normalizeInputs(fictionalScenario({ mysteryField: 987654 }));
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(JSON.stringify(n.error)).not.toContain("987654");
+    expect(JSON.stringify(n.error)).not.toContain("1250000");
+  });
+
+  test("all eight tools still accept the valid fictional scenario", () => {
+    const valid = fictionalScenario();
+    for (const tool of [
+      "retirement_calculate",
+      "retirement_monte_carlo",
+      "retirement_max_spending",
+      "retirement_compare_strategies",
+      "retirement_roth_conversion",
+      "retirement_work_years",
+      "retirement_tax_year",
+    ]) {
+      expect(dispatchTool(tool, valid).ok).toBe(true);
+    }
+    expect(dispatchTool("retirement_describe_capabilities", {}).ok).toBe(
+      true,
+    );
   });
 });
 

@@ -193,7 +193,7 @@ describe("advertised schema == accepting schema", () => {
   });
 });
 
-describe("canonical names land; old names are stripped", () => {
+describe("canonical names land; old names are rejected", () => {
   test("socialSecurityAnnual / expectedRealReturnPct / state land with user provenance", () => {
     const n = normalizeInputs(
       fictionalScenario({
@@ -239,7 +239,11 @@ describe("canonical names land; old names are stripped", () => {
     });
   });
 
-  test("old advertised names are stripped, not honored", () => {
+  test("old advertised names are rejected, not honored", () => {
+    // The strict schema rejects unrecognized fields outright — the
+    // old advertised names are no longer silently stripped (that
+    // stripping is the SHOULD-1 defect: a caller under the old name
+    // priced a plan with no Social Security and the default return).
     const raw = {
       pretax: 1250000,
       taxable: 2100000,
@@ -256,14 +260,16 @@ describe("canonical names land; old names are stripped", () => {
       expectedReturnPct: 9,
     };
     const n = normalizeInputs(raw);
-    expect(n.ok).toBe(true);
-    if (!n.ok) throw new Error("fixture failed");
-    // No Social Security was modeled (the old name was dropped).
-    expect(n.scenario.ssPrimaryAnnual).toBe(0);
-    expect(n.scenario.ssPrimaryStartAge).toBeNull();
-    // The return fell back to the blended default at 95% stocks (6.75),
-    // not the 9 the caller wrote under the old name.
-    expect(n.scenario.expectedReturnPct).toBe(6.75);
+    expect(n.ok).toBe(false);
+    if (n.ok) throw new Error("old names should not normalize");
+    expect(n.error.error.code).toBe("invalid_input");
+    for (const old of [
+      "ssPrimaryAnnual",
+      "ssPrimaryStartAge",
+      "expectedReturnPct",
+    ]) {
+      expect(n.error.error.message).toContain(old);
+    }
   });
 
   test("taxYear 2027 is invalid_input, not a silent clamp", () => {
