@@ -5104,15 +5104,19 @@ export function RothConversion({
     fieldId?: string;
     section?: RothSectionId;
     fieldLabel?: string;
+    /* Number clauses (retire age, spending, Social Security) stay
+       in the header line; strategy/scenario clauses move into the
+       Tax Plan ⓘ tooltip. */
+    shortSummary?: boolean;
   };
   const plainSummaryClauses = ((): SummaryClause[] => {
     const parts: SummaryClause[] = [];
     const retire = parseIntField(retirementAge);
     if (retire != null)
-      parts.push({ text: `Retire at ${retire}`, fieldId: "roth-Retirement-age", section: "household", fieldLabel: "Retirement age" });
+      parts.push({ text: `Retire at ${retire}`, fieldId: "roth-Retirement-age", section: "household", fieldLabel: "Retirement age", shortSummary: true });
     const spendD = parseDollars(spending);
     if (spendD != null)
-      parts.push({ text: `spend ${fmtDollars(spendD)}/yr`, fieldId: "roth-Annual-spending", section: "household", fieldLabel: "Annual spending" });
+      parts.push({ text: `spend ${fmtDollars(spendD)}/yr`, fieldId: "roth-Annual-spending", section: "household", fieldLabel: "Annual spending", shortSummary: true });
     parts.push({
       text: `draw ${drawOrderLabel(drawOrderFromKey(drawOrder)).toLowerCase()} first`,
       fieldId: "roth-draworder",
@@ -5139,20 +5143,20 @@ export function RothConversion({
       fieldLabel: "Pay conversion tax from",
     });
     if (ssPrimaryNoBenefit && ssSpouseNoBenefit) {
-      parts.push({ text: "no Social Security benefit", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
+      parts.push({ text: "no Social Security benefit", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age", shortSummary: true });
     } else if (ssPrimaryNoBenefit) {
       const a = parseIntField(ssSAge);
-      parts.push({ text: a != null ? `spouse Social Security at ${a}` : "Social Security not set", fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age" });
+      parts.push({ text: a != null ? `spouse Social Security at ${a}` : "Social Security not set", fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age", shortSummary: true });
     } else if (ssSpouseNoBenefit) {
       const a = parseIntField(ssPAge);
-      parts.push({ text: a != null ? `Social Security at ${a}` : "Social Security not set", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
+      parts.push({ text: a != null ? `Social Security at ${a}` : "Social Security not set", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age", shortSummary: true });
     } else {
       const aP = parseIntField(ssPAge);
       const aS = parseIntField(ssSAge);
       if (aP != null && aS != null && aP !== aS)
-        parts.push({ text: `Social Security at ${aP} and ${aS}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
-      else if (aP != null) parts.push({ text: `Social Security at ${aP}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
-      else if (aS != null) parts.push({ text: `spouse Social Security at ${aS}`, fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age" });
+        parts.push({ text: `Social Security at ${aP} and ${aS}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age", shortSummary: true });
+      else if (aP != null) parts.push({ text: `Social Security at ${aP}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age", shortSummary: true });
+      else if (aS != null) parts.push({ text: `spouse Social Security at ${aS}`, fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age", shortSummary: true });
     }
     if (survivorOn) {
       parts.push({
@@ -5161,6 +5165,21 @@ export function RothConversion({
     }
     return parts;
   })();
+
+  /* The header line carries only the numbers — the retire age,
+     the yearly spending, and the Social Security start age(s).
+     The strategy clauses (draw order, fill ceiling, pay-tax-from)
+     and the survivor note move into the Tax Plan ⓘ tooltip
+     instead, so the header stays one short line and the strategy
+     is one tap away. The split is by construction: every clause
+     is either a number (shortSummary) or strategy/scenario,
+     never both — the tooltip text below joins the non-number
+     clauses in the same order they read in the old line. */
+  const shortSummaryClauses = plainSummaryClauses.filter((c) => c.shortSummary);
+  const tooltipStrategyText = plainSummaryClauses
+    .filter((c) => !c.shortSummary)
+    .map((c) => c.text)
+    .join(" · ");
 
 
   /* -------- The saved plan as a pricing payload (plan face) --------
@@ -7148,6 +7167,132 @@ export function RothConversion({
     );
   }
 
+  /* "Your plan" at a glance (merge build): the header summary
+     line and the saved-status row are built ONCE here so the plan
+     face can carry them inside the Plan total card while the
+     change/settings faces keep them where they always were — the
+     status row is the only "Back to saved" revert in the view,
+     and edits happen on those faces, so removing it there would
+     strand the revert. The summary renders the short number
+     clauses only; the strategy clauses live in the Tax Plan ⓘ
+     tooltip. The status row renders only while something needs
+     it — a field changed from the saved plan, or a what-if
+     answer on screen — which is exactly the condition that
+     enables "Back to saved"; when every field matches and no
+     what-if is showing, the row is hidden entirely. Inside the
+     row nothing changed: the revert action, the mismatch text,
+     and the save note behave exactly as before. */
+  const summaryLine =
+    shortSummaryClauses.length > 0 ? (
+      <p
+        aria-label="Plan summary in plain English"
+        className="mt-3 max-w-3xl text-base leading-relaxed font-medium text-[var(--text)]"
+      >
+        {shortSummaryClauses.map((c, i) => (
+          <Fragment key={i}>
+            {i > 0 && " · "}
+            {c.fieldId ? (
+              <button
+                type="button"
+                aria-label={`Go to the ${c.fieldLabel ?? c.text} field`}
+                className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                onClick={() => jumpToField(c.fieldId!, c.section)}
+              >
+                {c.text}
+              </button>
+            ) : (
+              c.text
+            )}
+          </Fragment>
+        ))}
+      </p>
+    ) : null;
+  const showSavedStatusRow = changedCount > 0 || whatIfResult != null;
+  const savedStatusRow = showSavedStatusRow ? (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      {!confirmBackToSaved ? (
+        <>
+          <button
+            type="button"
+            aria-label="Back to saved"
+            className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
+            disabled={changedCount === 0 && whatIfResult == null}
+            onClick={() => {
+              if (changedCount > 0) {
+                // Build v149: hold the re-armed autosave
+                // while the discard confirm is open — the
+                // edit must not land before the user decides.
+                // Confirming drops the pending save in
+                // backToSaved; cancelling re-arms it.
+                cancelPendingSaveTimer();
+                setConfirmBackToSaved(true);
+              } else if (whatIfResult != null) {
+                // No field has drifted, but a what-if answer
+                // is on screen: Back to saved clears it and
+                // returns the face to the saved plan only.
+                // The answer was never saved, so no
+                // confirmation is needed to drop it.
+                clearWhatIf();
+              }
+            }}
+          >
+            Back to saved
+          </button>
+          <span className="text-xs text-[var(--dim)]" aria-live="polite">
+            {changedCount === 0
+              ? whatIfResult != null
+                ? "Every field matches the saved plan. A what-if answer is showing — Back to saved clears it."
+                : "Every field matches the saved plan."
+              : `${changedCount} field${changedCount === 1 ? "" : "s"} changed from the saved plan — marked “Changed” below.`}
+          </span>
+          {/* Build v149 — the autosave's status, visible
+              on every face beside the changed-fields line:
+              "Saving…" while an edit is queued or in flight,
+              "Saved" once it lands, and a plain failure note
+              when it does not. Before v149 nothing here said
+              whether a typed value had actually been saved. */}
+          {planSaveNote && (
+            <span className="text-xs font-medium text-[var(--text)]" aria-live="polite">
+              {planSaveNote}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <span className="text-sm text-[var(--bad)]">
+            Go back to the saved plan? The {changedCount} changed field
+            {changedCount === 1 ? "" : "s"} will return to the saved values —
+            nothing is written.
+          </span>
+          <button
+            type="button"
+            aria-label="Back to saved"
+            className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
+            onClick={() => {
+              backToSaved();
+              clearWhatIf();
+            }}
+          >
+            Back to saved
+          </button>
+          <button
+            type="button"
+            aria-label="Cancel back to saved"
+            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
+            onClick={() => {
+              setConfirmBackToSaved(false);
+              // Build v149: the discard was called off —
+              // re-arm the save held while the confirm was open.
+              rearmPendingSave();
+            }}
+          >
+            Cancel
+          </button>
+        </>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div
       // Build v131 — settled-value gate: focus tracking for
@@ -7234,7 +7379,7 @@ export function RothConversion({
         Tax Plan
         <InfoNote
           ariaLabel="About the Tax Plan view"
-          text="Plans year-by-year Roth conversions in the lower-income years after retirement, before RMDs begin. Every year is priced with the real rules — RMDs first, then the conversion, Social Security by the provisional-income formula, IRMAA on the two-year lookback, and the ACA credit while anyone is on the marketplace."
+          text={`Plans year-by-year Roth conversions in the lower-income years after retirement, before RMDs begin. Every year is priced with the real rules — RMDs first, then the conversion, Social Security by the provisional-income formula, IRMAA on the two-year lookback, and the ACA credit while anyone is on the marketplace. The strategy: ${tooltipStrategyText}.`}
         />
       </h1>
 
@@ -7310,115 +7455,9 @@ export function RothConversion({
       </div>
       </div>
 
-      {init && (
-        <p
-          aria-label="Plan summary in plain English"
-          className="mt-3 max-w-3xl text-base leading-relaxed font-medium text-[var(--text)]"
-        >
-          {plainSummaryClauses.map((c, i) => (
-            <Fragment key={i}>
-              {i > 0 && " · "}
-              {c.fieldId ? (
-                <button
-                  type="button"
-                  aria-label={`Go to the ${c.fieldLabel ?? c.text} field`}
-                  className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                  onClick={() => jumpToField(c.fieldId!, c.section)}
-                >
-                  {c.text}
-                </button>
-              ) : (
-                c.text
-              )}
-            </Fragment>
-          ))}
-        </p>
-      )}
+      {init && face !== "plan" && summaryLine}
 
-      {init && (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          {!confirmBackToSaved ? (
-            <>
-              <button
-                type="button"
-                aria-label="Back to saved"
-                className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
-                disabled={changedCount === 0 && whatIfResult == null}
-                onClick={() => {
-                  if (changedCount > 0) {
-                    // Build v149: hold the re-armed autosave
-                    // while the discard confirm is open — the
-                    // edit must not land before the user decides.
-                    // Confirming drops the pending save in
-                    // backToSaved; cancelling re-arms it.
-                    cancelPendingSaveTimer();
-                    setConfirmBackToSaved(true);
-                  } else if (whatIfResult != null) {
-                    // No field has drifted, but a what-if answer
-                    // is on screen: Back to saved clears it and
-                    // returns the face to the saved plan only.
-                    // The answer was never saved, so no
-                    // confirmation is needed to drop it.
-                    clearWhatIf();
-                  }
-                }}
-              >
-                Back to saved
-              </button>
-              <span className="text-xs text-[var(--dim)]" aria-live="polite">
-                {changedCount === 0
-                  ? whatIfResult != null
-                    ? "Every field matches the saved plan. A what-if answer is showing — Back to saved clears it."
-                    : "Every field matches the saved plan."
-                  : `${changedCount} field${changedCount === 1 ? "" : "s"} changed from the saved plan — marked “Changed” below.`}
-              </span>
-              {/* Build v149 — the autosave's status, visible
-                  on every face beside the changed-fields line:
-                  "Saving…" while an edit is queued or in flight,
-                  "Saved" once it lands, and a plain failure note
-                  when it does not. Before v149 nothing here said
-                  whether a typed value had actually been saved. */}
-              {planSaveNote && (
-                <span className="text-xs font-medium text-[var(--text)]" aria-live="polite">
-                  {planSaveNote}
-                </span>
-              )}
-            </>
-          ) : (
-            <>
-              <span className="text-sm text-[var(--bad)]">
-                Go back to the saved plan? The {changedCount} changed field
-                {changedCount === 1 ? "" : "s"} will return to the saved values —
-                nothing is written.
-              </span>
-              <button
-                type="button"
-                aria-label="Back to saved"
-                className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
-                onClick={() => {
-                  backToSaved();
-                  clearWhatIf();
-                }}
-              >
-                Back to saved
-              </button>
-              <button
-                type="button"
-                aria-label="Cancel back to saved"
-                className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
-                onClick={() => {
-                  setConfirmBackToSaved(false);
-                  // Build v149: the discard was called off —
-                  // re-arm the save held while the confirm was open.
-                  rearmPendingSave();
-                }}
-              >
-                Cancel
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      {init && face !== "plan" && savedStatusRow}
 
       {init && face === "settings" && (
         <section
@@ -8895,7 +8934,12 @@ export function RothConversion({
           home, through the same jump-and-highlight the plain
           summary's provenance taps use, so the exclusion can be
           edited from there. Display only — it reads the same
-          effective inputs pricing uses and writes nothing. */}
+          effective inputs pricing uses and writes nothing. The
+          section is also the plan-at-a-glance card (merge build):
+          the shortened summary line and the saved-status row sit
+          inside it, under the figure, instead of loose above the
+          tabs — on the other faces they still render in their old
+          spot, since the card only exists here. */}
       {face === "plan" && planTotalCents != null && (
         <section className={sectionCls} aria-label="Plan total">
           <button
@@ -8918,6 +8962,8 @@ export function RothConversion({
               Edit the exclusion in Your money
             </span>
           </button>
+          {init && summaryLine}
+          {init && savedStatusRow}
         </section>
       )}
 
