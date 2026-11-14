@@ -5349,6 +5349,12 @@ export function App() {
     oneOffsCount: number;
     withNav: boolean;
     ytd?: Dash["ytd"];
+    // Bare: render the tiles without their own card border, for
+    // Month mode where the tiles sit inside the combined
+    // tiles+chart card — the outer card supplies the border and
+    // the tiles grid runs edge to edge, as it did in its own
+    // card. Year-mode panels omit it and keep their own card.
+    bare?: boolean;
   }) {
     const key = (name: string) => `${opts.idPrefix}-${name}`;
     /* In Month mode (withNav) every tile's figure taps through to
@@ -5377,7 +5383,13 @@ export function App() {
             tiles were removed 2026-11-09: both figures still show
             in their sections below — the smoothed spend breakdown
             and the Monthly bills header.) */}
-        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+        <div
+          className={
+            opts.bare
+              ? undefined
+              : "rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
+          }
+        >
           <div className="grid grid-cols-2 sm:grid-cols-4">
             <QuickTile
               className="border-r border-b border-[var(--border)] sm:border-b-0"
@@ -5974,27 +5986,31 @@ export function App() {
                     : `${yv.year} — Cash out ${fmt(yv.totals.cashOutCents)} · True cost ${fmt(yv.totals.trueCostCents)}`}
                 </p>
               )}
+              {/* Combined tiles+chart card — one card: the month's
+                  tiles on top, the True cost vs Cash out chart
+                  below, separated by a divider. The chart's
+                  "True cost vs Cash out" heading stays as the
+                  chart's subheading inside the combined card. */}
               {!inYearMode && (
-                <>
-                  <div className="mt-2.5">
-                    {renderMonthTiles({
-                      idPrefix: "month",
-                      periodCaption: "This month",
-                      trueCostCents: data.smoothedCents,
-                      cashOutCents: data.cashOutCents,
-                      totalMonthlyCents: data.monthlyBillsTotalCents,
-                      everythingElseCents:
-                        data.cashOutCents -
-                        data.monthlyBillsTotalCents -
-                        data.yearlyPaidOutCents,
-                      keepLightsOnCents: data.keepLightsOnTotalCents,
-                      yearlyPaidOutCents: data.yearlyPaidOutCents,
-                      oneOffsTotalCents: data.oneOffsTotalCents,
-                      oneOffsCount: data.oneOffs.length,
-                      withNav: true,
-                      ytd: data.ytd,
-                    })}
-                  </div>
+                <div className="mt-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+                  {renderMonthTiles({
+                    idPrefix: "month",
+                    periodCaption: "This month",
+                    trueCostCents: data.smoothedCents,
+                    cashOutCents: data.cashOutCents,
+                    totalMonthlyCents: data.monthlyBillsTotalCents,
+                    everythingElseCents:
+                      data.cashOutCents -
+                      data.monthlyBillsTotalCents -
+                      data.yearlyPaidOutCents,
+                    keepLightsOnCents: data.keepLightsOnTotalCents,
+                    yearlyPaidOutCents: data.yearlyPaidOutCents,
+                    oneOffsTotalCents: data.oneOffsTotalCents,
+                    oneOffsCount: data.oneOffs.length,
+                    withNav: true,
+                    ytd: data.ytd,
+                    bare: true,
+                  })}
                   {/* True cost vs Cash out bars: the server-published
                       trailingMonths — the trailing window's own months,
                       the exact months the averages line averages — so
@@ -6011,27 +6027,36 @@ export function App() {
                       have entered figures, each with its own dashboard
                       figures; the line, tiles and everything else stay
                       on the viewed month. The averages line itself
-                      renders inside the chart card, under its
+                      renders inside the chart block, under its
                       subheading (see averageLine on
                       SpendingTrueCostChart). */}
-                  <SpendingTrueCostChart
-                    months={data.trailingMonths}
-                    aheadMonths={data.enteredAheadMonths}
-                    onTargetTap={flashSpendingTargetField}
-                    onRecordedMonthsTap={() =>
-                      scrollToSection("section-cash-out")
-                    }
-                    targetMonthlyCents={spendingTargetMonthlyCents}
-                    averageMonthlyCents={
-                      showAvgStrip ? data.avgSmoothedCents : null
-                    }
-                    averageLine={
-                      showAvgStrip
-                        ? `Average month · ${avgWindowLabel} — True cost ${fmt(data.avgSmoothedCents)} · Cash out ${fmt(data.avgCashOutCents)}`
-                        : null
-                    }
-                  />
-                </>
+                  {/* chart — inside the combined card now, so this is a
+                      divider-separated block, not its own card. The
+                      divider carries the chart card's former padding
+                      (px/pb) because the combined card is unpadded —
+                      the tiles grid runs edge to edge, as it did in
+                      its own card. */}
+                  <div className="mt-5 border-t border-[var(--border)] px-4 pt-5 pb-4 sm:px-5 sm:pb-5">
+                    <SpendingTrueCostChart
+                      months={data.trailingMonths}
+                      aheadMonths={data.enteredAheadMonths}
+                      onTargetTap={flashSpendingTargetField}
+                      onRecordedMonthsTap={() =>
+                        scrollToSection("section-cash-out")
+                      }
+                      targetMonthlyCents={spendingTargetMonthlyCents}
+                      averageMonthlyCents={
+                        showAvgStrip ? data.avgSmoothedCents : null
+                      }
+                      averageLine={
+                        showAvgStrip
+                          ? `Average month · ${avgWindowLabel} — True cost ${fmt(data.avgSmoothedCents)} · Cash out ${fmt(data.avgCashOutCents)}`
+                          : null
+                      }
+                      bare
+                    />
+                  </div>
+                </div>
               )}
               {inYearMode && yv && !yv.hasAnyData && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
@@ -6118,6 +6143,7 @@ export function App() {
 
             {!inYearMode && (
               <>
+
             {/* hero: smoothed spend + formula */}
             <section id="section-true-cost" aria-label="True cost" className={`mt-4 scroll-mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6${highlightCls("section-true-cost")}`}>
               <div className="flex items-start justify-between gap-3">
