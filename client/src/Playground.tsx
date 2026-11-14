@@ -6155,24 +6155,22 @@ export function Playground({
               type="button"
               aria-expanded={pgGroupOpen.single}
               aria-label="Single-year dials group"
-              className="flex w-full items-start justify-between gap-3 pr-1 text-left"
+              className="w-full text-left"
               onClick={() => togglePgGroup("single")}
             >
-              <span>
-                <span className="flex items-center">
-                  <span className="text-base font-semibold">
-                    Single-year dials
-                  </span>
-                  <InfoNote
-                    text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
-                    ariaLabel="About the single-year dials"
-                  />
+              <span className="flex items-center gap-2">
+                <span className="text-base font-semibold">
+                  Single-year dials
                 </span>
-                <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
-                  {pgSingleGroupSummary}
-                </span>
+                <InfoNote
+                  text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
+                  ariaLabel="About the single-year dials"
+                />
+                <FoldChevron open={!!pgGroupOpen.single} />
               </span>
-              <FoldChevron open={!!pgGroupOpen.single} className="mt-0.5" />
+              <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
+                {pgSingleGroupSummary}
+              </span>
             </button>
           </h3>
         {pgGroupOpen.single && (
