@@ -16,6 +16,22 @@
 > `Authorization: Bearer <token>` — **no public endpoint is live yet;
 > deployment is the reader's step** (see "Remote MCP deployment").
 
+## Two ways to use this
+
+**Method A: Remote MCP** — connect to a hosted server (local or
+remote) over Streamable HTTP, as above. The server is the feature
+this README documents in full.
+
+**Method B: Standalone JavaScript** — no server, no hosting, no
+install. A single file, `dist/finance-planner-cli.mjs`, runs the
+same eight tools under plain Node.js 20+:
+`node finance-planner-cli.mjs retirement_calculate input.json`.
+Get it from the GitHub Releases page (with its `.sha256` checksum)
+or build it with `bun run build:standalone`. Full reference:
+[STANDALONE.md](STANDALONE.md); the AI-facing guide:
+[AI_USAGE.md](AI_USAGE.md). Both methods call the same engines and
+return the same envelopes.
+
 ## The 9 tools (one line each)
 
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
@@ -162,6 +178,12 @@ bun src/cli.ts retirement_calculate input.json
 bun src/cli.ts retirement_calculate --stdin < input.json
 bun src/cli.ts serve --port 8080             # start the MCP server
 ```
+
+Standalone version of the same CLI (no Bun needed at runtime):
+`node dist/finance-planner-cli.mjs <tool> input.json` — see
+[STANDALONE.md](STANDALONE.md). It behaves like the bun CLI above,
+except `serve` is a usage error (the bundle starts no server) and
+`retirement_describe_capabilities` also runs bare, with no input.
 
 Exit codes: `0` = `ok:true` envelope, `2` = `ok:false` envelope
 (still printed), `1` = usage error. `serve` on a non-loopback host
@@ -597,6 +619,7 @@ same commands work when the tests are placed):
 
 ```sh
 bun test tests/                    # whole suite (~5–7 min quiet, mostly the work-years + optimizer legs)
+bun test tests/standalone.test.ts # standalone bundle (build, parity, isolation, clean env)
 bun test tests/input.test.ts       # input correctness
 bun test tests/isolation.test.ts   # sample isolation (highest priority)
 bun test tests/parity.test.ts      # engine parity (includes the ~95s work-years leg)
@@ -1171,8 +1194,17 @@ assistant-api/
     schema.ts    zod input schema (the accepting schema)
     types.ts     envelope / assumption / error types + versions
     cli.ts       local CLI + `serve`
+    standalone-cli.ts   Node-only entry point for the standalone bundle
+  scripts/
+    build-standalone.mjs   builds dist/finance-planner-cli.mjs
+  STANDALONE.md   standalone bundle reference
+  AI_USAGE.md     AI-facing guide for the standalone bundle
+  dist/
+    finance-planner-cli.mjs       the generated bundle (committed)
+    finance-planner-cli.mjs.sha256   its checksum
   tests/
     helpers.ts            shared fictional household + envelope helpers
+    standalone.test.ts    standalone bundle tests
     input.test.ts         input correctness
     isolation.test.ts     sample isolation (structural + behavioral)
     parity.test.ts        engine parity (incl. the slow work-years leg)

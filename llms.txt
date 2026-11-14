@@ -19,6 +19,26 @@ Pricing uses the 2026 tax-law tables unless `taxYear` says 2025; a year past the
 - Full guide: `assistant-api/README.md`
 - Client config: `assistant-api/mcp.json` (copy the `mcpServers` block)
 - Registry metadata (not published): `assistant-api/server.json`
+- Standalone bundle: `assistant-api/dist/finance-planner-cli.mjs`
+  (see below)
+
+## Standalone bundle (no MCP, no hosting)
+
+A single-file Node.js calculator — the same 8 tools, the same
+engines, no server, no install, no Bun at runtime, no network.
+Needs only Node.js 20+.
+
+- Get it: the GitHub Releases page (`finance-planner-cli.mjs` +
+  `finance-planner-cli.mjs.sha256` artifacts), or the committed copy
+  at `assistant-api/dist/finance-planner-cli.mjs`, or build it with
+  `cd assistant-api && bun run build:standalone`.
+- Verify it: `sha256sum -c finance-planner-cli.mjs.sha256`.
+- First command: `node finance-planner-cli.mjs retirement_describe_capabilities`
+  (no input needed — it returns the guide to all 8 tools).
+- Then: `node finance-planner-cli.mjs retirement_calculate input.json`.
+- AI guide: `assistant-api/AI_USAGE.md` (read this first — the
+  complete-inputs rule and the don't-invent-results rule).
+  Reference: `assistant-api/STANDALONE.md`.
 
 ## The 9 tools (one line each)
 

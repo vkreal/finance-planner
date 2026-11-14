@@ -794,6 +794,7 @@ const CAPABILITY_LIMITATIONS: string[] = [
   "Success rates are 0–1 fractions at whole-run precision, never rounded to 2dp: with N runs the finest step is 1/N (931 successes out of 1,000 read 0.931, not 0.93; 99.9% reads 0.999, not 1.0). successfulRuns / historicalSuccessfulRuns are the whole-run counts behind the rates, derived from the engine rate × run count.",
   "Max spending is conditional on the seed, 1,000 simulations, the model assumptions, and the engine's $100 search increment, and is a portfolio-only (no-tax) simulation result. Only the percent strategy's cap is flaggable: cappedAtPercentBound (Monte Carlo leg) and historicalCappedAtPercentBound (historical leg) are true when the respective leg hits the engine's 30%/yr bound. For constant, phased and guardrails the engine's internal search cap has no adapter-visible flag, so a maximum that is really the cap is not flagged.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
+  "Standalone bundle: the same eight tools ship as a single finance-planner-cli.mjs file that runs under plain Node.js 20+ with no server, no install, and no network — see assistant-api/STANDALONE.md.",
 ];
 
 // Machine-readable self-orientation guide for AI clients: one entry per
@@ -912,11 +913,13 @@ const ASSUMPTIONS_SUMMARY: string[] = [
   "Pricing uses the latest published tax-law tables (the engine block names the year); earlier law years are available via taxYear.",
 ];
 
-const QUICK_START: { local: string; remote: string } = {
+const QUICK_START: { local: string; remote: string; standalone: string } = {
   local:
     "Local (zero-config): run `bun src/server.ts` from the assistant-api directory — it listens on http://127.0.0.1:8080 with no token needed on localhost. Then POST a JSON-RPC request to http://127.0.0.1:8080/mcp, or call retirement_describe_capabilities first to see all tools.",
   remote:
     "Remote: from the repo root run `assistant-api/deploy.sh` with ASSISTANT_API_TOKEN set — it builds the Docker image and runs it on 0.0.0.0:8080. Then POST to https://<host>/mcp with header `Authorization: Bearer <token>`.",
+  standalone:
+    "Standalone (no server, no install): run `node finance-planner-cli.mjs <tool> input.json` with Node.js 20+ — a single self-contained file, no MCP connection or hosting needed. Get it from the GitHub Releases page or build it with `bun run build:standalone`; see assistant-api/STANDALONE.md and assistant-api/AI_USAGE.md.",
 };
 
 function describeCapabilities(): AdapterResult<unknown> {
