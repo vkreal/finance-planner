@@ -6649,6 +6649,14 @@ export function RothConversion({
     snap?.cashCents == null
       ? null
       : Math.max(0, snap.cashCents - bucketSetAsideCents);
+  // Display-only split of the Cash bucket for the stacked
+  // bar: the set-aside slice is the entered cash set aside
+  // capped at the Cash bucket, so the slice and free cash
+  // foot to the Cash bucket total.
+  const bucketSetAsideSliceCents =
+    snap?.cashCents == null
+      ? null
+      : Math.min(bucketSetAsideCents, snap.cashCents);
   const bucketSpendingCents = parseMoney(spending);
   const bucketTargetCents =
     bucketSpendingCents == null ? null : 2 * bucketSpendingCents;
@@ -6667,7 +6675,10 @@ export function RothConversion({
   // lens by horizon, not a partition — the Cash bucket sits
   // inside the taxable pool — so the bar partitions the
   // money DE-DUPLICATED: Bucket 1 is the Cash bucket itself,
-  // Bucket 2 is the taxable pool after the exclusion LESS
+  // rendered as two adjacent slices — free cash in the
+  // accent shade and the set-aside slice in the warn-deep
+  // shade — that foot to the Cash bucket total; Bucket 2
+  // is the taxable pool after the exclusion LESS
   // the cash already shown in Bucket 1 (floored at $0 for
   // rendering, in case the exclusion eats into the cash
   // portion) plus the combined pre-tax pool, and Bucket 3 is
@@ -8952,37 +8963,62 @@ export function RothConversion({
                   collapsed — only the text readout folds
                   away. One horizontal bar, segments
                   sized by dollars over the de-duplicated
-                  total computed above. Bucket 2 is two
-                  adjacent sub-segments (taxable remainder,
-                  pre-tax) so each taps to its own field,
-                  reading as one Bucket 2 segment. The
-                  Bucket 1 shortfall is an outlined,
-                  hatched extension — not a filled segment
-                  and not part of the total — spanning from
-                  the free-cash position to the two-year
-                  target position on the bar's scale; it is
+                  total computed above. Bucket 1 is two
+                  adjacent slices — free cash (accent) and
+                  the amount set aside (warn-deep) — that
+                  foot to the Cash bucket total; both tap
+                  to the Cash set aside field, and each
+                  renders only while its amount is above
+                  zero. Bucket 2 is two adjacent
+                  sub-segments (taxable remainder, pre-tax)
+                  so each taps to its own field, reading as
+                  one Bucket 2 segment. The Bucket 1
+                  shortfall is an outlined, hatched
+                  extension — not a filled segment and not
+                  part of the total — spanning from the
+                  free-cash position (now the boundary
+                  between the two Bucket 1 slices) to the
+                  two-year target position on the bar's
+                  scale; it is
                   drawn only while free cash is below the
                   target, and moves live with the Cash set
                   aside field and the Annual spending dial. */}
               <div className="relative">
                 <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
-                  <button
-                    type="button"
-                    aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
-                    className="h-full shrink-0 bg-[var(--accent)] text-left"
-                    style={{
-                      width: `${((snap.cashCents ?? 0) / bucketBarTotalCents) * 100}%`,
-                    }}
-                    onClick={() =>
-                      jumpToField("roth-Cash-set-aside", "money")
-                    }
-                  >
-                    {(snap.cashCents ?? 0) / bucketBarTotalCents >= 0.3 && (
-                      <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
-                        Bucket 1 · {fmtCentsExact(snap.cashCents ?? 0)}
-                      </span>
-                    )}
-                  </button>
+                  {(bucketFreeCashCents ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      aria-label={`Bucket 1 free cash ${fmtCentsExact(bucketFreeCashCents ?? 0)} — go to the Cash set aside field in Your money`}
+                      className="h-full shrink-0 bg-[var(--accent)] text-left"
+                      style={{
+                        width: `${((bucketFreeCashCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                      }}
+                      onClick={() =>
+                        jumpToField("roth-Cash-set-aside", "money")
+                      }
+                    >
+                      {(bucketFreeCashCents ?? 0) / bucketBarTotalCents >=
+                        0.3 && (
+                        <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
+                          Bucket 1 ·{" "}
+                          {fmtCentsExact(bucketFreeCashCents ?? 0)}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  {(bucketSetAsideSliceCents ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      aria-label={`Set aside ${fmtCentsExact(bucketSetAsideSliceCents ?? 0)} — go to the Cash set aside field in Your money`}
+                      className="h-full shrink-0 bg-[var(--warn-deep)] text-left"
+                      style={{
+                        width: `${((bucketSetAsideSliceCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                      }}
+                      onClick={() =>
+                        jumpToField("roth-Cash-set-aside", "money")
+                      }
+                    />
+                  )}
                   <button
                     type="button"
                     aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
@@ -9064,7 +9100,7 @@ export function RothConversion({
               <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
                 <button
                   type="button"
-                  aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
+                  aria-label={`Bucket 1 free cash ${fmtCentsExact(bucketFreeCashCents ?? 0)} — go to the Cash set aside field in Your money`}
                   className="flex items-baseline gap-1.5 text-left"
                   onClick={() =>
                     jumpToField("roth-Cash-set-aside", "money")
@@ -9075,12 +9111,31 @@ export function RothConversion({
                     className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--accent)]"
                   />
                   <span className="text-[var(--dim)]">
-                    Bucket 1 · Cash
+                    Bucket 1 · Free cash
                   </span>
                   <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
-                    {fmtCentsExact(snap.cashCents ?? 0)}
+                    {fmtCentsExact(bucketFreeCashCents ?? 0)}
                   </span>
                 </button>
+                {(bucketSetAsideSliceCents ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    aria-label={`Set aside ${fmtCentsExact(bucketSetAsideSliceCents ?? 0)} — go to the Cash set aside field in Your money`}
+                    className="flex items-baseline gap-1.5 text-left"
+                    onClick={() =>
+                      jumpToField("roth-Cash-set-aside", "money")
+                    }
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--warn-deep)]"
+                    />
+                    <span className="text-[var(--dim)]">Set aside</span>
+                    <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
+                      {fmtCentsExact(bucketSetAsideSliceCents ?? 0)}
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
