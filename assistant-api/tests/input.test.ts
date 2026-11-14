@@ -282,6 +282,46 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(JSON.stringify(n.error)).not.toContain("1250000");
   });
 
+  test("each rejected key gets its own message naming just that key", () => {
+    const n = normalizeInputs(
+      fictionalScenario({ mysteryFieldA: 1, mysteryFieldB: 2 }),
+    );
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    // The envelope types details as unknown; the mapping above
+    // always produces { field, message } entries.
+    const details = n.error.error.details as {
+      field: string;
+      message: string;
+    }[];
+    expect(details.map((d) => d.field).sort()).toEqual([
+      "mysteryFieldA",
+      "mysteryFieldB",
+    ]);
+    for (const d of details) {
+      // The singular form zod already produces for a single key —
+      // never the combined list on every entry.
+      expect(d.message).toBe(`Unrecognized key: "${d.field}"`);
+      for (const other of details) {
+        if (other.field !== d.field) {
+          expect(d.message).not.toContain(other.field);
+        }
+      }
+    }
+    // The top-level message still lists every rejected key.
+    expect(n.error.error.message).toContain("mysteryFieldA");
+    expect(n.error.error.message).toContain("mysteryFieldB");
+  });
+
+  test("a single rejected key keeps its existing message", () => {
+    const n = normalizeInputs(fictionalScenario({ mysteryField: 1 }));
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.details).toEqual([
+      { field: "mysteryField", message: 'Unrecognized key: "mysteryField"' },
+    ]);
+  });
+
   test("all eight tools still accept the valid fictional scenario", () => {
     const valid = fictionalScenario();
     for (const tool of [
