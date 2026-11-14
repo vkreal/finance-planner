@@ -6702,39 +6702,16 @@ export function Playground({
         {pgSectionCard("spending", "Spending", pgSpendingSummary, (
         <>
         <div className="mt-2 max-w-xs">
-          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="mb-1">
             <label
               className="block text-sm font-medium text-[var(--text)]"
               htmlFor="roth-pg-spending"
             >
               {pgSpendingUnit === "month" ? "Monthly spending" : "Spending per year"}
             </label>
-            <div
-              role="group"
-              aria-label="Spending display period"
-              className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-            >
-              <button
-                type="button"
-                aria-label="Show spending per year"
-                aria-pressed={pgSpendingUnit === "year"}
-                onClick={() => setPgSpendingUnit("year")}
-                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-              >
-                Per year
-              </button>
-              <button
-                type="button"
-                aria-label="Show spending per month"
-                aria-pressed={pgSpendingUnit === "month"}
-                onClick={() => setPgSpendingUnit("month")}
-                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-              >
-                Per month
-              </button>
-            </div>
           </div>
-          <div className="relative">
+          <div className="flex flex-wrap items-center gap-2">
+          <div className="relative shrink-0">
             <span
               aria-hidden="true"
               className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
@@ -6795,6 +6772,31 @@ export function Playground({
               = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
             </p>
           )}
+            <div
+              role="group"
+              aria-label="Spending display period"
+              className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+            >
+              <button
+                type="button"
+                aria-label="Show spending per year"
+                aria-pressed={pgSpendingUnit === "year"}
+                onClick={() => setPgSpendingUnit("year")}
+                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per year
+              </button>
+              <button
+                type="button"
+                aria-label="Show spending per month"
+                aria-pressed={pgSpendingUnit === "month"}
+                onClick={() => setPgSpendingUnit("month")}
+                className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per month
+              </button>
+            </div>
+          </div>
           <p className="mt-1 text-xs text-[var(--dim)]">
             The Tax Plan&rsquo;s annual spending — editing here changes the saved plan, like editing it in the Tax Plan or Retirement. It only sets the &ldquo;Left after a year&rsquo;s spending&rdquo; comparison below; it never changes the tax.
           </p>

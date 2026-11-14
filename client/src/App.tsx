@@ -5586,38 +5586,15 @@ export function App() {
                       text="The Tax Plan’s annual spending — editing here changes the saved plan, like editing it in the Tax Plan, Retirement, or Playground."
                     />
                   </span>
-                  <div
-                    role="group"
-                    aria-label="Spending display period"
-                    className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-                  >
-                    <button
-                      type="button"
-                      aria-label="Show spending per year"
-                      aria-pressed={spendingTargetUnit === "year"}
-                      onClick={() => setSpendingTargetUnit("year")}
-                      className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                    >
-                      Per year
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Show spending per month"
-                      aria-pressed={spendingTargetUnit === "month"}
-                      onClick={() => setSpendingTargetUnit("month")}
-                      className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                    >
-                      Per month
-                    </button>
-                  </div>
                 </div>
-                <div className="relative">
-                  <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
-                  >
-                    $
-                  </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative shrink-0">
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+                    >
+                      $
+                    </span>
                   <input
                     id="spending-target-per-year"
                     aria-label={
@@ -5662,12 +5639,37 @@ export function App() {
                       }
                     }}
                   />
-                </div>
                 {spendingTargetUnit === "month" && (
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     = {fmt(parseDollars(spendingTarget) ?? 0)}/yr
                   </p>
                 )}
+                    </div>
+                    <div
+                      role="group"
+                      aria-label="Spending display period"
+                      className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+                    >
+                      <button
+                        type="button"
+                        aria-label="Show spending per year"
+                        aria-pressed={spendingTargetUnit === "year"}
+                        onClick={() => setSpendingTargetUnit("year")}
+                        className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                      >
+                        Per year
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Show spending per month"
+                        aria-pressed={spendingTargetUnit === "month"}
+                        onClick={() => setSpendingTargetUnit("month")}
+                        className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                      >
+                        Per month
+                      </button>
+                    </div>
+                  </div>
                 {spendingTargetMsg != null && (
                   <p className="mt-1 text-xs text-[var(--bad)]" role="note">
                     {spendingTargetMsg}

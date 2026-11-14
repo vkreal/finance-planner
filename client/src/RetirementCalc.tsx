@@ -4409,38 +4409,16 @@ export function RetirementCalc({
               </div>
             ) : (
               <div className="col-span-2 lg:col-span-1">
-                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <div className="mb-1">
                   <span className="block text-sm font-medium text-[var(--text)]">
                     {spendingUnit === "month" ? "Spending per month ($)" : "Annual spending ($)"}
                   </span>
-                  <div
-                    role="group"
-                    aria-label="Spending display period"
-                    className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-                  >
-                    <button
-                      type="button"
-                      aria-label="Show spending per year"
-                      aria-pressed={spendingUnit === "year"}
-                      onClick={() => handleSpendingUnitChange("year")}
-                      className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                    >
-                      Per year
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Show spending per month"
-                      aria-pressed={spendingUnit === "month"}
-                      onClick={() => handleSpendingUnitChange("month")}
-                      className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                    >
-                      Per month
-                    </button>
-                  </div>
                 </div>
                 <label htmlFor="rc-spending" className="sr-only">
                   {spendingUnit === "month" ? "Spending per month" : "Annual spending"}
                 </label>
+                <div className="flex flex-wrap items-center gap-2">
+                <div className="shrink-0">
                 <input
                   id="rc-spending"
                   type="text"
@@ -4474,11 +4452,37 @@ export function RetirementCalc({
                     }
                   }}
                 />
+                </div>
+                <div
+                  role="group"
+                  aria-label="Spending display period"
+                  className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+                >
+                  <button
+                    type="button"
+                    aria-label="Show spending per year"
+                    aria-pressed={spendingUnit === "year"}
+                    onClick={() => handleSpendingUnitChange("year")}
+                    className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                  >
+                    Per year
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Show spending per month"
+                    aria-pressed={spendingUnit === "month"}
+                    onClick={() => handleSpendingUnitChange("month")}
+                    className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                  >
+                    Per month
+                  </button>
+                </div>
                 {spendingUnit === "month" && (
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     = {fmt(effectiveSpendingCents)}/yr
                   </p>
                 )}
+                </div>
                 <Explainer
                   id="retirement.annualSpending"
                   label="Annual spending"
