@@ -2001,6 +2001,7 @@ function SpendingTrueCostChart({
   averageLine,
   targetMonthlyCents,
   averageMonthlyCents,
+  bare,
 }: {
   months: SpendingMonthRow[];
   aheadMonths: SpendingAheadRow[];
@@ -2040,6 +2041,13 @@ function SpendingTrueCostChart({
   // 2026-10-25 it was a standalone highlighted banner between
   // the tiles and this card: right numbers, wrong place).
   averageLine: string | null;
+  // Bare: render without the card's own border and padding, for
+  // Month mode where the chart sits inside the combined
+  // tiles+chart card below the divider — the divider block
+  // supplies the spacing and the combined card the border. The
+  // section element, its aria-label, and the tap-away ref stay:
+  // only the card chrome goes.
+  bare?: boolean;
 }) {
   const thisMonth = currentMonth();
   const chartData: SpendingChartDatum[] = [
