@@ -5637,7 +5637,7 @@ export function Playground({
       );
     } else {
       parts.push(
-        `Current estimate for ${pgIncomeYearNum} — type your estimate here, or it comes from your plan's yield for that year.`,
+        `Current estimate for ${pgIncomeYearNum} — type your estimate here, or it comes from your filed return (line ${line}) or your plan's yield for that year.`,
       );
     }
     if (extra) parts.push(extra);
@@ -5662,7 +5662,7 @@ export function Playground({
     return (
       base +
       src +
-      ` Where this estimate comes from: type your current estimate in this dial, or use your saved plan's yield for that year.`
+      ` Where this estimate can come from: your most recent filed return (line ${line}), your saved plan's yield for that year, or your own typed estimate. The "My ${pgTaxReturnYear} return as filed" preset loads the return's figures into the return year itself.`
     );
   };
   /* Typing in an income dial marks its provenance "typed"

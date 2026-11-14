@@ -716,21 +716,18 @@ export function RothConversion({
   const [convertedAlready, setConvertedAlready] = useState("");
   // Tax-return actuals (Form 1040 lines 2b / 3a / 3b from the
   // household's most recent return, plus the calendar year of
-  // that return — build v147): plan-record-only fields,
-  // following the execution / gift pattern — they save WITH the
-  // plan record under their own taxReturn* keys (via
-  // buildInputsPayload only) and are read by the Playground's
-  // "Start from my numbers" prefill and by the blank-yield
+  // that return — build v147): this view no longer carries
+  // these fields as form state — it never rendered or edited
+  // them. They live only on the loaded plan record (its
+  // taxReturn block), and buildSavePayload passes that stored
+  // block through unchanged under the payload's taxReturn*
+  // keys, so a save here can never wipe the stored figures.
+  // The record's readers are unchanged: the Playground's
+  // "Start from my numbers" prefill and the blank-yield
   // fallback (contract v136: a blank yield field prices the
   // implied yield these actuals describe — percentages only,
-  // derived where plan inputs are assembled). They never
-  // enter a scenario or a pricing request AS AMOUNTS — the
-  // plan keeps modelling interest and dividends from the
-  // yield fields. Blank = not entered.
-  const [taxReturnInterest, setTaxReturnInterest] = useState("");
-  const [taxReturnQualDiv, setTaxReturnQualDiv] = useState("");
-  const [taxReturnOrdDiv, setTaxReturnOrdDiv] = useState("");
-  const [taxReturnYear, setTaxReturnYear] = useState("");
+  // derived where plan inputs are assembled, reading the
+  // record's block directly).
   const [winStart, setWinStart] = useState("");
   const [winStop, setWinStop] = useState("");
   const [payTaxFrom, setPayTaxFrom] = useState<"taxable" | "conversion">("taxable");
@@ -1895,18 +1892,10 @@ export function RothConversion({
       setGiftKidOtherIncome(gMoney(g.giftKidOtherIncomeCents));
       setGiftSaleAge(gNum(g.giftSaleAge));
     }
-    // Tax-return actuals: the saved Form 1040 lines, blank on
-    // any record written before these fields existed — and the
-    // return year, blank on any record written before v147.
-    {
-      const t = data.taxReturn;
-      const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
-      const tNum = (n: number | null) => (n == null ? "" : String(n));
-      setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
-      setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
-      setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
-      setTaxReturnYear(tNum(t.taxReturnYear));
-    }
+    // Tax-return actuals: this view no longer hydrates them
+    // into form state (it never rendered or edited them) — they
+    // stay on the loaded record, and buildSavePayload passes
+    // the record's stored block through unchanged.
     // Record the seeded defaults for the "Calculated with"
     // diff (see seedDefaultsList above).
     defaultsRef.current = seedDefaultsList(snap);
@@ -1979,15 +1968,9 @@ export function RothConversion({
       setGiftKidOtherIncome(gMoney(g.giftKidOtherIncomeCents));
       setGiftSaleAge(gNum(g.giftSaleAge));
     }
-    {
-      const t = res.taxReturn;
-      const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
-      const tNum = (n: number | null) => (n == null ? "" : String(n));
-      setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
-      setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
-      setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
-      setTaxReturnYear(tNum(t.taxReturnYear));
-    }
+    // Tax-return actuals: not re-hydrated into form state —
+    // this view no longer carries them; the record's stored
+    // block is passed through by buildSavePayload unchanged.
     defaultsRef.current = seedDefaultsList(snap);
     planRevisionRef.current = res.revision;
   };
@@ -2699,7 +2682,11 @@ export function RothConversion({
         return n == null ? null : Math.min(120, Math.max(0, n));
       })(),
       // The tax-return actuals save WITH the plan record too,
-      // under their own taxReturn* keys. Scenarios never carry
+      // under their own taxReturn* keys. This view no longer
+      // carries them as form state (it never rendered or edited
+      // them), so the payload passes the loaded record's stored
+      // block (data?.taxReturn) through unchanged — a save here
+      // can never wipe the stored figures. Scenarios never carry
       // them, and no pricing run ever sees the AMOUNTS — but
       // pricing does reach them through the percentages derived
       // from them: a blank yield field prices the implied yield
@@ -2710,13 +2697,15 @@ export function RothConversion({
       // share derived from them splits the priced dividend
       // yield (contract v138). The other reader is the
       // Playground's "Start from my numbers" prefill. The
-      // year is clamped to a sane range (2000–2100), like the
-      // other year fields in this payload.
-      taxReturnInterestCents: parseMoney(taxReturnInterest),
-      taxReturnQualifiedDividendsCents: parseMoney(taxReturnQualDiv),
-      taxReturnOrdinaryDividendsCents: parseMoney(taxReturnOrdDiv),
+      // stored year is clamped to a sane range (2000–2100),
+      // like the other year fields in this payload.
+      taxReturnInterestCents: data?.taxReturn?.taxReturnInterestCents ?? null,
+      taxReturnQualifiedDividendsCents:
+        data?.taxReturn?.taxReturnQualifiedDividendsCents ?? null,
+      taxReturnOrdinaryDividendsCents:
+        data?.taxReturn?.taxReturnOrdinaryDividendsCents ?? null,
       taxReturnYear: (() => {
-        const n = parseIntField(taxReturnYear);
+        const n = data?.taxReturn?.taxReturnYear ?? null;
         return n == null ? null : Math.min(2100, Math.max(2000, n));
       })(),
     };
@@ -2963,7 +2952,6 @@ export function RothConversion({
     mcVolatility,
     giftAge, giftAmount, giftBasis, giftKidBirthYear, giftKidStudent,
     giftKidOtherIncome, giftSaleAge,
-    taxReturnInterest, taxReturnQualDiv, taxReturnOrdDiv, taxReturnYear,
   ]);
 
   /* ---------------- scenarios ---------------- */
@@ -4995,10 +4983,6 @@ export function RothConversion({
     claimAgeFloor: intChanged(claimAgeFloor, savedResolved?.claimAgeFloor),
     otherOrd: moneyChanged(otherOrd, savedResolved?.otherOrdinaryCents),
     taxExempt: moneyChanged(taxExempt, savedResolved?.taxExemptInterestCents),
-    taxReturnInterest: moneyChanged(taxReturnInterest, data?.taxReturn.taxReturnInterestCents),
-    taxReturnQualDiv: moneyChanged(taxReturnQualDiv, data?.taxReturn.taxReturnQualifiedDividendsCents),
-    taxReturnOrdDiv: moneyChanged(taxReturnOrdDiv, data?.taxReturn.taxReturnOrdinaryDividendsCents),
-    taxReturnYear: intChanged(taxReturnYear, data?.taxReturn.taxReturnYear),
     acaSize: intChanged(acaSize, savedResolved?.acaHouseholdSize),
     acaSteps: acaStepsChanged,
     benchCouple: moneyChanged(benchCouple, savedResolved?.acaBenchmarkCoupleCents),
