@@ -4717,6 +4717,7 @@ export function App() {
 
   function resetItemForm() {
     setShowItemForm(false);
+    setItemFormAnchor("top");
     setEditingItemId(null);
     setEditingItemBase(null);
     setEditingItemEpoch(null);
