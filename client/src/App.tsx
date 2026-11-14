@@ -1873,15 +1873,24 @@ type SpendingChartDatum = {
   cashOut: number;
   trueCostCents: number;
   cashOutCents: number;
-  // The Cash out bar's stacked parts (see splitCashOut): regular
-  // cash out below, the month's one-offs on top. The two always
-  // sum to cashOut / cashOutCents; oneOff is 0 in months with no
-  // one-offs recorded, where the bar renders as one regular part.
+  // The True cost bar's stacked parts: lights-on at the bottom,
+  // the rest above. The two always sum to trueCost / trueCostCents.
+  trueCostLightsOn: number;
+  trueCostRest: number;
+  trueCostLightsOnCents: number;
+  trueCostRestCents: number;
+  // The Cash out bar's stacked parts (see splitCashOut): lights-on
+  // at the bottom, regular cash out in the middle, the month's
+  // one-offs on top. The three always sum to cashOut / cashOutCents;
+  // oneOff is 0 in months with no one-offs recorded.
+  cashOutLightsOn: number;
   cashOutRegular: number;
   cashOutOneOff: number;
+  cashOutLightsOnCents: number;
   cashOutRegularCents: number;
   cashOutOneOffCents: number;
   oneOffTotalCents: number;
+  keepLightsOnCents: number;
 };
 
 /* Split a month's Cash out into its stacked-bar parts: regular
@@ -1918,6 +1927,38 @@ function cashOutBaseShape(shapeProps: any) {
   );
 }
 
+/* Shape for the bottom (lights-on) segment of a split True cost bar:
+   square top corners when the rest sits on top of it; the bar's usual
+   rounded top when the lights-on part is the whole bar. The segment's
+   fill is diagonal stripes in the bar's own hue family (the
+   lightsOnStripesTeal pattern: the bar's deep teal with darker-teal
+   stripe lines), so the boundary with the rest above it reads from
+   the stripes alone. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function trueCostLightsOnShape(shapeProps: any) {
+  const datum = shapeProps?.payload as { trueCostRest?: number } | undefined;
+  const hasRestOnTop = (datum?.trueCostRest ?? 0) > 0;
+  return (
+    <Rectangle {...shapeProps} radius={hasRestOnTop ? [0, 0, 0, 0] : [3, 3, 0, 0]} />
+  );
+}
+
+/* Shape for the bottom (lights-on) segment of a split Cash out bar:
+   square top corners when anything sits on top of it; the bar's usual
+   rounded top when the lights-on part is the whole bar. The segment's
+   fill is diagonal stripes in the bar's own hue family (the
+   lightsOnStripesOrange pattern: the bar's deep orange with
+   darker-orange stripe lines), so the boundary with what sits above
+   it reads from the stripes alone. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cashOutLightsOnShape(shapeProps: any) {
+  const datum = shapeProps?.payload as { cashOutRegular?: number; cashOutOneOff?: number } | undefined;
+  const hasAbove = (datum?.cashOutRegular ?? 0) > 0 || (datum?.cashOutOneOff ?? 0) > 0;
+  return (
+    <Rectangle {...shapeProps} radius={hasAbove ? [0, 0, 0, 0] : [3, 3, 0, 0]} />
+  );
+}
+
 /* Grouped bar chart for the Month-mode Quick view: one pair of bars
    per recorded month — the month's True cost (smoothed) beside its
    Cash out, in chronological order. Fed from getDashboard's own
@@ -1947,7 +1988,7 @@ function cashOutBaseShape(shapeProps: any) {
    names the series. No recorded months renders a plain empty
    state. In a month with one-offs recorded, the Cash out bar is
    split into two stacked parts — regular cash out below, the
-   one-offs on top in a darker shade of the same orange — so a
+   one-offs on top in their own red/rose hue — so a
    spike caused by a one-off explains itself at a glance; the
    label above the bar stays the month's total Cash out, and
    months without one-offs keep the single solid bar. */
@@ -2011,16 +2052,30 @@ function SpendingTrueCostChart({
         cashOut: m.cashOutCents / 100,
         trueCostCents: m.smoothedCents,
         cashOutCents: m.cashOutCents,
-        cashOutRegular: split.regularCents / 100,
+        trueCostLightsOn: trueCostLightsOnCents / 100,
+        trueCostRest: trueCostRestCents / 100,
+        trueCostLightsOnCents,
+        trueCostRestCents,
+        cashOutLightsOn: cashOutLightsOnCents / 100,
+        cashOutRegular: cashOutRegularCents / 100,
         cashOutOneOff: split.oneOffCents / 100,
-        cashOutRegularCents: split.regularCents,
+        cashOutLightsOnCents,
+        cashOutRegularCents,
         cashOutOneOffCents: split.oneOffCents,
         oneOffTotalCents: m.oneOffTotalCents,
+        keepLightsOnCents,
       };
     }),
     ...aheadMonths.map((m) => {
       const estimate = m.month > thisMonth;
       const split = splitCashOut(m.cashOutCents, m.oneOffTotalCents);
+      const keepLightsOnCents = m.keepLightsOnCents ?? 0;
+      const trueCostCents = m.smoothedCents;
+      const trueCostLightsOnCents = Math.max(0, Math.min(keepLightsOnCents, trueCostCents));
+      const trueCostRestCents = trueCostCents - trueCostLightsOnCents;
+      const oneOffCents = split.oneOffCents;
+      const cashOutLightsOnCents = Math.max(0, Math.min(keepLightsOnCents, m.cashOutCents - oneOffCents));
+      const cashOutRegularCents = m.cashOutCents - cashOutLightsOnCents - oneOffCents;
       return {
         name: estimate
           ? `${shortMonthLabel(m.month)} (est.)`
@@ -2031,11 +2086,18 @@ function SpendingTrueCostChart({
         cashOut: m.cashOutCents / 100,
         trueCostCents: m.smoothedCents,
         cashOutCents: m.cashOutCents,
-        cashOutRegular: split.regularCents / 100,
+        trueCostLightsOn: trueCostLightsOnCents / 100,
+        trueCostRest: trueCostRestCents / 100,
+        trueCostLightsOnCents,
+        trueCostRestCents,
+        cashOutLightsOn: cashOutLightsOnCents / 100,
+        cashOutRegular: cashOutRegularCents / 100,
         cashOutOneOff: split.oneOffCents / 100,
-        cashOutRegularCents: split.regularCents,
+        cashOutLightsOnCents,
+        cashOutRegularCents,
         cashOutOneOffCents: split.oneOffCents,
         oneOffTotalCents: m.oneOffTotalCents,
+        keepLightsOnCents,
       };
     }),
   ];
@@ -2044,6 +2106,7 @@ function SpendingTrueCostChart({
      drives the extra legend entry and the tooltip note, so both
      appear only when a split is on screen. */
   const hasOneOffSplit = chartData.some((d) => d.cashOutOneOffCents > 0);
+  const hasLightsOnSplit = chartData.some((d) => d.trueCostLightsOnCents > 0 || d.cashOutLightsOnCents > 0);
   /* Vs-target summary over the recorded months only: the
      `months` above — the same trailing months the chart plots
      and the header average uses. Entered-ahead (est.) pairs in
@@ -2128,9 +2191,14 @@ function SpendingTrueCostChart({
           {hasOneOffSplit && (
             <p>
               In a month with one-offs recorded, the Cash out bar is split:
-              regular cash out below, the one-offs on top in the darker
-              shade. The label above the bar is still the month&rsquo;s
+              regular cash out below, the one-offs on top in the red/rose
+              hue. The label above the bar is still the month&rsquo;s
               total Cash out.
+            </p>
+          )}
+          {hasLightsOnSplit && (
+            <p>
+              Each bar is split: the lights-on part — the month&rsquo;s keep-the-lights-on cost, the floor the Monthly bills header shows — sits at the bottom, shown as diagonal stripes, the rest above it. The label above the bar is still the month&rsquo;s total.
             </p>
           )}
         </ExplainerInfoTip>
@@ -2157,7 +2225,7 @@ function SpendingTrueCostChart({
                   : null;
               return (
                 <li key={d.monthStr}>
-                  {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.cashOutOneOffCents > 0 ? ` · One-offs ${fmt(d.cashOutOneOffCents)} of the Cash out` : ""}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
+                  {`${d.name}: True cost ${fmt(d.trueCostCents)}${d.trueCostLightsOnCents > 0 ? ` · Lights on ${fmt(d.trueCostLightsOnCents)} of the True cost` : ""} · Cash out ${fmt(d.cashOutCents)}${d.cashOutLightsOnCents > 0 ? ` · Lights on ${fmt(d.cashOutLightsOnCents)} of the Cash out` : ""}${d.cashOutOneOffCents > 0 ? ` · One-offs ${fmt(d.cashOutOneOffCents)} of the Cash out` : ""}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
                 </li>
               );
             })}
@@ -2196,12 +2264,63 @@ function SpendingTrueCostChart({
               />
               Cash out
             </span>
+            {hasLightsOnSplit && (
+              <span className="inline-flex items-center gap-2">
+                <svg
+                  aria-hidden="true"
+                  width="14"
+                  height="10"
+                  viewBox="0 0 14 10"
+                  className="shrink-0"
+                >
+                  <defs>
+                    <clipPath id="lightsOnLegendSwatchClip">
+                      <rect width="14" height="10" rx="2" />
+                    </clipPath>
+                    <pattern
+                      id="lightsOnLegendStripesTeal"
+                      width="4"
+                      height="4"
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width="4" height="4" fill="var(--accent-deep)" />
+                      <line x1="0" y1="0" x2="0" y2="4" stroke="var(--lights-on-stripes-teal)" strokeWidth="1.5" />
+                    </pattern>
+                    <pattern
+                      id="lightsOnLegendStripesOrange"
+                      width="4"
+                      height="4"
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width="4" height="4" fill="var(--warn-deep)" />
+                      <line x1="0" y1="0" x2="0" y2="4" stroke="var(--lights-on-stripes-orange)" strokeWidth="1.5" />
+                    </pattern>
+                  </defs>
+                  <g clipPath="url(#lightsOnLegendSwatchClip)">
+                    <rect width="7" height="10" fill="url(#lightsOnLegendStripesTeal)" />
+                    <rect x="7" width="7" height="10" fill="url(#lightsOnLegendStripesOrange)" />
+                  </g>
+                </svg>
+                Lights on
+                <ExplainerInfoTip
+                  id="spending.lightsOnLegend"
+                  label="Lights on"
+                  align="center"
+                >
+                  <p>
+                    The bottom part of each bar is the month&rsquo;s keep-the-lights-on cost, shown as diagonal stripes.
+                  </p>
+                </ExplainerInfoTip>
+              </span>
+            )}
             {hasOneOffSplit && (
               <span className="inline-flex items-center gap-2">
                 <span
                   aria-hidden="true"
                   className="inline-block h-[10px] w-[14px] rounded-[2px]"
-                  style={{ background: "var(--warn-deep)" }}
+                  style={{ background: "var(--one-offs)" }}
                 />
                 One-offs
               </span>
@@ -2267,6 +2386,28 @@ function SpendingTrueCostChart({
                   barCategoryGap="22%"
                   barGap={3}
                 >
+                  <defs>
+                    <pattern
+                      id="lightsOnStripesTeal"
+                      width="7"
+                      height="7"
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width="7" height="7" fill="var(--accent-deep)" />
+                      <line x1="0" y1="0" x2="0" y2="7" stroke="var(--lights-on-stripes-teal)" strokeWidth="2.5" />
+                    </pattern>
+                    <pattern
+                      id="lightsOnStripesOrange"
+                      width="7"
+                      height="7"
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width="7" height="7" fill="var(--warn-deep)" />
+                      <line x1="0" y1="0" x2="0" y2="7" stroke="var(--lights-on-stripes-orange)" strokeWidth="2.5" />
+                    </pattern>
+                  </defs>
                   <CartesianGrid
                     stroke="var(--border)"
                     strokeDasharray="3 3"
@@ -2352,9 +2493,30 @@ function SpendingTrueCostChart({
                     }}
                   />
                   <Bar
-                    dataKey="trueCost"
+                    cursor="pointer"
+                    dataKey="trueCostLightsOn"
+                    name="True cost"
+                    stackId="trueCost"
+                    fill="url(#lightsOnStripesTeal)"
+                    shape={trueCostLightsOnShape}
+                  >
+                    {chartData.map((d) => (
+                      <Cell
+                        key={d.monthStr}
+                        fill="url(#lightsOnStripesTeal)"
+                        fillOpacity={d.estimate ? 0.3 : 1}
+                        stroke={d.estimate ? "var(--accent-deep)" : "none"}
+                        strokeWidth={d.estimate ? 1.5 : 0}
+                        strokeDasharray={d.estimate ? "4 2" : undefined}
+                      />
+                    ))}
+                  </Bar>
+                  <Bar
+                    cursor="pointer"
+                    dataKey="trueCostRest"
                     name="True cost"
                     fill="var(--accent)"
+                    stackId="trueCost"
                     radius={[3, 3, 0, 0]}
                   >
                     {chartData.map((d) => (
@@ -2414,16 +2576,32 @@ function SpendingTrueCostChart({
                       }}
                     />
                   </Bar>
-                  {/* Cash out is drawn as two stacked segments
-                      sharing one stack: regular cash out below and
-                      the month's one-offs on top in the darker
-                      shade. In a month with no one-offs the top
-                      segment is 0 high and invisible, and the
-                      regular segment — given its rounded top back
-                      by cashOutBaseShape — renders exactly as the
-                      old single bar did. The two segments' Cells
-                      carry the same estimate treatment the single
-                      bar's Cells did. */}
+                  {/* Cash out is drawn as three stacked segments
+                      sharing one stack: lights-on at the bottom in
+                      diagonal stripes in the bar's own hue family,
+                      regular cash out in the middle and the month's
+                      one-offs on top in their own red/rose hue. The
+                      segments' Cells carry the same estimate
+                      treatment the single bar's Cells did. */}
+                  <Bar
+                    cursor="pointer"
+                    dataKey="cashOutLightsOn"
+                    name="Cash out"
+                    stackId="cashOut"
+                    fill="url(#lightsOnStripesOrange)"
+                    shape={cashOutLightsOnShape}
+                  >
+                    {chartData.map((d) => (
+                      <Cell
+                        key={d.monthStr}
+                        fill="url(#lightsOnStripesOrange)"
+                        fillOpacity={d.estimate ? 0.3 : 1}
+                        stroke={d.estimate ? "var(--lights-on-orange)" : "none"}
+                        strokeWidth={d.estimate ? 1.5 : 0}
+                        strokeDasharray={d.estimate ? "4 2" : undefined}
+                      />
+                    ))}
+                  </Bar>
                   <Bar
                     dataKey="cashOutRegular"
                     name="Cash out"
@@ -2443,18 +2621,19 @@ function SpendingTrueCostChart({
                     ))}
                   </Bar>
                   <Bar
+                    cursor="pointer"
                     dataKey="cashOutOneOff"
                     name="One-offs"
                     stackId="cashOut"
-                    fill="var(--warn-deep)"
+                    fill="var(--one-offs)"
                     radius={[3, 3, 0, 0]}
                   >
                     {chartData.map((d) => (
                       <Cell
                         key={d.monthStr}
-                        fill="var(--warn-deep)"
+                        fill="var(--one-offs)"
                         fillOpacity={d.estimate ? 0.3 : 1}
-                        stroke={d.estimate ? "var(--warn-deep)" : "none"}
+                        stroke={d.estimate ? "var(--one-offs)" : "none"}
                         strokeWidth={d.estimate ? 1.5 : 0}
                         strokeDasharray={d.estimate ? "4 2" : undefined}
                       />
@@ -2583,8 +2762,8 @@ type YearChartDatum = {
    matching the panels; a month with data and a real $0 keeps its
    $0 in the tooltip with no bar height. As in the Month-mode
    chart, a month with one-offs recorded has its Cash out bar
-   split — regular cash out below, one-offs on top in the darker
-   shade — and months without one-offs keep the single solid bar. */
+   split — regular cash out below, one-offs on top in the red/rose
+   hue — and months without one-offs keep the single solid bar. */
 function YearTrueCostChart({
   year,
   months,
@@ -2720,7 +2899,7 @@ function YearTrueCostChart({
             <span
               aria-hidden="true"
               className="inline-block h-[10px] w-[14px] rounded-[2px]"
-              style={{ background: "var(--warn-deep)" }}
+              style={{ background: "var(--one-offs)" }}
             />
             One-offs
           </span>
@@ -2878,21 +3057,21 @@ function YearTrueCostChart({
               </Bar>
               {/* Cash out as two stacked segments, as in the
                   Month-mode chart: regular cash out below, the
-                  month's one-offs on top in the darker shade; a
+                  month's one-offs on top in the red/rose hue; a
                   month with no one-offs is just the regular
                   segment, exactly as the old single bar rendered. */}
               <Bar
                 dataKey="cashOutRegular"
                 name="Cash out"
                 stackId="cashOut"
-                fill="var(--warn)"
+                fill="url(#cashOutBarGradientYear)"
                 cursor="pointer"
                 shape={cashOutBaseShape}
               >
                 {chartData.map((d) => (
                   <Cell
                     key={d.monthStr}
-                    fill="var(--warn)"
+                    fill="url(#cashOutBarGradientYear)"
                     fillOpacity={d.estimate ? 0.3 : 1}
                     stroke={d.estimate ? "var(--warn)" : "none"}
                     strokeWidth={d.estimate ? 1.5 : 0}
@@ -2904,16 +3083,16 @@ function YearTrueCostChart({
                 dataKey="cashOutOneOff"
                 name="One-offs"
                 stackId="cashOut"
-                fill="var(--warn-deep)"
+                fill="var(--one-offs)"
                 radius={[3, 3, 0, 0]}
                 cursor="pointer"
               >
                 {chartData.map((d) => (
                   <Cell
                     key={d.monthStr}
-                    fill="var(--warn-deep)"
+                    fill="var(--one-offs)"
                     fillOpacity={d.estimate ? 0.3 : 1}
-                    stroke={d.estimate ? "var(--warn-deep)" : "none"}
+                    stroke={d.estimate ? "var(--one-offs)" : "none"}
                     strokeWidth={d.estimate ? 1.5 : 0}
                     strokeDasharray={d.estimate ? "4 2" : undefined}
                   />

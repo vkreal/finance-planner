@@ -937,6 +937,12 @@ const dashboardHistoryRowOut = z.object({
   smoothedCents: z.number(),
   yearlyLumpsCents: z.number(),
   oneOffTotalCents: z.number(),
+  // The month's keep-lights-on cost on the header's definition
+  // (lights-on monthly bills in effect that month + lights-on
+  // yearly accrual that month), published so the chart can stack
+  // the lights-on portion of each bar; already inside
+  // smoothedCents/cashOutCents, presented not added.
+  keepLightsOnCents: z.number(),
   hasOneOff: z.boolean(),
   // True when this month is after the current calendar month — its
   // figures were entered ahead and are estimates, the same flag the
@@ -7581,6 +7587,12 @@ export const Actions = {
           // splits a trailing/history month's (same fields those
           // rows carry).
           oneOffTotalCents: z.number(),
+          // The month's keep-lights-on cost on the header's definition
+          // (lights-on monthly bills in effect that month + lights-on
+          // yearly accrual that month), published so the chart can stack
+          // the lights-on portion of each bar; already inside
+          // smoothedCents/cashOutCents, presented not added.
+          keepLightsOnCents: z.number(),
           hasOneOff: z.boolean(),
         }),
       ),
@@ -7771,6 +7783,7 @@ export const Actions = {
           smoothedCents: e.smoothed,
           yearlyLumpsCents: e.lumps,
           oneOffTotalCents: ooTotal,
+          keepLightsOnCents: keepLightsOnForMonth(m),
           hasOneOff: ooTotal !== 0,
           estimate: m > currentMonthStr,
         });
@@ -7848,6 +7861,7 @@ export const Actions = {
           smoothedCents: beforeStart ? 0 : e.smoothed,
           yearlyLumpsCents: e.lumps,
           oneOffTotalCents: ooTotal,
+          keepLightsOnCents: beforeStart ? 0 : keepLightsOnForMonth(m),
           hasOneOff: ooTotal !== 0,
           // Entered-ahead months keep their estimate flag in the
           // history rows too (build v59, finding F4).
@@ -7874,6 +7888,7 @@ export const Actions = {
             smoothedCents: e.smoothed,
             cashOutCents: e.cashOut,
             oneOffTotalCents: ooTotal,
+            keepLightsOnCents: keepLightsOnForMonth(m),
             hasOneOff: ooTotal !== 0,
           };
         });

@@ -31,9 +31,20 @@
   --dim: #6b7a70;
   --border: #ddd5c2;
   --accent: #14594c;
+  --accent-deep: #0e4a3e;
+  --lights-on-orange: #9d4607;
+  /* Stripe lines for the True cost vs Cash out chart's lights-on
+     segments: the same hues as --accent-deep / --lights-on-orange
+     taken a bit darker so the diagonal stripes read more easily.
+     Dedicated tokens (not the shared variables) because the
+     estimate-month outline strokes use --accent-deep /
+     --lights-on-orange too and must not darken with the stripes. */
+  --lights-on-stripes-teal: #083a2f;
+  --lights-on-stripes-orange: #843a05;
   --accent-soft: #dcebe4;
   --warn: #b45309;
   --warn-deep: #8a3c05;
+  --one-offs: #c23347;
   --warn-soft: #f7e8d2;
   --bad: #b3352b;
   --bad-soft: #f9e0dc;
@@ -54,9 +65,14 @@
     --dim: #9aa695;
     --border: #3a4034;
     --accent: #4fc2a8;
+    --accent-deep: #379e86;
+    --lights-on-orange: #d18732;
+    --lights-on-stripes-teal: #2b7f6a;
+    --lights-on-stripes-orange: #b06f24;
     --accent-soft: #22392f;
     --warn: #e8a04c;
     --warn-deep: #c47a24;
+    --one-offs: #e5637a;
     --warn-soft: #3d2f1a;
     --bad: #e07a6d;
     --bad-soft: #472622;
