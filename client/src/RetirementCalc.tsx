@@ -3909,6 +3909,26 @@ export function RetirementCalc({
                     ? `Money runs out at ${projection.shortfallAge}`
                     : `Money runs out by ${inputs.endAge}`}
             </p>
+            <span className="tnum text-base leading-relaxed">
+              <span aria-hidden="true" className="text-[var(--dim)]">·</span>{" "}
+              <span className="whitespace-nowrap">
+                <span className={keyFigureCls}>{fmt(projection.ending)}</span>
+                {` left at ${inputs.endAge}`}
+              </span>
+              {projection.hasRetiredYears && projection.neverRunsOut && projection.ending <= 0 && (
+                <span className="text-[var(--dim)]">
+                  {" — every year's spending fully funded, with nothing to spare"}
+                </span>
+              )}
+              {projection.hasRetiredYears && !projection.neverRunsOut && projection.shortfallAge != null && (
+                <span className="text-[var(--dim)]">
+                  {` — runs out ${inputs.endAge - projection.shortfallAge} ${inputs.endAge - projection.shortfallAge === 1 ? "year" : "years"} before the end age`}
+                  {projection.ending > 0
+                    ? " (later income refills the balance, but that year's spending was not fully funded)"
+                    : ""}
+                </span>
+              )}
+            </span>
             {!projection.hasRetiredYears ? (
               <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--dim)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
                 No verdict
@@ -3947,23 +3967,6 @@ export function RetirementCalc({
               </p>
             </ExplainerInfoTip>
           </div>
-          <p className="tnum mt-2 text-base leading-relaxed">
-            <span className={keyFigureCls}>{fmt(projection.ending)}</span>
-            {` left at ${inputs.endAge}`}
-            {projection.hasRetiredYears && projection.neverRunsOut && projection.ending <= 0 && (
-              <span className="text-[var(--dim)]">
-                {" — every year's spending fully funded, with nothing to spare"}
-              </span>
-            )}
-            {projection.hasRetiredYears && !projection.neverRunsOut && projection.shortfallAge != null && (
-              <span className="text-[var(--dim)]">
-                {` — runs out ${inputs.endAge - projection.shortfallAge} ${inputs.endAge - projection.shortfallAge === 1 ? "year" : "years"} before the end age`}
-                {projection.ending > 0
-                  ? " (later income refills the balance, but that year's spending was not fully funded)"
-                  : ""}
-              </span>
-            )}
-          </p>
           {!projection.hasRetiredYears && (
             <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
               The retirement age is past the end age, so no year&rsquo;s
