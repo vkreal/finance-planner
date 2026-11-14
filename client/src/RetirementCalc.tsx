@@ -3915,7 +3915,7 @@ export function RetirementCalc({
             <span className="tnum text-base leading-relaxed">
               <span aria-hidden="true" className="text-[var(--dim)]">·</span>{" "}
               <span className="whitespace-nowrap">
-                <span className={keyFigureCls}>{fmt(projection.ending)}</span>
+                <span className={`${keyFigureCls} text-[var(--accent)]`}>{fmt(projection.ending)}</span>
                 {` left at ${inputs.endAge}`}
               </span>
               {projection.hasRetiredYears && projection.neverRunsOut && projection.ending <= 0 && (
