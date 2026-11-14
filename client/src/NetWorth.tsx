@@ -5093,30 +5093,34 @@ export function NetWorthView() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              className={btnGhost}
-              aria-expanded={showAccountForm}
-              onClick={() => setShowAccountForm(!showAccountForm)}
-            >
-              Add account
-            </button>
-            <button
-              type="button"
-              className={btnGhost}
-              aria-expanded={showNwImport}
-              onClick={() => setShowNwImport(!showNwImport)}
-            >
-              Import balances
-            </button>
-            <button
-              type="button"
               aria-expanded={!accountsCollapsed}
               aria-label={accountsCollapsed ? "Expand Accounts" : "Collapse Accounts"}
-              className={btnGhost}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
               onClick={() => handleAccountsCollapsedChange(!accountsCollapsed)}
             >
-              {accountsCollapsed ? "Expand" : "Collapse"}
+              <FoldChevron open={!accountsCollapsed} />
             </button>
           </div>
+        </div>
+        {!accountsCollapsed && (
+        <>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={btnGhost}
+            aria-expanded={showAccountForm}
+            onClick={() => setShowAccountForm(!showAccountForm)}
+          >
+            Add account
+          </button>
+          <button
+            type="button"
+            className={btnGhost}
+            aria-expanded={showNwImport}
+            onClick={() => setShowNwImport(!showNwImport)}
+          >
+            Import balances
+          </button>
         </div>
       {showAccountForm && (
         <form
@@ -5194,7 +5198,6 @@ export function NetWorthView() {
         />
       )}
 
-        {!accountsCollapsed && (
         <div className="mt-3 overflow-x-auto">
           <table className="tnum w-full min-w-[700px] border-collapse text-sm">
             <caption className="sr-only">Accounts with latest balances and changes; Share is each account&rsquo;s latest recorded balance as a share of the latest snapshot total</caption>
@@ -5502,6 +5505,7 @@ export function NetWorthView() {
             />
           </p>
         </div>
+        </>
         )}
         {renameError && !accountsCollapsed && (
           <p className="mt-2 text-sm text-[var(--bad)]">{renameError}</p>
@@ -5539,26 +5543,29 @@ export function NetWorthView() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              className={btnGhost}
-              onClick={() => setShowNwExplorer(true)}
-            >
-              Slice &amp; dice
-            </button>
-            <button type="button" className={btnPrimary} onClick={openAddSnapshot}>
-              Add snapshot
-            </button>
-            <button
-              type="button"
               aria-expanded={!historyCollapsed}
               aria-label={historyCollapsed ? "Expand History" : "Collapse History"}
-              className={btnGhost}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
               onClick={() => handleHistoryCollapsedChange(!historyCollapsed)}
             >
-              {historyCollapsed ? "Expand" : "Collapse"}
+              <FoldChevron open={!historyCollapsed} />
             </button>
           </div>
         </div>
         {!historyCollapsed && (
+        <>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={btnGhost}
+            onClick={() => setShowNwExplorer(true)}
+          >
+            Slice &amp; dice
+          </button>
+          <button type="button" className={btnPrimary} onClick={openAddSnapshot}>
+            Add snapshot
+          </button>
+        </div>
         <div className="mt-3 overflow-x-auto">
           <table className="tnum w-full border-collapse text-sm">
             <caption className="sr-only">Balances by account and snapshot date</caption>
@@ -5766,6 +5773,7 @@ export function NetWorthView() {
             </tbody>
           </table>
         </div>
+        </>
         )}
       </section>
 
