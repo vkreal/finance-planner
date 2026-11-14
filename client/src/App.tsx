@@ -3639,6 +3639,14 @@ export function App() {
     setFold.mutate({ id: `spending.cashout.${m}`, open: next });
   };
   const [showItemForm, setShowItemForm] = useState(false);
+  // Where the item form renders, relative to the control that
+  // opened it — the form opens right where the user tapped:
+  // "top" = at the top of the Monthly cash out section (opened
+  // from the section header's "+ Itemize a month", or the form's
+  // month has no row in the list); "add" = directly under the
+  // month row's "+ Add item" button at the end of its items;
+  // "edit" = directly under the item being edited.
+  const [itemFormAnchor, setItemFormAnchor] = useState<"top" | "add" | "edit">("top");
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   // Build v65 (F14): the cash-out item as loaded when the
   // editor opened — sent back as the update's CAS base.
@@ -4717,14 +4725,16 @@ export function App() {
     setItemError("");
   }
 
-  function openNewItem(forMonth: string) {
+  function openNewItem(forMonth: string, anchor: "top" | "add" = "top") {
     resetItemForm();
     setIDate(`${forMonth}-01`);
+    setItemFormAnchor(anchor);
     setShowItemForm(true);
     setCashOutMonthExpanded(forMonth, true);
   }
 
   function openEditItem(it: CashOutItem) {
+    setItemFormAnchor("edit");
     setEditingItemId(it.id);
     setEditingItemBase({
       month: it.month,
@@ -5310,6 +5320,13 @@ export function App() {
   // form to the month of its date. The month-total form renders
   // directly under its month's row in the Monthly cash out list
   // below, above the month's items. The item form opens right
+  // where the user tapped (itemFormAnchor): under the month
+  // row's "+ Add item" button at the end of its items, under
+  // the item being edited, or at the top of the section when
+  // opened from the section header — or when the form's month
+  // has no row in the list yet (a brand-new month with neither
+  // a total nor an item). If the form's month row is collapsed
+  // while an in-row anchor is active, the form falls back to
   // the top of that row so it never vanishes. Fields, state,
   // and submit behavior are unchanged — only the render
   // position moved.
@@ -6267,7 +6284,7 @@ export function App() {
 
               {!summaryFormHasRow && summaryFormEl}
 
-              {!itemFormHasRow && itemFormEl}
+              {(!itemFormHasRow || itemFormAnchor === "top") && itemFormEl}
 
               {data.cashOutMonths.length === 0 && !showSummaryForm && !showItemForm && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
@@ -6323,7 +6340,15 @@ export function App() {
                           </div>
                         </div>
                         {cm.month === sMonth && summaryFormEl}
-                        {cm.month === itemFormMonth && itemFormEl}
+                        {/* Item form fallback: its anchor (the "+ Add
+                            item" button / the edited item) lives in
+                            the expanded items block, so while this
+                            row is collapsed the form renders here at
+                            the top of the row instead of vanishing. */}
+                        {cm.month === itemFormMonth &&
+                          itemFormAnchor !== "top" &&
+                          !expanded &&
+                          itemFormEl}
                         {confirmDeleteSummaryMonth === cm.month && (
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span className="text-sm text-[var(--bad)]">
@@ -6428,6 +6453,9 @@ export function App() {
                                         </button>
                                       </div>
                                     )}
+                                    {itemFormAnchor === "edit" &&
+                                      editingItemId === it.id &&
+                                      itemFormEl}
                                   </li>
                                 ))}
                               </ul>
@@ -6436,10 +6464,13 @@ export function App() {
                               type="button"
                               className="mt-2 text-sm font-medium text-[var(--accent)]"
                               aria-label={`Add item for ${monthLabel(cm.month)}`}
-                              onClick={() => openNewItem(cm.month)}
+                              onClick={() => openNewItem(cm.month, "add")}
                             >
                               + Add item
                             </button>
+                            {itemFormAnchor === "add" &&
+                              cm.month === itemFormMonth &&
+                              itemFormEl}
                           </div>
                         )}
                       </li>
