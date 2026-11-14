@@ -267,13 +267,6 @@ function ordinalDay(day: number): string {
   }
 }
 
-function shiftMonth(month: string, delta: number): string {
-  const y = Number(month.slice(0, 4));
-  const m = Number(month.slice(5, 7)) - 1 + delta;
-  const d = new Date(y, m, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
 function todayStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -5173,14 +5166,6 @@ export function App() {
           </div>
         ) : (
           <div className="flex items-center justify-between gap-2 pt-4">
-            <button
-              type="button"
-              aria-label="Previous month"
-              className={btnGhost}
-              onClick={() => setMonth(shiftMonth(month, -1))}
-            >
-              ←
-            </button>
             <div className="flex items-center gap-2">
               <input
                 type="month"
@@ -5201,14 +5186,6 @@ export function App() {
                 </button>
               )}
             </div>
-            <button
-              type="button"
-              aria-label="Next month"
-              className={btnGhost}
-              onClick={() => setMonth(shiftMonth(month, 1))}
-            >
-              →
-            </button>
           </div>
         )}
 
