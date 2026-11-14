@@ -376,12 +376,15 @@ function fmtMonthLabel(ym: string | null): string | null {
 // while it is NOT focused, the raw string while it is focused (so
 // typing is never rewritten or the caret moved), and the formatted
 // form again on blur. Blank and unparseable text are shown exactly
-// as typed — formatting never coerces a value.
+// as typed — formatting never coerces a value. Cents are shown
+// only when the amount has them ($144,000, not $144,000.00) — the
+// same input-display convention as the other views'
+// fmtMoneyInput / fmtInputMoney.
 function formatMoneyDisplay(s: string): string {
   const cents = parseMoney(s);
   if (cents == null) return s;
   return `$${(cents / 100).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })}`;
 }
@@ -390,7 +393,7 @@ function formatMoneyDisplay(s: string): string {
 // the annual string (and the annual cents every engine, save, and
 // comparison derives from it) is never rewritten by formatting.
 // The unfocused form rounds the exact annual ÷ 12 figure to cents
-// for display ($160,000.00/yr shows as $13,333.33/mo while the
+// for display ($160,000/yr shows as $13,333.33/mo while the
 // stored annual value stays exactly 16000000 cents); the raw form
 // is the same rounded figure without decoration, shown while the
 // field is focused so an edit starts from what was displayed.
@@ -399,7 +402,7 @@ function formatMonthlyDisplay(annualStr: string): string {
   const cents = parseMoney(annualStr);
   if (cents == null) return annualStr;
   return `$${(cents / 1200).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })}`;
 }
@@ -4481,7 +4484,7 @@ export function RetirementCalc({
                   </button>
                 </div>
                 {spendingUnit === "month" && (
-                  <p className="mt-1 text-xs text-[var(--dim)]">
+                  <p className="shrink-0 whitespace-nowrap text-xs text-[var(--dim)]">
                     = {fmt(effectiveSpendingCents)}/yr
                   </p>
                 )}

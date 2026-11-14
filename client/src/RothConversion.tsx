@@ -7540,7 +7540,7 @@ export function RothConversion({
 
           <h3 className="mt-5 text-sm font-semibold">2. How much do you spend in a year?</h3>
           <div className="mt-2 max-w-xs">
-            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <div className="mb-1">
               <label
                 className="block text-sm font-medium text-[var(--text)]"
                 htmlFor="roth-Change-the-plan-yearly-spending"
@@ -7548,32 +7548,9 @@ export function RothConversion({
                 {spendingUnit === "month" ? "Monthly spending" : "Yearly spending"}
                 {changedFields.spending && <ChangedMark />}
               </label>
-              <div
-                role="group"
-                aria-label="Spending display period"
-                className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-              >
-                <button
-                  type="button"
-                  aria-label="Show spending per year"
-                  aria-pressed={spendingUnit === "year"}
-                  onClick={() => setSpendingUnit("year")}
-                  className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                >
-                  Per year
-                </button>
-                <button
-                  type="button"
-                  aria-label="Show spending per month"
-                  aria-pressed={spendingUnit === "month"}
-                  onClick={() => setSpendingUnit("month")}
-                  className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-                >
-                  Per month
-                </button>
-              </div>
             </div>
-            <div className="relative">
+            <div className="flex flex-wrap items-center gap-2">
+            <div className="relative shrink-0">
               <span
                 aria-hidden="true"
                 className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
@@ -7619,11 +7596,36 @@ export function RothConversion({
                 }}
               />
             </div>
+            <div
+              role="group"
+              aria-label="Spending display period"
+              className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+            >
+              <button
+                type="button"
+                aria-label="Show spending per year"
+                aria-pressed={spendingUnit === "year"}
+                onClick={() => setSpendingUnit("year")}
+                className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per year
+              </button>
+              <button
+                type="button"
+                aria-label="Show spending per month"
+                aria-pressed={spendingUnit === "month"}
+                onClick={() => setSpendingUnit("month")}
+                className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+              >
+                Per month
+              </button>
+            </div>
             {spendingUnit === "month" && (
-              <p className="mt-1 text-xs text-[var(--dim)]">
+              <p className="shrink-0 whitespace-nowrap text-xs text-[var(--dim)]">
                 = ${fmtMoneyInput((parseMoney(spending) ?? 0) / 100)}/yr
               </p>
             )}
+            </div>
           </div>
 
           <h3 className="mt-5 text-sm font-semibold">3. When does Social Security start?</h3>

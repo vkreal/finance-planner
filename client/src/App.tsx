@@ -6926,7 +6926,7 @@ export function App() {
 
             {/* monthly bills — breakdown of cash out, never added again */}
             <section id="section-monthly-bills" aria-label="Monthly bills" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-monthly-bills")}`}>
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {/* The ⓘ sits right after the bold title, ahead of the
                     summary figure; the fold toggle stays alone at the
                     far right. No summary sentence on the face: the
@@ -7329,7 +7329,7 @@ export function App() {
 
             {/* transactions */}
             <section id="section-transactions" aria-label="Transactions" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-transactions")}`}>
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {/* Same header pattern as Monthly bills: bold title,
                     then the ⓘ, then the quick summary — here the
                     month's cash out, the same figure the Monthly
@@ -7582,8 +7582,8 @@ export function App() {
                   right. The row never wraps — the long summary wraps
                   within the left side instead, so the toggle stays on
                   the title row at every width. */}
-              <div className="flex flex-nowrap items-center justify-between gap-x-3">
-                <h2 className="display flex min-w-0 flex-1 flex-wrap items-center gap-x-2 text-xl font-semibold">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
                   Yearly &amp; periodic expenses
                   {/* No summary sentence on the face: the key figures
                       live in the header summary beside the tip, and the

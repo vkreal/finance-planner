@@ -2095,13 +2095,11 @@ export function Playground({
   // aria-expanded and the app's shared chip chevron (FoldChevron), with a
   // one-line blurb naming what the group holds. The header row
   // itself is not a card — the section cards inside the group
-  // keep the card treatment. The button carries pr-1 (4px of
-  // right padding) so the chip's right edge lands exactly where
-  // the view's other bare fold toggles put theirs: the paste
-  // and known-point headers centre the same 28px chip inside a
-  // 36px tap-target button, which insets the chip 4px from the
-  // shared right edge — without this padding the group chip sat
-  // flush with that edge, 4px to the right of theirs.
+  // keep the card treatment — and the chip sits right after
+  // the title, the same placement as the Single-year dials
+  // group header: on a bare header (no card edge to anchor
+  // it) the toggle belongs to the title, not the far edge of
+  // the row.
   const pgGroupHeader = (
     id: "single" | "projection",
     title: string,
@@ -2112,14 +2110,14 @@ export function Playground({
         type="button"
         aria-expanded={pgGroupOpen[id]}
         aria-label={`${title} group`}
-        className="flex w-full items-start justify-between gap-3 pr-1 text-left"
+        className="w-full text-left"
         onClick={() => togglePgGroup(id)}
       >
-        <span>
-          <span className="block text-base font-semibold">{title}</span>
-          <span className="mt-0.5 block text-sm text-[var(--dim)]">{blurb}</span>
+        <span className="flex items-center gap-2">
+          <span className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">{title}</span>
+          <FoldChevron open={!!pgGroupOpen[id]} />
         </span>
-        <FoldChevron open={!!pgGroupOpen[id]} className="mt-0.5" />
+        <span className="mt-0.5 block text-sm text-[var(--dim)]">{blurb}</span>
       </button>
     </h3>
   );
@@ -2233,7 +2231,7 @@ export function Playground({
   const [pasteOpen, setPasteOpen] = usePersistedFold(
     "playground.pasteInputs",
   );
-  /* Month / Year spend-display toggle (2026-11-03): ONE
+  /* Year / Month spend-display toggle (2026-11-03): ONE
      persisted flag in the same generic fold store, shared by
      BOTH spend readouts — "Cash left after tax" and "Left
      after a year's spending" — in both places they render
@@ -6159,7 +6157,7 @@ export function Playground({
               onClick={() => togglePgGroup("single")}
             >
               <span className="flex items-center gap-2">
-                <span className="text-base font-semibold">
+                <span className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
                   Single-year dials
                 </span>
                 <InfoNote
@@ -6765,11 +6763,6 @@ export function Playground({
               }}
             />
           </div>
-          {pgSpendingUnit === "month" && (
-            <p className="mt-1 text-xs text-[var(--dim)]">
-              = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
-            </p>
-          )}
             <div
               role="group"
               aria-label="Spending display period"
@@ -6794,6 +6787,11 @@ export function Playground({
                 Per month
               </button>
             </div>
+            {pgSpendingUnit === "month" && (
+              <p className="shrink-0 whitespace-nowrap text-xs text-[var(--dim)]">
+                = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
+              </p>
+            )}
           </div>
           <p className="mt-1 text-xs text-[var(--dim)]">
             The Tax Plan&rsquo;s annual spending — editing here changes the saved plan, like editing it in the Tax Plan or Retirement. It only sets the &ldquo;Left after a year&rsquo;s spending&rdquo; comparison below; it never changes the tax.
@@ -9016,7 +9014,7 @@ export function Playground({
                 irmaaLine != null ? (
                   <div className={markerCls} role="note">
                     <span aria-hidden="true">⚠</span>{" "}
-                    {`IRMAA Tier ${pg.irmaa.tier} line crossed — ${fmtDollars(irmaaLine)}. Surcharge $${pg.irmaa.monthlyPerPerson.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo per person in ${pg.irmaa.premiumYear}.`}
+                    {`IRMAA Tier ${pg.irmaa.tier} line crossed — ${fmtDollars(irmaaLine)}. Surcharge ${fmtDollars(pg.irmaa.monthlyPerPerson)}/mo per person in ${pg.irmaa.premiumYear}.`}
                   </div>
                 ) : null;
               // Closing room note: one part per applicable line
@@ -9230,7 +9228,7 @@ export function Playground({
                 <section className={sectionCls} aria-label="Tax for the year">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold">Tax for the year</h3>
-                  {/* Month / Year pills: the same persisted
+                  {/* Year / Month pills: the same persisted
                       spendPerMonth state the sticky strip's
                       pills write — they switch ONLY the two
                       spend readouts below (Cash left after
