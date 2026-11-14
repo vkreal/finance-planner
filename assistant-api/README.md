@@ -56,8 +56,10 @@ $43,901,094.30 at age 95, historical never-out rate 100%.
 > `src/schema.ts`), and the JSON Schema the server advertises over
 > `tools/list` uses exactly the same names — a schema-consistency
 > test (`tests/schema-consistency.test.ts`) asserts the two field
-> sets are identical. Unknown keys are still stripped by design
-> (not an error), so double-check spelling:
+> sets are identical. Unknown keys are rejected with
+> `invalid_input` naming the key (the validator is a strict
+> schema, matching the advertised `additionalProperties: false`),
+> so double-check spelling:
 > `socialSecurityAnnual`, `socialSecurityStartAge`,
 > `spouseSocialSecurityAnnual`, `spouseSocialSecurityStartAge`,
 > `expectedRealReturnPct`, `state`, flat single-year fields like

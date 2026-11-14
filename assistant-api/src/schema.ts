@@ -14,8 +14,12 @@
 //   "caller supplied it" from "omitted" in order to record provenance
 //   (user vs assumption vs engine_constant). The effective defaults are
 //   documented on each field; see normalize.ts for the resolution.
-// - Unknown keys are STRIPPED (zod v4 default object behavior —
-//   deliberately NOT .strict()).
+// - Unknown keys are REJECTED (z.strictObject): a misspelled or
+//   unrecognized field fails validation with `invalid_input` naming
+//   the key, instead of being silently stripped — so a mistyped
+//   field can never silently drop intended income. This agrees
+//   with the published MCP JSON Schema (additionalProperties:
+//   false in tools.ts).
 // - NaN / Infinity are rejected by z.number() itself in zod v4, and
 //   every numeric field also carries .finite() for explicitness.
 // - Absurd values are rejected: any dollar amount > $100,000,000;
@@ -40,7 +44,7 @@ const age = z.number().int().finite().min(18).max(120);
 const percent = (min: number, max: number) =>
   z.number().finite().min(min).max(max);
 
-export const RetirementQuestionInputs = z.object({
+export const RetirementQuestionInputs = z.strictObject({
   // --- Essential: required keys (explicit 0 allowed). ---
   /** Pre-tax retirement balances (401(k), traditional IRA, …), dollars. */
   pretax: dollars,

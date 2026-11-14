@@ -265,10 +265,23 @@ export function normalizeInputs(
       return { ok: false, error: missingInputError(ordered) };
     }
     // Field names + messages only — never the caller's values.
-    const details = issues.map((issue) => ({
-      field: issue.path.length > 0 ? issue.path.join(".") : "(input)",
-      message: issue.message,
-    }));
+    // An unrecognized_keys issue carries the rejected names in
+    // `keys` (its path is empty), so expand it to one detail per
+    // rejected key: the error names the property it rejected.
+    const details = issues.flatMap((issue) => {
+      if (issue.code === "unrecognized_keys") {
+        return issue.keys.map((key) => ({
+          field: key,
+          message: issue.message,
+        }));
+      }
+      return [
+        {
+          field: issue.path.length > 0 ? issue.path.join(".") : "(input)",
+          message: issue.message,
+        },
+      ];
+    });
     const fields = [...new Set(details.map((d) => d.field))];
     return {
       ok: false,
