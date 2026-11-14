@@ -2722,6 +2722,33 @@ export function RetirementCalc({
   // the ending balance renders as the plain figure.
   const projectionAtRisk =
     projection != null && projection.hasRetiredYears && !projection.neverRunsOut;
+// Passed flags for the tab badges (2026-11-09, green ✓): the
+  // mirror of the at-risk flags — a tab shows its green ✓ only
+  // when it has a computed result AND passes. A null Historical /
+  // Monte Carlo engine shows no badge either way (same as its
+  // at-risk badge); the no-retired-years Projection likewise
+  // shows neither badge. Max Spending follows the same
+  // last-known-state fallback the verdict reads, so a tab badge
+  // and the verdict can never disagree.
+  const projectionPassed =
+    projection != null && projection.hasRetiredYears && projection.neverRunsOut;
+  const historicalPassed = historical != null && !historicalAtRisk;
+  const monteCarloPassed = monteCarlo != null && !monteCarloAtRisk;
+  const maxSpendingPassed = !maxSpendingAtRisk;
+
+  // Verdict (2026-11-09, four-pass): "Succeeds" only when all four
+  // engine tabs pass. The badge reads the four at-risk flags above
+  // exactly as the tab badges do — never re-derived — so the
+  // verdict and the tabs can never disagree: a steady path that
+  // succeeds while a stress test fails is "At risk", not
+  // "Succeeds". A null Historical/Monte Carlo engine is not at
+  // risk (same as its tab badge); Max Spending follows its
+  // existing last-known-state fallback.
+  const verdictAtRisk =
+    projection != null &&
+    projection.hasRetiredYears &&
+    projection.neverRunsOut &&
+    (historicalAtRisk || monteCarloAtRisk || maxSpendingAtRisk);
 
   // Short-form at-risk explanations for the engine tabs (the pill
   // tooltips carry the full version). Null for a healthy tab — a
@@ -3987,8 +4014,10 @@ export function RetirementCalc({
       {/* Plan verdict (2026-11-09, "Both"): a glanceable
           verdict at the top of the view — a big "lasts until"
           headline with a verdict badge right after it
-          on the same line (green "Succeeds" when the plan
-          succeeds, red "Falls short" when it falls short),
+          on the same line (green "Succeeds" only when all
+          four engine tabs pass, amber "At risk" when the
+          steady path succeeds but a stress test fails, red
+          "Falls short" when the steady path itself falls short),
           plus what's left at the end age below, so the
           verdict reads once and how comfortably the plan
           succeeds is visible in one glance. (The badge once
@@ -3996,7 +4025,7 @@ export function RetirementCalc({
           repeating the same words; the dedup build folded it
           in after the headline, and the badge is deliberately
           big and bright — text-base bold on a solid accent /
-          bad / dim fill with surface-coloured text — so it
+          warn / bad / dim fill with surface-coloured text — so it
           holds its own beside the 3xl/4xl headline.) The
           plan-summary sentence renders inside this panel as a
           small muted line under the amount-left line (it once
@@ -4015,8 +4044,18 @@ export function RetirementCalc({
           is the ending balance at the end age. It updates live
           with every edit, like every other result here, and
           renders nothing while the inputs are invalid (there
-          is no Projection result to state truthfully). One
-          third state (2026-11-09, round-9 SHOULD-5): when the
+          is no Projection result to state truthfully). The
+          badge is not the Projection result alone (2026-11-09,
+          four-pass): "Succeeds" also requires the Historical,
+          Monte Carlo, and Max Spending tabs to pass, read from
+          their existing at-risk flags, so the verdict can never
+          contradict a tab badge; the "At risk" state names the
+          failing test(s) in the ⓘ after the badge, reusing
+          the tabs' own at-risk explanations; the steady-return note lives in that ⓘ too. The headline, the
+          amount-left line, and the Projection tab's "Money
+          lasts to" stay judged by neverRunsOut/shortfallAge
+          alone. One further state (2026-11-09, round-9
+          SHOULD-5): when the
           retirement age is past the end age, no retired year
           was priced at all (the Projection result's
           hasRetiredYears is false), so the block shows the
@@ -4048,16 +4087,38 @@ export function RetirementCalc({
                 No verdict
               </span>
             ) : projection.neverRunsOut ? (
-              <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
-                <span aria-hidden="true">✓</span>
-                Succeeds
-              </span>
+              verdictAtRisk ? (
+                <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--warn)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
+                  <span aria-hidden="true">⚠</span>
+                  At risk
+                </span>
+              ) : (
+                <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
+                  <span aria-hidden="true">✓</span>
+                  Succeeds
+                </span>
+              )
             ) : (
               <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--bad)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
                 <span aria-hidden="true">✗</span>
                 Falls short
               </span>
             )}
+            <ExplainerInfoTip
+              id="retirement.verdict"
+              label="Plan verdict"
+              align="center"
+            >
+              {verdictAtRisk &&
+                [tabTips.historical, tabTips.montecarlo, tabTips.maxspending]
+                  .filter((tip): tip is string => tip != null)
+                  .map((tip) => (
+                    <p key={tip}>{tip}</p>
+                  ))}
+              <p>
+                {`Projection at a steady ${(expected * 100).toFixed(2)}% real return — the same figures as the Projection tab below.`}
+              </p>
+            </ExplainerInfoTip>
           </div>
           <p className="tnum mt-2 text-base leading-relaxed">
             <span className={keyFigureCls}>{fmt(projection.ending)}</span>
@@ -4789,12 +4850,12 @@ export function RetirementCalc({
       >
         {(
           [
-            ["projection", "Projection", projectionAtRisk],
-            ["historical", "Historical", historicalAtRisk],
-            ["montecarlo", "Monte Carlo", monteCarloAtRisk],
-            ["maxspending", "Max Spending", maxSpendingAtRisk],
-          ] as [Tab, string, boolean][]
-        ).map(([t, label, atRisk]) => {
+            ["projection", "Projection", projectionAtRisk, projectionPassed],
+            ["historical", "Historical", historicalAtRisk, historicalPassed],
+            ["montecarlo", "Monte Carlo", monteCarloAtRisk, monteCarloPassed],
+            ["maxspending", "Max Spending", maxSpendingAtRisk, maxSpendingPassed],
+          ] as [Tab, string, boolean, boolean][]
+        ).map(([t, label, atRisk, passed]) => {
           const selected = tab === t;
           const tip = atRisk ? tabTips[t] : null;
           const tipOpen = tip != null && tipTab === t;
@@ -4802,7 +4863,13 @@ export function RetirementCalc({
           <button
             key={t}
             type="button"
-            aria-label={atRisk ? `${label} engine — at risk` : `${label} engine`}
+            aria-label={
+              atRisk
+                ? `${label} engine — at risk`
+                : passed
+                  ? `${label} engine — passed`
+                  : `${label} engine`
+            }
             aria-pressed={selected}
             aria-describedby={tipOpen ? `rc-tab-tip-${t}` : undefined}
             onClick={() => setTab(t)}
@@ -4851,6 +4918,16 @@ export function RetirementCalc({
                 style={{ backgroundColor: "#dc2626", color: "#ffffff" }}
               >
                 ⚠
+              </span>
+            )}
+            {!atRisk && passed && (
+              <span
+                aria-hidden="true"
+                data-pass-badge={t}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] leading-none"
+                style={{ backgroundColor: "var(--accent)", color: "#ffffff" }}
+              >
+                ✓
               </span>
             )}
             {tipOpen && tip && (
