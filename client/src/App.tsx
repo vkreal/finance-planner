@@ -6108,6 +6108,312 @@ export function App() {
               )}
             </section>
 
+            {/* monthly cash out — one number per month */}
+            <section id="section-cash-out" aria-label="Monthly cash out" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-cash-out")}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="display text-xl font-semibold">Monthly cash out</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className={btnGhost}
+                    onClick={() => openNewItem(month)}
+                  >
+                    + Itemize a month
+                  </button>
+                  <button
+                    type="button"
+                    className={btnAdd}
+                    onClick={() =>
+                      openSummaryForm(
+                        month,
+                        data.summaries.find((s) => s.month === month)?.cashOutCents,
+                      )
+                    }
+                  >
+                    {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
+                  </button>
+                </div>
+              </div>
+              <Explainer
+                id="spending.cashOut"
+                label="Monthly cash out"
+                hideToggle
+                className="mt-1"
+                summary="One number per month — everything that left checking; if a month has both a total and items, the items win."
+              >
+                <p>
+                  The simple way: one number per month — everything that left
+                  checking. For a month with an entered total, that total is
+                  the month's cash out and spending base; any transactions
+                  recorded for that month are not added on top of it. Or
+                  itemize a month instead: add line items and their sum
+                  becomes that month's cash out. If a month has both, the
+                  items win and the entered total stays below as a reference
+                  so you can reconcile the difference; deleting all the items
+                  returns the month to its entered total.
+                </p>
+              </Explainer>
+
+              {showSummaryForm && (
+                <form onSubmit={submitSummary} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <h3 className="display text-lg font-semibold">
+                    {data.summaries.some((s) => s.month === sMonth)
+                      ? "Edit month's cash out"
+                      : "Enter month's cash out"}
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="s-month" className={labelCls}>Month</label>
+                      <input id="s-month" type="month" required className={inputCls} value={sMonth} onChange={(e) => setSMonth(e.target.value)} />
+                    </div>
+                    <div>
+                      <label htmlFor="s-amount" className={labelCls}>Total cash out ($)</label>
+                      <input id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
+                    </div>
+                  </div>
+                  <p className="text-sm text-[var(--dim)]">
+                    Everything that left checking in {monthLabel(sMonth || month)} —
+                    bills, card payments, all of it, as one total.
+                  </p>
+                  {summaryError && <p className="text-sm text-[var(--bad)]">{summaryError}</p>}
+                  <div className="flex gap-2">
+                    <button type="submit" className={btnPrimary} disabled={upsertSummary.isPending}>
+                      Save cash out
+                    </button>
+                    <button type="button" className={btnGhost} onClick={() => { setShowSummaryForm(false); setSummaryEpoch(null); }}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {showItemForm && (
+                <form onSubmit={submitItem} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <h3 className="display text-lg font-semibold">
+                    {editingItemId ? "Edit cash out item" : "Add cash out item"}
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="ci-date" className={labelCls}>Date cash went out</label>
+                      <input id="ci-date" type="date" required className={inputCls} value={iDate} onChange={(e) => setIDate(e.target.value)} />
+                    </div>
+                    <div>
+                      <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
+                      <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="ci-desc" className={labelCls}>Name</label>
+                    <CategoryField
+                      id="ci-desc"
+                      value={iDesc}
+                      options={cashOutNameOptions}
+                      onChange={setIDesc}
+                      customLabel="Add a new name…"
+                      customPlaceholder="Type a new name"
+                      customAriaLabel="New name"
+                      placeholderOption="Choose a name…"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
+                    <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
+                  </div>
+                  <p className="text-sm text-[var(--dim)]">
+                    Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
+                    items becomes that month's cash out everywhere — Quick
+                    view, true cost, and the explorer.
+                  </p>
+                  {itemError && <p className="text-sm text-[var(--bad)]">{itemError}</p>}
+                  <div className="flex gap-2">
+                    <button type="submit" className={btnPrimary} disabled={addCashOutItem.isPending || updateCashOutItem.isPending}>
+                      {editingItemId ? "Save changes" : "Add item"}
+                    </button>
+                    <button type="button" className={btnGhost} onClick={resetItemForm}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {data.cashOutMonths.length === 0 && !showSummaryForm && !showItemForm && (
+                <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
+                  No monthly totals entered yet. If you'd rather not track
+                  individual transactions, enter one cash-out number per
+                  month here — or itemize a month with line items that add
+                  up to it.
+                </p>
+              )}
+              {data.cashOutMonths.length > 0 && (
+                <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+                  {[...data.cashOutMonths].reverse().map((cm) => {
+                    const expanded = cashOutMonthExpanded(cm.month);
+                    const hasBoth =
+                      cm.enteredCashOutCents != null && cm.itemsCount > 0;
+                    return (
+                      <li key={cm.month} className="p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <button
+                            type="button"
+                            className="text-left text-base font-medium underline-offset-2 hover:underline"
+                            aria-label={`View ${monthLabel(cm.month)}`}
+                            onClick={() => setMonth(cm.month)}
+                          >
+                            {monthLabel(cm.month)}
+                            {cm.month === month && (
+                              <span className="ml-2 text-xs font-normal text-[var(--accent)]">Viewing</span>
+                            )}
+                          </button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="tnum text-base font-medium">{fmt(cm.resolvedCashOutCents)}</span>
+                            <button
+                              type="button"
+                              aria-expanded={expanded}
+                              aria-label={`${expanded ? "Hide" : "Show"} items for ${monthLabel(cm.month)}`}
+                              className="px-1 py-1 text-sm text-[var(--accent)]"
+                              onClick={() => toggleCashOutMonth(cm.month)}
+                            >
+                              {expanded ? "Hide items" : cm.itemsCount > 0 ? "Show items" : "Itemize"}
+                            </button>
+                            {cm.enteredCashOutCents != null && (
+                              <>
+                                <button type="button" aria-label={`Edit cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openSummaryForm(cm.month, cm.enteredCashOutCents ?? undefined)}>
+                                  Edit
+                                </button>
+                                {confirmDeleteSummaryMonth !== cm.month && (
+                                  <button type="button" aria-label={`Delete cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteSummaryMonth(cm.month)}>
+                                    ✕
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {confirmDeleteSummaryMonth === cm.month && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-[var(--bad)]">
+                              Delete {monthLabel(cm.month)}?
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Confirm delete cash out for ${monthLabel(cm.month)}`}
+                              className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                              disabled={deleteSummary.isPending}
+                              onClick={() => {
+                                deleteSummary.mutate(cm.month);
+                                setConfirmDeleteSummaryMonth(null);
+                              }}
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Cancel delete cash out for ${monthLabel(cm.month)}`}
+                              className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                              onClick={() => setConfirmDeleteSummaryMonth(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {cm.itemsCount > 0 && (
+                          <p className="mt-0.5 text-xs text-[var(--dim)]">
+                            from {cm.itemsCount} item{cm.itemsCount === 1 ? "" : "s"}
+                          </p>
+                        )}
+                        {hasBoth && (
+                          <p className="tnum mt-0.5 text-xs text-[var(--dim)]">
+                            Entered total {fmt(cm.enteredCashOutCents ?? 0)} · Items{" "}
+                            {fmt(cm.itemsTotalCents)} · Difference{" "}
+                            {fmtSigned(cm.itemsTotalCents - (cm.enteredCashOutCents ?? 0))}
+                          </p>
+                        )}
+                        {expanded && (
+                          <div className="mt-3 border-t-2 border-[var(--dim)] pt-3">
+                            {cm.items.length === 0 ? (
+                              <p className="text-sm text-[var(--dim)]">
+                                No items yet for {monthLabel(cm.month)} — add
+                                the first one and it starts rolling up right away.
+                              </p>
+                            ) : (
+                              <ul className="divide-y divide-[var(--border)]">
+                                {/* Latest paid first: items arrive day-ascending, so render a copy sorted by paid day descending (newest entry first within the same day). */}
+                                {[...cm.items]
+                                  .sort((a, b) => b.day - a.day || b.id - a.id)
+                                  .map((it) => (
+                                  <li key={it.id} className="py-2">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="text-base">
+                                          {it.description}{" "}
+                                          <span className="text-sm text-[var(--dim)] opacity-40">
+                                            · paid on the {ordinalDay(it.day)}
+                                          </span>
+                                        </p>
+                                        {it.note && (
+                                          <p className="text-xs text-[var(--dim)]">{it.note}</p>
+                                        )}
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
+                                        <button type="button" aria-label={`Edit ${it.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditItem(it)}>
+                                          Edit
+                                        </button>
+                                        {confirmDeleteCashOutItemId !== it.id && (
+                                          <button type="button" aria-label={`Delete ${it.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteCashOutItemId(it.id)}>
+                                            ✕
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {confirmDeleteCashOutItemId === it.id && (
+                                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                                        <span className="text-sm text-[var(--bad)]">
+                                          Delete {it.description}?
+                                        </span>
+                                        <button
+                                          type="button"
+                                          aria-label={`Confirm delete ${it.description}`}
+                                          className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                                          disabled={deleteCashOutItem.isPending}
+                                          onClick={() => {
+                                            deleteCashOutItem.mutate(it.id);
+                                            setConfirmDeleteCashOutItemId(null);
+                                          }}
+                                        >
+                                          Delete
+                                        </button>
+                                        <button
+                                          type="button"
+                                          aria-label={`Cancel delete ${it.description}`}
+                                          className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                                          onClick={() => setConfirmDeleteCashOutItemId(null)}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            <button
+                              type="button"
+                              className="mt-2 text-sm font-medium text-[var(--accent)]"
+                              aria-label={`Add item for ${monthLabel(cm.month)}`}
+                              onClick={() => openNewItem(cm.month)}
+                            >
+                              + Add item
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
             {actionMsg && (
               <p className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--accent-soft)] px-3 py-2 text-sm">
                 {actionMsg}
@@ -6615,312 +6921,6 @@ export function App() {
                   ? ` — set-asides less smoothed-bill payments, accumulated since ${monthLabel(data.reserveStartMonth)}.`
                   : "."}
               </p>
-            </section>
-
-            {/* monthly cash out — one number per month */}
-            <section id="section-cash-out" aria-label="Monthly cash out" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-cash-out")}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-xl font-semibold">Monthly cash out</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={btnGhost}
-                    onClick={() => openNewItem(month)}
-                  >
-                    + Itemize a month
-                  </button>
-                  <button
-                    type="button"
-                    className={btnAdd}
-                    onClick={() =>
-                      openSummaryForm(
-                        month,
-                        data.summaries.find((s) => s.month === month)?.cashOutCents,
-                      )
-                    }
-                  >
-                    {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
-                  </button>
-                </div>
-              </div>
-              <Explainer
-                id="spending.cashOut"
-                label="Monthly cash out"
-                hideToggle
-                className="mt-1"
-                summary="One number per month — everything that left checking; if a month has both a total and items, the items win."
-              >
-                <p>
-                  The simple way: one number per month — everything that left
-                  checking. For a month with an entered total, that total is
-                  the month's cash out and spending base; any transactions
-                  recorded for that month are not added on top of it. Or
-                  itemize a month instead: add line items and their sum
-                  becomes that month's cash out. If a month has both, the
-                  items win and the entered total stays below as a reference
-                  so you can reconcile the difference; deleting all the items
-                  returns the month to its entered total.
-                </p>
-              </Explainer>
-
-              {showSummaryForm && (
-                <form onSubmit={submitSummary} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <h3 className="display text-lg font-semibold">
-                    {data.summaries.some((s) => s.month === sMonth)
-                      ? "Edit month's cash out"
-                      : "Enter month's cash out"}
-                  </h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="s-month" className={labelCls}>Month</label>
-                      <input id="s-month" type="month" required className={inputCls} value={sMonth} onChange={(e) => setSMonth(e.target.value)} />
-                    </div>
-                    <div>
-                      <label htmlFor="s-amount" className={labelCls}>Total cash out ($)</label>
-                      <input id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
-                    </div>
-                  </div>
-                  <p className="text-sm text-[var(--dim)]">
-                    Everything that left checking in {monthLabel(sMonth || month)} —
-                    bills, card payments, all of it, as one total.
-                  </p>
-                  {summaryError && <p className="text-sm text-[var(--bad)]">{summaryError}</p>}
-                  <div className="flex gap-2">
-                    <button type="submit" className={btnPrimary} disabled={upsertSummary.isPending}>
-                      Save cash out
-                    </button>
-                    <button type="button" className={btnGhost} onClick={() => { setShowSummaryForm(false); setSummaryEpoch(null); }}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {showItemForm && (
-                <form onSubmit={submitItem} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <h3 className="display text-lg font-semibold">
-                    {editingItemId ? "Edit cash out item" : "Add cash out item"}
-                  </h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="ci-date" className={labelCls}>Date cash went out</label>
-                      <input id="ci-date" type="date" required className={inputCls} value={iDate} onChange={(e) => setIDate(e.target.value)} />
-                    </div>
-                    <div>
-                      <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
-                      <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
-                    </div>
-                  </div>
-                  <div>
-                    <label htmlFor="ci-desc" className={labelCls}>Name</label>
-                    <CategoryField
-                      id="ci-desc"
-                      value={iDesc}
-                      options={cashOutNameOptions}
-                      onChange={setIDesc}
-                      customLabel="Add a new name…"
-                      customPlaceholder="Type a new name"
-                      customAriaLabel="New name"
-                      placeholderOption="Choose a name…"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
-                    <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
-                  </div>
-                  <p className="text-sm text-[var(--dim)]">
-                    Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
-                    items becomes that month's cash out everywhere — Quick
-                    view, true cost, and the explorer.
-                  </p>
-                  {itemError && <p className="text-sm text-[var(--bad)]">{itemError}</p>}
-                  <div className="flex gap-2">
-                    <button type="submit" className={btnPrimary} disabled={addCashOutItem.isPending || updateCashOutItem.isPending}>
-                      {editingItemId ? "Save changes" : "Add item"}
-                    </button>
-                    <button type="button" className={btnGhost} onClick={resetItemForm}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {data.cashOutMonths.length === 0 && !showSummaryForm && !showItemForm && (
-                <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
-                  No monthly totals entered yet. If you'd rather not track
-                  individual transactions, enter one cash-out number per
-                  month here — or itemize a month with line items that add
-                  up to it.
-                </p>
-              )}
-              {data.cashOutMonths.length > 0 && (
-                <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
-                  {[...data.cashOutMonths].reverse().map((cm) => {
-                    const expanded = cashOutMonthExpanded(cm.month);
-                    const hasBoth =
-                      cm.enteredCashOutCents != null && cm.itemsCount > 0;
-                    return (
-                      <li key={cm.month} className="p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <button
-                            type="button"
-                            className="text-left text-base font-medium underline-offset-2 hover:underline"
-                            aria-label={`View ${monthLabel(cm.month)}`}
-                            onClick={() => setMonth(cm.month)}
-                          >
-                            {monthLabel(cm.month)}
-                            {cm.month === month && (
-                              <span className="ml-2 text-xs font-normal text-[var(--accent)]">Viewing</span>
-                            )}
-                          </button>
-                          <div className="flex shrink-0 items-center gap-1">
-                            <span className="tnum text-base font-medium">{fmt(cm.resolvedCashOutCents)}</span>
-                            <button
-                              type="button"
-                              aria-expanded={expanded}
-                              aria-label={`${expanded ? "Hide" : "Show"} items for ${monthLabel(cm.month)}`}
-                              className="px-1 py-1 text-sm text-[var(--accent)]"
-                              onClick={() => toggleCashOutMonth(cm.month)}
-                            >
-                              {expanded ? "Hide items" : cm.itemsCount > 0 ? "Show items" : "Itemize"}
-                            </button>
-                            {cm.enteredCashOutCents != null && (
-                              <>
-                                <button type="button" aria-label={`Edit cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openSummaryForm(cm.month, cm.enteredCashOutCents ?? undefined)}>
-                                  Edit
-                                </button>
-                                {confirmDeleteSummaryMonth !== cm.month && (
-                                  <button type="button" aria-label={`Delete cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteSummaryMonth(cm.month)}>
-                                    ✕
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        {confirmDeleteSummaryMonth === cm.month && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="text-sm text-[var(--bad)]">
-                              Delete {monthLabel(cm.month)}?
-                            </span>
-                            <button
-                              type="button"
-                              aria-label={`Confirm delete cash out for ${monthLabel(cm.month)}`}
-                              className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
-                              disabled={deleteSummary.isPending}
-                              onClick={() => {
-                                deleteSummary.mutate(cm.month);
-                                setConfirmDeleteSummaryMonth(null);
-                              }}
-                            >
-                              Delete
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Cancel delete cash out for ${monthLabel(cm.month)}`}
-                              className="rounded border border-[var(--border)] px-2 py-1 text-sm"
-                              onClick={() => setConfirmDeleteSummaryMonth(null)}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                        {cm.itemsCount > 0 && (
-                          <p className="mt-0.5 text-xs text-[var(--dim)]">
-                            from {cm.itemsCount} item{cm.itemsCount === 1 ? "" : "s"}
-                          </p>
-                        )}
-                        {hasBoth && (
-                          <p className="tnum mt-0.5 text-xs text-[var(--dim)]">
-                            Entered total {fmt(cm.enteredCashOutCents ?? 0)} · Items{" "}
-                            {fmt(cm.itemsTotalCents)} · Difference{" "}
-                            {fmtSigned(cm.itemsTotalCents - (cm.enteredCashOutCents ?? 0))}
-                          </p>
-                        )}
-                        {expanded && (
-                          <div className="mt-3 border-t-2 border-[var(--dim)] pt-3">
-                            {cm.items.length === 0 ? (
-                              <p className="text-sm text-[var(--dim)]">
-                                No items yet for {monthLabel(cm.month)} — add
-                                the first one and it starts rolling up right away.
-                              </p>
-                            ) : (
-                              <ul className="divide-y divide-[var(--border)]">
-                                {/* Latest paid first: items arrive day-ascending, so render a copy sorted by paid day descending (newest entry first within the same day). */}
-                                {[...cm.items]
-                                  .sort((a, b) => b.day - a.day || b.id - a.id)
-                                  .map((it) => (
-                                  <li key={it.id} className="py-2">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <p className="text-base">
-                                          {it.description}{" "}
-                                          <span className="text-sm text-[var(--dim)] opacity-40">
-                                            · paid on the {ordinalDay(it.day)}
-                                          </span>
-                                        </p>
-                                        {it.note && (
-                                          <p className="text-xs text-[var(--dim)]">{it.note}</p>
-                                        )}
-                                      </div>
-                                      <div className="flex shrink-0 items-center gap-1">
-                                        <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
-                                        <button type="button" aria-label={`Edit ${it.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditItem(it)}>
-                                          Edit
-                                        </button>
-                                        {confirmDeleteCashOutItemId !== it.id && (
-                                          <button type="button" aria-label={`Delete ${it.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteCashOutItemId(it.id)}>
-                                            ✕
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-                                    {confirmDeleteCashOutItemId === it.id && (
-                                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                                        <span className="text-sm text-[var(--bad)]">
-                                          Delete {it.description}?
-                                        </span>
-                                        <button
-                                          type="button"
-                                          aria-label={`Confirm delete ${it.description}`}
-                                          className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
-                                          disabled={deleteCashOutItem.isPending}
-                                          onClick={() => {
-                                            deleteCashOutItem.mutate(it.id);
-                                            setConfirmDeleteCashOutItemId(null);
-                                          }}
-                                        >
-                                          Delete
-                                        </button>
-                                        <button
-                                          type="button"
-                                          aria-label={`Cancel delete ${it.description}`}
-                                          className="rounded border border-[var(--border)] px-2 py-1 text-sm"
-                                          onClick={() => setConfirmDeleteCashOutItemId(null)}
-                                        >
-                                          Cancel
-                                        </button>
-                                      </div>
-                                    )}
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                            <button
-                              type="button"
-                              className="mt-2 text-sm font-medium text-[var(--accent)]"
-                              aria-label={`Add item for ${monthLabel(cm.month)}`}
-                              onClick={() => openNewItem(cm.month)}
-                            >
-                              + Add item
-                            </button>
-                          </div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
             </section>
 
             {/* monthly bills — breakdown of cash out, never added again */}
