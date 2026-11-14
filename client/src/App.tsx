@@ -3040,6 +3040,29 @@ function YearTrueCostChart({
       };
     });
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Phone-width tick angle: below the sm breakpoint the 620px
+     floor is dropped (see the wrapper below) and the whole year
+     squeezes into the phone's width — about 24px per month — so
+     the horizontal month labels overlap ("OctNovDec (est" ran
+     together) and the last one clips at the right edge. On a
+     narrow screen the ticks angle -45° and end-anchor instead,
+     each label slanting down-left from its tick so neighbours
+     clear each other and nothing extends past the right edge;
+     the XAxis gets the extra height the angled labels need.
+     Keyed on the same 640px sm breakpoint as the floor, via
+     matchMedia so it only re-renders when the breakpoint is
+     crossed. Desktop rendering is untouched. */
+  const [isNarrow, setIsNarrow] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 639px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const onChange = () => setIsNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   /* Whether any plotted month's Cash out bar is actually split —
      drives the extra legend entry, so it appears only when a
      split is on screen. */
@@ -3224,6 +3247,7 @@ function YearTrueCostChart({
                 tickLine={false}
                 axisLine={{ stroke: "var(--border)" }}
                 interval={0}
+                height={isNarrow ? 60 : 30}
                 tick={(tickProps: {
                   x?: number;
                   y?: number;
@@ -3232,13 +3256,13 @@ function YearTrueCostChart({
                 }) => {
                   return (
                     <g
-                      transform={`translate(${tickProps.x ?? 0},${tickProps.y ?? 0})`}
+                      transform={`translate(${tickProps.x ?? 0},${tickProps.y ?? 0})${isNarrow ? " rotate(-45)" : ""}`}
                     >
                       <text
                         x={0}
                         y={0}
-                        dy={12}
-                        textAnchor="middle"
+                        dy={isNarrow ? 6 : 12}
+                        textAnchor={isNarrow ? "end" : "middle"}
                         fontSize={12}
                         fill="var(--text)"
                       >
