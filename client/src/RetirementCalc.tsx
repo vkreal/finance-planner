@@ -3895,11 +3895,12 @@ export function RetirementCalc({
           its own figure and a note explaining why there is no
           verdict; neither the success nor the falls-short
           wording appears in that state. */}
+      <section
+        aria-label="Plan verdict and inputs"
+        className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}
+      >
       {inputs && projection && (
-        <section
-          aria-label="Plan verdict"
-          className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}
-        >
+        <>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <p className="display text-3xl leading-tight font-semibold sm:text-4xl">
               {!projection.hasRetiredYears
@@ -3977,36 +3978,36 @@ export function RetirementCalc({
               end age for a verdict.
             </p>
           )}
-          <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
-            {`Projection at a steady ${(expected * 100).toFixed(2)}% real return — the same figures as the Projection tab below.`}
-          </p>
-        </section>
+          <div className="mt-5 border-t border-[var(--border)] pt-5" />
+        </>
       )}
 
       {/* inputs: the header row is the fold header and stays
           visible whether the form is open or hidden — it
-          carries the "Plan inputs" title, the live
-          plan-summary line under it (the single linked copy —
-          its numbers are taps to their fields), and the fold
-          chevron. Everything under it hides when folded,
-          starting with the action row (Reset / plan status /
-          Save controls) at the top of the panel body, then the
-          autosave note, the baseline notes, and the fields
-          grouped You / Money / Assumptions. Display only,
-          every field keeps its control and behavior exactly
-          as before. */}
-      <section
-        aria-label="Retirement inputs"
-        className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
-      >
+          carries the "Plan inputs" title (with the "Results
+          updated" pill briefly after an edit), the four
+          tiles below it (the collapsed face — the merged
+          Calculated-with content: tiles + strategy band +
+          residual line), and the fold chevron. Everything
+          under the tiles hides when folded, starting with
+          the action row (Reset / plan status / Save controls)
+          at the top of the panel body, then the autosave
+          note, the baseline notes, and the fields grouped
+          You / Money / Assumptions. Display only, every
+          field keeps its control and behavior exactly as
+          before. The verdict banner above is the card's
+          always-visible top (2026-11-13 merge); the fold
+          hides only the body below the tiles. */}
         <div className="flex flex-wrap items-start gap-2">
           <div className="min-w-0">
-            <h2 className="display text-base font-semibold">Plan inputs</h2>
-            {planSummary && (
-              <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
-                {planSummary}
-              </span>
-            )}
+            <h2 className="flex items-center gap-2 text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
+              Plan inputs
+              {resultsFlash && (
+                <span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-semibold text-white">
+                  Results updated
+                </span>
+              )}
+            </h2>
           </div>
           <button
             type="button"
