@@ -3945,13 +3945,24 @@ export function NetWorthView() {
               Include house &amp; mortgage
             </label>
             <span className="text-sm whitespace-nowrap text-[var(--dim)]">
-              {latestPropertyNet != null
-                ? includeProperty
-                  ? `· property net ${fmt(latestPropertyNet)} counted`
-                  : `· property net ${fmt(latestPropertyNet)} not counted`
-                : includeProperty
-                  ? "· property counted"
-                  : "· property not counted"}
+              {latestPropertyNet != null && latest ? (
+                <>
+                  · property net{" "}
+                  <button
+                    type="button"
+                    aria-label={`Edit the house and mortgage values in the ${fmtDateLong(latest.date)} snapshot`}
+                    className={nwTapCls}
+                    onClick={() => openEditSnapshot(latest)}
+                  >
+                    {fmt(latestPropertyNet)}
+                  </button>{" "}
+                  {includeProperty ? "counted" : "not counted"}
+                </>
+              ) : includeProperty ? (
+                "· property counted"
+              ) : (
+                "· property not counted"
+              )}
             </span>
           </div>
           {propertyAccountsWithoutValue.length > 0 && latest && (
