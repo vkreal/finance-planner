@@ -73,11 +73,19 @@ export type CoreTxn = {
      foot the full payment amount.
    - "refund_reversal": the part of a card refund that exceeded
      that bill's unsettled charges and so reverses a settlement
-     already counted in an earlier month; attributedCents is
-     negative and lands in the refund's own month. */
+     already counted in an earlier month — at most what that bill
+     has settled, so a reversal never exceeds the recorded
+     settlements; attributedCents is negative and lands in the
+     refund's own month.
+   - "refund_unmatched": the part of a card refund left over
+     after cancelling that bill's unsettled charges AND reversing
+     everything it had settled — money back beyond what the
+     ledger ever settled, so it is shown on its own line and
+     never described as a reversal; attributedCents is negative
+     and lands in the refund's own month. */
 export type CoreSettlementLine = {
   date: string;
-  kind: "checking_bill" | "card_payment" | "refund_reversal";
+  kind: "checking_bill" | "card_payment" | "refund_reversal" | "refund_unmatched";
   // Display label of the underlying transaction (its description
   // when the dataset carries one, else a generic label).
   label: string;
@@ -89,6 +97,42 @@ export type CoreSettlementLine = {
   chargeLabel: string | null;
   chargeCents: number | null;
 };
+
+/* Detail string for one settlement-basis breakdown line — the
+   wording the explorer drill-down shows. Lives here (not in the
+   handler) so the extended fixtures can pin it verbatim: the
+   handler returns this function's output, so the fixture pins
+   the endpoint string, not a copy. */
+const SETTLEMENT_MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const settlementDayLabel = (date: string): string =>
+  `${SETTLEMENT_MONTHS_SHORT[Number(date.slice(5, 7)) - 1] ?? ""} ${Number(date.slice(8, 10))}`;
+
+export function settlementLineDetail(l: CoreSettlementLine): string {
+  if (l.kind === "checking_bill") {
+    return (
+      `Paid from checking · ${settlementDayLabel(l.date)}` +
+      (l.billName && l.billName !== l.label ? ` · ${l.billName}` : "")
+    );
+  }
+  if (l.kind === "card_payment") {
+    return (
+      `Card payment · ${settlementDayLabel(l.date)} · settles ${l.billName ?? "a smoothed bill"}` +
+      (l.chargeDate
+        ? ` — charged ${settlementDayLabel(l.chargeDate)}${l.chargeLabel && l.chargeLabel !== l.label ? ` (${l.chargeLabel})` : ""}`
+        : "")
+    );
+  }
+  if (l.kind === "refund_unmatched") {
+    return (
+      `Card refund · ${settlementDayLabel(l.date)} · $${(Math.abs(l.attributedCents) / 100).toFixed(2)} exceeds recorded settlements — not matched to an earlier settlement` +
+      (l.billName ? ` of ${l.billName}` : "")
+    );
+  }
+  return (
+    `Card refund · ${settlementDayLabel(l.date)} · reverses part of an earlier settlement` +
+    (l.billName ? ` of ${l.billName}` : "")
+  );
+}
 
 export type CoreMonthlyBill = { id: number; keepLightsOn: number };
 
@@ -469,7 +513,9 @@ export function createSpendingCore<
      charge is treated as settled first. A card refund (a negative
      linked card charge) first cancels that bill's outstanding
      unsettled charges; any remainder reverses a settlement already
-     attributed, in the refund's own month. settledLumps(m) is the
+     attributed, at most what that bill has settled, and the rest
+     is an unmatched excess shown on its own line — never described
+     as a reversal — in the refund's own month. settledLumps(m) is the
      total whose money left checking in m — the ONE correction
      figure every basis uses — and yearlyPaidOut(m) counts a yearly
      payment in its settlement month: checking payments in their
@@ -502,6 +548,14 @@ export function createSpendingCore<
       chargeLabel: string | null;
       chargeCents: number;
     }[] = [];
+    // Per-bill settled total still reversible: every card_payment
+    // / checking_bill attribution adds its cents here, and a
+    // refund's reversal takes at most what its bill has settled.
+    // Without this cap a refund could be described as reversing
+    // more than the ledger ever settled (round-10 F6).
+    const reversibleByBill = new Map<number, number>();
+    const addReversible = (billId: number, cents: number) =>
+      reversibleByBill.set(billId, (reversibleByBill.get(billId) ?? 0) + cents);
     const chronological = [...txns].sort((a, b) =>
       a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
     );
@@ -511,6 +565,7 @@ export function createSpendingCore<
         if (t.sourceType === "checking") {
           addTo(settledByMonth, m, t.amountCents);
           addTo(paidOutByMonth, m, t.amountCents);
+          addReversible(t.yearlyExpenseId, t.amountCents);
           addLine(m, {
             date: t.date,
             kind: "checking_bill",
@@ -544,20 +599,45 @@ export function createSpendingCore<
               refund -= take;
             }
             if (refund > 0) {
-              addTo(settledByMonth, m, -refund);
-              addTo(paidOutByMonth, m, -refund);
-              addLine(m, {
-                date: t.date,
-                kind: "refund_reversal",
-                label: t.description ?? billNameById.get(t.yearlyExpenseId) ?? "Card refund",
-                billId: t.yearlyExpenseId,
-                billName: billNameById.get(t.yearlyExpenseId) ?? null,
-                attributedCents: -refund,
-                transactionCents: t.amountCents,
-                chargeDate: null,
-                chargeLabel: null,
-                chargeCents: null,
-              });
+              // Split the remainder: at most what this bill has
+              // settled reverses a settlement; the rest is an
+              // unmatched excess — same cash total, honest label.
+              const reversible = reversibleByBill.get(t.yearlyExpenseId) ?? 0;
+              const reversal = Math.min(refund, reversible);
+              const unmatched = refund - reversal;
+              if (reversal > 0) {
+                reversibleByBill.set(t.yearlyExpenseId, reversible - reversal);
+                addTo(settledByMonth, m, -reversal);
+                addTo(paidOutByMonth, m, -reversal);
+                addLine(m, {
+                  date: t.date,
+                  kind: "refund_reversal",
+                  label: t.description ?? billNameById.get(t.yearlyExpenseId) ?? "Card refund",
+                  billId: t.yearlyExpenseId,
+                  billName: billNameById.get(t.yearlyExpenseId) ?? null,
+                  attributedCents: -reversal,
+                  transactionCents: t.amountCents,
+                  chargeDate: null,
+                  chargeLabel: null,
+                  chargeCents: null,
+                });
+              }
+              if (unmatched > 0) {
+                addTo(settledByMonth, m, -unmatched);
+                addTo(paidOutByMonth, m, -unmatched);
+                addLine(m, {
+                  date: t.date,
+                  kind: "refund_unmatched",
+                  label: t.description ?? billNameById.get(t.yearlyExpenseId) ?? "Card refund",
+                  billId: t.yearlyExpenseId,
+                  billName: billNameById.get(t.yearlyExpenseId) ?? null,
+                  attributedCents: -unmatched,
+                  transactionCents: t.amountCents,
+                  chargeDate: null,
+                  chargeLabel: null,
+                  chargeCents: null,
+                });
+              }
             }
           }
         }
@@ -572,6 +652,7 @@ export function createSpendingCore<
           remaining -= take;
           addTo(settledByMonth, m, take);
           addTo(paidOutByMonth, m, take);
+          addReversible(o.expenseId, take);
           addLine(m, {
             date: t.date,
             kind: "card_payment",

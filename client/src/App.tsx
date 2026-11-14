@@ -3751,8 +3751,10 @@ export function App() {
      breakdown. The figure counts net settlements in the
      settlement month — a bill charged to a card counts when
      the card payment settles it, not in the charge month, and
-     a refund counts in its own month as a reversal of a
-     previously settled charge — so the breakdown is the month's
+     a refund counts in its own month — the part matching a
+     previously settled charge reverses that settlement, and
+     any part beyond what was ever settled is shown on its
+     own unmatched line — so the breakdown is the month's
      settlement lines from the same spending core (through
      getExplorerMonthLines, the explorer drill-down's read),
      footing exactly to the figure. Session-local view state,
@@ -3919,8 +3921,9 @@ export function App() {
      (unfiltered). The smoothed-bills-paid line opens the
      settlement-basis breakdown panel under the breakdown (below):
      the figure counts net settlements in the settlement month
-     (a refund counts in its own month, as a reversal of a
-     previously settled charge), so a charge-month filter of the
+     (a refund counts in its own month — the part matching a
+     previously settled charge reverses that settlement, the
+     rest is shown as unmatched), so a charge-month filter of the
      Transactions list cannot show it —
      a card charge sits in its charge month carrying the bill
      link, while the checking card payment that settles it (the
@@ -5989,9 +5992,11 @@ export function App() {
                     in its own month, and a bill charged to a card
                     counts when the card payment settles it — not in
                     the month the charge was recorded. A refund counts
-                    here too, as a reversal of a previously settled
-                    charge, so the figure is the month&rsquo;s net
-                    settlements. Each line is the portion of a payment
+                    here too: the part matching a previously settled
+                    charge reverses that settlement, and any part
+                    beyond what was ever settled is shown on its own
+                    line as unmatched, so the figure is the
+                    month&rsquo;s net settlements. Each line is the portion of a payment
                     counted here; a payment&rsquo;s full amount is named
                     in its line when only part of it counts.
                   </p>

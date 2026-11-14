@@ -298,6 +298,7 @@ monthlyBillUpdateOutcome,
 monthlyBillUpdateSet,
 monthsBetween,
 paymentsPerYear,
+settlementLineDetail,
 shiftMonth,
 sortCashOutItems,
 versionInEffect,
@@ -8695,15 +8696,21 @@ export const Actions = {
       // amount), "card_payment" (fullAmountCents is the card
       // payment's full amount and chargeCents the charge this
       // portion settles — either can exceed the line's attributed
-      // amount), or "refund_reversal" (a negative line reversing
-      // part of an earlier settlement; fullAmountCents is the
-      // refund transaction's amount).
+      // amount), "refund_reversal" (a negative line reversing
+      // part of an earlier settlement — at most what that bill
+      // settled, so a reversal never exceeds the recorded
+      // settlements; fullAmountCents is the refund
+      // transaction's amount), or "refund_unmatched" (a negative
+      // line for the part of a refund beyond what that bill ever
+      // settled — shown separately, never described as a
+      // reversal; fullAmountCents is the refund transaction's
+      // amount).
       yearlyPaidOutLines: z.array(
         z.object({
           label: z.string(),
           detail: z.string().nullable(),
           amountCents: z.number(),
-          kind: z.enum(["checking_bill", "card_payment", "refund_reversal"]),
+          kind: z.enum(["checking_bill", "card_payment", "refund_reversal", "refund_unmatched"]),
           billName: z.string().nullable(),
           date: z.string(),
           fullAmountCents: z.number(),
@@ -8798,25 +8805,9 @@ export const Actions = {
       // was recorded — the charge month is context only; the
       // line counts in THIS month, when the money left checking.
       const yearlyPaidOutLines = core.settlementLinesForMonth(m).map((l) => {
-        let detail: string;
-        if (l.kind === "checking_bill") {
-          detail =
-            `Paid from checking · ${dayLabel(l.date)}` +
-            (l.billName && l.billName !== l.label ? ` · ${l.billName}` : "");
-        } else if (l.kind === "card_payment") {
-          detail =
-            `Card payment · ${dayLabel(l.date)} · settles ${l.billName ?? "a smoothed bill"}` +
-            (l.chargeDate
-              ? ` — charged ${dayLabel(l.chargeDate)}${l.chargeLabel && l.chargeLabel !== l.label ? ` (${l.chargeLabel})` : ""}`
-              : "");
-        } else {
-          detail =
-            `Card refund · ${dayLabel(l.date)} · reverses part of an earlier settlement` +
-            (l.billName ? ` of ${l.billName}` : "");
-        }
         return {
           label: l.label,
-          detail,
+          detail: settlementLineDetail(l),
           amountCents: l.attributedCents,
           kind: l.kind,
           billName: l.billName,

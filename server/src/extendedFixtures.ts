@@ -1720,6 +1720,108 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     }),
   },
   {
+    id: "sp-refund-reversal-capped",
+    kind: "spending",
+    note: "Refund reversal is capped at what the bill settled (round-10 F6 — the old walk booked the whole refund remainder as a reversal, so a $120 refund over a $30 settlement read as a $50 reversal). Core A, TestBill: $100 card charge Jan 10, $30 card payment Jan 20, $120 refund Feb 10, $50 refund Mar 10. Jan settles $30 (one card_payment line). Feb's $120 refund first cancels the $70 still outstanding (100 − 30), leaving $50; reversible is only the $30 settled in Jan, so the reversal is min(50, 30) = $30 and the $20 excess is a refund_unmatched line; Feb lines sum −3000 − 2000 = −5000 = yearlyPaidOutForMonth('2026-02'). Mar's $50 refund finds nothing outstanding and nothing reversible left (Jan's $30 was consumed in Feb), so the reversal is $0 and the whole $50 is unmatched; Mar paid out −5000. Core B, NormalBill: $100 charge, $100 payment, $40 Feb refund — the refund is inside the $100 settled, so it is a single refund_reversal line of −4000 with no unmatched line. The unmatched detail is the endpoint string (the handler returns settlementLineDetail verbatim): 'Card refund · Feb 10 · $20.00 exceeds recorded settlements — not matched to an earlier settlement of TestBill' (109 characters), naming the $20.00 excess and containing no 'revers' wording.",
+    expected: {
+      janSettled: 3000,
+      febReversal: -3000,
+      febUnmatched: -2000,
+      febLines: 2,
+      febLineSum: -5000,
+      febPaidOut: -5000,
+      marReversal: 0,
+      marUnmatched: -5000,
+      marLines: 1,
+      marPaidOut: -5000,
+      normalFebReversal: -4000,
+      normalFebUnmatchedLines: 0,
+      normalFebLines: 1,
+      normalFebPaidOut: -4000,
+      unmatchedDetailPhrases: 4,
+      unmatchedDetailReverses: 0,
+      unmatchedDetailLen: 109,
+    },
+    actual: () => {
+      const coreA = createSpendingCore({
+        txns: [
+          { date: "2026-01-10", kind: "spending", sourceType: "card", amountCents: 10000, yearlyExpenseId: 1, description: "TestBill charge" },
+          { date: "2026-01-20", kind: "card_payment", sourceType: "checking", amountCents: 3000, yearlyExpenseId: null, description: "Card payment" },
+          { date: "2026-02-10", kind: "spending", sourceType: "card", amountCents: -12000, yearlyExpenseId: 1, description: "TestBill refund" },
+          { date: "2026-03-10", kind: "spending", sourceType: "card", amountCents: -5000, yearlyExpenseId: 1, description: "TestBill refund 2" },
+        ],
+        yearly: [
+          { id: 1, name: "TestBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+        ],
+        yearlyVersions: [
+          { id: 1, expenseId: 1, effectiveFrom: "2026-01", expectedCents: 12000, frequency: "yearly" },
+        ],
+        summaries: [],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const coreB = createSpendingCore({
+        txns: [
+          { date: "2026-01-10", kind: "spending", sourceType: "card", amountCents: 10000, yearlyExpenseId: 1, description: "NormalBill charge" },
+          { date: "2026-01-20", kind: "card_payment", sourceType: "checking", amountCents: 10000, yearlyExpenseId: null, description: "Card payment" },
+          { date: "2026-02-10", kind: "spending", sourceType: "card", amountCents: -4000, yearlyExpenseId: 1, description: "NormalBill refund" },
+        ],
+        yearly: [
+          { id: 1, name: "NormalBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+        ],
+        yearlyVersions: [
+          { id: 1, expenseId: 1, effectiveFrom: "2026-01", expectedCents: 12000, frequency: "yearly" },
+        ],
+        summaries: [],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const sumKind = (lines: ReturnType<typeof coreA.settlementLinesForMonth>, kind: string) =>
+        lines.filter((l) => l.kind === kind).reduce((s, l) => s + l.attributedCents, 0);
+      const sumAll = (lines: ReturnType<typeof coreA.settlementLinesForMonth>) =>
+        lines.reduce((s, l) => s + l.attributedCents, 0);
+      const febA = coreA.settlementLinesForMonth("2026-02");
+      const marA = coreA.settlementLinesForMonth("2026-03");
+      const febB = coreB.settlementLinesForMonth("2026-02");
+      const unmatchedDetail = settlementLineDetail(
+        febA.find((l) => l.kind === "refund_unmatched")!,
+      );
+      const phrases = [
+        "Card refund · Feb 10",
+        "$20.00 exceeds recorded settlements",
+        "not matched to an earlier settlement",
+        "of TestBill",
+      ];
+      return {
+        janSettled: coreA.yearlyPaidOutForMonth("2026-01"),
+        febReversal: sumKind(febA, "refund_reversal"),
+        febUnmatched: sumKind(febA, "refund_unmatched"),
+        febLines: febA.length,
+        febLineSum: sumAll(febA),
+        febPaidOut: coreA.yearlyPaidOutForMonth("2026-02"),
+        marReversal: sumKind(marA, "refund_reversal"),
+        marUnmatched: sumKind(marA, "refund_unmatched"),
+        marLines: marA.length,
+        marPaidOut: coreA.yearlyPaidOutForMonth("2026-03"),
+        normalFebReversal: sumKind(febB, "refund_reversal"),
+        normalFebUnmatchedLines: febB.filter((l) => l.kind === "refund_unmatched").length,
+        normalFebLines: febB.length,
+        normalFebPaidOut: coreB.yearlyPaidOutForMonth("2026-02"),
+        unmatchedDetailPhrases: phrases.filter((p) => unmatchedDetail.includes(p)).length,
+        unmatchedDetailReverses: unmatchedDetail.split("revers").length - 1,
+        unmatchedDetailLen: unmatchedDetail.length,
+      };
+    },
+  },
+  {
     id: "sp-txn-month-eff",
     kind: "spending",
     note: "Jan 2025 (transaction-only month, cash basis — build v59 F1/F2): incurred = $500.00 spending + $200.00 BiWater + $300.00 card-paid QuarterFee = $1,000.00 (reported, no longer the True cost basis); cash out counts checking only = $700.00 (the card charge is not cash out); lumps = the yearly money whose cash left checking in January = BiWater's $200.00 only — QuarterFee's $300.00 card charge is settled by February's card payment, so its correction lands in February; smoothed = cash out 700 − 200 settled + 400 set-aside = $900.00. (Pre-v59 this pinned the incurred basis: 1000 − 500 + 400 = $900.00 — the same total by coincidence, with the card charge counted in both incurred and lumps.)",
