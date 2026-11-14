@@ -9,7 +9,7 @@
 
 [![Live demo](https://img.shields.io/badge/▶_Live_Demo-Try_it_in_your_browser-2ea44f?style=for-the-badge)](https://vkreal.github.io/finance-planner/)
 [![Pages build](https://github.com/vkreal/finance-planner/actions/workflows/pages.yml/badge.svg)](https://github.com/vkreal/finance-planner/actions)
-[![Runs in your browser](https://img.shields.io/badge/data-100%25_in_your_browser-blue?style=for-the-badge)](#-privacy)
+[![Runs in your browser](https://img.shields.io/badge/data-100%25_in_your_browser-blue?style=for-the-badge)](#-features)
 
 <br/>
 
@@ -63,7 +63,7 @@ A single-year tax sandbox. Type in a year's interest, dividends, stock sales, an
 | --- | --- |
 | 🧮 **A real tax engine, not formulas in cells** | Federal brackets, standard deductions, capital-gains stacking, ACA credits, and IRMAA — computed from versioned law tables, so a new tax year is a new table, not a rewrite. |
 | 🎯 **Accuracy-tested** | The engine ships with an extensive fixture suite — hundreds of pinned cases — that runs against every change. |
-| 🔐 **Encrypted backups** | Export and restore use an authenticated-encryption file format that works identically in the browser and server builds. Plain-text backups are labelled as unauthenticated. |
+| 🔐 **Encrypted backups** | Export and restore use an authenticated-encryption file format that works identically in the browser and server builds. Plain-text backups are labelled as unauthenticated. One custody difference: the packaged (browser-only) build generates a fresh RSA-4096 key pair per install, so a vault backup opens only on its own install — or with its exported private key. |
 | 📄 **CSV import / export** | With safeguards against spreadsheet formula injection and malformed files. |
 | 🕵️ **Privacy by construction** | The public demo contains only fictional sample data, and the hosted version keeps everything in your browser. |
 

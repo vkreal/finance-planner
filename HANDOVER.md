@@ -58,17 +58,24 @@ decision:
   separately.
 - The December console's gain harvest is sized from the pool and basis
   facts it is given; the plan march sizes its harvest from the pool
-  REMAINING after the year's spending and tax sales. (Known defect — see
-  below — the console can harvest gains the year's sales already realized
-  when spending sells the pool down.)
+  REMAINING after the year's spending and tax sales. (Fixed by build v113 —
+  the console now sizes the harvest from the pool left after the year's
+  typed sale, matching the plan march, so it can no longer harvest gains
+  the sale already realized.)
 - The December console's entering capital-loss carryforward resolves from
   the record only when the console's tax year IS the plan's first year.
-  Changing the tax year in the form does not re-resolve the overlay, and
-  the save flags are grouped (one flag per group of fields), so editing
-  one field can save its untouched siblings. (Known defects — see below.)
-- The loss ledger only runs when an entering carryforward was supplied;
-  with no entering carryforward, a new current-year loss returns a zero
-  carry-out by design.
+  Changing the tax year in the form re-resolves the year-dependent overlays:
+  the year-change handler flushes any save queued at the old year and resets
+  the year-dependent edited flags, so the new year's re-resolution governs
+  (fixed by the round-6 build; pinned by fixture
+  `dec-stored-carryin-switchback-typed`). The carry-in and harvest edited
+  flags are per field, so editing one field saves only that field — grouped
+  flags survive only for the year-to-date group (see below).
+- The loss ledger's year-end reconciliation runs when an entering carryforward
+  was supplied, and also when the year's own total gains are a net loss: even
+  with no carry-in entered, a newly realized loss banks its reconciled
+  carry-out instead of dropping it (`server/src/taxEngine.ts`, `ledgerOn ||
+  grossGains < 0`).
 - The state capital-gains excise and the federal gain bases can differ
   (distinct federal and state gain bases; state-attributable portions of
   losses and gains are tracked separately).
@@ -91,9 +98,11 @@ decision:
   adding up line by line, no more depth unless asked. Charts (stacks,
   bars, lines, areas) over number-heavy tables.
 - Build discipline: one builder at a time; three consecutive clean
-  internal review passes per build (external reviews never count); the
-  user is final feel authority. Provenance taps on NEW displayed figures
-  wherever possible. Push each queued build once built and verified clean,
+  internal review passes per build (external reviews never count) — except
+  small UI moves, which get ONE clean review pass plus a rendered feel pass
+  (one-pass rule, 2026-11-13; the three-pass bar stays for engine work and
+  anything that changes figures); the user is final feel authority.
+  Provenance taps on NEW displayed figures wherever possible. Push each queued build once built and verified clean,
   no per-push word; if verification fails, do not push — report instead.
 - Fixture data: new fixtures and tests take their household from the
   shared fictional sample household (server/src/sampleHousehold.ts) —
@@ -138,17 +147,25 @@ the repo, in the household's assistant memory or notes — recording:
 
 ## Known defects in the December console (settled)
 
-- The harvest uses the starting pool, not the pool remaining after sales.
-  Fix direction: resolve a remaining-pool / basis pair, or explicitly
-  require current remaining facts instead of presenting starting facts as
-  sufficient for parity.
-- Changing the tax year retains the previous year's carryforward overlay.
-  Fix direction: re-resolve untouched overlays when their year changes.
-- Editing one field permanently saves its untouched sibling overlays. Fix
-  direction: track edits per field.
-- All three stand, demonstrated in code with worked examples. They are
-  recorded here so any AI working on the console knows them; the fix order
-  is the household's call.
+- **FIXED by build v113 (round-17 fix F3)** — was: the harvest used the
+  starting pool, not the pool remaining after sales. Now:
+  `pricePlaygroundYear` sizes the harvest from the pool left after this
+  year's typed sale (the pool less the sale's proceeds, less the basis the
+  sale retired), matching the plan march.
+- **FIXED by the round-6 build (2026-11-08)** — was: changing the tax year
+  retained the previous year's carryforward overlay. Now: the year-change
+  handler flushes any save queued at the old year, resets the year-dependent
+  edited flags, and re-resolution governs; pinned by fixture
+  `dec-stored-carryin-switchback-typed` (see DATA-PLAN.md).
+- **FIXED per field (round-17 defect 3)** — was: editing one field
+  permanently saved its untouched sibling overlays. Now: each of the four
+  carry-in fields and each of the two harvest facts carries its own edited
+  flag, so editing one field saves only that field
+  (`server/src/decemberCore.ts`). Grouped flags survive ONLY for the
+  year-to-date group (one flag for the group's six figures).
+- All three are fixed (see each entry above); the per-field flag fix leaves
+  the year-to-date group sharing one flag by design. They stay recorded here
+  so any AI working on the console knows what was wrong and what fixed it.
 
 ## Parked — do not re-propose (app-level)
 

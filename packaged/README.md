@@ -13,7 +13,7 @@ builder interface.
 ## How it works
 
 The client talks to the server only through `client/src/api.ts`
-(~90 actions over one POST endpoint). The packaged build keeps every
+(101 actions over one POST endpoint). The packaged build keeps every
 live source file unchanged and swaps the three server-only seams
 behind their existing interfaces:
 
@@ -92,7 +92,7 @@ the seed actually ran or the dataset was already non-empty.
 ```sh
 cd packaged
 bun install
-bun run build     # -> packaged/dist/ (static site, ~4 MB)
+bun run build     # -> packaged/dist/ (static site, ~6 MB)
 ```
 
 GitHub Pages: `.github/workflows/pages.yml` runs the same build on

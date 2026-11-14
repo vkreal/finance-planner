@@ -377,7 +377,7 @@ retirement and December — by running them):
 | Suite | Cases | Notes |
 | --- | --- | --- |
 | Tax (`server/src/taxFixtures.ts`) | 595 | Hand-derived pins, cents-exact; the census runs them chunked (§6). |
-| Extended (`server/src/extendedFixtures.ts`) | 162 | Optimizer / compare / settlement cases. |
+| Extended (`server/src/extendedFixtures.ts`) | 171 | Optimizer / compare / settlement cases. |
 | Retirement (`server/src/retirementFixtures.ts`) | 63 | Includes the Trinity benchmark case (§7). Verified 63/63 by running the suite on 2026-11-10. |
 | December (`runDecemberFixtures` in `server/src/decemberCore.ts`) | 96 | Solver-independent figures exact to the cent; figures out of the cliff solver's cent-by-cent search within ±$0.02. Verified 96/96 by running the suite on 2026-11-10. |
 | Teeth (per suite) | — | Each suite corrupts its own pins and must *fail* — a teeth check that passes on corrupted data is a dead check. |
@@ -416,9 +416,9 @@ when a figure looks wrong:
 `server/src/hardening/registry.ts` — one runner,
 `runHardeningChecks("fast" | "full")`, over self-contained modules
 that each declare their own inputs and assertions. Adding a check is
-adding a module and one registry line. Verified 2026-11-10:
+adding a module and one registry line. Verified 2026-11-14:
 `bun server/src/hardening/run.ts --fast` → **26/26 checks passed,
-teeth pass (44 corrupted pins failed as expected)**, ~67 s.
+teeth pass (101 corrupted pins failed as expected)**, ~72 s.
 
 | Part | Checks | What they pin |
 | --- | --- | --- |
@@ -506,7 +506,7 @@ the conventions the actions publish.
 | One accuracy suite | `runAccuracySelfCheck` with `suite` set to one of `tax`, `tax-teeth`, `tax-teeth-opt`, `extended`, `extended-teeth`, `retirement`, `retirement-teeth`, `integrity`, `ui-state`, `roth-cas`, `retirement-cas`, `replay`, `december`, `hardening` | One suite per call, by design. The `hardening` entry runs the registry's **fast** checks. |
 | Hardening registry | `bun server/src/hardening/run.ts [--fast \| --full]` | Default `--full`: 2,000 seeded households in the differential. `--fast` is the suite-safe run (subset seeds). Exits 1 on any check or teeth failure. |
 | Packaged verification | `bun ./run-harness.mjs` from `packaged/` | Builds the harness + tax-test bundles and runs the packaged runtime against an in-memory store: contract check, fixture census, seeded pricing, backup/restore interop, persistence, CAS spot checks, December end-to-end. |
-| Tax census | chunked, via `packaged/taxtest.ts` (invoked by `run-harness.mjs`) | **Do not run the whole tax suite in one process or one worker call.** The single-call suite builds multiple GB of fixture state and is OOM-killed on this machine — standing limitation S-2. The census driver slices it (24 chunks is the working count; 12-way chunking OOM-kills) with a sequential-retry fallback for chunks that die under concurrency. |
+| Tax census | chunked, via `packaged/taxtest.ts` (invoked by `run-harness.mjs`) | **Do not run the whole tax suite in one process or one worker call.** The single-call suite builds multiple GB of fixture state and is OOM-killed on this machine — standing limitation S-2. The packaged harness slices it into 6 chunks (`CHUNKS = 6` in `packaged/run-harness.mjs`; `FPKG_CHUNKS` defaults to 6 in `packaged/taxtest.ts`), spawned sequentially with no retry. The 24-chunk figure is the scratch flex-census driver's invocation count (24 shards via `bun flex-census.ts <start> <count>`, run in parallel batches with a sequential-retry fallback for chunks that die under concurrency) — that driver is not in the repo, so a fresh clone has the 6-chunk packaged census only. |
 | Regression gate | per-build procedure (§4.1) | The gate probe lives in scratch, not in the repo. Price the fixed set before and after; 0 differing leaves or the build fails its own verification. |
 
 **Worker cap.** A live worker call caps at 120 s. The full
