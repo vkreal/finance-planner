@@ -5291,6 +5291,102 @@ export function App() {
     );
   }
 
+  // Monthly cash out forms: each form belongs to one month —
+  // the month-total form to its Month field (sMonth), the item
+  // form to the month of its date. The month-total form renders
+  // directly under its month's row in the Monthly cash out list
+  // below, above the month's items. The item form opens right
+  // the top of that row so it never vanishes. Fields, state,
+  // and submit behavior are unchanged — only the render
+  // position moved.
+  const itemFormMonth = iDate.slice(0, 7);
+  const summaryFormHasRow = (data?.cashOutMonths ?? []).some(
+    (cm) => cm.month === sMonth,
+  );
+  const itemFormHasRow = (data?.cashOutMonths ?? []).some(
+    (cm) => cm.month === itemFormMonth,
+  );
+  const summaryFormEl = showSummaryForm ? (
+    <form onSubmit={submitSummary} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <h3 className="display text-lg font-semibold">
+        {(data?.summaries ?? []).some((s) => s.month === sMonth)
+          ? "Edit month's cash out"
+          : "Enter month's cash out"}
+      </h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label htmlFor="s-month" className={labelCls}>Month</label>
+          <input id="s-month" type="month" required className={inputCls} value={sMonth} onChange={(e) => setSMonth(e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="s-amount" className={labelCls}>Total cash out ($)</label>
+          <input id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
+        </div>
+      </div>
+      <p className="text-sm text-[var(--dim)]">
+        Everything that left checking in {monthLabel(sMonth || month)} —
+        bills, card payments, all of it, as one total.
+      </p>
+      {summaryError && <p className="text-sm text-[var(--bad)]">{summaryError}</p>}
+      <div className="flex gap-2">
+        <button type="submit" className={btnPrimary} disabled={upsertSummary.isPending}>
+          Save cash out
+        </button>
+        <button type="button" className={btnGhost} onClick={() => { setShowSummaryForm(false); setSummaryEpoch(null); }}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  ) : null;
+  const itemFormEl = showItemForm ? (
+    <form onSubmit={submitItem} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <h3 className="display text-lg font-semibold">
+        {editingItemId ? "Edit cash out item" : "Add cash out item"}
+      </h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label htmlFor="ci-date" className={labelCls}>Date cash went out</label>
+          <input id="ci-date" type="date" required className={inputCls} value={iDate} onChange={(e) => setIDate(e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
+          <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
+        </div>
+      </div>
+      <div>
+        <label htmlFor="ci-desc" className={labelCls}>Name</label>
+        <CategoryField
+          id="ci-desc"
+          value={iDesc}
+          options={cashOutNameOptions}
+          onChange={setIDesc}
+          customLabel="Add a new name…"
+          customPlaceholder="Type a new name"
+          customAriaLabel="New name"
+          placeholderOption="Choose a name…"
+        />
+      </div>
+      <div>
+        <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
+        <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
+      </div>
+      <p className="text-sm text-[var(--dim)]">
+        Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
+        items becomes that month's cash out everywhere — Quick
+        view, true cost, and the explorer.
+      </p>
+      {itemError && <p className="text-sm text-[var(--bad)]">{itemError}</p>}
+      <div className="flex gap-2">
+        <button type="submit" className={btnPrimary} disabled={addCashOutItem.isPending || updateCashOutItem.isPending}>
+          {editingItemId ? "Save changes" : "Add item"}
+        </button>
+        <button type="button" className={btnGhost} onClick={resetItemForm}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  ) : null;
+
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
@@ -6155,87 +6251,9 @@ export function App() {
                 </p>
               </Explainer>
 
-              {showSummaryForm && (
-                <form onSubmit={submitSummary} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <h3 className="display text-lg font-semibold">
-                    {data.summaries.some((s) => s.month === sMonth)
-                      ? "Edit month's cash out"
-                      : "Enter month's cash out"}
-                  </h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="s-month" className={labelCls}>Month</label>
-                      <input id="s-month" type="month" required className={inputCls} value={sMonth} onChange={(e) => setSMonth(e.target.value)} />
-                    </div>
-                    <div>
-                      <label htmlFor="s-amount" className={labelCls}>Total cash out ($)</label>
-                      <input id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
-                    </div>
-                  </div>
-                  <p className="text-sm text-[var(--dim)]">
-                    Everything that left checking in {monthLabel(sMonth || month)} —
-                    bills, card payments, all of it, as one total.
-                  </p>
-                  {summaryError && <p className="text-sm text-[var(--bad)]">{summaryError}</p>}
-                  <div className="flex gap-2">
-                    <button type="submit" className={btnPrimary} disabled={upsertSummary.isPending}>
-                      Save cash out
-                    </button>
-                    <button type="button" className={btnGhost} onClick={() => { setShowSummaryForm(false); setSummaryEpoch(null); }}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
+              {!summaryFormHasRow && summaryFormEl}
 
-              {showItemForm && (
-                <form onSubmit={submitItem} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <h3 className="display text-lg font-semibold">
-                    {editingItemId ? "Edit cash out item" : "Add cash out item"}
-                  </h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="ci-date" className={labelCls}>Date cash went out</label>
-                      <input id="ci-date" type="date" required className={inputCls} value={iDate} onChange={(e) => setIDate(e.target.value)} />
-                    </div>
-                    <div>
-                      <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
-                      <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
-                    </div>
-                  </div>
-                  <div>
-                    <label htmlFor="ci-desc" className={labelCls}>Name</label>
-                    <CategoryField
-                      id="ci-desc"
-                      value={iDesc}
-                      options={cashOutNameOptions}
-                      onChange={setIDesc}
-                      customLabel="Add a new name…"
-                      customPlaceholder="Type a new name"
-                      customAriaLabel="New name"
-                      placeholderOption="Choose a name…"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
-                    <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
-                  </div>
-                  <p className="text-sm text-[var(--dim)]">
-                    Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
-                    items becomes that month's cash out everywhere — Quick
-                    view, true cost, and the explorer.
-                  </p>
-                  {itemError && <p className="text-sm text-[var(--bad)]">{itemError}</p>}
-                  <div className="flex gap-2">
-                    <button type="submit" className={btnPrimary} disabled={addCashOutItem.isPending || updateCashOutItem.isPending}>
-                      {editingItemId ? "Save changes" : "Add item"}
-                    </button>
-                    <button type="button" className={btnGhost} onClick={resetItemForm}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
+              {!itemFormHasRow && itemFormEl}
 
               {data.cashOutMonths.length === 0 && !showSummaryForm && !showItemForm && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
@@ -6290,6 +6308,8 @@ export function App() {
                             )}
                           </div>
                         </div>
+                        {cm.month === sMonth && summaryFormEl}
+                        {cm.month === itemFormMonth && itemFormEl}
                         {confirmDeleteSummaryMonth === cm.month && (
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span className="text-sm text-[var(--bad)]">
