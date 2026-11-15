@@ -8426,6 +8426,13 @@ export type RothCompareScenarioYear = {
   // $0 in every year of a plan that does not enter the
   // health premium term.
   healthPremiumCents: number;
+  // Health premium gross (Review 3 R3-S1): the year's GROSS
+  // health premium (the engine's RothYear.healthPremiumGross),
+  // carried so a display can show gross and net side by side
+  // without re-deriving the gross from the net and the credit.
+  // $0 in every year of a plan that does not enter the term.
+  // Display only — no score, ranking, or delta reads it.
+  healthPremiumGrossCents: number;
   conversionCents: number;
   pretaxOutByChoiceCents: number;
   // The S-10 split of the year's total priced pre-tax draw
@@ -8600,6 +8607,7 @@ export function runRothCompare(
         educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
         healthPremiumCents: toCents(y.healthPremiumNet),
+        healthPremiumGrossCents: toCents(y.healthPremiumGross),
         conversionCents: toCents(y.conversion),
         // Audit S-10: the spending draw ALONE
         // (detail.pretaxSpendingDraw), never

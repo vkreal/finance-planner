@@ -54,7 +54,12 @@ export const RetirementQuestionInputs = z.strictObject({
   roth: dollars,
   /** HSA balance, dollars. */
   hsa: dollars,
-  /** Typical monthly spending, dollars. Must be > 0, <= $200,000/mo. */
+  /** Typical monthly spending, dollars. Must be > 0, <= $200,000/mo.
+   *  Read as living expenses EXCLUDING health insurance premiums
+   *  unless spendingIncludesHealthPremiums is true: when health
+   *  premium fields are supplied with that flag false, the premium
+   *  is funded on top of this spending; with it true the premiums
+   *  are already inside this figure and are not charged again. */
   monthlySpending: z.number().finite().gt(0).max(200_000),
   /** Current age of the primary person, whole years. */
   currentAge: age,
@@ -123,6 +128,42 @@ export const RetirementQuestionInputs = z.strictObject({
   acaBenchmarkSingle: dollars.optional(),
   /** ACA benchmark premium, family, $/yr. Default: null. */
   acaBenchmarkFamily: dollars.optional(),
+
+  // --- Health insurance premiums (annual dollars; Review 3 R3-S1).
+  //  The engine's v208 premium term: when ANY of the three amounts
+  //  is entered, the term is ACTIVE and annualSpending is read as
+  //  spending EXCLUDING health premiums — the year's actual premium
+  //  is funded on top of spending. The fields map to the engine's
+  //  healthPremiumAcaHousehold / healthPremiumAcaSingle /
+  //  healthPremiumMedicarePerPerson (dollars) and the compare
+  //  base's cents twins. An explicit 0 is an entered premium
+  //  (it activates the term and caps the retained ACA credit at
+  //  that $0 premium — the engine's R3-M2 rule — so a $0 premium
+  //  keeps no credit); omit all three to leave the term off.
+  //  supplying any of them REQUIRES spendingIncludesHealthPremiums
+  //  (see below): the caller must state the spending convention,
+  //  because a premium already inside monthlySpending would be
+  //  charged twice if it were also funded on top.
+  /** Marketplace health premium for a two-person household year,
+   *  $/yr (the plan actually enrolled in while both spouses are
+   *  on the marketplace). Default: null. */
+  healthPremiumAcaHouseholdAnnual: dollars.optional(),
+  /** Marketplace health premium for a one-person year, $/yr (the
+   *  plan actually enrolled in while exactly one spouse is on the
+   *  marketplace). Default: null. */
+  healthPremiumAcaSingleAnnual: dollars.optional(),
+  /** Medicare BASE premium per person on Medicare, $/yr (Part B
+   *  standard + Part D base, EXCLUDING the IRMAA surcharge, which
+   *  the engine prices separately). Default: null. */
+  healthPremiumMedicarePerPersonAnnual: dollars.optional(),
+  /** Whether monthlySpending already includes health insurance
+   *  premiums. REQUIRED when any health premium field is given
+   *  (normalize returns missing_input without it). true = the
+   *  premiums are already inside monthlySpending, so they are
+   *  NOT charged again (the engine funds spending verbatim);
+   *  false = monthlySpending excludes premiums and the entered
+   *  amounts are funded on top of spending. */
+  spendingIncludesHealthPremiums: z.boolean().optional(),
 
   // --- Other annual income (tax engine inputs). ---
   /** Other ordinary income, $/yr. Default (in normalize): 0. */

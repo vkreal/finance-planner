@@ -24,7 +24,7 @@
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
 - `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
 - `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
-- `retirement_tax_year` — one year's federal/state tax, ACA credit, and IRMAA for a published law year (2025 or 2026 today).
+- `retirement_tax_year` — one year's federal/state tax, ACA credit, IRMAA, and health premiums (gross and net, when premium fields are supplied) for a published law year (2025 or 2026 today).
 - `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.
 
 ## Minimal worked example
@@ -229,10 +229,10 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding` |
 | `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `chart` (dollars), `deterministicEndingBalance` |
 | `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending` |
-| `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
-| `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
+| `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
+| `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
 | `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
-| `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`. `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, cash left vs spending, sale gain/loss, RMD |
+| `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, health premiums (gross and net, when supplied), cash left vs spending, sale gain/loss, RMD |
 | `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (8 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
 
 ## Example calls + responses
@@ -344,6 +344,8 @@ authority for any single call.
 | `taxableDividendYieldPct` / `taxableInterestYieldPct` | `null` (no yield modeled) | assumption |
 | `otherOrdinaryAnnual` / `taxExemptInterestAnnual` | `0` | assumption |
 | `acaBenchmarkCouple` / `acaBenchmarkSingle` / `acaBenchmarkFamily` | `null` (no credit modeled) + a warning | assumption |
+| `healthPremiumAcaHouseholdAnnual` / `healthPremiumAcaSingleAnnual` / `healthPremiumMedicarePerPersonAnnual` | `null` — no premium entered for this tier; with the term active via another tier the marketplace tiers fall back to the year's benchmark (Medicare: no fallback) + a warning — see "Health insurance premiums" below | assumption |
+| `spendingIncludesHealthPremiums` | `null` — required when any premium field is given (missing → `missing_input` + question); `false` = premiums funded on top of `monthlySpending`, `true` = already inside it, not charged again | user |
 | `state` | Omitted → no state tax. `"WA"`/`"Washington"` → WA excise path (a supplied rate is ignored, with a warning). Other → `stateRatePct` applies. | assumption |
 | `stateRatePct` | `0` | assumption |
 | `taxYear` | Current calendar year clamped to the latest published law year; only the published law years (2025/2026 today) accepted | assumption |
@@ -357,7 +359,7 @@ authority for any single call.
 | `primarySoleBeneficiaryOfSpouse` | Omitted → not established → the spouse's RMD prices on the Uniform Lifetime Table. `true` lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger. A separate fact from the spouse being the primary's sole beneficiary. | assumption |
 | `mcSeed` / `mcRuns` | `12345` / `1000` | engine_constant |
 | `compareAges` | `[retirementAge, retirementAge+2, retirementAge+5]` (no assumption entry when omitted) | — |
-| Tax-aware extras (not in the input schema) | Spouse's own pre-tax balance `$0` in the multi-year compare (the single-year tool takes `pretaxSpousePriorYearEndAnnual` instead); heir/exit rate `22%` (engine_constant); no pre-tax preserve floor; spouse is the sole beneficiary when mfj (Joint Life Table for the primary's RMD); health premiums are **not** priced — only the ACA credit and IRMAA. Capital-loss carryforward entering the year is **not** an input (a banked loss from an earlier year cannot be typed in); the year's own realized loss still prices, with the carry-out in `lossCarryOutSt` / `lossCarryOutLt`. | assumption / engine_constant |
+| Tax-aware extras (not in the input schema) | Spouse's own pre-tax balance `$0` in the multi-year compare (the single-year tool takes `pretaxSpousePriorYearEndAnnual` instead); heir/exit rate `22%` (engine_constant); no pre-tax preserve floor; spouse is the sole beneficiary when mfj (Joint Life Table for the primary's RMD); health premiums priced only by the tax-aware tools — see "Health insurance premiums" below. Capital-loss carryforward entering the year is **not** an input (a banked loss from an earlier year cannot be typed in); the year's own realized loss still prices, with the carry-out in `lossCarryOutSt` / `lossCarryOutLt`. | assumption / engine_constant |
 
 > **Standalone bundle note.** The standalone CLI bundle (owned
 > separately; it vendors this adapter's `dispatchTool()` as
@@ -388,6 +390,55 @@ validation — the message names the field, never the value),
 tax year outside the published law years, or fewer than two comparable quit ages),
 `engine_error` (the engine could not price the scenario; the message
 carries no internals).
+
+## Health insurance premiums
+
+The tax-aware tools (`retirement_compare_strategies`,
+`retirement_roth_conversion`, `retirement_work_years`,
+`retirement_tax_year`) price health insurance premiums through the
+engine's v208 premium term. The portfolio-only tools
+(`retirement_calculate`, `retirement_monte_carlo`,
+`retirement_max_spending`) price none of them — and warn when premiums
+were supplied to charge, so a caller never silently loses them.
+
+| Field | Meaning |
+| --- | --- |
+| `healthPremiumAcaHouseholdAnnual` | Marketplace premium, $/yr, for a year when both spouses are on the marketplace — the plan actually enrolled in. |
+| `healthPremiumAcaSingleAnnual` | Marketplace premium, $/yr, for a year when exactly one spouse is on the marketplace. |
+| `healthPremiumMedicarePerPersonAnnual` | Medicare base premium per person on Medicare, $/yr (Part B standard + Part D base, EXCLUDING the IRMAA surcharge, which the engine prices separately). |
+| `spendingIncludesHealthPremiums` | Whether `monthlySpending` already includes health insurance premiums. **Required when any premium field is given** (missing → `missing_input` + the question "Does your monthly spending already include health insurance premiums?"). |
+
+The spending convention is the whole design: `monthlySpending` is read
+as living expenses EXCLUDING premiums, and a supplied premium is funded
+on top of spending — unless the caller declares
+`spendingIncludesHealthPremiums: true`, in which case the premiums are
+already inside the spending figure and are recorded but never charged
+again. There is no silent double-add and no assumed average premium:
+omit all three fields and no premium is modeled (the response warns
+that premiums are not included); supply any of them without the flag
+and the call is rejected as `missing_input`.
+
+What comes back, per scenario: `lifetimeHealthPremiumGross` and
+`lifetimeHealthPremiumNet` (gross less the ACA credits applied to it),
+and per year in the `yearly` table `healthPremiumGross` /
+`healthPremiumNet`. The ACA credit, the IRMAA surcharge, and the
+premiums stay separate lines — IRMAA is never folded into the Medicare
+base. An explicit `$0` premium is an entered premium: it activates the
+term and caps the retained ACA credit at that $0 premium, so a $0
+premium keeps no credit. When a tier is not entered but the term is
+active, the engine falls back to that year's benchmark for the
+marketplace tiers (a null Medicare amount has no fallback — $0).
+
+Worked check (fictional household, ages 54/52, retire 58, end 95,
+$9,500/mo, benchmarks couple $26,000 / single $16,000, premiums
+household $20,000 / single $12,000 / Medicare $3,600 per person,
+`spendingIncludesHealthPremiums: false`): the do-nothing scenario of
+`retirement_roth_conversion` reports lifetime gross premium $380,000
+and lifetime net premium $234,426 — the $145,574 of ACA credit
+kept over the plan. The yearly schedule runs 2030–2036 both on the
+marketplace, 2037–2038 spouse only (single tier + primary's
+Medicare), 2039–2067 both on Medicare. `premiums.test.ts` pins all of
+it, including the direct-engine parity behind these figures.
 
 ## Security model
 

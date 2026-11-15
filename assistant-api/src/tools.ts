@@ -205,6 +205,26 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       description:
         "ACA benchmark premium per year in dollars for a family household.",
     },
+    healthPremiumAcaHouseholdAnnual: {
+      ...MONEY,
+      description:
+        "Marketplace health premium per year in dollars for a year when both spouses are on the marketplace — the plan actually enrolled in. Priced only by the tax-aware tools.",
+    },
+    healthPremiumAcaSingleAnnual: {
+      ...MONEY,
+      description:
+        "Marketplace health premium per year in dollars for a year when exactly one spouse is on the marketplace — the plan actually enrolled in. Priced only by the tax-aware tools.",
+    },
+    healthPremiumMedicarePerPersonAnnual: {
+      ...MONEY,
+      description:
+        "Medicare base premium per person on Medicare, dollars per year (Part B standard + Part D base, excluding the IRMAA surcharge, which the engine prices separately). Priced only by the tax-aware tools.",
+    },
+    spendingIncludesHealthPremiums: {
+      type: "boolean",
+      description:
+        "Whether monthlySpending already includes health insurance premiums. REQUIRED when any health premium field is given: true means the premiums are inside monthlySpending and are not charged again; false means monthlySpending excludes them and the premium is funded on top of spending.",
+    },
     stateRatePct: {
       type: "number",
       minimum: 0,
@@ -455,7 +475,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks whether they can retire now, or when they can afford to retire. ` +
       `Required: pretax, taxable, roth, hsa (account balances in dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), spouseAge, Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), and portfolio assumptions expectedRealReturnPct, stocksPct and strategy (defaults from the engine). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. mcRuns, mcSeed and volatilityPct do not change it either — there is no Monte Carlo leg here; the historical cross-check is deterministic. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), spouseAge, Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), and portfolio assumptions expectedRealReturnPct, stocksPct and strategy (defaults from the engine). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. mcRuns, mcSeed and volatilityPct do not change it either — there is no Monte Carlo leg here; the historical cross-check is deterministic. ` +
       `Example call: ${JSON.stringify(EXAMPLE_CALCULATE)}. ` +
       `Returns: whether the money lasts (neverRunsOut), the ending balance, and a year-by-year balance table, plus the historical cross-check of the same plan.`,
     inputSchema: BASE_INPUT_SCHEMA,
@@ -466,7 +486,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` +
       `Example call: ${JSON.stringify(EXAMPLE_MONTE_CARLO)}. ` +
       `Returns: the success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations.`,
     inputSchema: BASE_INPUT_SCHEMA,
@@ -477,7 +497,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). monthlySpending is still required: give current spending (e.g. 9500) as the starting point; the tool reports the highest sustainable level, which may differ. ` +
-      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` +
       `Example call: ${JSON.stringify(EXAMPLE_MAX_SPENDING)}. ` +
       `Returns: the maximum sustainable monthly spending in dollars at 85% Monte Carlo success over 1,000 simulations, with a historical cross-check of that spending level.`,
     inputSchema: BASE_INPUT_SCHEMA,
@@ -488,10 +508,10 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks which account to spend from first, or how the withdrawal order changes their taxes and outcome. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
       `There is no strategy input: the tool always compares all three withdrawal orders — taxable-first (spend the taxable account first), pretax-first (spend the pre-tax account first), roth-first (spend Roth first) — and reports each one, so do not pass a withdrawal order. ` +
       `Example call: ${JSON.stringify(EXAMPLE_COMPARE_STRATEGIES)}. ` +
-      `Returns: a tax-aware comparison of the three withdrawal orders, with taxes, ACA credit and ending wealth for each, so the user can see which order leaves the most.`,
+      `Returns: a tax-aware comparison of the three withdrawal orders, with taxes, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each, so the user can see which order leaves the most.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareWithdrawalStrategies),
   },
@@ -500,9 +520,9 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks whether to convert pre-tax money to Roth, how much to convert, or whether conversions are worth the tax. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
       `Example call: ${JSON.stringify(EXAMPLE_ROTH)}. ` +
-      `Returns: a tax-aware comparison of four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — with federal tax, ACA credit, IRMAA and ending wealth for each.`,
+      `Returns: a tax-aware comparison of four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — with federal tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareRothConversions),
   },
@@ -511,7 +531,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
+      `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. ` +
       `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. A work-years call can take a minute or more, and while it runs the server answers nothing else. ` +
       `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` +
       `Returns: a tax-aware comparison of retiring at each age in compareAges, with taxes and ending wealth for each age, plus — when a salary is given — the earned-income comparison (work years, payroll tax, all-in tax) for each age.`,
@@ -523,9 +543,9 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
+      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional), and health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
       `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` +
-      `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced sale gain/loss and RMD.`,
+      `Returns: the single-year federal and state tax, ACA premium credit, IRMAA price, and health premiums (gross and net, when premium fields are supplied) for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateSingleYearTax),
   },
@@ -560,11 +580,18 @@ const CAPABILITY_ASSUMPTIONS: Assumption[] = [
     provenance: "engine_constant",
     note: "Every call carries its complete scenario. Nothing is saved between calls.",
   },
+  {
+    field: "monthlySpending",
+    value: "excludes health premiums unless spendingIncludesHealthPremiums is true",
+    provenance: "assumption",
+    note: "When health premium fields are supplied, monthlySpending is read as living expenses excluding health insurance premiums and the premium is funded on top of spending, unless spendingIncludesHealthPremiums declares the premiums are already inside monthlySpending (then they are not charged again). When no premium field is supplied, no premium is modeled and the call carries a warning.",
+  },
 ];
 
 const CAPABILITY_LIMITATIONS: string[] = [
   "Stateless and read-only: every call carries its complete scenario; nothing is saved.",
   `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
+  "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
   "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
   "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",

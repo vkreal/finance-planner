@@ -281,6 +281,19 @@ const NO_CEILINGS_CENTS: RothCompareCeilingsCents = {
 const HEALTH_PREMIUM_WARNING =
   "Health insurance premiums are not included; only the ACA premium credit and IRMAA surcharge are priced.";
 
+/**
+ * The premium warning for a tax-aware tool: none when the caller
+ * supplied premiums to charge (the v208 term is wired and the
+ * year's gross/net premiums ride the results); the
+ * supplied-but-included case is warned by normalize (a
+ * scenario-level warning, merged into every envelope), and the
+ * not-modeled warning otherwise.
+ */
+function healthPremiumWarnings(scenario: NormalizedScenario): string[] {
+  if (scenario.premiumsCharged || scenario.premiumsInSpending) return [];
+  return [HEALTH_PREMIUM_WARNING];
+}
+
 // ---------------------------------------------------------------------------
 // Scenario -> engine inputs
 // ---------------------------------------------------------------------------
@@ -374,6 +387,17 @@ export function toSimInputs(
     );
   }
   const income = simIncomeStreams(scenario);
+  // Health premiums (Review 3 R3-S1): this portfolio-only
+  // simulation prices no premiums. When the caller supplied
+  // premiums to charge on top of spending, say so — otherwise
+  // the call would silently drop them. (When the caller declared
+  // the premiums are already inside monthlySpending, no warning:
+  // the simulation funds spending verbatim, so they are in it.)
+  if (scenario.premiumsCharged) {
+    warnings.push(
+      "Health insurance premiums were supplied but this portfolio-only simulation prices none of them — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them.",
+    );
+  }
   const inputs: SimInputs = {
     startCents: scenario.portfolioCents,
     spendingCents: scenario.annualSpendingCents,
@@ -496,9 +520,28 @@ function buildRothCompareBase(
         ? null
         : dollarsToCents(scenario.acaBenchmarkFamily),
     acaSpouseEndAge: null,
-    healthPremiumAcaHouseholdCents: null,
-    healthPremiumAcaSingleCents: null,
-    healthPremiumMedicarePerPersonCents: null,
+    // Health premiums (Review 3 R3-S1): wired only when the
+    // caller supplied amounts AND declared spending excludes
+    // them (premiumsCharged) — the engine's v208 term then funds
+    // the year's actual premium on top of spending. An explicit
+    // 0 stays 0 (an entered premium), never null; when the caller
+    // declared the premiums are already inside monthlySpending,
+    // or supplied none, all three stay null so the term never
+    // engages and no premium is charged twice.
+    healthPremiumAcaHouseholdCents:
+      scenario.premiumsCharged &&
+      scenario.healthPremiumAcaHousehold != null
+        ? dollarsToCents(scenario.healthPremiumAcaHousehold)
+        : null,
+    healthPremiumAcaSingleCents:
+      scenario.premiumsCharged && scenario.healthPremiumAcaSingle != null
+        ? dollarsToCents(scenario.healthPremiumAcaSingle)
+        : null,
+    healthPremiumMedicarePerPersonCents:
+      scenario.premiumsCharged &&
+      scenario.healthPremiumMedicarePerPerson != null
+        ? dollarsToCents(scenario.healthPremiumMedicarePerPerson)
+        : null,
     inflationPct: scenario.inflationPct,
     stateRatePct: scenario.stateRatePct,
     residenceState: scenario.residenceState,
@@ -593,9 +636,17 @@ function buildRothPlanInputs(
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
-    healthPremiumAcaHousehold: null,
-    healthPremiumAcaSingle: null,
-    healthPremiumMedicarePerPerson: null,
+    // Health premiums (Review 3 R3-S1): same rule as the cents
+    // base above — wired in dollars only when premiumsCharged.
+    healthPremiumAcaHousehold: scenario.premiumsCharged
+      ? scenario.healthPremiumAcaHousehold
+      : null,
+    healthPremiumAcaSingle: scenario.premiumsCharged
+      ? scenario.healthPremiumAcaSingle
+      : null,
+    healthPremiumMedicarePerPerson: scenario.premiumsCharged
+      ? scenario.healthPremiumMedicarePerPerson
+      : null,
     inflationPct: scenario.inflationPct,
     stateRatePct: scenario.stateRatePct,
     residenceState: scenario.residenceState,
@@ -661,6 +712,12 @@ type MappedCompareScenario = {
   lifetimeStateTax: number;
   acaCreditKept: number;
   irmaaTotal: number;
+  // Lifetime health premiums (Review 3 R3-S1; $0 when the v208
+  // term is not entered): the GROSS premium the score identity
+  // adds beside acaCreditKept, and the NET premium actually
+  // funded (gross less the credits applied to it).
+  lifetimeHealthPremiumGross: number;
+  lifetimeHealthPremiumNet: number;
   endingPretax: number;
   endingTaxable: number;
   endingRoth: number;
@@ -686,6 +743,8 @@ function mapCompareScenario(
     lifetimeStateTax: centsToDollars(s.stateTaxCents),
     acaCreditKept: centsToDollars(s.acaCreditCents),
     irmaaTotal: centsToDollars(s.irmaaCents),
+    lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
+    lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
     endingTaxable: centsToDollars(s.endingTaxableCents),
     endingRoth: centsToDollars(s.endingRothCents),
@@ -706,6 +765,14 @@ type YearlyCompareRow = {
   taxableIncome: number;
   acaCredit: number;
   irmaa: number;
+  // The year's health premiums (Review 3 R3-S1): GROSS premium
+  // (marketplace gross + Medicare base for the year's persons
+  // on Medicare) and NET premium actually funded (gross less
+  // the year's priced premium credit, capped at the marketplace
+  // gross). $0 in every year of a plan that does not enter the
+  // v208 term.
+  healthPremiumGross: number;
+  healthPremiumNet: number;
   conversion: number;
   pretaxOutByChoice: number;
   settlementConverged: boolean;
@@ -735,6 +802,8 @@ function yearlyTable(
     taxableIncome: centsToDollars(y.taxableIncomeCents),
     acaCredit: centsToDollars(y.acaCreditCents),
     irmaa: centsToDollars(y.irmaaCents),
+    healthPremiumGross: centsToDollars(y.healthPremiumGrossCents),
+    healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
     pretaxOutByChoice: centsToDollars(y.pretaxOutByChoiceCents),
     settlementConverged: y.settlementConverged,
@@ -828,7 +897,7 @@ function deltasVsBaseline(
 }
 
 const YEARLY_TABLE_WARNING =
-  "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary.";
+  "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary.";
 
 const WORK_YEARS_HORIZON_WARNING =
   "The work-years rows price each quit age as its own plan starting at that quit age with rolled balances, so their ending balances span different horizons and are not like-for-like across quit ages; use the all-in tax and the Roth-compare scenarios for the quit-age decision.";
@@ -1128,7 +1197,7 @@ export function compareWithdrawalStrategies(
         deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
         yearly: yearlyTable(outcome.baselineRaw),
       },
-      [HEALTH_PREMIUM_WARNING, YEARLY_TABLE_WARNING],
+      [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
       taxAwareAssumptions(scenario),
       null,
       "retirement_compare_strategies",
@@ -1191,7 +1260,7 @@ export function compareRothConversions(
         deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
         yearly: yearlyTable(outcome.baselineRaw),
       },
-      [HEALTH_PREMIUM_WARNING, YEARLY_TABLE_WARNING],
+      [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
       taxAwareAssumptions(scenario),
       null,
       "retirement_roth_conversion",
@@ -1355,7 +1424,7 @@ export function compareRetirementAges(
         workYearsWinnerByAllInTax,
       },
       [
-        HEALTH_PREMIUM_WARNING,
+        ...healthPremiumWarnings(scenario),
         YEARLY_TABLE_WARNING,
         WORK_YEARS_HORIZON_WARNING,
         ...workYearsWarnings,
@@ -1577,6 +1646,47 @@ export function calculateSingleYearTax(
         : scenario.householdSize >= 3
           ? (scenario.acaBenchmarkFamily ?? scenario.acaBenchmarkCouple)
           : scenario.acaBenchmarkCouple;
+    // Health premiums (Review 3 R3-S1): the single-year pricer
+    // reads the ONE applicable marketplace amount in
+    // healthPremiumAcaAnnual — the plan actually enrolled in for
+    // the priced year — never the two tiers. Resolve it here,
+    // mirroring the march's healthGrossAca tier rule
+    // (taxEngine.ts): both spouses on the marketplace -> the
+    // household tier; exactly one -> the single tier; nobody ->
+    // none. A null applicable tier falls back to the year's
+    // benchmark under the march's own benchmark rule (both on
+    // ACA: family when a family figure is entered for a 3+
+    // household, else couple; exactly one on ACA: single) —
+    // exactly as the march does. The whole resolution is gated
+    // on the term being active (premiumsCharged): with no
+    // premium supplied the applicable amount is null and the
+    // year prices no premium. The Medicare BASE premium is
+    // passed through per person; the pricer multiplies it by
+    // the persons on Medicare THIS year (the onMedicare flags),
+    // and the IRMAA surcharge stays the forward block's own
+    // figure, never folded into the base.
+    const primaryOnAca = agePrimary < 65;
+    const spouseOnAca =
+      joint && ageSpouse != null && ageSpouse < 65;
+    const anyOnAca = primaryOnAca || spouseOnAca;
+    const bothOnAca = primaryOnAca && spouseOnAca;
+    const benchmarkForPremium = bothOnAca
+      ? scenario.householdSize >= 3 &&
+        scenario.acaBenchmarkFamily != null
+        ? scenario.acaBenchmarkFamily
+        : scenario.acaBenchmarkCouple
+      : anyOnAca
+        ? scenario.acaBenchmarkSingle
+        : null;
+    const healthPremiumAcaAnnual =
+      !scenario.premiumsCharged || !anyOnAca
+        ? null
+        : ((bothOnAca
+            ? scenario.healthPremiumAcaHousehold
+            : scenario.healthPremiumAcaSingle) ?? benchmarkForPremium);
+    const healthPremiumMedicarePerPerson = scenario.premiumsCharged
+      ? scenario.healthPremiumMedicarePerPerson
+      : null;
     const inputs: PlaygroundYearInputs = {
       taxYear: scenario.taxYear,
       filingStatus: scenario.filingStatus,
@@ -1605,10 +1715,16 @@ export function calculateSingleYearTax(
       spouseSoleBeneficiary: joint,
       acaHouseholdSize: scenario.householdSize,
       acaBenchmarkAnnual: benchmarkAnnual,
+      healthPremiumAcaAnnual,
+      healthPremiumMedicarePerPerson,
       stateRatePct: scenario.stateRatePct,
       residenceState: scenario.residenceState,
       annualSpending: centsToDollars(scenario.annualSpendingCents),
     };
+    // Same conditional premium warning as the compare tools: the
+    // omitted case warns; the charged case is priced (no warning);
+    // the included case is warned by normalize at the scenario level.
+    warnings.push(...healthPremiumWarnings(scenario));
     const priced: PlaygroundYearResult = pricePlaygroundYear(inputs);
     // Post-price overlap checks (need the computed RMD, which
     // only the engine knows): the RMD is priced as income IN

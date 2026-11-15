@@ -98,6 +98,22 @@ export interface NormalizedScenario {
   acaBenchmarkCouple: number | null;
   acaBenchmarkSingle: number | null;
   acaBenchmarkFamily: number | null;
+  // Health premiums (Review 3 R3-S1; annual dollars, null = not
+  // provided). spendingIncludesHealthPremiums is null when the
+  // caller did not declare a convention (only required — and only
+  // meaningful — when a premium field is given). premiumsCharged
+  // is true exactly when the engine's v208 term is wired (a
+  // premium was given AND the caller declared spending excludes
+  // premiums); premiumsInSpending is true exactly when a premium
+  // was given AND the caller declared it is already inside
+  // monthlySpending (then the amounts are recorded but never
+  // wired, so they cannot be charged twice).
+  healthPremiumAcaHousehold: number | null;
+  healthPremiumAcaSingle: number | null;
+  healthPremiumMedicarePerPerson: number | null;
+  spendingIncludesHealthPremiums: boolean | null;
+  premiumsCharged: boolean;
+  premiumsInSpending: boolean;
   stateRatePct: number;
   residenceState: "WA" | "other";
   stateLabel: string | null;
@@ -172,6 +188,8 @@ export const MISSING_INPUT_QUESTIONS: Record<string, string> = {
     "At what age do you plan to start collecting Social Security?",
   spouseSocialSecurityStartAge:
     "At what age does your spouse plan to start collecting Social Security?",
+  spendingIncludesHealthPremiums:
+    "Does your monthly spending already include health insurance premiums?",
 };
 
 /** One `{ field, question }` entry per missing field, in field order. */
@@ -351,6 +369,20 @@ export function normalizeInputs(
     input.spouseSocialSecurityStartAge === undefined
   ) {
     missing.push("spouseSocialSecurityStartAge");
+  }
+  // Health premiums (Review 3 R3-S1): supplying any premium amount
+  // requires the caller to state the spending convention — without
+  // it the adapter cannot tell a premium to fund on top of spending
+  // from one already inside it, and charging both would double-count.
+  const anyPremiumGiven =
+    input.healthPremiumAcaHouseholdAnnual !== undefined ||
+    input.healthPremiumAcaSingleAnnual !== undefined ||
+    input.healthPremiumMedicarePerPersonAnnual !== undefined;
+  if (
+    anyPremiumGiven &&
+    input.spendingIncludesHealthPremiums === undefined
+  ) {
+    missing.push("spendingIncludesHealthPremiums");
   }
   if (missing.length > 0) {
     return { ok: false, error: missingInputError(missing) };
@@ -875,6 +907,92 @@ export function normalizeInputs(
     );
   }
 
+  // --- Health insurance premiums (Review 3 R3-S1). ---
+  // The engine's v208 term activates when ANY amount is entered:
+  // spending is then read as EXCLUDING premiums and the year's
+  // actual premium is funded on top. When the caller declares
+  // the premiums are already inside monthlySpending, the amounts
+  // are recorded (user provenance) but never wired to the engine
+  // — wiring them would fund them a second time on top of the
+  // spending that already contains them. An explicit 0 is an
+  // entered amount (it activates the term and caps the retained
+  // ACA credit at that $0 premium — the engine's R3-M2 rule).
+  const healthPremiumAcaHousehold =
+    input.healthPremiumAcaHouseholdAnnual ?? null;
+  const healthPremiumAcaSingle =
+    input.healthPremiumAcaSingleAnnual ?? null;
+  const healthPremiumMedicarePerPerson =
+    input.healthPremiumMedicarePerPersonAnnual ?? null;
+  const premiumsGiven = anyPremiumGiven;
+  const spendingIncludesHealthPremiums =
+    input.spendingIncludesHealthPremiums ?? null;
+  // Derived flag the tier notes (and the adapter) wire from: the
+  // v208 term is active exactly when a premium was given AND the
+  // caller declared spending excludes premiums. It is computed
+  // here, before the tier notes, because a null tier's note
+  // depends on whether the term is active (pass-1 SHOULD-1).
+  const premiumsCharged =
+    premiumsGiven && spendingIncludesHealthPremiums === false;
+  for (const [field, value] of [
+    ["healthPremiumAcaHouseholdAnnual", healthPremiumAcaHousehold],
+    ["healthPremiumAcaSingleAnnual", healthPremiumAcaSingle],
+    [
+      "healthPremiumMedicarePerPersonAnnual",
+      healthPremiumMedicarePerPerson,
+    ],
+  ] as const) {
+    if (value === null) {
+      record(
+        field,
+        null,
+        "assumption",
+        field === "healthPremiumMedicarePerPersonAnnual"
+          ? "No Medicare premium provided — no Medicare premium is modeled for this tier (a null Medicare amount has no benchmark fallback)."
+          : premiumsCharged
+            ? "No premium provided for this tier — with the premium term active, the engine falls back to the year's benchmark for this tier."
+            : "No health premium provided for this tier — no premium modeled for it.",
+      );
+    } else {
+      record(field, value, "user", "Provided by caller.");
+    }
+  }
+  if (spendingIncludesHealthPremiums === null) {
+    // Reachable only when no premium was given: a premium without
+    // a convention is rejected in Step 2 above.
+    record(
+      "spendingIncludesHealthPremiums",
+      null,
+      "assumption",
+      "No health premium fields were given, so no spending convention applies.",
+    );
+  } else {
+    record(
+      "spendingIncludesHealthPremiums",
+      spendingIncludesHealthPremiums,
+      "user",
+      "Provided by caller.",
+    );
+  }
+  // Derived flag the adapter wires from (never user input).
+  // (premiumsCharged is computed above, with the tier notes.)
+  const premiumsInSpending =
+    premiumsGiven && spendingIncludesHealthPremiums === true;
+  record(
+    "premiumsCharged",
+    premiumsCharged,
+    "assumption",
+    premiumsCharged
+      ? "Health premiums are funded on top of monthlySpending: the caller declared spending excludes premiums, so the engine's v208 term is wired."
+      : premiumsInSpending
+        ? "Health premiums are NOT charged again: the caller declared they are already inside monthlySpending, so the engine funds spending verbatim and the supplied amounts are recorded for reference only."
+        : "No health premium is charged: no premium fields were given.",
+  );
+  if (premiumsInSpending) {
+    warnings.push(
+      "Monthly spending already includes health premiums, so the supplied premium amounts are recorded but not charged again — the engine funds spending verbatim. Gross/net premium breakdowns are not priced in this mode.",
+    );
+  }
+
   // --- State tax. ---
   const rawState =
     input.state === undefined ? "" : input.state.trim();
@@ -1197,6 +1315,12 @@ export function normalizeInputs(
     acaBenchmarkCouple,
     acaBenchmarkSingle,
     acaBenchmarkFamily,
+    healthPremiumAcaHousehold,
+    healthPremiumAcaSingle,
+    healthPremiumMedicarePerPerson,
+    spendingIncludesHealthPremiums,
+    premiumsCharged,
+    premiumsInSpending,
     stateRatePct,
     residenceState,
     stateLabel,
@@ -1269,6 +1393,13 @@ export function publicEffectiveInputs(
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
+    healthPremiumAcaHouseholdAnnual: scenario.healthPremiumAcaHousehold,
+    healthPremiumAcaSingleAnnual: scenario.healthPremiumAcaSingle,
+    healthPremiumMedicarePerPersonAnnual:
+      scenario.healthPremiumMedicarePerPerson,
+    spendingIncludesHealthPremiums: scenario.spendingIncludesHealthPremiums,
+    premiumsCharged: scenario.premiumsCharged,
+    premiumsInSpending: scenario.premiumsInSpending,
     state: scenario.stateLabel,
     residenceState: scenario.residenceState,
     stateRatePct: scenario.stateRatePct,
