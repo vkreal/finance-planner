@@ -26,8 +26,10 @@ this README documents in full.
 install. A single file, `dist/finance-planner-cli.mjs`, runs the
 same eight tools under plain Node.js 20+:
 `node finance-planner-cli.mjs retirement_calculate input.json`.
-Get it from the GitHub Releases page (with its `.sha256` checksum)
-or build it with `bun run build:standalone`. Full reference:
+No release has been published yet — until the first release, use the
+committed copy at `assistant-api/dist/finance-planner-cli.mjs` (with
+its `.sha256` checksum) or build it with `cd assistant-api &&
+bun run build:standalone`. Full reference:
 [STANDALONE.md](STANDALONE.md); the AI-facing guide:
 [AI_USAGE.md](AI_USAGE.md). Both methods call the same engines and
 return the same envelopes.

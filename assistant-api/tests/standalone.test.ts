@@ -511,6 +511,41 @@ describe("parity with the direct (bun) CLI", () => {
     expect(JSON.parse(node.stdout)).toHaveProperty("ok", false);
   }, TOOL_TIMEOUT);
 
+  // P3-M1: each omitted essential must be a `missing_input` envelope
+  // (with the `missing` array and plain-language `questions`), byte-
+  // identical to the bun CLI — not `invalid_input`. The bundle used
+  // to sniff zod's locale-dependent "received undefined" message,
+  // which bun's bundler drops, so all six came back `invalid_input`.
+  test("each omitted essential: identical missing_input envelope, exit 2", () => {
+    const essentials = [
+      "pretax",
+      "taxable",
+      "roth",
+      "hsa",
+      "monthlySpending",
+      "currentAge",
+    ] as const;
+    for (const key of essentials) {
+      const scenario = fictionalScenario();
+      delete scenario[key];
+      const dir = mkdtempSync(join(tmpdir(), "standalone-missing-"));
+      const file = join(dir, "calc.json");
+      writeFileSync(file, JSON.stringify(scenario));
+      const bun = runBunCli("retirement_calculate", file);
+      const node = runBundle(SYSTEM_NODE, "retirement_calculate", file);
+      expect(bun.status).toBe(2);
+      expect(node.status).toBe(2);
+      expect(node.stdout).toBe(bun.stdout);
+      const envelope = JSON.parse(node.stdout);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error.code).toBe("missing_input");
+      expect(envelope.error.missing).toEqual([key]);
+      expect(envelope.error.questions).toEqual([
+        { field: key, question: expect.any(String) },
+      ]);
+    }
+  }, TOOL_TIMEOUT);
+
   test("malformed JSON is a usage error (exit 1, silent stdout)", () => {
     const dir = mkdtempSync(join(tmpdir(), "standalone-malformed-"));
     const file = join(dir, "bad.json");

@@ -15295,9 +15295,60 @@ function invalidInputError(message, details) {
     }
   };
 }
+function receivedName(value) {
+  if (value === undefined)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (Array.isArray(value))
+    return "array";
+  if (typeof value === "number")
+    return Number.isNaN(value) ? "nan" : "number";
+  if (value instanceof Date)
+    return "date";
+  return typeof value;
+}
+function valueAtPath(raw, path) {
+  let cur = raw;
+  for (const seg of path) {
+    if (cur === null || typeof cur !== "object")
+      return;
+    cur = cur[seg];
+  }
+  return cur;
+}
+function detailMessage(issue, raw) {
+  if (issue.code === "invalid_type") {
+    return `Invalid input: expected ${String(issue.expected)}, received ${receivedName(valueAtPath(raw, issue.path))}`;
+  }
+  if (issue.code === "too_small" || issue.code === "too_big") {
+    const tooSmall = issue.code === "too_small";
+    const bound = tooSmall ? issue.minimum : issue.maximum;
+    const op = issue.inclusive ? tooSmall ? ">=" : "<=" : tooSmall ? ">" : "<";
+    const head = tooSmall ? "Too small" : "Too big";
+    if (issue.origin === "number") {
+      return `${head}: expected number to be ${op}${String(bound)}`;
+    }
+    if (issue.origin === "array") {
+      return `${head}: expected array to have ${op}${String(bound)} items`;
+    }
+    if (issue.origin === "string") {
+      return `${head}: expected string to have ${op}${String(bound)} characters`;
+    }
+    return issue.message;
+  }
+  if (issue.code === "invalid_value") {
+    return `Invalid option: expected one of ${(issue.values ?? []).map((v) => JSON.stringify(v)).join("|")}`;
+  }
+  return issue.message;
+}
 function normalizeInputs(raw) {
   const parsed = RetirementQuestionInputs.safeParse(raw);
   if (!parsed.success) {
+    const rawMissing = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? ESSENTIAL_KEYS.filter((k) => !(k in raw) || raw[k] === undefined) : [];
+    if (rawMissing.length > 0) {
+      return { ok: false, error: missingInputError(rawMissing) };
+    }
     const issues = parsed.error.issues;
     const missingEssential = [];
     for (const issue of issues) {
@@ -15320,7 +15371,7 @@ function normalizeInputs(raw) {
       return [
         {
           field: issue.path.length > 0 ? issue.path.join(".") : "(input)",
-          message: issue.message
+          message: detailMessage(issue, raw)
         }
       ];
     });

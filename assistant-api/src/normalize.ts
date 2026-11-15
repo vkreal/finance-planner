@@ -354,6 +354,91 @@ function invalidInputError(message: string, details: unknown): AdapterError {
   };
 }
 
+/** Name a received value the way zod's English messages do
+ *  ("string", "number", "boolean", "null", "undefined", "array",
+ *  "object", "nan", "date", ...). Used to rebuild detail messages
+ *  without relying on zod's locale strings, which the standalone
+ *  bundle drops (see the Step 1 note). */
+function receivedName(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number")
+    return Number.isNaN(value) ? "nan" : "number";
+  if (value instanceof Date) return "date";
+  return typeof value; // string, boolean, bigint, symbol, function, object
+}
+
+/** Read the caller's value at a zod issue path. */
+function valueAtPath(raw: unknown, path: (string | number)[]): unknown {
+  let cur: unknown = raw;
+  for (const seg of path) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string | number, unknown>)[seg];
+  }
+  return cur;
+}
+
+/**
+ * Rebuild a zod issue's detail message from its STRUCTURED fields
+ * instead of `issue.message`. Zod builds its English messages from
+ * the locale, and the standalone bundle drops the locale (bun
+ * tree-shakes the side-effect locale registration), so in the bundle
+ * every locale-dependent message degrades to the bare "Invalid
+ * input" — the detail loses the expected/received reason and
+ * bundle-vs-server envelopes diverge. The formats below reproduce
+ * zod v4's English wordings exactly for the codes this schema can
+ * produce (verified empirically against the unbundled leg);
+ * anything else keeps `issue.message` — custom refine messages are
+ * literal strings in the source, so they survive bundling unchanged.
+ */
+function detailMessage(
+  issue: {
+    code: string;
+    message: string;
+    path: (string | number)[];
+    expected?: unknown;
+    origin?: unknown;
+    minimum?: unknown;
+    maximum?: unknown;
+    inclusive?: unknown;
+    values?: unknown[];
+  },
+  raw: unknown,
+): string {
+  if (issue.code === "invalid_type") {
+    return `Invalid input: expected ${String(issue.expected)}, received ${receivedName(valueAtPath(raw, issue.path))}`;
+  }
+  if (issue.code === "too_small" || issue.code === "too_big") {
+    const tooSmall = issue.code === "too_small";
+    const bound = tooSmall ? issue.minimum : issue.maximum;
+    const op = issue.inclusive
+      ? tooSmall
+        ? ">="
+        : "<="
+      : tooSmall
+        ? ">"
+        : "<";
+    const head = tooSmall ? "Too small" : "Too big";
+    if (issue.origin === "number") {
+      return `${head}: expected number to be ${op}${String(bound)}`;
+    }
+    if (issue.origin === "array") {
+      return `${head}: expected array to have ${op}${String(bound)} items`;
+    }
+    if (issue.origin === "string") {
+      return `${head}: expected string to have ${op}${String(bound)} characters`;
+    }
+    return issue.message;
+  }
+  if (issue.code === "invalid_value") {
+    return `Invalid option: expected one of ${(issue.values ?? [])
+      .map((v) => JSON.stringify(v))
+      .join("|")}`;
+  }
+  return issue.message;
+}
+
 /**
  * Validate + normalize raw caller input into a NormalizedScenario.
  *
@@ -369,12 +454,36 @@ export function normalizeInputs(
   // ---- Step 1: zod validation. ----
   const parsed = RetirementQuestionInputs.safeParse(raw);
   if (!parsed.success) {
+    // Missing essentials are detected from the RAW input object, not
+    // from zod's messages: the standalone bundle is built with bun,
+    // which drops zod's locale (its English strings are registered
+    // via a side-effect-only import, and zod declares
+    // "sideEffects": false), so in the bundle every locale-dependent
+    // message is the bare "Invalid input" and a message sniff for
+    // "received undefined" never fires. A key absent from `raw`, or
+    // present with value `undefined` (which zod also treats as
+    // missing, and which a direct caller can pass even though JSON
+    // cannot express it), is missing; a present-but-null or
+    // wrong-typed key still goes through zod below -> invalid_input.
+    const rawMissing: string[] =
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+        ? (ESSENTIAL_KEYS as readonly string[]).filter(
+            (k) =>
+              !(k in raw) ||
+              (raw as Record<string, unknown>)[k] === undefined,
+          )
+        : [];
+    if (rawMissing.length > 0) {
+      return { ok: false, error: missingInputError(rawMissing) };
+    }
     const issues = parsed.error.issues;
     // A "required" failure is zod v4's invalid_type with a message
     // ending in "received undefined" (a present-but-wrong-typed value
     // says "received string"/"received null" instead). Only the
     // six essential keys map to missing_input; everything else is
-    // invalid_input.
+    // invalid_input. This is a fallback for the unbundled leg, where
+    // zod's locale is present; the raw-object check above is what
+    // the bundle relies on.
     const missingEssential: string[] = [];
     for (const issue of issues) {
       const field = issue.path[0];
@@ -415,7 +524,10 @@ export function normalizeInputs(
       return [
         {
           field: issue.path.length > 0 ? issue.path.join(".") : "(input)",
-          message: issue.message,
+          // Rebuilt from the issue's structured fields, not
+          // `issue.message` — the bundle drops zod's locale, so the
+          // message itself degrades to bare "Invalid input" there.
+          message: detailMessage(issue, raw),
         },
       ];
     });

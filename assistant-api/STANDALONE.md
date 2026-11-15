@@ -5,13 +5,16 @@ Planner's retirement engines under plain Node.js — no MCP server, no
 hosting, no install, no network, no database.
 
 The file is `assistant-api/dist/finance-planner-cli.mjs`
-(557,342 bytes, sha256
-`0e7dfa8168a70d17bbf478f01f856481e050b5851b0156c32b26951c4b69516e`),
+(559,200 bytes, sha256
+`a03a2f024cc4f7a4d21988de8a3c0ff6f70bcff4cfad29c83c7a105a4794f8d0`),
 built from source commit `4bc7316` (main at the Review 4 reviewer-NICE
 gloss fix; the bundle commit also carries the Engine Review 1 adequacy
 floor, Engine Review 2 solver-feasibility fields, Review 4
-comparisonScope and its 6 NICE fixes, and the Review 2/6/8/3 fixes —
-Review 7's Monte Carlo precision work is not in this build). Size and hash change with every rebuild from a new source
+comparisonScope and its 6 NICE fixes, the Review 2/6/8/3 fixes, and
+the Review 10 Pass 2/3 fixes — the missing-input detection fix and
+the locale-independent error-detail messages in normalize.ts, plus
+three doc fixes — Review 7's Monte Carlo precision work is not in
+this build). Size and hash change with every rebuild from a new source
 commit — verify the copy you hold with the `.sha256` file next to it,
 not with the numbers in this paragraph.
 It calls the same `dispatchTool()` the MCP server and the bun CLI
@@ -137,7 +140,7 @@ Every call returns one JSON envelope:
   "ok": true,
   "source": "finance-planner-engine",
   "adapterVersion": "assistant-api 0.1.0",
-  "apiContractVersion": 163,
+  "apiContractVersion": 164,
   "taxLawYear": 2026,
   "effectiveInputs": { "...": "what was priced" },
   "assumptions": [ { "field": "…", "value": "…", "provenance": "…" } ],
@@ -167,8 +170,13 @@ non-taxable) — the response never merges them.
   the engine's fixed 1,000 runs).
 - Monte Carlo runs are capped at 5,000 simulations per call; the
   planning horizon ends at age 120.
-- The work-years comparison can take a minute or more; it runs to
-  completion in-process with no preemption.
+- There is no execution timeout: every call runs to completion
+  in-process, and killing a call yields no partial output (stdout is
+  written once, at the end). The slowest calls are the work-years
+  comparison (a minute or more) and the full-optimizer search
+  (`comparisonScope: "full"`, ~77s quiet / ~216s loaded). What bounds
+  them instead of a time limit is the work itself: a 256KB input cap,
+  `mcRuns` ≤ 5,000, `compareAges` 2–5, and the age-120 horizon.
 - Results are planning estimates from the Finance Planner engines,
   not tax advice.
 
@@ -248,12 +256,12 @@ rule, the "don't invent results" rule, and a worked example. The
 - Full adapter suite green (`bun test tests/`), including
   `tests/standalone.test.ts`.
 - Parity (four-way matrix, base `4bc7316`, bundle
-  `0e7dfa8168a70d17bbf478f01f856481e050b5851b0156c32b26951c4b69516e`):
+  `a03a2f024cc4f7a4d21988de8a3c0ff6f70bcff4cfad29c83c7a105a4794f8d0`):
   all 8 tools MATCH across all 5 legs — direct adapter, bun CLI,
   MCP endpoint, standalone bundle under system Node 24, standalone
   bundle under Node 20.19.5 — on identical input JSON (40 MATCH,
-  0 MISMATCH; fresh direct references, logs `parity7.log`,
-  `parity7-taxyear.log`, `parity7-wy.log`). Key figures: calculate
+  0 MISMATCH; fresh direct references, logs `parity8.log`,
+  `parity8-taxyear.log`, `parity8-wy.log`). Key figures: calculate
   ending $19,889,344.44; Monte Carlo successRate 0.92; max-spending
   $11,100/mo at 0.85; tax_year federalTax $32,429.05 (RMD $42,058.82);
   work-years 2-age variant (spouse SS $0, compareAges [58,60],
@@ -264,12 +272,11 @@ rule, the "don't invent results" rule, and a worked example. The
   on the 6 GB VM — preserved as `parity4/retirement_work_years.heavy.json`
   for a bigger host; the wy56 heavy leg (compareAges [56,60], salary
   $120,000, spouse SS $0) re-ran on the rebuilt bundle under Node 20
-  (944,202 ms; 413,442 ms on the 9e64de1 bundle in a quieter window):
-  every figure identical to the 19ea743-base run —
+  (873,264 ms): every figure identical to the 19ea743-base run —
   retire-56 ending $15,524,955.88, retire-60 $18,513,081.03,
   lifetimeTax $739,369.67 both, winners wealth retire-60 / net cost
   retire-56 / all-in tax retire-58, deltas +$2,988,125.15 / $0
-  (log `parity7-wy56.log`). The envelope gained the `comparisonScope`
+  (log `parity8-wy56.log`). The envelope gained the `comparisonScope`
   block (`"limited"`) and contract 164 — that is the only change.
   Transport note: the bun CLI and both bundle legs print byte-identical
   stdout (pretty JSON); the direct leg prints the same envelope as
