@@ -775,7 +775,7 @@ const CAPABILITY_ASSUMPTIONS: Assumption[] = [
 
 const CAPABILITY_LIMITATIONS: string[] = [
   "Stateless and read-only: every call carries its complete scenario; nothing is saved.",
-  `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
+  `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available from the single-year tool. Multi-year plans price later years on the newest published row carried forward in today's dollars — a projection, named in each priced year's lawProvenance — and the 2027 federal figures (Rev. Proc. 2026-35) are published but no 2027 row is adopted until the CMS half (2027 Part B premium + IRMAA) publishes.`,
   "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
   "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
@@ -933,6 +933,16 @@ function describeCapabilities(): AdapterResult<unknown> {
         apiContractVersion: API_CONTRACT_VERSION_REPORTED,
         taxLawYear: latestTaxLawYear(),
         lawYears: TAX_LAW_YEARS.map((law) => law.year),
+        // Engine Review 3 (E3-S1): what "the newest row" means
+        // for a year past it. Multi-year plans price later
+        // years on the newest published row carried forward
+        // in today's dollars — a projection, named per year
+        // in lawProvenance — while this adapter's single-year
+        // tool prices published years only and rejects the
+        // rest. The 2027 federal figures are published (Rev.
+        // Proc. 2026-35) but no 2027 row is adopted until the
+        // CMS half (2027 Part B premium + IRMAA) publishes.
+        lawProvenanceNote: `Published law rows ${FIRST_LAW_YEAR}–${latestTaxLawYear()}. Multi-year plans price later years on the ${latestTaxLawYear()} row carried forward in today's dollars (a projection, named per priced year in lawProvenance); the single-year tool prices published years only.`,
       },
     },
     warnings: [],

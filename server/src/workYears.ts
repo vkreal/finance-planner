@@ -186,8 +186,10 @@ import {
 } from "./tierLedger";
 import {
   lawForYear,
+  lawProvenanceForYear,
   rmdAgeForBirthYear,
   type FilingStatus,
+  type LawProvenanceStatus,
   type YearLaw,
 } from "./taxLaw";
 import {
@@ -964,6 +966,16 @@ export type WorkYearLine = {
   // State tax on the salary year, from the shared priceYear
   // path at the plan's state tax rate (0 at a 0% rate).
   stateTax: number;
+  // Law + state-tax provenance (Engine Review 3, E3-S1/E3-S2):
+  // the law row this year actually priced under, and how its
+  // state tax was priced — the law row from this year's own
+  // lawForYear call, the state-tax kind from the shared
+  // priceYear result. A carried-forward year is a projection
+  // under today's law; a flat-rate state tax is an estimate,
+  // never an exact state return. Pure metadata.
+  lawYearUsed: number;
+  lawStatus: LawProvenanceStatus;
+  stateTaxKind: "wa-excise" | "flat-rate-estimate";
   ficaWages: number;
   fica: number;
   // Payroll tax as its own named component (T2): the same
@@ -1772,6 +1784,9 @@ export function priceOneWorkYear(
     magi: priced.magi,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
+    lawYearUsed: law.year,
+    lawStatus: lawProvenanceForYear(calendarYear).status,
+    stateTaxKind: priced.stateTaxProvenance.kind,
     ficaWages,
     fica,
     payrollTax: payroll.total,

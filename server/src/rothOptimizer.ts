@@ -98,6 +98,7 @@ type RothPlanInputs,
 type RothPlanResult,
 type RothStrategy,
 type RothYear,
+type StateTaxProvenance,
 type TaxableTier,
 } from "./taxEngine";
 import {
@@ -109,6 +110,7 @@ lawForYear,
 rmdAgeForBirthYear,
 ssAnnualAtClaimAge,
 ssBenefitFactor,
+type LawProvenance,
 } from "./taxLaw";
 // Social Security claiming law lives in taxLaw.ts (Engine
 // Review 5) and is re-exported here so the import sites that
@@ -4627,6 +4629,16 @@ export type PlaygroundYearResult = {
   niit: number;
   federalTax: number;
   stateTax: number;
+  // Law + state-tax provenance (Engine Review 3, E3-S1/E3-S2):
+  // the law row this year actually priced under, and how its
+  // state tax was priced — copied from the shared priceYear
+  // result, so a single-year price names its row and its
+  // state-tax basis beside the tax. A carried-forward year is
+  // a projection under today's law, never published law for
+  // that year; a flat-rate state tax is an estimate, never an
+  // exact state return. Pure metadata: no priced figure moves.
+  lawProvenance: LawProvenance;
+  stateTaxProvenance: StateTaxProvenance;
   // Washington excise breakdown (T3; $0 unless residence is
   // Washington): the WA-allocated gains entering the excise
   // base, the standard deduction applied, and the taxable
@@ -6484,6 +6496,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     niit: priced.niit,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
+    lawProvenance: priced.lawProvenance,
+    stateTaxProvenance: priced.stateTaxProvenance,
     waGains: priced.waGains,
     waStandardDeduction: priced.waStandardDeduction,
     waTaxableGains: priced.waTaxableGains,

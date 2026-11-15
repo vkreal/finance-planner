@@ -488,7 +488,16 @@ export const TAX_LAW_2026: YearLaw = {
   // note on YearLaw — the 2025 amounts carry forward
   // unchanged (today's-dollars convention); the rate
   // structure and the unindexed $1,000,000 threshold are
-  // statutory and identical in both rows.
+  // statutory and identical in both rows. Re-checked for
+  // Engine Review 3 (November 2026): DOR's own capital-gains
+  // pages, as crawled November 2, 2026, still publish only
+  // the 2025 amounts ($278,000 / $111,000); one secondary
+  // source claims a November 12, 2026 DOR check publishing
+  // 2026 amounts of $290,000 (standard deduction and
+  // charitable threshold) and $116,000 (charitable cap),
+  // but that claim is NOT validated against a DOR source,
+  // so the 2026 row keeps the 2025 amounts and the claim
+  // stands as an open verification item, not a correction.
   waStandardDeduction: 278000,
   waRatePct: 7,
   waAdditionalRatePct: 2.9,
@@ -561,6 +570,110 @@ export function lawForYear(year: number): YearLaw {
   }
   return year < EARLIEST_LAW.year ? EARLIEST_LAW : CURRENT_LAW;
 }
+
+/* -------- Law provenance (Engine Review 3, E3-S1) --------
+   The structured answer to "which law row did this year price
+   under, and was it that year's own law?": every priced year
+   carries one of these (priceYear's lawProvenance, the
+   single-year pricer's result, each plan year's detail, each
+   work year's line, and runPlaygroundYear's response), so a
+   substitution is on the record wherever a price is surfaced
+   — never silent. `status` names the relationship: "exact"
+   (the priced year has its own published row), "carried-
+   forward" (the year is past the newest published row and
+   prices on that newest row in today's dollars — a
+   PROJECTION, not that year's published law), or "carried-
+   backward" (the year is before the oldest published row and
+   prices on the earliest row the table holds, never under a
+   later year's law). `isProjection` is true exactly for a
+   carried-forward year: a future-year price is a projection
+   under today's law, and no future legislation is implied
+   or assumed. Dated schedules that live OUTSIDE the base law
+   row (the SALT schedule above, the OBBBA senior deduction's
+   2025–2028 window, the AMT phase-out reset) still price by
+   their own calendar year inside a carried-forward year —
+   provenance names the BASE row only, and those schedules
+   are what keep a projected year on its enacted figures
+   where the statute enacted them. */
+export type LawProvenanceStatus =
+  | "exact"
+  | "carried-forward"
+  | "carried-backward";
+
+export type LawProvenance = {
+  // The published law row the year actually priced under.
+  lawYear: number;
+  status: LawProvenanceStatus;
+  // True only when the priced year has its own published row.
+  published: boolean;
+  // True when the priced year is past the newest published
+  // row: the price is a projection under carried-forward law.
+  isProjection: boolean;
+  // One plain sentence naming the substitution (or its
+  // absence), for display wherever the year is surfaced.
+  note: string;
+};
+
+export function lawProvenanceForYear(year: number): LawProvenance {
+  const law = lawForYear(year);
+  if (law.year === year) {
+    return {
+      lawYear: year,
+      status: "exact",
+      published: true,
+      isProjection: false,
+      note: `Priced under the published ${year} law row.`,
+    };
+  }
+  if (year > law.year) {
+    return {
+      lawYear: law.year,
+      status: "carried-forward",
+      published: false,
+      isProjection: true,
+      note:
+        `No published ${year} law row exists yet; priced on the ` +
+        `${law.year} row carried forward in today's dollars — a ` +
+        `projection under current law, not published ${year} law, ` +
+        `and no future legislation is assumed.`,
+    };
+  }
+  return {
+    lawYear: law.year,
+    status: "carried-backward",
+    published: false,
+    isProjection: false,
+    note:
+      `No published ${year} law row exists; priced under the ` +
+      `earliest published row (${law.year}), never under a later ` +
+      `year's law.`,
+  };
+}
+
+/* -------- 2027: published federal figures, no adopted row ----
+   The 2027 FEDERAL figures are published (IRS Rev. Proc.
+   2026-35, announced in IR-2026-133 on November 5, 2026:
+   standard deduction $16,600 single / $33,200 MFJ / $24,925
+   head of household; the 12% bracket tops at $104,050 MFJ;
+   the 37% rate starts above $793,650 MFJ; the gift-tax
+   annual exclusion rises to $20,000), but NO 2027 row is
+   adopted in this table. The app's law-table update is
+   deferred until the year's CMS half is also published
+   (the 2027 Part B premium and IRMAA tiers — not yet
+   published as of this build), because a law row prices
+   federal tax AND Medicare premiums together and a half
+   row would price one half on 2027 law and the other on
+   2026 law. Until the CMS half publishes, a 2027 year
+   prices on the 2026 row carried forward, and its
+   provenance says so (status "carried-forward"). If this
+   boundary is ever judged wrong, adding the row is one
+   year's entry in TAX_LAW_YEARS above — no engine change. */
+export const TAX_LAW_2027_NOTE =
+  "2027 federal figures are published (IRS Rev. Proc. 2026-35, " +
+  "IR-2026-133), but no 2027 law row is adopted: the CMS half " +
+  "(2027 Part B premium + IRMAA tiers) is not yet published, " +
+  "and the law table updates only when both halves exist. A " +
+  "2027 year prices on the 2026 row carried forward.";
 
 /* -------- SALT dated schedule (Build B) — IRC §164(b)(7),
    as amended by §70120 of Public Law 119-21 --------

@@ -266,7 +266,7 @@ type FillCeilings,
 type RothStrategy,
 } from "./taxEngine";
 import { runWorkYearsCompare } from "./workYears";
-import { CURRENT_LAW, TAX_LAW_YEARS, lawForYear } from "./taxLaw";
+import { CURRENT_LAW, TAX_LAW_YEARS, lawForYear, lawProvenanceForYear } from "./taxLaw";
 import {
 BLANK_ROTH_GIFT,
 computeGiftComparison,
@@ -4961,6 +4961,27 @@ const bracketLayerOut = z.object({
   tax: z.number(),
 });
 
+/* Law + state-tax provenance (Engine Review 3, E3-S1/E3-S2) —
+   the shared shape every single-year response carries beside
+   its tax: which published law row the year priced under and
+   whether it was the year's own row, and how the state tax
+   was priced. A carried-forward year is a projection under
+   today's law, never published law for that year; a flat-rate
+   state tax is an estimate, never an exact state return. */
+const lawProvenanceOut = z.object({
+  lawYear: z.number().int(),
+  status: z.enum(["exact", "carried-forward", "carried-backward"]),
+  published: z.boolean(),
+  isProjection: z.boolean(),
+  note: z.string(),
+});
+const stateTaxProvenanceOut = z.object({
+  kind: z.enum(["wa-excise", "flat-rate-estimate"]),
+  residenceState: z.enum(["WA", "other"]).nullable(),
+  ratePct: z.number().nullable(),
+  note: z.string(),
+});
+
 const playgroundYearOut = z.object({
   interest: z.number(),
   ordinaryDividends: z.number(),
@@ -5053,6 +5074,13 @@ const playgroundYearOut = z.object({
   niit: z.number(),
   federalTax: z.number(),
   stateTax: z.number(),
+  // Law + state-tax provenance (Engine Review 3, E3-S1/E3-S2):
+  // the law row this year actually priced under, and how its
+  // state tax was priced — the priced result's own figures,
+  // so a single-year price names its row and its state-tax
+  // basis beside the tax.
+  lawProvenance: lawProvenanceOut,
+  stateTaxProvenance: stateTaxProvenanceOut,
   // Washington excise breakdown (T3; $0 unless the year's
   // residence is Washington).
   waGains: z.number(),
@@ -15047,6 +15075,26 @@ export const Actions = {
       // this names that row, so the substitution is on the
       // record rather than silent.
       lawYearUsed: z.number().int(),
+      // Structured provenance (Engine Review 3, E3-S1 §10):
+      // the same row, with its status — "exact" for a year
+      // with its own published row, "carried-forward" for a
+      // year past the newest row (a PROJECTION under today's
+      // law — the note says so in plain words, and no future
+      // legislation is assumed), "carried-backward" for a
+      // year before the oldest row. DECISION, documented for
+      // the reviewers: a single-year call for an unsupported
+      // year is NOT rejected here — it prices under the
+      // fallback row with this provenance on the record,
+      // because the December console and the Playground
+      // projection price 2027+ years this way by design and
+      // a rejection would break those callers (the 2027
+      // fixture pins lawYearUsed 2026). The AI adapter's
+      // single-year tool DOES reject an unpublished year
+      // outright (its own contract) — the two surfaces
+      // differ deliberately, and this object is what lets a
+      // caller of this action tell a projection from a
+      // published-year price.
+      lawProvenance: lawProvenanceOut,
       result: playgroundYearOut,
       pastePayload: playgroundPasteOut,
       pasteText: z.string(),
@@ -15058,6 +15106,7 @@ export const Actions = {
       return {
         provenance: apiProvenance(),
         lawYearUsed: lawForYear(args.taxYear).year,
+        lawProvenance: lawProvenanceForYear(args.taxYear),
         result,
         pastePayload,
         pasteText: JSON.stringify(pastePayload),

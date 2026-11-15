@@ -2825,7 +2825,7 @@ export function calculateSingleYearTax(
   return guard(() => {
     if (!TAX_LAW_YEARS.some((law) => law.year === scenario.taxYear)) {
       return unsupported(
-        `The single-year price covers tax years ${TAX_LAW_YEARS.map((law) => law.year).join(", ")}; ${scenario.taxYear} is not priced.`,
+        `The single-year price covers tax years ${TAX_LAW_YEARS.map((law) => law.year).join(", ")}; ${scenario.taxYear} is not priced. In the app's single-year action the same year prices on the newest published row carried forward, with that substitution named in lawProvenance — this tool does not price it.`,
       );
     }
     const warnings: string[] = [];

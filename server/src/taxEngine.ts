@@ -45,12 +45,14 @@ fplFor,
 fullRetirementAgeMonths,
 jointDivisor,
 lawForYear,
+lawProvenanceForYear,
 rmdAgeForBirthYear,
 saltScheduleForYear,
 ssBenefitFactor,
 survivorReductionFactor,
 uniformDivisor,
 type FilingStatus,
+type LawProvenance,
 type YearLaw,
 } from "./taxLaw";
 import { applyLossLedger, capitalLossAllowanceCap } from "./lossLedger";
@@ -359,6 +361,26 @@ export type BracketLayer = {
   tax: number;
 };
 
+/* State-tax provenance (Engine Review 3, E3-S2) — how a
+   year's stateTax was priced. The flat-rate path is an
+   ESTIMATE: the caller-supplied rate on federal taxable
+   income, with no state rules behind it. */
+export type StateTaxKind = "wa-excise" | "flat-rate-estimate";
+
+export type StateTaxProvenance = {
+  kind: StateTaxKind;
+  // The residence the year priced under (null when none was
+  // supplied — the flat-rate path either way).
+  residenceState: "WA" | "other" | null;
+  // The caller-supplied flat rate (percent) on the estimate
+  // path; null on the Washington excise path, where the
+  // flat rate is ignored entirely.
+  ratePct: number | null;
+  // One plain sentence naming the basis, for display
+  // wherever the state tax is surfaced.
+  note: string;
+};
+
 export type PriceYearResult = {
   provisionalIncome: number;
   ssTaxable: number;
@@ -461,6 +483,28 @@ export type PriceYearResult = {
   // eligibility answered, and false in every year with no
   // pre-59½ pre-tax draw.
   earlyWithdrawalEligibilityUnknown: boolean;
+  // Law provenance (Engine Review 3, E3-S1): the law row
+  // this year actually priced under, and whether it was the
+  // year's own published row — see lawProvenanceForYear in
+  // taxLaw.ts. A carried-forward year is a projection under
+  // today's law, never published law for that year; a
+  // carried-backward year prices on the earliest published
+  // row, never a later year's law. Pure metadata: no priced
+  // figure moves.
+  lawProvenance: LawProvenance;
+  // State-tax provenance (Engine Review 3, E3-S2): HOW the
+  // stateTax above was priced, so a flat-rate figure can
+  // never be read as an exact state return. "wa-excise" is
+  // Washington's capital-gains excise (RCW 82.87), priced
+  // INSTEAD of the flat rate — the two never stack.
+  // "flat-rate-estimate" is the caller-supplied stateRatePct
+  // applied to federal taxable income: an ESTIMATE only.
+  // Other states may differ in taxable-income definitions,
+  // deductions, credits, retirement-income exclusions, and
+  // marginal rates, and no rate is ever auto-assigned — a
+  // caller that supplies no rate prices 0% (no state tax),
+  // never a default state's rate.
+  stateTaxProvenance: StateTaxProvenance;
   // Washington excise breakdown (T3): the year's WA-allocated
   // long-term gains entering the excise base (max(0, ltcg) —
   // or max(0, waGainsBase) when the caller supplies the
@@ -1717,6 +1761,25 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
       }
     }
   }
+  // Provenance (Engine Review 3, E3-S1/E3-S2): pure metadata
+  // naming the law row and the state-tax basis for this year
+  // — no priced figure moves. The flat-rate note is the
+  // estimate label: the rate is the caller's own figure,
+  // and the result is never an exact state return.
+  const lawProvenance = lawProvenanceForYear(input.calendarYear);
+  const stateTaxProvenance: StateTaxProvenance = wa
+    ? {
+        kind: "wa-excise",
+        residenceState: "WA",
+        ratePct: null,
+        note: "Washington capital-gains excise (RCW 82.87) on the year's Washington long-term gains, priced instead of the flat rate — the two never stack.",
+      }
+    : {
+        kind: "flat-rate-estimate",
+        residenceState: input.residenceState ?? null,
+        ratePct: input.stateRatePct,
+        note: `Estimate only: the caller-supplied ${input.stateRatePct}% rate applied to federal taxable income. Other states may differ in taxable-income definitions, deductions, credits, retirement-income exclusions, and marginal rates — this is not an exact state tax return.`,
+      };
   return {
     provisionalIncome: r2(provisional),
     ssTaxable: r2(ssTaxable),
@@ -1744,6 +1807,8 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     stateTax: r2(stateTax),
     earlyWithdrawalPenalty,
     earlyWithdrawalEligibilityUnknown,
+    lawProvenance,
+    stateTaxProvenance,
     waGains: wa ? wa.waGains : 0,
     waStandardDeduction: wa ? wa.standardDeduction : 0,
     waCharitableDeduction: wa ? wa.charitableDeduction : 0,
@@ -4540,6 +4605,13 @@ export type RothYearDetail = {
   ltcgTax: number;
   niit: number;
   stateTax: number;
+  // Law + state-tax provenance (Engine Review 3, E3-S1/E3-S2):
+  // the law row this year actually priced under, and how its
+  // state tax was priced — copied from the shared priceYear
+  // result, so a plan year names its row and its state-tax
+  // basis in the same place it shows the tax. Pure metadata.
+  lawProvenance: LawProvenance;
+  stateTaxProvenance: StateTaxProvenance;
   // The fill decision.
   fill: {
     inWindow: boolean;
@@ -10730,6 +10802,8 @@ export function simulateRothPlan(
       ltcgTax: priced.ltcgTax,
       niit: priced.niit,
       stateTax: r2(stateTax),
+      lawProvenance: priced.lawProvenance,
+      stateTaxProvenance: priced.stateTaxProvenance,
       fill: {
         inWindow,
         windowStartAge: inputs.windowStartAge,
