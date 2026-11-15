@@ -16312,7 +16312,7 @@ function deltasVsBaseline(mapped, baseline) {
     netCostDelta: r24(m.lifetimeNetCost - baseline.lifetimeNetCost)
   }));
 }
-var NET_COST_OBJECTIVE = "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus net health premium where a premium is entered; the adapter enters none, so $0).";
+var NET_COST_OBJECTIVE = "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus gross health premium where a premium is entered; the adapter enters none, so $0).";
 var WEALTH_OBJECTIVE = "Highest ending after-tax wealth: ending pre-tax + taxable + Roth + HSA balances, minus terminal tax on ending pre-tax.";
 var OMITTED_COSTS = [
   "Health insurance premiums are not priced — only the ACA premium credit and IRMAA surcharge.",
@@ -16320,6 +16320,7 @@ var OMITTED_COSTS = [
   "Forced required minimum distributions come out of pre-tax first under every draw order; the order governs discretionary spending draws only."
 ];
 var LIMITED_TIE_BREAK = "Exact ties on the deciding figure keep the earliest scenario in the evaluated list order (the engine's canonical draw-order list for withdrawals; the fixed list order for the limited Roth comparison).";
+var WORK_YEARS_TIE_BREAK = "Exact ties on the deciding figure keep the earliest quit age in the evaluated list order (the sorted compareAges order).";
 var OPTIMIZER_TIE_BREAK = "Exact ties follow the engine's own winner ordering (compareScoredCandidates): lowest net cost, then highest ending after-tax wealth, then Do Nothing, then the plan's own draw order, then candidate key.";
 function buildComparisonScope(opts) {
   return {
@@ -16825,7 +16826,7 @@ function compareRetirementAges(scenario) {
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
-      tieBreakPolicy: LIMITED_TIE_BREAK,
+      tieBreakPolicy: WORK_YEARS_TIE_BREAK,
       excludedCandidateFamilies: [
         "Conversion strategies beyond the entered-plan Do-Nothing fill per quit age.",
         "Joint claiming-age search in the quit-age comparison leg (the work-years leg's per-age winnerStrategy is the engine joint optimizer's pick for that quit age alone)."
@@ -17403,7 +17404,7 @@ var CAPABILITY_LIMITATIONS = [
   "Pre-retirement income is not accumulated: the simulation prices no pre-retirement spending, salary, or tax, so a Social Security benefit (or other fixed income) starting before retirement is not banked in the pre-retirement years — it counts only once retired. Benefits already being collected while still working belong to retirement_work_years, which prices those years with tax and lands the surplus in Taxable.",
   "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years) price tax and account order instead.",
   "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
-  'Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. A long call stalls the whole server — including /health — until it finishes.',
+  'Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. A long call stalls the whole server — including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.',
   "Limited comparisons never claim a global optimum: the default 3-order withdrawal comparison and 4-strategy Roth comparison crown the best of those few only. The full optimizer search is optimal only within the engine's searched candidate space at the entered claiming ages — it does not search claiming ages and prices no Monte Carlo success check. Every comparison response carries a comparisonScope block saying exactly what was evaluated; lowest lifetime net cost and highest ending after-tax wealth are different objectives and often crown different winners.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
   "Standalone bundle: the same eight tools ship as a single finance-planner-cli.mjs file that runs under plain Node.js 20+ with no server, no install, and no network — see assistant-api/STANDALONE.md."
