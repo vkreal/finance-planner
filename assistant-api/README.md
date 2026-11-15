@@ -21,8 +21,8 @@
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
 - `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes.
 - `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success, with the feasibility of that maximum (`targetAchieved`, `solutionStatus`).
-- `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
-- `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
+- `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware (limited default); all six draw-order permutations with `comparisonScope: "full"`.
+- `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 (limited default); the engine's full optimizer search with `comparisonScope: "full"`.
 - `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
 - `retirement_tax_year` — one year's federal/state tax, ACA credit, IRMAA, and health premiums (gross and net, when premium fields are supplied) for a published law year (2025 or 2026 today).
 - `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.
@@ -112,8 +112,8 @@ AI client ── JSON-RPC 2.0 / Streamable HTTP ──► server.ts (auth, rate 
   | `retirement_calculate` | `simulateDetailed` + `runHistorical` + `runNeverRunsOut` |
   | `retirement_monte_carlo` | `runMonteCarlo` + `simulateDetailed` (deterministic cross-check) |
   | `retirement_max_spending` | `solveMaxSpending` (Monte Carlo, 85% target) + historical cross-check |
-  | `retirement_compare_strategies` | `runRothCompare` (3 draw orders) |
-  | `retirement_roth_conversion` | `runRothCompare` (4 conversion fills) |
+  | `retirement_compare_strategies` | `runRothCompare` (3 draw orders by default; all 6 with `comparisonScope: "full"`, from `DRAW_ORDER_OPTIONS`) |
+  | `retirement_roth_conversion` | `runRothCompare` (4 conversion fills by default) or `runOptimizer` (full optimizer search with `comparisonScope: "full"`) |
   | `retirement_work_years` | `runRothCompare` (one scenario per quit age) + `runWorkYearsCompare` (only when `salaryAnnual` is given) |
   | `retirement_tax_year` | `pricePlaygroundYear` |
   | `retirement_describe_capabilities` | No engine call; returns the static guide |
@@ -229,11 +229,101 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`, `minimumAnnualSpending` ($/yr floor — adds `historicalSpendingAdequacyRate`, read beside `historicalNeverOutRate`, never instead of it). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding`, `historicalSpendingAdequacyRate` (null without a floor), `minimumAnnualSpending` |
 | `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `spendingAdequacyRate` (null without `minimumAnnualSpending`; read beside `successRate` — a high funding rate is not proof spending held the floor), `minimumAnnualSpending`, `chart` (dollars), `deterministicEndingBalance` |
 | `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending`, plus feasibility: `targetSuccessRate` (0.85), `achievedSuccessRate`, `targetAchieved`, `solutionStatus` (`feasible` / `feasible_at_zero` / `infeasible_at_zero` / `capped` — a $0 maximum with `infeasible_at_zero` means no spending level reaches the target) and the historical leg's `historicalTargetAchieved` / `historicalSolutionStatus` |
-| `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
-| `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
+| `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`), `comparisonScope`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — the default compares three orders; `comparisonScope: "full"` compares all six permutations. | `scenarios` (3 by default — taxable-first / pre-tax-first / roth-first — 6 in full mode) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `comparisonScope` block, `yearly` table |
+| `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1 by default; Do Nothing + winner + runners-up + ending-wealth winner in full mode) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `comparisonScope` block; in full mode an `optimizer` block (candidates evaluated, winning policy, yearly conversions); `yearly` table |
 | `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
 | `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, health premiums (gross and net, when supplied), cash left vs spending, sale gain/loss, RMD |
 | `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (8 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
+
+## Limited vs full comparisons — read this before trusting a "winner"
+
+The three comparison tools each return a `comparisonScope` block
+that says exactly what was evaluated. Four ideas an AI must keep
+separate:
+
+**1. Limited comparison (the default).** `comparisonScope:
+"limited"` prices a fixed handful of candidates: 3 withdrawal
+orders (taxable-first, pre-tax-first, roth-first) or 4 conversion
+strategies (Do Nothing, Fill 12%, Fill 22%, Fill 22% capped at
+IRMAA Tier 1). Its winner is the best **of those few only** —
+never a global optimum, and the response says so
+(`globalOptimalityClaimed: false`). On the fictional household,
+the limited Roth winner by net cost is Fill 22% capped at IRMAA
+Tier 1, while the winner by ending wealth is Fill 12% — the two
+objectives disagree even inside four candidates.
+
+**2. Full comparison.** Pass `comparisonScope: "full"`.
+`retirement_compare_strategies` then prices **all six**
+permutations of the Taxable / Pre-tax / Roth draw order (the
+engine's canonical `DRAW_ORDER_OPTIONS` in
+`server/src/taxEngine.ts`), baseline taxable-first, same
+financial inputs for every order, forced RMDs out of pre-tax
+first under every order. `retirement_roth_conversion` then runs
+the engine's own optimizer search (`runOptimizer` in
+`server/src/rothOptimizer.ts`) — it reuses the optimizer
+directly, no recreated logic. On the fictional household that
+search prices **3,025 candidates**: every federal bracket top,
+every IRMAA tier ceiling, bracket × IRMAA combinations,
+ACA-cliff caps, MAGI-cap steps ($150,000–$500,000), three
+conversion windows (stop at 65, stop the year before RMDs
+begin, through the RMD years), all six draw orders, guardrail
+and bunching variants, and gain-harvest twins — plus Do Nothing
+as the benchmark. The response returns Do Nothing, the winner,
+its runners-up, and the ending-wealth winner, with
+`optimizer.candidatesTested` naming the full searched count and
+`optimizer.winner.yearlyConversions` giving the winning
+policy's actual yearly conversion amounts. A full call is never
+silently downgraded to limited: if the optimizer cannot run,
+the call fails with `engine_error`. A full optimizer call is
+slow (measured ~77s on a quiet VM, ~216s under load, for the
+fictional household) — while it runs the server answers nothing
+else. `retirement_work_years` has no full mode: passing
+`"full"` there returns `unsupported`, not a quiet limited run.
+
+**3. Lowest lifetime net cost vs highest ending after-tax
+wealth.** Two different objectives, two different winners.
+Lifetime net cost is the engine's own objective (`planNetCost`):
+lifetime federal + state tax + pre-59½ penalties + IRMAA +
+terminal tax on ending pre-tax, minus ACA premium credit kept
+and refundable education credit (plus net health premium where
+a premium is entered; the adapter enters none, so $0). Ending
+after-tax wealth is ending pre-tax + taxable + Roth + HSA,
+minus terminal tax. The full optimizer's winner on the
+fictional household is "Fill to a $250,000 MAGI cap,
+convert ages 58–65, draw order Pre-tax → Roth → Taxable"
+(net cost $310,888.95, ending wealth $40,893,597.39,
+$765,700 converted 2030–2037) by net cost — but the highest
+ending wealth ($41,558,216.65) belongs to a different
+candidate ("Fill to the top of the 12% bracket, capped at
+IRMAA Tier 0, gain harvesting into the 0% bracket,
+guardrail, convert ages 58–95, draw order Pre-tax → Roth →
+Taxable"). Never report one winner without naming its
+objective, and never describe a four-strategy winner as
+globally optimal.
+
+**4. Tax-aware deterministic optimization is not Monte Carlo
+retirement-success optimization.** Every comparison here is
+deterministic tax-aware pricing: one flat-return march per
+candidate, scored by the net-cost identity above. It says
+nothing about the probability the plan succeeds — that is
+`retirement_monte_carlo` / `retirement_max_spending`, which
+price success rates over random return paths and know nothing
+about draw order or conversions. A strategy that wins on tax
+can still be the one that runs out first in a bad market, and
+a high Monte Carlo success rate says nothing about tax. Even
+the full optimizer search is **not** a global optimum: it
+holds claiming ages at the entered ages (the joint
+claiming-age search, `runJointOptimizer`, is not run — delaying
+a claim can open cheap conversion years the fixed-age search
+cannot see) and prices no success check. `comparisonScope`
+names the intentionally excluded families on every response.
+
+Exact ties keep the earliest candidate in the evaluated list
+order (the engine's canonical draw-order list for withdrawals;
+the fixed list order for the limited Roth comparison). The full
+optimizer follows the engine's own tie ordering (lowest net
+cost, then highest ending wealth, then Do Nothing, then the
+plan's own draw order, then candidate key).
 
 ## Example calls + responses
 
@@ -359,6 +449,7 @@ authority for any single call.
 | `primarySoleBeneficiaryOfSpouse` | Omitted → not established → the spouse's RMD prices on the Uniform Lifetime Table. `true` lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger. A separate fact from the spouse being the primary's sole beneficiary. | assumption |
 | `mcSeed` / `mcRuns` | `12345` / `1000` | engine_constant |
 | `compareAges` | `[retirementAge, retirementAge+2, retirementAge+5]` (no assumption entry when omitted) | — |
+| `comparisonScope` | `"limited"` — the fixed small comparison (3 withdrawal orders / 4 conversion fills). `"full"` prices the engine's whole candidate space for that tool; never silently downgraded. | assumption / user |
 | Tax-aware extras (not in the input schema) | Spouse's own pre-tax balance `$0` in the multi-year compare (the single-year tool takes `pretaxSpousePriorYearEndAnnual` instead); heir/exit rate `22%` (engine_constant); no pre-tax preserve floor; spouse is the sole beneficiary when mfj (Joint Life Table for the primary's RMD); health premiums priced only by the tax-aware tools — see "Health insurance premiums" below. Capital-loss carryforward entering the year is **not** an input (a banked loss from an earlier year cannot be typed in); the year's own realized loss still prices, with the carry-out in `lossCarryOutSt` / `lossCarryOutLt`. | assumption / engine_constant |
 
 > **Standalone bundle note.** The standalone CLI bundle (owned
@@ -483,10 +574,11 @@ From `assistant-api/` (Bun test; the layout mirrors the repo, so the
 same commands work when the tests are placed):
 
 ```sh
-bun test tests/                    # whole suite (~90–120s, mostly the work-years test)
+bun test tests/                    # whole suite (~5–7 min quiet, mostly the work-years + optimizer legs)
 bun test tests/input.test.ts       # input correctness
 bun test tests/isolation.test.ts   # sample isolation (highest priority)
 bun test tests/parity.test.ts      # engine parity (includes the ~95s work-years leg)
+bun test tests/strategy-comparison.test.ts  # withdrawal/Roth scope, winners, ties, full optimizer parity (~2 min quiet: the optimizer leg prices the search twice on a shortened horizon)
 bun test tests/security.test.ts    # auth, allowlist, body cap, log/error hygiene
 bun test tests/mcp-interop.test.ts # official-SDK interop (needs the SDK, see below)
 bun tests/mcp-client-smoke.ts     # standalone SDK smoke check (see below)
@@ -531,10 +623,19 @@ Notes:
   run by the suite**: it needs substantially more than this VM's
   6 GB (verified OOM, twice). The suite's work-years test uses
   spouse SS $0 only. See "Known limitations" (i).
-- Suite timing on this VM: 118 tests, 0 failures; total ~90–150s per
-  run (the work-years leg is most of it). Per file: input 34,
-  isolation 23, parity 24, schema-consistency 14, security 16,
-  mcp-interop 5, cli 2.
+- Suite timing on this VM: 136 tests pass, 4 skipped (SDK missing),
+  0 failures; 1 parity leg unrun — re-run it on a quiet box. Per
+  quiet run ~5–7 min (the work-years leg ~95s and the optimizer
+  parity leg ~80s are most of it). Per file (test counts, not
+  passes): input 41, isolation 23, parity 24,
+  schema-consistency 14, security 16, mcp-interop 5, cli 2,
+  strategy-comparison 16. NOTE: the parity work-years
+  with-salary leg (1 of parity's 24) died silently 5× on this
+  shared VM (process gone, no output — sibling review workers
+  running the same leg died identically; free RAM 200–600MB under
+  7–19 concurrent bun suites) and is NOT counted in the 136 passes;
+  re-run it on a quiet box. Nothing in this change touches that
+  leg's code path (runWorkYearsCompare → runJointOptimizer).
 
 ## Worked conversation transcripts
 
@@ -764,10 +865,15 @@ accepts 2027 with no code change.)
 (xi) **A long call stalls the whole server.** Engine calls run
 synchronously in-process with no timeout in v1: while one call
 runs — notably `retirement_work_years`, which can take a minute or
-more — the server answers nothing else, not even `/health`
-(measured 2m36.7s for a health check issued mid-call under load).
-A worker thread or timeout is future work; for now, don't rely on
-the server answering anything else during a work-years call.
+more, and a full optimizer search (`retirement_roth_conversion`
+with `comparisonScope: "full"`, measured ~77s on a quiet VM and
+~216s under load for the fictional household) — the server answers
+nothing else, not even `/health` (measured 2m36.7s for a health
+check issued mid-call under load). A worker thread or timeout is
+future work; for now, don't rely on the server answering anything
+else during a work-years or full-optimizer call. The full search
+is never cut short to meet a deadline: an optimizer failure
+returns `engine_error`, not a quiet limited comparison.
 
 (xii) **The app still prices a blank expected return at the
 stock-mix blend in a few places.** The adapter's omitted-return

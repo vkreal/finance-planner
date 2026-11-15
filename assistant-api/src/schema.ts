@@ -294,6 +294,16 @@ export const RetirementQuestionInputs = z.strictObject({
   /** Ages to compare, 2–5 whole years. Default (in normalize): []
    *  (the adapter defaults to [retirementAge, +2, +5]). */
   compareAges: z.array(age).min(2).max(5).optional(),
+
+  // --- Strategy-comparison scope. ---
+  /** Which candidate set a comparison tool evaluates. Default (in
+   *  normalize): "limited" — the fixed small comparison the tool
+   *  has always run (3 withdrawal orders / 4 conversion fills).
+   *  "full" prices the engine's whole candidate space instead:
+   *  all six withdrawal orders for compare_strategies, and the
+   *  engine's full Roth optimizer search for roth_conversion.
+   *  A full call is never silently downgraded to limited. */
+  comparisonScope: z.enum(["limited", "full"]).optional(),
 });
 
 /** Parsed (pre-default) shape of a retirement question's inputs. */

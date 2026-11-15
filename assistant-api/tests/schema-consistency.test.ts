@@ -133,6 +133,7 @@ describe("advertised schema == accepting schema", () => {
       "spendingIncludesHealthPremiums",
       "stateRatePct",
       "state",
+      "comparisonScope",
     ];
     const taxYear = [
       "spouseAge",

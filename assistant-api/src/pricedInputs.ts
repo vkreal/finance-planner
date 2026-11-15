@@ -144,6 +144,7 @@ export const FIELD_ORDER: string[] = [
   "mcSeed",
   "mcRuns",
   "compareAges",
+  "comparisonScope",
 ];
 
 /**
@@ -215,6 +216,7 @@ const COMPARE_OPTIONAL_INPUTS: string[] = [
   "spendingIncludesHealthPremiums",
   "stateRatePct",
   "state",
+  "comparisonScope",
 ];
 
 const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
@@ -338,6 +340,7 @@ const FIELD_BLURBS: Record<string, string> = {
   mcSeed: "the Monte Carlo random seed",
   mcRuns: "the number of Monte Carlo simulations",
   compareAges: "the retirement ages to compare",
+  comparisonScope: "the comparison scope (limited or full candidate set)",
 };
 
 /**

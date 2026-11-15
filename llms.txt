@@ -25,8 +25,8 @@ Pricing uses the 2026 tax-law tables unless `taxYear` says 2025.
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
 - `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes. Optional `minimumAnnualSpending` adds the spending-adequacy rate — funding success alone is not proof spending held up.
 - `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success, with feasibility (`targetAchieved`, `solutionStatus`: a $0 maximum with `infeasible_at_zero` means no spending level reaches the target).
-- `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
-- `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
+- `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware; all six orders with `comparisonScope: "full"`.
+- `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1; the full optimizer search with `comparisonScope: "full"`.
 - `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
 - `retirement_tax_year` — one year's federal/state tax, ACA credit, and IRMAA for a published law year (2025 or 2026 today).
 - `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.

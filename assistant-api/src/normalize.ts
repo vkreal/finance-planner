@@ -158,6 +158,7 @@ export interface NormalizedScenario {
    *  reported). Required essentials are in here too; the adapter
    *  never reports those as ignored. */
   suppliedFields: string[];
+  comparisonScope: "limited" | "full";
   assumptions: Assumption[];
   warnings: string[];
 }
@@ -1320,6 +1321,28 @@ export function normalizeInputs(
   // Caller-supplied keys, in FIELD_ORDER (see the interface note).
   const suppliedFields = FIELD_ORDER.filter((f) => f in input);
 
+  // --- Comparison scope: "limited" unless the caller asks for "full".
+  // Limited is the fixed small comparison each tool has always run
+  // (3 withdrawal orders / 4 conversion fills); full prices the
+  // engine's whole candidate space for that tool. The default keeps
+  // every existing call's shape and figures unchanged. ---
+  const comparisonScope = input.comparisonScope ?? "limited";
+  if (input.comparisonScope === undefined) {
+    record(
+      "comparisonScope",
+      comparisonScope,
+      "assumption",
+      'No comparison scope given — assumed "limited": the fixed small comparison (3 withdrawal orders / 4 conversion fills). Pass "full" for the engine\'s whole candidate space.',
+    );
+  } else {
+    record(
+      "comparisonScope",
+      comparisonScope,
+      "user",
+      "Provided by caller.",
+    );
+  }
+
   const scenario: NormalizedScenario = {
     portfolioCents,
     annualSpendingCents,
@@ -1372,6 +1395,7 @@ export function normalizeInputs(
     mcRuns,
     compareAges,
     suppliedFields,
+    comparisonScope,
     assumptions,
     warnings,
   };
@@ -1454,5 +1478,6 @@ export function publicEffectiveInputs(
     mcSeed: scenario.mcSeed,
     mcRuns: scenario.mcRuns,
     compareAges: [...scenario.compareAges],
+    comparisonScope: scenario.comparisonScope,
   };
 }

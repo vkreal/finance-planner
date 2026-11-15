@@ -114,17 +114,27 @@ import {
 } from "../../server/src/retirementEngines";
 import {
   pricePlaygroundYear,
+  runOptimizer,
   runRothCompare,
+  harvestGatePasses,
+  DO_NOTHING_SPEC,
+  type OptimizerCandidateSpec,
   type PlaygroundYearInputs,
   type PlaygroundYearResult,
   type RothCompareBaseSaved,
   type RothCompareCeilingsCents,
   type RothCompareOverrides,
   type RothCompareScenarioResult,
+  type ScoredCandidate,
 } from "../../server/src/rothOptimizer";
 import {
+  DRAW_ORDER_OPTIONS,
+  DEFAULT_DRAW_ORDER_KEY,
+  drawOrderKey,
+  drawOrderLabel,
   type DrawOrder,
   type RothPlanInputs,
+  type RothYear,
 } from "../../server/src/taxEngine";
 import { rmdAgeForBirthYear, TAX_LAW_YEARS } from "../../server/src/taxLaw";
 import {
@@ -462,7 +472,7 @@ function noBenefit(amount: number, startAge: number | null): boolean {
  * no itemized deductions, no education expenses, no college
  * window, ceilings null (Do Nothing fill).
  */
-function buildRothCompareBase(
+export function buildRothCompareBase(
   scenario: NormalizedScenario,
 ): RothCompareBaseSaved {
   const spouseAmount =
@@ -597,7 +607,7 @@ function buildRothCompareBase(
  * planInputsFromSaved's cents->dollars mapping. Used only by the
  * work-years leg of compareRetirementAges.
  */
-function buildRothPlanInputs(
+export function buildRothPlanInputs(
   scenario: NormalizedScenario,
   overrides?: { retirementAge?: number; windowStartAge?: number },
 ): RothPlanInputs {
@@ -726,6 +736,10 @@ function taxAwareAssumptions(scenario: NormalizedScenario): Assumption[] {
 type MappedCompareScenario = {
   name: string;
   strategyDescription: string;
+  /** Engine draw-order key priced under ("taxable-pretax-roth", …). */
+  drawOrder: string;
+  /** Engine optimizer candidate key — full-optimizer mode only. */
+  candidateKey?: string;
   endingWealth: number;
   lifetimeNetCost: number;
   lifetimeTax: number;
@@ -757,6 +771,9 @@ function mapCompareScenario(
   return {
     name: s.name,
     strategyDescription: s.strategyDescription,
+    // A null saved key prices as the engine default order
+    // (drawOrderFromKey), so the priced order is reported.
+    drawOrder: s.saved.drawOrder ?? DEFAULT_DRAW_ORDER_KEY,
     endingWealth: centsToDollars(s.endingAfterTaxWealthCents),
     lifetimeNetCost: centsToDollars(s.netCostCents),
     lifetimeTax: centsToDollars(s.totalTaxCents),
@@ -915,6 +932,199 @@ function deltasVsBaseline(
       endingWealthDelta: r2(m.endingWealth - baseline.endingWealth),
       netCostDelta: r2(m.lifetimeNetCost - baseline.lifetimeNetCost),
     }));
+}
+
+/**
+ * Winner semantics (Review 4: R4-S3). Every strategy comparison
+ * carries this block so an AI can tell, from the response alone,
+ * what was actually evaluated and what each winner means:
+ *
+ * - scope "limited": the fixed small comparison (3 withdrawal
+ *   orders / 4 conversion fills). A limited winner is the best
+ *   OF THOSE FEW — never a global optimum.
+ * - scope "full": the engine's whole candidate space for that
+ *   tool (all six draw orders; the Roth optimizer's full search
+ *   at the entered claiming ages). Even a full search is NOT a
+ *   global optimum: claiming ages are held at the entered ages
+ *   (the joint claiming-age search is not run) and no Monte
+ *   Carlo success check is priced. globalOptimalityClaimed is
+ *   therefore false in every mode.
+ *
+ * Lifetime net cost is the engine's own objective (planNetCost
+ * in rothOptimizer.ts): lifetime federal + state tax + pre-59½
+ * penalties + IRMAA + terminal tax on ending pre-tax − ACA
+ * premium credit kept − refundable education credit (+ net
+ * health premium where a premium is entered; $0 here, since
+ * the adapter enters none). Lowest lifetime net cost and
+ * highest ending after-tax wealth are DIFFERENT objectives and
+ * routinely crown different winners — the response names both,
+ * and neither is "the" winner without its objective.
+ * Ending after-tax wealth is ending pre-tax + taxable + Roth
+ * + HSA − terminal tax.
+ */
+export type ComparisonScopeInfo = {
+  scope: "limited" | "full";
+  searchKind: "fixed-comparison" | "optimizer-search";
+  evaluatedCandidates: number;
+  /** Limited: every candidate evaluated. Full: the candidates
+   *  returned in `scenarios` (the full set is described by
+   *  candidateSetDescription instead of listed). */
+  candidateNames: string[];
+  candidateSetDescription: string;
+  baselineName: string;
+  winnerByNetCost: string | null;
+  winnerByEndingWealth: string | null;
+  globalOptimalityClaimed: false;
+  netCostObjective: string;
+  wealthObjective: string;
+  tieBreakPolicy: string;
+  excludedCandidateFamilies: string[];
+  omittedCosts: string[];
+};
+
+const NET_COST_OBJECTIVE =
+  "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus net health premium where a premium is entered; the adapter enters none, so $0).";
+const WEALTH_OBJECTIVE =
+  "Highest ending after-tax wealth: ending pre-tax + taxable + Roth + HSA balances, minus terminal tax on ending pre-tax.";
+const OMITTED_COSTS = [
+  "Health insurance premiums are not priced — only the ACA premium credit and IRMAA surcharge.",
+  "This is deterministic tax-aware pricing, not a Monte Carlo retirement-success optimization: no success probability is computed here.",
+  "Forced required minimum distributions come out of pre-tax first under every draw order; the order governs discretionary spending draws only.",
+];
+
+const LIMITED_TIE_BREAK =
+  "Exact ties on the deciding figure keep the earliest scenario in the evaluated list order (the engine's canonical draw-order list for withdrawals; the fixed list order for the limited Roth comparison).";
+const OPTIMIZER_TIE_BREAK =
+  "Exact ties follow the engine's own winner ordering (compareScoredCandidates): lowest net cost, then highest ending after-tax wealth, then Do Nothing, then the plan's own draw order, then candidate key.";
+
+function buildComparisonScope(
+  opts: Omit<ComparisonScopeInfo, "globalOptimalityClaimed" | "netCostObjective" | "wealthObjective" | "omittedCosts">,
+): ComparisonScopeInfo {
+  return {
+    ...opts,
+    globalOptimalityClaimed: false,
+    netCostObjective: NET_COST_OBJECTIVE,
+    wealthObjective: WEALTH_OBJECTIVE,
+    omittedCosts: OMITTED_COSTS,
+  };
+}
+
+/** Friendly names for the engine's six canonical draw orders
+ *  (DRAW_ORDER_OPTIONS in taxEngine.ts, in canonical order).
+ *  The three the limited comparison already used keep their
+ *  established names. */
+export const DRAW_ORDER_NAMES: Record<string, string> = {
+  "taxable-pretax-roth": "taxable-first",
+  "taxable-roth-pretax": "taxable-roth-first",
+  "pretax-taxable-roth": "pre-tax-first",
+  "pretax-roth-taxable": "pre-tax-roth-first",
+  "roth-taxable-pretax": "roth-first",
+  "roth-pretax-taxable": "roth-pre-tax-first",
+};
+
+// ---------------------------------------------------------------------------
+// Full Roth optimizer mapping (scoreAllCandidates / runOptimizer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Display name for one optimizer candidate: the engine's strategy
+ * name, plus the variant flags the name does not carry
+ * (guardrail / bunching), the conversion window, and the draw
+ * order — jointly unique per candidate key, so winner fields
+ * name exactly one candidate.
+ */
+export function optimizerCandidateDisplayName(spec: OptimizerCandidateSpec): string {
+  const parts = [spec.name];
+  if (spec.guardrail) parts.push("marginal-rate guardrail");
+  if (spec.bunching) parts.push("ACA bunching");
+  parts.push(spec.windowLabel);
+  parts.push(`draw order ${drawOrderLabel(spec.drawOrder)}`);
+  return parts.join(" · ");
+}
+
+/** One scored optimizer candidate mapped onto the shared compare shape. */
+function mapScoredCandidate(
+  s: ScoredCandidate,
+  retirementAge: number,
+): MappedCompareScenario {
+  const conversionsTotal = s.result.years.reduce(
+    (sum, y) => sum + y.conversion,
+    0,
+  );
+  return {
+    name: optimizerCandidateDisplayName(s.spec),
+    strategyDescription: `Retire at ${retirementAge} · ${optimizerCandidateDisplayName(s.spec)}`,
+    drawOrder: drawOrderKey(s.spec.drawOrder),
+    candidateKey: s.spec.key,
+    endingWealth: r2(s.result.endingAfterTaxWealth),
+    lifetimeNetCost: r2(s.cost.netCost),
+    lifetimeTax: r2(s.cost.tax),
+    lifetimeFederalTax: r2(s.result.lifetimeFederalTax),
+    lifetimeStateTax: r2(s.result.lifetimeStateTax),
+    acaCreditKept: r2(s.cost.acaCredit),
+    irmaaTotal: r2(s.cost.irmaa),
+    lifetimeHealthPremiumGross: r2(s.result.lifetimeHealthPremiumGross),
+    lifetimeHealthPremiumNet: r2(s.result.lifetimeHealthPremiumNet),
+    endingPretax: r2(s.result.endingPretax),
+    endingTaxable: r2(s.result.endingTaxable),
+    endingRoth: r2(s.result.endingRoth),
+    endingHsa: r2(s.result.endingHsa),
+    conversionsTotal: r2(conversionsTotal),
+    terminalTax: r2(s.cost.terminal),
+  };
+}
+
+/** Yearly conversion amounts for one scored candidate (nonzero years only). */
+function yearlyConversions(s: ScoredCandidate): Array<{
+  year: number;
+  agePrimary: number;
+  conversion: number;
+}> {
+  return s.result.years
+    .filter((y) => y.conversion > 0)
+    .map((y) => ({
+      year: y.year,
+      agePrimary: y.agePrimary,
+      conversion: r2(y.conversion),
+    }));
+}
+
+/**
+ * Down-sampled yearly table from a priced march's own RothYear rows
+ * (dollars). Same columns as the compare yearly table; the
+ * pre-tax-out-by-choice column follows the compare's own rule
+ * (conversion + the year's pre-tax spending draw). Capped at 60 rows.
+ */
+function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
+  const rows = years.map((y) => ({
+    year: y.year,
+    agePrimary: y.agePrimary,
+    ageSpouse: y.ageSpouse,
+    federalTax: r2(y.federalTax),
+    stateTax: r2(y.stateTax),
+    penalty: r2(y.penalty),
+    agi: r2(y.agi),
+    taxableIncome: r2(y.taxableIncome),
+    acaCredit: r2(y.acaCreditKept),
+    irmaa: r2(y.irmaaPaid),
+    healthPremiumGross: r2(y.healthPremiumGross),
+    healthPremiumNet: r2(y.healthPremiumNet),
+    conversion: r2(y.conversion),
+    pretaxOutByChoice: r2(y.conversion + y.detail.pretaxSpendingDraw),
+    settlementConverged: y.settlementConverged,
+    settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
+    settlementMismatchPretax: centsToDollars(
+      y.settlementMismatchCents.pretax,
+    ),
+    ceilingBreached: y.ceilingBreached,
+  }));
+  if (rows.length <= 60) return rows;
+  const stride = Math.ceil(rows.length / 60);
+  const picked: YearlyCompareRow[] = [];
+  for (let i = 0; i < rows.length; i += stride) picked.push(rows[i]!);
+  const last = rows[rows.length - 1]!;
+  if (picked[picked.length - 1] !== last) picked.push(last);
+  return picked;
 }
 
 const YEARLY_TABLE_WARNING =
@@ -1292,24 +1502,57 @@ export function compareWithdrawalStrategies(
     netCostDelta: number;
   }>;
   yearly: YearlyCompareRow[];
+  comparisonScope: ComparisonScopeInfo;
 }> {
   return guard(() => {
     const base = buildRothCompareBase(scenario);
     // D3: the saved shape carries the draw order as a key string.
     // Forced RMDs come out of pre-tax first under every order;
     // the order governs spending draws only (taxEngine).
+    // Full mode prices the engine's canonical list of all
+    // supported draw orders (DRAW_ORDER_OPTIONS, taxEngine.ts);
+    // limited mode keeps the three orders this tool has always
+    // compared, so existing calls are unchanged.
+    const full = scenario.comparisonScope === "full";
+    const orders = full
+      ? DRAW_ORDER_OPTIONS.map((o) => ({
+          name: DRAW_ORDER_NAMES[o.key] ?? o.key,
+          overrides: { drawOrder: o.key },
+        }))
+      : [
+          { name: "taxable-first", overrides: { drawOrder: "taxable-pretax-roth" } },
+          { name: "pre-tax-first", overrides: { drawOrder: "pretax-taxable-roth" } },
+          { name: "roth-first", overrides: { drawOrder: "roth-taxable-pretax" } },
+        ];
     const compared = runCompare(
       base,
-      [
-        { name: "taxable-first", overrides: { drawOrder: "taxable-pretax-roth" } },
-        { name: "pre-tax-first", overrides: { drawOrder: "pretax-taxable-roth" } },
-        { name: "roth-first", overrides: { drawOrder: "roth-taxable-pretax" } },
-      ],
+      orders,
       scenario.startYear,
       "taxable-first",
     );
     if (!compared.ok) return compared;
     const outcome = compared.outcome;
+    const scope = buildComparisonScope({
+      scope: full ? "full" : "limited",
+      searchKind: "fixed-comparison",
+      evaluatedCandidates: outcome.mapped.length,
+      candidateNames: outcome.mapped.map((m) => m.name),
+      candidateSetDescription: full
+        ? "All six permutations of the Taxable / Pre-tax / Roth spending-draw order (the engine's canonical DRAW_ORDER_OPTIONS), each priced as a fixed strategy with identical inputs."
+        : "The three fixed withdrawal orders this tool has always compared: taxable-first, pre-tax-first, roth-first. The other three permutations are not priced in this mode — pass comparisonScope \"full\" for all six.",
+      baselineName: outcome.baseline.name,
+      winnerByNetCost: outcome.winnerByNetCost,
+      winnerByEndingWealth: outcome.winnerByEndingWealth,
+      tieBreakPolicy: LIMITED_TIE_BREAK,
+      excludedCandidateFamilies: full
+        ? [
+            "Mid-plan draw-order switches (a second order from a switch age) — one order applies for the whole horizon in each candidate.",
+          ]
+        : [
+            "The three uncompared draw-order permutations (taxable-roth-first, pre-tax-roth-first, roth-pre-tax-first) — pass comparisonScope \"full\" to price them.",
+            "Mid-plan draw-order switches (a second order from a switch age).",
+          ],
+    });
     return respond(
       scenario,
       {
@@ -1319,6 +1562,7 @@ export function compareWithdrawalStrategies(
         winnerByNetCost: outcome.winnerByNetCost,
         deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
         yearly: yearlyTable(outcome.baselineRaw),
+        comparisonScope: scope,
       },
       [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
       taxAwareAssumptions(scenario),
@@ -1332,9 +1576,8 @@ export function compareWithdrawalStrategies(
 // 5. Roth conversion compare
 // ---------------------------------------------------------------------------
 
-export function compareRothConversions(
-  scenario: NormalizedScenario,
-): AdapterResult<{
+/** Shared results shape for retirement_roth_conversion (limited and full). */
+export type RothConversionResults = {
   baselineName: string;
   scenarios: MappedCompareScenario[];
   winnerByEndingWealth: string | null;
@@ -1345,10 +1588,56 @@ export function compareRothConversions(
     netCostDelta: number;
   }>;
   yearly: YearlyCompareRow[];
-}> {
+  comparisonScope: ComparisonScopeInfo;
+  optimizer?: {
+    candidatesTested: number;
+    searchKind: "optimizer-search";
+    winner: {
+      name: string;
+      candidateKey: string;
+      strategyDescription: string;
+      drawOrder: string;
+      windowLabel: string;
+      windowStopAge: number;
+      guardrail: boolean;
+      bunching: boolean;
+      gainsHarvest: boolean;
+      claimAgePrimary: number | null;
+      claimAgeSpouse: number | null;
+      netCost: number;
+      endingWealth: number;
+      conversionsTotal: number;
+      yearlyConversions: Array<{
+        year: number;
+        agePrimary: number;
+        conversion: number;
+      }>;
+    };
+    runnersUp: Array<{
+      name: string;
+      candidateKey: string;
+      netCost: number;
+      endingWealth: number;
+      conversionsTotal: number;
+    }>;
+    doNothing: { netCost: number; endingWealth: number };
+    candidateFamiliesEvaluated: string[];
+    excludedCandidateFamilies: string[];
+  };
+};
+
+export function compareRothConversions(
+  scenario: NormalizedScenario,
+): AdapterResult<RothConversionResults> {
   return guard(() => {
+    if (scenario.comparisonScope === "full") {
+      return compareRothConversionsFull(scenario);
+    }
     const base = buildRothCompareBase(scenario);
     // D4: ceilings overrides use the cents shape, not NO_CEILINGS.
+    // Limited mode: the four fixed conversion strategies this tool
+    // has always compared. A limited winner is the best of these
+    // four only — never a global optimum (see comparisonScope).
     const compared = runCompare(
       base,
       [
@@ -1373,6 +1662,23 @@ export function compareRothConversions(
     );
     if (!compared.ok) return compared;
     const outcome = compared.outcome;
+    const scope = buildComparisonScope({
+      scope: "limited",
+      searchKind: "fixed-comparison",
+      evaluatedCandidates: outcome.mapped.length,
+      candidateNames: outcome.mapped.map((m) => m.name),
+      candidateSetDescription:
+        "The four fixed conversion strategies this tool has always compared: Do Nothing, Fill 12%, Fill 22%, Fill 22% capped at IRMAA Tier 1, all priced at the entered claiming ages under the plan's draw order. No other ceiling, window, or draw order is priced in this mode — pass comparisonScope \"full\" for the engine's optimizer search.",
+      baselineName: outcome.baseline.name,
+      winnerByNetCost: outcome.winnerByNetCost,
+      winnerByEndingWealth: outcome.winnerByEndingWealth,
+      tieBreakPolicy: LIMITED_TIE_BREAK,
+      excludedCandidateFamilies: [
+        "Every other conversion ceiling (other bracket tops, IRMAA tiers, ACA-cliff caps, MAGI caps) — pass comparisonScope \"full\" to search them.",
+        "Other conversion windows (stop at 65 / through the RMD years), other draw orders, guardrail and bunching variants, gain-harvest twins — pass comparisonScope \"full\" to search them.",
+        "Joint claiming-age combinations — claiming ages are held at the entered ages in every mode.",
+      ],
+    });
     return respond(
       scenario,
       {
@@ -1382,8 +1688,174 @@ export function compareRothConversions(
         winnerByNetCost: outcome.winnerByNetCost,
         deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
         yearly: yearlyTable(outcome.baselineRaw),
+        comparisonScope: scope,
       },
       [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
+      taxAwareAssumptions(scenario),
+      null,
+      "retirement_roth_conversion",
+    );
+  });
+}
+
+/**
+ * Full Roth mode: the engine's own optimizer search, reused
+ * directly (runOptimizer in rothOptimizer.ts) — no recreated
+ * optimization logic. The search prices every candidate the
+ * engine builds (bracket / IRMAA / ACA-cliff / MAGI ceilings ×
+ * conversion windows × all six draw orders × guardrail /
+ * bunching variants × gain-harvest twins when the gate passes)
+ * plus the Do Nothing benchmark, at the entered claiming ages,
+ * and ranks by the engine's own winner ordering (lowest
+ * lifetime net cost, ending wealth breaking exact cost ties).
+ *
+ * Never downgraded: if the optimizer throws, guard() turns it
+ * into engine_error — the caller gets a failure, not a quiet
+ * limited comparison.
+ */
+function compareRothConversionsFull(
+  scenario: NormalizedScenario,
+): AdapterResult<RothConversionResults> {
+  return guard(() => {
+    const planInputs = buildRothPlanInputs(scenario);
+    const result = runOptimizer(planInputs);
+    const winner = result.winner;
+    const doNothing = result.doNothing;
+    // The engine's scored list arrives best-first by its own
+    // winner ordering; the wealth winner is the max-wealth
+    // candidate over the whole searched set (routinely not the
+    // net-cost winner — the two objectives differ).
+    const wealthWinner = pickWinner(
+      result.scored,
+      (a, b) => a.result.endingAfterTaxWealth > b.result.endingAfterTaxWealth,
+    );
+    // Returned scenarios: the benchmark, the engine winner, its
+    // runners-up, and the wealth winner when it is none of those
+    // — so both winner fields always name a returned scenario.
+    // The full scored set is thousands of rows and is not
+    // shipped; candidatesTested names its size.
+    const returned: ScoredCandidate[] = [];
+    const seenKeys = new Set<string>();
+    for (const s of [
+      doNothing,
+      winner,
+      ...result.runnersUp,
+      ...(wealthWinner == null ? [] : [wealthWinner]),
+    ]) {
+      if (!seenKeys.has(s.spec.key)) {
+        seenKeys.add(s.spec.key);
+        returned.push(s);
+      }
+    }
+    const mapped = returned.map((s) =>
+      mapScoredCandidate(s, scenario.retirementAge),
+    );
+    const baseline = mapped.find(
+      (m) => m.candidateKey === DO_NOTHING_SPEC.key,
+    )!;
+    const winnerMapped = mapped.find(
+      (m) => m.candidateKey === winner.spec.key,
+    )!;
+    const winnerName = winnerMapped.name;
+    const wealthWinnerName =
+      wealthWinner == null
+        ? null
+        : optimizerCandidateDisplayName(wealthWinner.spec);
+    const harvestGate = harvestGatePasses(planInputs);
+    const excludedCandidateFamilies = [
+      "Joint claiming-age combinations (runJointOptimizer) — claiming ages are held at the entered ages; delaying a claim can open cheap conversion years the fixed-age search cannot see.",
+      "Monte Carlo retirement-success check — this search is deterministic tax-aware pricing only, not a success-probability optimization.",
+      ...(harvestGate
+        ? []
+        : [
+            "Gain-harvest twins — the harvest gate failed for this plan (no taxable balance above $0 with basis below 100%), so harvesting is a provable no-op here.",
+          ]),
+    ];
+    const candidateFamiliesEvaluated = [
+      "Every federal bracket top as a conversion ceiling",
+      "Every IRMAA tier ceiling, and bracket × IRMAA combinations",
+      "ACA-cliff caps (alone and with the 12% / 22% brackets)",
+      "MAGI-cap steps ($150,000–$500,000)",
+      "Conversion windows: stop at 65, stop the year before RMDs begin, keep topping up through the RMD years",
+      "All six draw orders",
+      "Guardrail variants (bracket ceilings) and bunching variants (non-cliff ceilings)",
+      ...(harvestGate
+        ? ["Gain-harvest twins of every conversion candidate"]
+        : []),
+      "Do Nothing as the benchmark",
+    ];
+    const scope = buildComparisonScope({
+      scope: "full",
+      searchKind: "optimizer-search",
+      evaluatedCandidates: result.candidatesTested,
+      candidateNames: mapped.map((m) => m.name),
+      candidateSetDescription: `The engine's full optimizer search at the entered claiming ages: ${result.candidatesTested} candidates priced (bracket / IRMAA / ACA / MAGI ceilings × conversion windows × all six draw orders × guardrail / bunching variants${harvestGate ? " × gain-harvest twins" : ""}), plus the Do Nothing benchmark. The response returns the benchmark, the winner, its runners-up, and the ending-wealth winner when it is none of those; candidatesTested is the full searched count. Still not a global optimum: claiming ages are fixed (see excluded families).`,
+      baselineName: baseline.name,
+      winnerByNetCost: winnerName,
+      winnerByEndingWealth: wealthWinnerName,
+      tieBreakPolicy: OPTIMIZER_TIE_BREAK,
+      excludedCandidateFamilies,
+    });
+    const winnerConversions = yearlyConversions(winner);
+    const winnerTotal = winner.result.years.reduce(
+      (sum, y) => sum + y.conversion,
+      0,
+    );
+    return respond(
+      scenario,
+      {
+        baselineName: baseline.name,
+        scenarios: mapped,
+        winnerByEndingWealth: wealthWinnerName,
+        winnerByNetCost: winnerName,
+        deltas: deltasVsBaseline(mapped, baseline),
+        // The baseline (Do Nothing) yearly table, as in limited
+        // mode; the winner's yearly conversions are in
+        // optimizer.winner.yearlyConversions.
+        yearly: yearlyTableFromRothYears(doNothing.result.years),
+        comparisonScope: scope,
+        optimizer: {
+          candidatesTested: result.candidatesTested,
+          searchKind: "optimizer-search",
+          winner: {
+            name: winnerName,
+            candidateKey: winner.spec.key,
+            strategyDescription: winnerMapped.strategyDescription,
+            drawOrder: drawOrderKey(winner.spec.drawOrder),
+            windowLabel: winner.spec.windowLabel,
+            windowStopAge: winner.spec.windowStopAge,
+            guardrail: winner.spec.guardrail,
+            bunching: winner.spec.bunching,
+            gainsHarvest: winner.spec.gainsHarvest ?? false,
+            claimAgePrimary: winner.claimAges.primaryAge,
+            claimAgeSpouse: winner.claimAges.spouseAge,
+            netCost: r2(winner.cost.netCost),
+            endingWealth: r2(winner.result.endingAfterTaxWealth),
+            conversionsTotal: r2(winnerTotal),
+            yearlyConversions: winnerConversions,
+          },
+          runnersUp: result.runnersUp.map((s) => ({
+            name: optimizerCandidateDisplayName(s.spec),
+            candidateKey: s.spec.key,
+            netCost: r2(s.cost.netCost),
+            endingWealth: r2(s.result.endingAfterTaxWealth),
+            conversionsTotal: r2(
+              s.result.years.reduce((sum, y) => sum + y.conversion, 0),
+            ),
+          })),
+          doNothing: {
+            netCost: r2(doNothing.cost.netCost),
+            endingWealth: r2(doNothing.result.endingAfterTaxWealth),
+          },
+          candidateFamiliesEvaluated,
+          excludedCandidateFamilies,
+        },
+      },
+      [
+        HEALTH_PREMIUM_WARNING,
+        YEARLY_TABLE_WARNING,
+        "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+      ],
       taxAwareAssumptions(scenario),
       null,
       "retirement_roth_conversion",
@@ -1424,8 +1896,19 @@ export function compareRetirementAges(
     winnerClaimSpouseAge: number | null;
   }>;
   workYearsWinnerByAllInTax: string | null;
+  comparisonScope: ComparisonScopeInfo;
 }> {
   return guard(() => {
+    // No full mode exists for the quit-age comparison: each age
+    // prices one fixed strategy, and full conversion search is a
+    // per-age operation (retirement_roth_conversion, full). A
+    // requested full search is refused explicitly — never run as
+    // a quiet limited comparison.
+    if (scenario.comparisonScope === "full") {
+      return unsupported(
+        'retirement_work_years has no full comparison mode: each quit age prices one fixed strategy, and the full optimizer search runs per retirement age. Use retirement_roth_conversion with comparisonScope "full" for the optimizer search, or omit comparisonScope for the fixed quit-age comparison.',
+      );
+    }
     const rawAges =
       scenario.compareAges.length > 0
         ? scenario.compareAges
@@ -1534,6 +2017,27 @@ export function compareRetirementAges(
       ...m,
       retirementAge: ages[i]!,
     }));
+    // Limited comparison: one fixed (Do-Nothing-fill) strategy per
+    // quit age — the ages are the candidates, not conversion
+    // strategies. The work-years leg's per-age winnerStrategy does
+    // come from the engine's joint optimizer, but the quit-age
+    // comparison itself stays limited: no optimizer search across
+    // conversion strategies is run here.
+    const scope = buildComparisonScope({
+      scope: "limited",
+      searchKind: "fixed-comparison",
+      evaluatedCandidates: withAges.length,
+      candidateNames: withAges.map((m) => m.name),
+      candidateSetDescription: `One fixed Do-Nothing-fill strategy per quit age (${ages.map((a) => `retire-${a}`).join(", ")}), all priced with identical inputs. Conversion strategies are not searched across quit ages here — use retirement_roth_conversion with comparisonScope "full" for that search, at one retirement age.`,
+      baselineName: outcome.baseline.name,
+      winnerByNetCost: outcome.winnerByNetCost,
+      winnerByEndingWealth: outcome.winnerByEndingWealth,
+      tieBreakPolicy: LIMITED_TIE_BREAK,
+      excludedCandidateFamilies: [
+        "Conversion strategies beyond the entered-plan Do-Nothing fill per quit age.",
+        "Joint claiming-age search in the quit-age comparison leg (the work-years leg's per-age winnerStrategy is the engine joint optimizer's pick for that quit age alone).",
+      ],
+    });
     return respond(
       scenario,
       {
@@ -1545,6 +2049,7 @@ export function compareRetirementAges(
         yearly: yearlyTable(outcome.baselineRaw),
         workYears,
         workYearsWinnerByAllInTax,
+        comparisonScope: scope,
       },
       [
         ...healthPremiumWarnings(scenario),
