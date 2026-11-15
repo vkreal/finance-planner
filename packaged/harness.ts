@@ -147,6 +147,37 @@ function eq(label: string, actual: unknown, expected: unknown) {
   );
 }
 
+// ---------- Guard: harness Retirement literals cover the server shape ----------
+// The three Retirement field literals below (sections L, M, N) are
+// hand-written copies of the server's retirementInputFields. When
+// the server adds a required field (as minimumAnnualSpendingCents
+// was added by Engine Review 1), a literal that omits it fails at
+// save time with a 400 — found only when the Pages gate runs. This
+// guard derives the required keys from the server's own
+// saveRetirementCalc request schema (the same schema the
+// dispatcher validates against, so it cannot drift from it) and
+// fails loudly if any literal is missing one. The optional CAS
+// bases (baseRevision, baseBaselineRevision) are excluded: the
+// literals never carry them — they are added at each call site.
+function retirementRequiredKeys(): string[] {
+  const shape = (Actions.saveRetirementCalc.request as any)?.shape;
+  if (!shape || typeof shape !== "object") return [];
+  return Object.keys(shape).filter((k) => !shape[k].isOptional());
+}
+function checkRetirementFieldsCover(label: string, fields: Record<string, unknown>) {
+  const required = retirementRequiredKeys();
+  if (required.length === 0) {
+    check(label, false, "could not read the server Retirement shape from Actions.saveRetirementCalc.request");
+    return;
+  }
+  const missing = required.filter((k) => !(k in fields));
+  check(
+    label,
+    missing.length === 0,
+    missing.length ? `missing required Retirement keys: ${missing.join(", ")}` : "",
+  );
+}
+
 const store = memoryStore();
 const rt = await createRuntime({ store, wasmUrl: wasmPath });
 
@@ -1034,6 +1065,7 @@ eq(
     phaseDeclinePct: null,
     minimumAnnualSpendingCents: null,
   };
+  checkRetirementFieldsCover("L-guard retFields cover the server Retirement shape", retFields);
   const [s1, s2] = await Promise.all([
     rtL.dispatch("saveRetirementCalc", {
       ...retFields,
@@ -1454,6 +1486,7 @@ eq(
     phaseStartAge: null, phaseDeclinePct: null,
     minimumAnnualSpendingCents: null,
   };
+  checkRetirementFieldsCover("M-guard retFields cover the server Retirement shape", retFields);
   const retSave = await rtM.call<any>("saveRetirementCalc", {
     ...retFields, baseRevision: 0,
   });
@@ -1529,6 +1562,7 @@ eq(
     phaseStartAge: null, phaseDeclinePct: null,
     minimumAnnualSpendingCents: null,
   };
+  checkRetirementFieldsCover("N-guard retFieldsN cover the server Retirement shape", retFieldsN);
   const retSaveN = await rtN.call<any>("saveRetirementCalc", { ...retFieldsN, baseRevision: 0 });
   eq("N5 normal Retirement save ok", retSaveN.ok, true);
   const baseSaveN = await rtN.call<any>("saveRetirementBaseline", {
