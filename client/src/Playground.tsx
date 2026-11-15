@@ -9201,8 +9201,13 @@ export function Playground({
                     {pg.aca.below100Fpl ? (
                       <>
                         {" "}
-                        Under 100% of the poverty line, so the premium credit is $0
-                        under the standard §36B income test.{" "}
+                        Under 100% of the poverty line, so the premium credit{" "}
+                        {pg.aca.credit != null ? "is $0" : "would be $0"}
+                        {/* E6 NICEs fix — pg.aca.credit is null when no
+                        benchmark premium was entered, so the $0 is
+                        conditional ("would be") until a benchmark is
+                        entered and the $0 is actually priced. */}
+                        {" "}under the standard §36B income test.{" "}
                         {pg.aca.eligibilityNote}
                       </>
                     ) : (

@@ -1808,8 +1808,10 @@ export type AcaCreditResult = {
   // eligibilityNote names the rule whenever below100Fpl is
   // true (null otherwise): for 2026+ coverage it states the
   // former §36B(c)(1)(B) exception was repealed by OBBBA
-  // §71302, so no statutory exception is priced; for 2025
-  // coverage it states the pre-OBBBA exception is NOT
+  // §71302, so no statutory exception is priced, and names
+  // Treas. Reg. §1.36B-2(b)(6) as surviving that repeal but
+  // NOT modeled; for 2025 coverage it states the pre-OBBBA
+  // exception is NOT modeled, and (b)(6) is likewise NOT
   // modeled. Medicaid eligibility is never modeled and never
   // assumed — the engine prices the marketplace credit only.
   below100Fpl: boolean;
@@ -1839,9 +1841,9 @@ export type AcaCreditResult = {
 // result shows.
 export function acaBelow100Note(coverageYear: number): string {
   if (coverageYear >= 2026) {
-    return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The former §36B(c)(1)(B) exception for lawfully present immigrants ineligible for Medicaid was repealed by OBBBA §71302 for tax years after 2025, so no statutory exception is priced for this coverage year. Medicaid eligibility is not modeled.";
+    return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The former §36B(c)(1)(B) exception for lawfully present immigrants ineligible for Medicaid was repealed by OBBBA §71302 for tax years after 2025, so no statutory exception is priced for this coverage year. Treas. Reg. §1.36B-2(b)(6) survives that repeal — a household the Exchange estimated at 100%–400% of the poverty line keeps a credit when actual income lands below 100%, provided advance payments were made — but it is not modeled here, because the engine never receives the Exchange's estimate. Medicaid eligibility is not modeled.";
   }
-  return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The pre-OBBBA §36B(c)(1)(B) exception (a lawfully present immigrant ineligible for Medicaid treated as at 100% FPL) is not modeled, so this result prices the standard test only. Medicaid eligibility is not modeled.";
+  return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The pre-OBBBA §36B(c)(1)(B) exception (a lawfully present immigrant ineligible for Medicaid treated as at 100% FPL) is not modeled, so this result prices the standard test only. Treas. Reg. §1.36B-2(b)(6) (a household the Exchange estimated at 100%–400% of the poverty line keeps a credit when actual income lands below 100%, provided advance payments were made) is likewise not modeled. Medicaid eligibility is not modeled.";
 }
 
 export function acaCreditFor(args: {
@@ -7906,14 +7908,20 @@ export function simulateRothPlan(
           // wrongly imply a credit is shown, so this branch
           // replaces it for the below-100% year (the
           // acaUnder138 flag still reads true on the row).
+          // E6 NICEs fix — DISPLAY: both warning texts below
+          // floor the percentage from ACA MAGI / poverty line
+          // instead of rounding the stored 2dp pctFpl, so 1¢
+          // below 100% (or 138%) never displays the edge
+          // value; pricing is untouched (edges classify in
+          // integer cents).
           warnings.push({
             kind: "aca",
-            text: `Priced at ${acaResult.pctFpl.toFixed(0)}% of the poverty line — under 100% FPL, so the premium credit is $0 under the standard §36B income test. ${acaResult.eligibilityNote ?? ""}`,
+            text: `Priced at ${acaResult.fpl > 0 ? Math.floor((priced.acaMagi / acaResult.fpl) * 100 + 1e-9) : 0}% of the poverty line — under 100% FPL, so the premium credit is $0 under the standard §36B income test. ${acaResult.eligibilityNote ?? ""}`,
           });
         } else if (acaUnder138) {
           warnings.push({
             kind: "aca",
-            text: `Priced at ${acaResult.pctFpl.toFixed(0)}% of the poverty line — under 138% FPL, at that income coverage routes to Medicaid rather than a marketplace plan in most states, so the credit shown for this year is flagged rather than a marketplace result.`,
+            text: `Priced at ${acaResult.fpl > 0 ? Math.floor((priced.acaMagi / acaResult.fpl) * 100 + 1e-9) : 0}% of the poverty line — under 138% FPL, at that income coverage routes to Medicaid rather than a marketplace plan in most states, so the credit shown for this year is flagged rather than a marketplace result.`,
           });
         }
       }

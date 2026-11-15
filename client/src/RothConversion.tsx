@@ -6471,7 +6471,23 @@ export function RothConversion({
                       <strong>Tier {detailRow.detail.irmaa.tierSet}</strong> premiums in{" "}
                       {detailRow.detail.irmaa.premiumYear} (the two-year lookback).
                     </li>
-                    {detailRow.detail.irmaa.paidTier != null ? (
+                    {/* E6 NICEs fix — the branch gates on
+                    surchargeKnown DIRECTLY (it is false exactly when
+                    someone is on Medicare and no lookback entry exists
+                    for year − 2): unknown first, then the paid tier,
+                    then nobody on Medicare. Equivalent to the old
+                    paidTier/persons gating on every case — pinned by
+                    e6-nice6-irmaa-branch-equivalence — and it reads
+                    the flag the engine publishes for exactly this
+                    question instead of re-deriving it. */}
+                    {!detailRow.detail.irmaa.surchargeKnown ? (
+                      <li>
+                        IRMAA for this year is <strong>unknown, not $0</strong> — the{" "}
+                        {detailRow.detail.irmaa.lookbackYear} MAGI that would set this
+                        year&rsquo;s tier is not on record, so the $0 shown is an
+                        unavailable computation, not a priced surcharge.
+                      </li>
+                    ) : detailRow.detail.irmaa.paidTier != null ? (
                       <li>
                         IRMAA paid this year:{" "}
                         <span className="tnum font-medium">{fmtDollars(detailRow.irmaaPaid)}</span>{" "}
@@ -6481,13 +6497,6 @@ export function RothConversion({
                         charged for {detailRow.detail.irmaa.personsOnMedicare}{" "}
                         {detailRow.detail.irmaa.personsOnMedicare === 1 ? "person" : "people"} on
                         Medicare.
-                      </li>
-                    ) : detailRow.detail.irmaa.personsOnMedicare > 0 ? (
-                      <li>
-                        IRMAA for this year is <strong>unknown, not $0</strong> — the{" "}
-                        {detailRow.detail.irmaa.lookbackYear} MAGI that would set this
-                        year&rsquo;s tier is not on record, so the $0 shown is an
-                        unavailable computation, not a priced surcharge.
                       </li>
                     ) : (
                       <li>Nobody is on Medicare this year, so no IRMAA is paid.</li>
@@ -6505,7 +6514,24 @@ export function RothConversion({
                         (poverty line{" "}
                         <span className="tnum">{fmtDollars(detailRow.detail.aca.fpl ?? 0)}</span>;
                         income is{" "}
-                        <span className="tnum">{(detailRow.detail.aca.pctFpl ?? 0).toFixed(1)}%</span>{" "}
+                        {/* E6 NICEs fix — pctFpl DISPLAY: the stored pctFpl is
+                        rounded to 2dp, so 1¢ below a band edge it reads the
+                        edge (132.9999…% → 133.00) and toFixed(1) then
+                        displays the edge while the band prices correctly
+                        (edges classify in integer cents). The display is
+                        therefore derived from the year's ACA MAGI and
+                        poverty line and FLOORED to one decimal, so it can
+                        never round up onto an edge: 1¢ below 133% shows
+                        132.9%, exactly at 133% shows 133.0%. The +1e-9
+                        guards the floor against float error at an exact
+                        edge only; it cannot lift a true below-edge value
+                        onto the edge. Pricing is untouched. */}
+                        <span className="tnum">
+                          {detailRow.detail.aca.fpl != null && detailRow.detail.aca.fpl > 0
+                            ? (Math.floor((detailRow.acaMagi / detailRow.detail.aca.fpl) * 1000 + 1e-9) / 10).toFixed(1)
+                            : (detailRow.detail.aca.pctFpl ?? 0).toFixed(1)}
+                          %
+                        </span>{" "}
                         of the poverty line)
                         {detailRow.detail.aca.overCliff
                           ? " — over the cliff, so no credit."

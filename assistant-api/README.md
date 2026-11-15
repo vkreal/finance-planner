@@ -438,6 +438,7 @@ authority for any single call.
 | `taxableDividendYieldPct` / `taxableInterestYieldPct` | `null` (no yield modeled) | assumption |
 | `otherOrdinaryAnnual` / `taxExemptInterestAnnual` | `0` | assumption |
 | `acaBenchmarkCouple` / `acaBenchmarkSingle` / `acaBenchmarkFamily` | `null` (no credit modeled) + a warning | assumption |
+| `priorYearMagi` | `null` (no prior-year returns supplied) — array of `{taxYear, magi, filingStatus}` (taxYear 1900–2200, magi in dollars, filingStatus `mfj`/`single`/`hoh`; max 40 entries; a duplicate tax year keeps the LAST entry), for the compare tools only (`retirement_compare_strategies`, `retirement_roth_conversion`, `retirement_work_years`). Each entry grades the IRMAA lookback for the premium year two years later, but only for years the march does not itself price — a priced year always wins its own year. A premium year with no lookback entry prices $0 IRMAA with `irmaaSurchargeKnown: false` (unknown, not a computed zero) and is listed in `irmaaLookbackMissingYears` + a warning. | assumption |
 | `healthPremiumAcaHouseholdAnnual` / `healthPremiumAcaSingleAnnual` / `healthPremiumMedicarePerPersonAnnual` | `null` — no premium entered for this tier; with the term active via another tier the marketplace tiers fall back to the year's benchmark (Medicare: no fallback) + a warning — see "Health insurance premiums" below | assumption |
 | `spendingIncludesHealthPremiums` | `null` — required when any premium field is given (missing → `missing_input` + question); `false` = premiums funded on top of `monthlySpending`, `true` = already inside it, not charged again | user |
 | `state` | Omitted → no state tax. `"WA"`/`"Washington"` → WA excise path (a supplied rate is ignored, with a warning). Other → `stateRatePct` applies. | assumption |
@@ -964,6 +965,26 @@ survivor-FRA cut at "Before 1/2/1911" — the CFR controls
 (20 CFR §404.409(b): "Before 1/2/1912"), so the engine follows
 the CFR; the one-year difference is a POMS wording gap, not a
 defect.
+
+(xvi) **IRMAA lookback + ACA below-100% FPL (Engine Review 6).**
+An IRMAA surcharge is set by the MAGI filed two years earlier,
+so a premium year whose lookback year predates the priced span
+prices $0 with `irmaaSurchargeKnown: false` — unknown, not a
+computed zero — unless a `priorYearMagi` entry supplies that
+return (see the inputs table above). The December console prices
+no IRMAA payable at all. Below 100% of the federal poverty line
+the premium credit is $0 under the standard §36B income test:
+for 2026+ coverage the former §36B(c)(1)(B) exception was
+repealed by OBBBA §71302, and Treas. Reg. §1.36B-2(b)(6)
+(a household the Exchange estimated at 100%–400% of the
+poverty line keeps a credit when actual income lands below
+100%, provided advance payments were made) survives that
+repeal but is NOT modeled — the engine never receives the
+Exchange's estimate. For 2025 the (c)(1)(B) exception existed
+and is likewise not modeled. No exception is modeled in any
+year, Medicaid eligibility is never modeled or assumed, and
+the engine never infers immigration status or any special
+eligibility circumstance.
 
 ## Source layout
 

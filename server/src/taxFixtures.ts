@@ -429,7 +429,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "e6-aca-below100-2026",
     kind: "tax",
-    note: "ENGINE REVIEW 6, E6-S2 — ACA below 100% FPL, 2026 coverage (hand-derived; IRC §36B, Rev. Proc. 2025-25, 2025 guidelines HH2 FPL $21,150 → 100% $21,150, 400% cliff $84,600): MAGI $21,149 is $1 under the line — below100Fpl true, credit $0, and the note names the OBBBA §71302 repeal of the former §36B(c)(1)(B) exception (P.L. 119-21, effective tax years after 2025-12-31), so no exception is priced for 2026+. MAGI exactly $21,150 is AT 100% — the first band prices: applicable 2.10%, expected contribution 2.10% × $21,150 = $444.15, credit on a $20,000 benchmark $20,000 − $444.15 = $19,555.85, below100Fpl false, eligibilityNote null.",
+    note: "ENGINE REVIEW 6, E6-S2 — ACA below 100% FPL, 2026 coverage (hand-derived; IRC §36B, Rev. Proc. 2025-25, 2025 guidelines HH2 FPL $21,150 → 100% $21,150, 400% cliff $84,600): MAGI $21,149 is $1 under the line — below100Fpl true, credit $0, and the note names the OBBBA §71302 repeal of the former §36B(c)(1)(B) exception (P.L. 119-21, effective tax years after 2025-12-31), so no exception is priced for 2026+, and names Treas. Reg. §1.36B-2(b)(6) as surviving that repeal but not modeled. MAGI exactly $21,150 is AT 100% — the first band prices: applicable 2.10%, expected contribution 2.10% × $21,150 = $444.15, credit on a $20,000 benchmark $20,000 − $444.15 = $19,555.85, below100Fpl false, eligibilityNote null.",
     expected: {
       belowCredit: 0,
       belowFlag: 1,
@@ -437,6 +437,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       belowFpl: 21150,
       belowCliff: 84600,
       belowNoteRepeal: 1,
+      belowNoteReg: 1,
       atCredit: 19555.85,
       atFlag: 0,
       atApplicablePct: 2.1,
@@ -453,6 +454,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         belowFpl: below.fpl,
         belowCliff: below.cliff,
         belowNoteRepeal: (below.eligibilityNote ?? "").includes("repealed by OBBBA §71302") ? 1 : 0,
+        belowNoteReg: (below.eligibilityNote ?? "").includes("§1.36B-2(b)(6)") ? 1 : 0,
         atCredit: at.credit,
         atFlag: at.below100Fpl ? 1 : 0,
         atApplicablePct: at.applicablePct,
@@ -488,14 +490,74 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "e6-nice2-pctfpl-display-floor",
+    kind: "tax",
+    note: "ENGINE REVIEW 6 NICEs fix — pctFpl DISPLAY only (hand-derived; 2026 coverage, HH2, FPL $21,150): the engine stores pctFpl rounded to 2dp, so 1¢ below a band edge it reads the edge while the band prices correctly (edges classify in integer cents). MAGI $28,129.49 is 1¢ below 133% ($28,129.50): stored pctFpl 133, but the display — ACA MAGI / poverty line floored to one decimal — is 132.9% (warning-text integer floor 132%), and the FIRST band prices: applicable 2.10%, contribution 2.10% × $28,129.49 = $590.72, credit $20,000 − $590.72 = $19,409.28. Exactly at 133% the display is 133.0% and the second band prices (3.14%, $19,116.73). MAGI $21,149.99 is 1¢ below 100%: below100Fpl true, credit $0, stored pctFpl 100, display 99.9% (integer floor 99%). MAGI $29,186.99 is 1¢ below 138% ($29,187.00): stored pctFpl 138, display 137.9% (integer floor 137%), applicable 3.45%. Pricing is untouched by the display fix.",
+    expected: {
+      below133Stored: 133,
+      below133Display: 132.9,
+      below133WarnInt: 132,
+      below133Pct: 2.1,
+      below133Credit: 19409.28,
+      at133Stored: 133,
+      at133Display: 133,
+      at133Pct: 3.14,
+      at133Credit: 19116.73,
+      below100Flag: 1,
+      below100Credit: 0,
+      below100Stored: 100,
+      below100Display: 99.9,
+      below100WarnInt: 99,
+      below138Stored: 138,
+      below138Display: 137.9,
+      below138WarnInt: 137,
+      below138Pct: 3.45,
+    },
+    actual: () => {
+      // The display formulas, exactly as the UI renders them:
+      // floored from ACA MAGI / poverty line, never rounded up
+      // onto an edge (+1e-9 guards the floor against float
+      // error at an exact edge only).
+      const disp = (magi: number, fpl: number) =>
+        Math.floor((magi / fpl) * 1000 + 1e-9) / 10;
+      const warn = (magi: number, fpl: number) =>
+        Math.floor((magi / fpl) * 100 + 1e-9);
+      const b133 = acaCreditFor({ magi: 28129.49, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const a133 = acaCreditFor({ magi: 28129.5, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const b100 = acaCreditFor({ magi: 21149.99, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const b138 = acaCreditFor({ magi: 29186.99, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      return {
+        below133Stored: b133.pctFpl,
+        below133Display: disp(28129.49, b133.fpl),
+        below133WarnInt: warn(28129.49, b133.fpl),
+        below133Pct: b133.applicablePct,
+        below133Credit: b133.credit,
+        at133Stored: a133.pctFpl,
+        at133Display: disp(28129.5, a133.fpl),
+        at133Pct: a133.applicablePct,
+        at133Credit: a133.credit,
+        below100Flag: b100.below100Fpl ? 1 : 0,
+        below100Credit: b100.credit,
+        below100Stored: b100.pctFpl,
+        below100Display: disp(21149.99, b100.fpl),
+        below100WarnInt: warn(21149.99, b100.fpl),
+        below138Stored: b138.pctFpl,
+        below138Display: disp(29186.99, b138.fpl),
+        below138WarnInt: warn(29186.99, b138.fpl),
+        below138Pct: b138.applicablePct,
+      };
+    },
+  },
+  {
     id: "e6-aca-below100-2027-and-2025",
     kind: "tax",
-    note: "ENGINE REVIEW 6, E6-S2 — below-100% is law-year-aware (hand-derived): 2027 coverage uses the 2026 guidelines (HH2 FPL $21,640 → cliff $86,560; Rev. Proc. 2026-26): MAGI $21,639 is below 100% — credit $0, note still cites the §71302 repeal — while MAGI exactly $21,640 prices the first band at 2.15%: contribution 2.15% × $21,640 = $465.26, credit $20,000 − $465.26 = $19,534.74. 2025 coverage uses the 2024 guidelines (HH1 FPL $15,060; enhanced schedule Rev. Proc. 2024-35, 0% under 150%): MAGI $15,059 is below 100% — credit $0, and the note names the pre-OBBBA §36B(c)(1)(B) exception as NOT modeled (it existed for 2025) and does NOT mention a repeal — while MAGI exactly $15,060 prices the 0% band: contribution $0, credit the full $10,000 benchmark.",
+    note: "ENGINE REVIEW 6, E6-S2 — below-100% is law-year-aware (hand-derived): 2027 coverage uses the 2026 guidelines (HH2 FPL $21,640 → cliff $86,560; Rev. Proc. 2026-26): MAGI $21,639 is below 100% — credit $0, note still cites the §71302 repeal and names Treas. Reg. §1.36B-2(b)(6) as surviving but not modeled — while MAGI exactly $21,640 prices the first band at 2.15%: contribution 2.15% × $21,640 = $465.26, credit $20,000 − $465.26 = $19,534.74. 2025 coverage uses the 2024 guidelines (HH1 FPL $15,060; enhanced schedule Rev. Proc. 2024-35, 0% under 150%): MAGI $15,059 is below 100% — credit $0, and the note names the pre-OBBBA §36B(c)(1)(B) exception as NOT modeled (it existed for 2025) and does NOT mention a repeal, and likewise names (b)(6) as not modeled — while MAGI exactly $15,060 prices the 0% band: contribution $0, credit the full $10,000 benchmark.",
     expected: {
       y27BelowCredit: 0,
       y27BelowFlag: 1,
       y27BelowCliff: 86560,
       y27BelowFpl: 21640,
+      y27NoteReg: 1,
       y27AtCredit: 19534.74,
       y27AtPct: 2.15,
       y27AtFlag: 0,
@@ -503,6 +565,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       y25BelowFlag: 1,
       y25NotePreObbba: 1,
       y25NoteRepeal: 0,
+      y25NoteReg: 1,
       y25AtCredit: 10000,
       y25AtPct: 0,
       y25AtFlag: 0,
@@ -517,6 +580,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y27BelowFlag: y27Below.below100Fpl ? 1 : 0,
         y27BelowCliff: y27Below.cliff,
         y27BelowFpl: y27Below.fpl,
+        y27NoteReg: (y27Below.eligibilityNote ?? "").includes("§1.36B-2(b)(6)") ? 1 : 0,
         y27AtCredit: y27At.credit,
         y27AtPct: y27At.applicablePct,
         y27AtFlag: y27At.below100Fpl ? 1 : 0,
@@ -524,6 +588,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y25BelowFlag: y25Below.below100Fpl ? 1 : 0,
         y25NotePreObbba: (y25Below.eligibilityNote ?? "").includes("pre-OBBBA §36B(c)(1)(B) exception") ? 1 : 0,
         y25NoteRepeal: (y25Below.eligibilityNote ?? "").includes("repealed") ? 1 : 0,
+        y25NoteReg: (y25Below.eligibilityNote ?? "").includes("§1.36B-2(b)(6)") ? 1 : 0,
         y25AtCredit: y25At.credit,
         y25AtPct: y25At.applicablePct,
         y25AtFlag: y25At.below100Fpl ? 1 : 0,
@@ -682,6 +747,77 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y34SrcMagi: y34?.detail.irmaa.paidSourceMagi ?? null,
         y35Tier: y35?.detail.irmaa.paidTier ?? null,
         y35SrcMagi: y35?.detail.irmaa.paidSourceMagi ?? null,
+      };
+    },
+  },
+  {
+    id: "e6-nice6-irmaa-branch-equivalence",
+    kind: "tax",
+    note: "ENGINE REVIEW 6 NICEs fix — the RothConversion year IRMAA detail now gates on surchargeKnown directly instead of re-deriving it from paidTier / personsOnMedicare (branch counts from the engine's own marches on the fictional sample household: primary born 1968, 65 in 2033; spouse born 1970, 65 in 2035): on every year of three marches the old branch (paidTier != null → paid line; else persons > 0 → unknown line; else nobody line) selects the SAME line as the new branch (!surchargeKnown → unknown; else paidTier != null → paid; else nobody) — zero violations — because (paidTier != null OR persons == 0) === surchargeKnown on every year. Missing-lookback march (startYear 2033, no seeds), 31 years: 29 paid, 2 unknown (2033–2034), 0 nobody. Same march with seeds [{2031, $100,000, mfj}, {2032, $300,000, mfj}], 31 years: 31 paid, 0 unknown. Default-start march, 38 years: 31 paid, 0 unknown, 7 nobody (the pre-Medicare years before 2033). No behavior change: the branch renders identically on every existing case.",
+    expected: {
+      violations: 0,
+      aYears: 31,
+      aPaid: 29,
+      aUnknown: 2,
+      aNobody: 0,
+      bYears: 31,
+      bPaid: 31,
+      bUnknown: 0,
+      bNobody: 0,
+      cYears: 38,
+      cPaid: 31,
+      cUnknown: 0,
+      cNobody: 7,
+    },
+    actual: () => {
+      const counts = (res: RothPlanResult) => {
+        let paid = 0;
+        let unknown = 0;
+        let nobody = 0;
+        let violations = 0;
+        for (const y of res.years) {
+          const d = y.detail.irmaa;
+          const oldPaid = d.paidTier != null;
+          const oldUnknown = !oldPaid && d.personsOnMedicare > 0;
+          const oldNobody = !oldPaid && d.personsOnMedicare === 0;
+          const newUnknown = !d.surchargeKnown;
+          const newPaid = d.surchargeKnown && d.paidTier != null;
+          const newNobody = d.surchargeKnown && d.paidTier == null;
+          if (oldPaid !== newPaid || oldUnknown !== newUnknown || oldNobody !== newNobody) violations++;
+          if (newPaid) paid++;
+          if (newUnknown) unknown++;
+          if (newNobody) nobody++;
+        }
+        return { years: res.years.length, paid, unknown, nobody, violations };
+      };
+      const a = counts(simulateRothPlan(samplePlanInputs({ startYear: 2033 }), DO_NOTHING));
+      const b = counts(
+        simulateRothPlan(
+          samplePlanInputs({
+            startYear: 2033,
+            irmaaLookbackSeed: [
+              { year: 2031, magi: 100000, filingStatus: "mfj" },
+              { year: 2032, magi: 300000, filingStatus: "mfj" },
+            ],
+          }),
+          DO_NOTHING,
+        ),
+      );
+      const c = counts(simulateRothPlan(samplePlanInputs({}), DO_NOTHING));
+      return {
+        violations: a.violations + b.violations + c.violations,
+        aYears: a.years,
+        aPaid: a.paid,
+        aUnknown: a.unknown,
+        aNobody: a.nobody,
+        bYears: b.years,
+        bPaid: b.paid,
+        bUnknown: b.unknown,
+        bNobody: b.nobody,
+        cYears: c.years,
+        cPaid: c.paid,
+        cUnknown: c.unknown,
+        cNobody: c.nobody,
       };
     },
   },

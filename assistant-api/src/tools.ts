@@ -121,7 +121,7 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "string",
       enum: ["mfj", "single", "hoh"],
       description:
-        "Federal tax filing status: mfj (married filing jointly), single, or hoh (head of household).",
+        "Federal tax filing status: mfj (married filing jointly), single, or hoh (head of household). Married filing separately (\"mfs\") is NOT supported — the engine prices mfj, single, and head of household only, and an \"mfs\" value is rejected rather than priced as one of these.",
     },
     householdSize: {
       type: "integer",

@@ -1366,6 +1366,13 @@ function irmaaAcaCompareWarnings(
     }
     if (m.acaBelow100FplYears.length > 0) {
       const years = m.acaBelow100FplYears.join(", ");
+      // "Is $0" stands here, not "would be $0": the compare
+      // yearly rows carry acaCredit as a PRICED number (0 for
+      // these years), never null — the null-credit case lives
+      // only in the single-year tax tool (whose response echoes
+      // the priced year verbatim with aca.credit null when no
+      // benchmark was entered) and the Playground block, both
+      // fixed to say "would be $0" when the credit is null.
       out.push(
         `ACA credit is $0 for ${m.name} in ${years} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
       );
@@ -2763,8 +2770,13 @@ export function calculateSingleYearTax(
     // year + 2, always computable — so there is no unknown
     // lookback to warn about here.)
     if (priced.aca.below100Fpl) {
+      // E6 NICEs fix — the response carries aca.credit NULL
+      // when no benchmark premium was entered (the credit is
+      // unpriced there), so the warning says "would be $0"
+      // in that case and "is $0" only when a benchmark was
+      // entered and the $0 was actually priced.
       warnings.push(
-        `ACA credit is $0 for ${scenario.taxYear} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
+        `ACA credit ${priced.aca.credit == null ? "would be $0" : "is $0"} for ${scenario.taxYear} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.${priced.aca.credit == null ? " (No benchmark premium was entered, so no credit is priced here.)" : ""}`,
       );
     }
     // Post-price overlap checks (need the computed RMD, which

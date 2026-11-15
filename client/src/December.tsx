@@ -1855,6 +1855,15 @@ export function December() {
                       "Refundable education credit (AOTC)",
                       `−${fmtDollarsExact(likelyCase.educationRefundableAtHeadline)}`,
                     )}
+                  {/* E6 NICEs fix — DISCLOSURE ONLY: the December
+                  console prices no IRMAA payable at all (the
+                  surcharge for next year is set by the MAGI from
+                  two years ago, which this console does not carry),
+                  so no IRMAA appears anywhere in the bill above.
+                  Do not read the bill as including it. */}
+                  <p className="mt-1 text-sm">
+                    Medicare IRMAA is not priced in this December console — the surcharge is set by the MAGI from two years ago, which this console does not carry, so no IRMAA is included in the bill above.
+                  </p>
                   {likelyCase.harvestedGainAtHeadline > 0 &&
                     billRow(
                       "Gain harvested into the 0% band",

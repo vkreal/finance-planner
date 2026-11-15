@@ -1212,3 +1212,33 @@ describe("R6 backward compatibility and contract", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// §NICE-7 — Below-100% FPL warning: "would be $0" when the credit is null
+// (Engine Review 6 NICEs fix)
+// ---------------------------------------------------------------------------
+
+describe("NICE-7 below-100% warning: would-be vs is $0", () => {
+  // The fictional household prices a $0 single-year income here
+  // (no single-year income fields entered), so the year's ACA MAGI
+  // is $0 — under 100% of the 2026-coverage poverty line for a
+  // household of 2 ($21,150) — and the credit is $0 under the
+  // standard §36B income test.
+  test("no benchmark entered: credit is null, warning says 'would be $0'", () => {
+    const res = pricedWithParity({});
+    expect(res.aca.below100Fpl).toBe(true);
+    expect(res.aca.credit).toBeNull();
+    const w = warningsFor({});
+    expect(w).toContain("ACA credit would be $0");
+    expect(w).not.toContain("ACA credit is $0");
+  });
+
+  test("benchmark entered: credit is priced $0, warning says 'is $0'", () => {
+    const res = pricedWithParity({ acaBenchmarkCouple: 20000 });
+    expect(res.aca.below100Fpl).toBe(true);
+    expect(res.aca.credit).toBe(0);
+    const w = warningsFor({ acaBenchmarkCouple: 20000 });
+    expect(w).toContain("ACA credit is $0");
+    expect(w).not.toContain("ACA credit would be $0");
+  });
+});

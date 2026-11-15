@@ -7347,6 +7347,82 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "api-optimizer-improvements-missing-integrity",
+    kind: "apicontract",
+    note: "ENGINE REVIEW 6 NICEs fix — optimizerImprovements must not throw on a scored candidate with NO integrity assessment attached (synthetic stubs carry none; real candidates always carry one from scoreAllCandidates). Per E4's assessCandidateIntegrity contract a candidate is invalid only when an assessment finds a reason, so no assessment means no invalid verdict: stubs without integrity are selected on their priced gain, while a stub carrying an explicit invalid assessment is still excluded. Pins, on synthetic scored stubs (net costs in dollars): the two no-integrity levers are selected in lowest-net-cost order (gains $500 then $250 over the $100,000 plan); the invalid-assessed lever is excluded even though it is cheapest; Do Nothing is excluded even when it beats the plan.",
+    expected: {
+      count: 2,
+      firstGainCents: 50000,
+      secondGainCents: 25000,
+      invalidExcluded: 1,
+      doNothingExcluded: 1,
+    },
+    actual: () => {
+      const ceilings = {
+        bracketTopPct: 22,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCap: null,
+        acaCliffBuffer: null,
+      };
+      const stub = (
+        key: string,
+        name: string,
+        netCost: number,
+        integrity?: { status: "valid" | "valid-with-benign-residual" | "invalid" },
+      ): ScoredCandidate =>
+        ({
+          spec: {
+            key,
+            name,
+            ceilings,
+            windowStopAge: 75,
+            windowKind: "throughRmd",
+            windowLabel: "",
+            guardrail: false,
+            bunching: false,
+            gainsHarvest: false,
+            drawOrder: DEFAULT_DRAW_ORDER,
+          },
+          result: { endingAfterTaxWealth: 0 },
+          cost: { netCost },
+          claimAges: {
+            primaryAge: 67,
+            spouseAge: null,
+            primaryAnnual: 0,
+            spouseAnnual: 0,
+            searchedPrimary: false,
+            searchedSpouse: false,
+          },
+          // No integrity field at all unless the caller passes
+          // one — that omission is the case under test.
+          ...(integrity != null ? { integrity } : {}),
+        }) as unknown as ScoredCandidate;
+      const saved = 100000;
+      const out = optimizerImprovements(
+        [
+          [
+            stub("a", "Fill to the top of the 22% bracket", 99500),
+            stub("b", "Fill to the top of the 12% bracket", 99750),
+            stub("c", "Fill to the top of the 24% bracket", 90000, { status: "invalid" }),
+            stub(DO_NOTHING_SPEC.key, "Do Nothing", 90000),
+          ],
+        ],
+        saved,
+      );
+      const gains = out.map((o) => Math.round(o.gainVsSavedPlan * 100));
+      return {
+        count: out.length,
+        firstGainCents: gains[0] ?? null,
+        secondGainCents: gains[1] ?? null,
+        invalidExcluded: out.some((o) => o.candidate.spec.key === "c") ? 0 : 1,
+        doNothingExcluded: out.some((o) => o.candidate.spec.key === DO_NOTHING_SPEC.key) ? 0 : 1,
+      };
+    },
+  },
+  {
     id: "pg-cash-left-vs-spending-surplus",
     kind: "apicontract",
     note: "Enough for the year (build v126), surplus: the year leaves $49,120 cash left after tax; against $40,000 of annual spending it is enough by $9,120 (49,120 − 40,000). The spending never enters the tax — cash left is identical with and without it.",

@@ -614,11 +614,22 @@ export function crownOptimizerWinners(
   winnerQualified: boolean;
   winnersDiffer: boolean;
 } {
-  const valid = sortedAll.filter((s) => s.integrity.status !== "invalid");
+  // E6 NICEs fix — a candidate with NO integrity assessment
+  // attached is never excluded as invalid: under E4's
+  // assessCandidateIntegrity contract a candidate is invalid
+  // only when an assessment finds a reason (unresolved
+  // settlement, unpaid tax, unfunded spending, converting
+  // breach), and no assessment means no such verdict exists.
+  // Real candidates always carry one (scoreAllCandidates
+  // attaches assessCandidateIntegrity to every candidate), so
+  // no real verdict is weakened; this only stops a stub
+  // without an assessment (e.g. the Extended fixture's
+  // synthetic scored candidates) from throwing here.
+  const valid = sortedAll.filter((s) => s.integrity?.status !== "invalid");
   const invalid = sortedAll.length - valid.length;
   const rawFirst = sortedAll[0]!;
   const excludedInvalidWinner =
-    rawFirst.integrity.status === "invalid"
+    rawFirst.integrity?.status === "invalid"
       ? { candidate: rawFirst, integrity: rawFirst.integrity }
       : null;
   const netCostWinner = pickNetCostWinner(valid);
@@ -1128,8 +1139,11 @@ export function optimizerImprovements(
       if (s.spec.key === DO_NOTHING_SPEC.key) continue;
       // E4-S1: a lever whose own pricing did not settle, left
       // tax unpaid, or left spending unfunded is not a
-      // recommendation, however cheap it scores.
-      if (s.integrity.status === "invalid") continue;
+      // recommendation, however cheap it scores. (E6 NICEs
+      // fix: the optional chain — a candidate with no
+      // integrity assessment attached is never excluded as
+      // invalid; see crownOptimizerWinners above.)
+      if (s.integrity?.status === "invalid") continue;
       const gain = Math.round((savedPlanNetCost - s.cost.netCost) * 100) / 100;
       if (gain < 0.01) continue;
       const leverKey = [
@@ -1171,7 +1185,9 @@ export function runOptimizer(
   const winner = crowned.selectedWinner;
   const runnersUp = scored
     .filter(
-      (s) => s.integrity.status !== "invalid" && s !== winner,
+      // E6 NICEs fix: optional chain — no assessment attached
+      // is never an invalid verdict (see crownOptimizerWinners).
+      (s) => s.integrity?.status !== "invalid" && s !== winner,
     )
     .slice(0, 3);
   return {
@@ -1722,7 +1738,9 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const runnersUp: ScoredCandidate[] = [];
   for (const s of eligible) {
     if (runnersUp.length >= 3) break;
-    if (s.integrity.status === "invalid") continue;
+    // E6 NICEs fix: optional chain — no assessment attached
+    // is never an invalid verdict (see crownOptimizerWinners).
+    if (s.integrity?.status === "invalid") continue;
     if (
       s.spec.key === winner.spec.key &&
       s.claimAges.primaryAge === winner.claimAges.primaryAge &&
