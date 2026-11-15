@@ -5,11 +5,13 @@ Planner's retirement engines under plain Node.js — no MCP server, no
 hosting, no install, no network, no database.
 
 The file is `assistant-api/dist/finance-planner-cli.mjs`
-(506,733 bytes, sha256
-`dc0dcfa153bf864e4c088b3a05fb48cde3bda5ff5e50b1957bbe81e3af497744`),
-built from source commit `19ea743` (main at the Review 6 merge; the
-bundle commit also carries the Review 2 5%-default and two-stream-SS
-fixes). Size and hash change with every rebuild from a new source
+(556,909 bytes, sha256
+`b189627bdd8c54818bec2cec976a99310b2da580ffe8034b2309c9e3301b3fa6`),
+built from source commit `aa65684` (main at the Review 4 merge; the
+bundle commit also carries the Engine Review 1 adequacy floor,
+Engine Review 2 solver-feasibility fields, Review 4 comparisonScope,
+and the Review 2/6/8/3 fixes — Review 7's Monte Carlo precision work
+is not in this build). Size and hash change with every rebuild from a new source
 commit — verify the copy you hold with the `.sha256` file next to it,
 not with the numbers in this paragraph.
 It calls the same `dispatchTool()` the MCP server and the bun CLI
@@ -30,7 +32,7 @@ the first release, the committed copy in `dist/` is the live path.
 ### How to publish a release (maintainer step — no release exists yet)
 
 1. Pick the source commit the bundle was built from and record it in
-   the release notes (immutable reference, e.g. `19ea743` plus the
+   the release notes (immutable reference, e.g. `aa65684` plus the
    bundle commit). Rebuild from that exact commit if the committed
    copy is not already byte-identical to a fresh build from it.
 2. Tag the commit, e.g. `git tag -a standalone-v0.1.0 -m "Standalone
@@ -245,9 +247,33 @@ rule, the "don't invent results" rule, and a worked example. The
   `assistant-api/`).
 - Full adapter suite green (`bun test tests/`), including
   `tests/standalone.test.ts`.
-- Parity: all 8 tools byte-identical to the direct (bun) CLI path on
-  the same inputs, under the system Node and under Node 20.19.5
-  (per-tool tests in `tests/standalone.test.ts`).
+- Parity (four-way matrix, base `aa65684`, bundle
+  `b189627bdd8c54818bec2cec976a99310b2da580ffe8034b2309c9e3301b3fa6`):
+  all 8 tools MATCH across all 5 legs — direct adapter, bun CLI,
+  MCP endpoint, standalone bundle under system Node 24, standalone
+  bundle under Node 20.19.5 — on identical input JSON (40 MATCH,
+  0 MISMATCH; fresh direct references, logs `parity5.log`,
+  `parity5-taxyear.log`, `parity5-wy.log`). Key figures: calculate
+  ending $19,889,344.44; Monte Carlo successRate 0.92; max-spending
+  $11,100/mo at 0.85; tax_year federalTax $32,429.05 (RMD $42,058.82);
+  work-years 2-age variant (spouse SS $0, compareAges [58,60],
+  salary $120,000) retire-58 ending $17,091,856.23, retire-60
+  $18,513,081.03, winners wealth retire-60 / net cost retire-58 /
+  all-in tax retire-58. The heavy work-years input (spouse SS
+  $18,000, compareAges [58,60,63], salary $200,000) still cannot run
+  on the 6 GB VM — preserved as `parity4/retirement_work_years.heavy.json`
+  for a bigger host; the wy56 heavy leg (compareAges [56,60], salary
+  $120,000, spouse SS $0) re-ran on the rebuilt bundle under Node 20
+  (710,544 ms): every figure identical to the 19ea743-base run —
+  retire-56 ending $15,524,955.88, retire-60 $18,513,081.03,
+  lifetimeTax $739,369.67 both, winners wealth retire-60 / net cost
+  retire-56 / all-in tax retire-58, deltas +$2,988,125.15 / $0
+  (log `parity5-wy56.log`). The envelope gained the `comparisonScope`
+  block (`"limited"`) and contract 164 — that is the only change.
+  Transport note: the bun CLI and both bundle legs print byte-identical
+  stdout (pretty JSON); the direct leg prints the same envelope as
+  compact JSON and MCP returns it inside SSE framing — both agree
+  canonically (re-serialized JSON identical), not byte-wise.
 - Sample isolation: rebuilding from a repo copy with every sample
   figure rewritten to $0.01 gives a byte-identical bundle, and that
   bundle prices the fictional household identically.
