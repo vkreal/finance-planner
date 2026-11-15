@@ -5,18 +5,21 @@ Planner's retirement engines under plain Node.js — no MCP server, no
 hosting, no install, no network, no database.
 
 The file is `assistant-api/dist/finance-planner-cli.mjs`
-(559,394 bytes, sha256
-`7de35618e10b92f5bfb85fe6246fbd34bf8afed5733af6d57e1aa51fdf44d452`),
+(559,443 bytes, sha256
+`698e0fa0326568f4980bc8af5dd7df8008ee3edd01bfda873452b5031f1ca372`),
 built from source commit `4bc7316` (main at the Review 4 reviewer-NICE
 gloss fix; the bundle commit also carries the Engine Review 1 adequacy
 floor, Engine Review 2 solver-feasibility fields, Review 4
 comparisonScope and its 6 NICE fixes, the Review 2/6/8/3 fixes, the
 Review 10 Pass 2/3 fixes (missing-input detection, locale-independent
-error-detail messages, three doc fixes), and the Review 10 round-2
+error-detail messages, three doc fixes), the Review 10 round-2
 follow-ups (PropertyKey type fix, Releases-page qualifier in the
 bundled quick-start + AI_USAGE + llms.txt, `cd` prefix on the
-llms.txt/STANDALONE.md verify commands, wy56 winner correction) —
-Review 7's Monte Carlo precision work is not in this build). Size and hash change with every rebuild from a new source
+llms.txt/STANDALONE.md verify commands, wy56 winner correction), and
+the Review 10 round-3 follow-ups (execution-model-neutral long-call
+wording in the shared describe limitations, `cd` prefix on the
+AI_USAGE.md verify command) — Review 7's Monte Carlo precision work
+is not in this build). Size and hash change with every rebuild from a new source
 commit — verify the copy you hold with the `.sha256` file next to it,
 not with the numbers in this paragraph.
 It calls the same `dispatchTool()` the MCP server and the bun CLI
@@ -261,12 +264,12 @@ rule, the "don't invent results" rule, and a worked example. The
 - Full adapter suite green (`bun test tests/`), including
   `tests/standalone.test.ts`.
 - Parity (four-way matrix, base `4bc7316`, bundle
-  `7de35618e10b92f5bfb85fe6246fbd34bf8afed5733af6d57e1aa51fdf44d452`):
+  `698e0fa0326568f4980bc8af5dd7df8008ee3edd01bfda873452b5031f1ca372`):
   all 8 tools MATCH across all 5 legs — direct adapter, bun CLI,
   MCP endpoint, standalone bundle under system Node 24, standalone
   bundle under Node 20.19.5 — on identical input JSON (40 MATCH,
-  0 MISMATCH; fresh direct references, logs `parity9.log`,
-  `parity9-taxyear.log`, `parity9-wy.log`). Key figures: calculate
+  0 MISMATCH; fresh direct references, logs `parity10.log`,
+  `parity10-taxyear.log`, `parity10-wy.log`). Key figures: calculate
   ending $19,889,344.44; Monte Carlo successRate 0.92; max-spending
   $11,100/mo at 0.85; tax_year federalTax $32,429.05 (RMD $42,058.82);
   work-years 2-age variant (spouse SS $0, compareAges [58,60],
@@ -277,11 +280,11 @@ rule, the "don't invent results" rule, and a worked example. The
   on the 6 GB VM — preserved as `parity4/retirement_work_years.heavy.json`
   for a bigger host; the wy56 heavy leg (compareAges [56,60], salary
   $120,000, spouse SS $0) re-ran on the rebuilt bundle under Node 20
-  (498,971 ms): every figure identical to the 19ea743-base run —
+  (598,921 ms): every figure identical to the 19ea743-base run —
   retire-56 ending $15,524,955.88, retire-60 $18,513,081.03,
   lifetimeTax $739,369.67 both, winners wealth retire-60 / net cost
   retire-56 / all-in tax retire-56, deltas +$2,988,125.15 / $0
-  (log `parity9-wy56.log`). The envelope gained the `comparisonScope`
+  (log `parity10-wy56.log`). The envelope gained the `comparisonScope`
   block (`"limited"`) and contract 164 — that is the only change.
   Transport note: the bun CLI and both bundle legs print byte-identical
   stdout (pretty JSON); the direct leg prints the same envelope as

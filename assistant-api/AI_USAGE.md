@@ -142,7 +142,7 @@ plans last to 95 in every historical path."
   repo, with `finance-planner-cli.mjs.sha256` next to it. No release
   has been published yet — until the first release, the committed
   copy is the way to get it.
-  Verify with `sha256sum -c finance-planner-cli.mjs.sha256`.
+  Verify with `cd assistant-api/dist && sha256sum -c finance-planner-cli.mjs.sha256`.
 - The reference: `assistant-api/STANDALONE.md` — build, tools,
   input/output schema, assumptions, limitations, verification.
 - The adapter's own guide: `assistant-api/README.md` (Method A:
