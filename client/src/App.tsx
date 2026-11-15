@@ -3497,10 +3497,7 @@ export function App() {
      RothConversion's existing jumpTarget mechanism
      (build v133) jumps to the named field once the plan has
      loaded, opening its section on the All settings face. The
-     nonce makes each tap fire exactly once. The Retirement
-     view's Calculated-with taps (Spending / Ages / Expected
-     return) set the same target, landing in the household or
-     advanced section as their field requires. */
+     nonce makes each tap fire exactly once. */
   const [rothJumpTarget, setRothJumpTarget] = useState<{
     fieldId: string;
     section: RothSectionId;
@@ -5624,12 +5621,7 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RetirementCalc
-            onJumpToTaxPlan={(target) => {
-              setRothJumpTarget(target);
-              setTopView("roth");
-            }}
-          />
+          <RetirementCalc />
         </main>
       </div>
     );

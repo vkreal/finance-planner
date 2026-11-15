@@ -17,7 +17,6 @@ YAxis,
 import { api, type ApiResponse } from "./api";
 import { Explainer, ExplainerInfoTip } from "./Explainer";
 import { FoldChevron } from "./FoldChevron";
-import type { RothSectionId } from "./RothConversion";
 import { usePersistedFold } from "./foldState";
 import { usePersistedChoice } from "./persistedChoice";
 import {
@@ -480,15 +479,7 @@ const SAVE_HOLD_MAX_POLLS = 100;
    (RothConversion.tsx, Playground.tsx). */
 const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
 
-export function RetirementCalc({
-  onJumpToTaxPlan,
-}: {
-  onJumpToTaxPlan?: (target: {
-    fieldId: string;
-    section: RothSectionId;
-    nonce: number;
-  }) => void;
-} = {}) {
+export function RetirementCalc() {
   const queryClient = useQueryClient();
   const q = useQuery({
     queryKey: ["retirementcalc"],
@@ -560,9 +551,8 @@ export function RetirementCalc({
   // or plain text, except the header summary's values, which
   // are taps back to the fields below (build v146). The
   // Calculated-with tiles are taps to where each number lives
-  // — Portfolio and Spending to the fields below, Ages /
-  // Expected return across to the Tax Plan record — taps only,
-  // they edit nothing in place.)
+  // — Portfolio, Spending, Ages, and Expected return to the
+  // fields below — taps only, they edit nothing in place.)
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -639,19 +629,14 @@ export function RetirementCalc({
   const rcTapCls =
     "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
   /* Calculated-with tile taps: each tile is a tap to where its
-     number lives — Portfolio and Spending to this view's own
-     Retirement record fields (jumpToRcField above), Ages /
-     Expected return to the Tax Plan record via App's cross-view
-     jump (the same jumpTarget mechanism the Playground's Plan
-     total tap uses). Spending is the one strategy-aware tile:
-     in the percent strategy the tile shows this record's own
-     percentOfPortfolio, so it taps to this view's rc-percent
-     field instead of the rc-spending field (the Tax Plan's
-     Annual spending is not an input to that strategy's
+     number lives — Portfolio, Spending, Ages, and Expected
+     return to this view's own Retirement record fields
+     (jumpToRcField above). Spending is the one strategy-aware
+     tile: in the percent strategy the tile shows this record's
+     own percentOfPortfolio, so it taps to this view's
+     rc-percent field instead of the rc-spending field (the Tax
+     Plan's Annual spending is not an input to that strategy's
      calculation). Taps only — the tiles edit nothing. */
-  const jumpToTaxPlan = (fieldId: string, section: RothSectionId) => {
-    onJumpToTaxPlan?.({ fieldId, section, nonce: Date.now() });
-  };
   const calcTileCls =
     "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2 text-left hover:border-[var(--accent)]";
   const calcTileValueCls =
@@ -4210,9 +4195,9 @@ export function RetirementCalc({
               </div>
               <button
                 type="button"
-                aria-label="Go to the Your birth year field in the Tax Plan"
+                aria-label="Go to the Current age field"
                 className={calcTileCls}
-                onClick={() => jumpToTaxPlan("roth-Your-birth-year", "household")}
+                onClick={() => jumpToRcField("rc-current-age")}
               >
                 <p className="text-xs text-[var(--dim)]">Ages</p>
                 <p className={calcTileValueCls}>
@@ -4222,9 +4207,21 @@ export function RetirementCalc({
               </button>
               <button
                 type="button"
-                aria-label="Go to the Expected return field in the Tax Plan"
+                aria-label="Go to the Expected real return field"
                 className={calcTileCls}
-                onClick={() => jumpToTaxPlan("roth-Expected-return", "advanced")}
+                onClick={() => {
+                  // The Expected real return field lives in the
+                  // Assumptions group, which defaults to collapsed,
+                  // so rc-expected-return is not in the DOM until it
+                  // opens — expand it first (persisted, the same as
+                  // tapping Expand), then jump with the usual
+                  // scroll-and-flash. Same pattern as the Volatility
+                  // tap below.
+                  if (assumptionsCollapsed) {
+                    handleAssumptionsCollapsedChange(false);
+                  }
+                  jumpToRcField("rc-expected-return");
+                }}
               >
                 <p className="text-xs text-[var(--dim)]">Expected return</p>
                 <p className={calcTileValueCls}>
