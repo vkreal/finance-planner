@@ -537,6 +537,16 @@ function stateFromForm(f: DecForm): DecemberState {
       return clamp0(prim ?? 0) + clamp0(sp ?? 0);
     })(),
     rmdAlreadyReceived: clamp0(parseMoney(f.rmdAlreadyReceived)),
+    // First-RMD deferral (Engine Review 5, E5-S2): the
+    // December console's form does not offer the election
+    // yet, so the state defaults inertly (no deferral, no
+    // carry) and the console prices exactly as before. The
+    // election lives in the Tax Plan record; wiring the
+    // console's own controls is a follow-up UI build.
+    firstRmdDeferralPrimary: false,
+    firstRmdDeferralSpouse: false,
+    firstRmdDeferredCarryPrimary: 0,
+    firstRmdDeferredCarrySpouse: 0,
     spouseSoleBeneficiary: f.spouseSoleBeneficiary,
     primarySoleBeneficiaryOfSpouse: f.primarySoleBeneficiaryOfSpouse,
     stateRatePct: Math.min(100, clamp0(parseMoney(f.stateRatePct))),

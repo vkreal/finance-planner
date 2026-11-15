@@ -451,6 +451,10 @@ authority for any single call.
 | Single-year RMD (`pretaxPriorYearEndAnnual`, `pretaxSpousePriorYearEndAnnual`) | Omitted → `null`, no RMD from that balance. Explicit `0` → a $0 RMD. Each is that owner's pre-tax balance at Dec 31 of the year before the priced year — never today's balance. Spouse balance counts only on a joint (`mfj`) return. | assumption |
 | `rmdAlreadyReceivedAnnual` | Omitted → `$0` (the full computed RMD is added). The part of this year's RMD already received and already counted in the entered income, netted out of the RMD added (floored at $0). | assumption |
 | `primarySoleBeneficiaryOfSpouse` | Omitted → not established → the spouse's RMD prices on the Uniform Lifetime Table. `true` lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger. A separate fact from the spouse being the primary's sole beneficiary. | assumption |
+| First-RMD deferral (`firstRmdDeferralPrimary`, `firstRmdDeferralSpouse`) — Engine Review 5 | Omitted → no deferral (the first RMD is paid in its own year). `true` defers that owner's first RMD to April 1 of the following year; the following year pays both RMDs. An election entered past the first RMD year has no effect (the response names `$0` deferred). Priced by the plan tools (march + work-years roll) and the tax-year tool. | assumption |
+| First-RMD carry (`firstRmdDeferredCarryPrimaryAnnual`, `firstRmdDeferredCarrySpouseAnnual`) — Engine Review 5 | Omitted → `$0`. The amount deferred from a prior year, priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only — the plan tools never take a carry-in (their carry is produced by the work-years roll). | assumption |
+| Survivor scenario (`survivorEnabled`, `survivorWho`, `survivorDeathYear`) — Engine Review 5 | Omitted → off (both spouses modeled through the plan horizon). `survivorEnabled: true` turns the scenario on; `survivorWho` defaults to `"primary"`; `survivorDeathYear` is REQUIRED when enabled (`missing_input` without it). Plan tools only — the single-year pricer carries no survivor scenario. | assumption |
+| `survivorClaimAge` — Engine Review 5 | Omitted → the simplified max-of-two-benefits rule (the survivor keeps the larger benefit, never both). Entered (60–70) → the enhanced SSA survivor rules: the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. Never inferred — no claiming age is assigned from anything else entered; a claiming age with no survivor scenario has no effect (warned). | assumption |
 | `mcSeed` / `mcRuns` | `12345` / `1000` | engine_constant |
 | `compareAges` | `[retirementAge, retirementAge+2, retirementAge+5]` (no assumption entry when omitted) | — |
 | `comparisonScope` | `"limited"` — the fixed small comparison (3 withdrawal orders / 4 conversion fills). `"full"` prices the engine's whole candidate space for that tool; never silently downgraded. | assumption / user |
@@ -460,9 +464,14 @@ authority for any single call.
 > separately; it vendors this adapter's `dispatchTool()` as
 > `assistant-api/dist/finance-planner-cli.mjs`, rebuilt with
 > `bun run build:standalone`) must be rebuilt after this change
-> lands to carry the six new single-year fields (`stockSoldAnnual`, `stockBasisAnnual`,
+> lands to carry the new fields: the six single-year fields from
+> Review 6 (`stockSoldAnnual`, `stockBasisAnnual`,
 > `pretaxPriorYearEndAnnual`, `pretaxSpousePriorYearEndAnnual`,
-> `rmdAlreadyReceivedAnnual`, `primarySoleBeneficiaryOfSpouse`).
+> `rmdAlreadyReceivedAnnual`, `primarySoleBeneficiaryOfSpouse`)
+> plus the eight Engine Review 5 fields (`firstRmdDeferralPrimary`,
+> `firstRmdDeferralSpouse`, `firstRmdDeferredCarryPrimaryAnnual`,
+> `firstRmdDeferredCarrySpouseAnnual`, `survivorEnabled`,
+> `survivorWho`, `survivorDeathYear`, `survivorClaimAge`).
 > Do not rebuild it from this tree — the bundle's coordinator owns
 > that step.
 

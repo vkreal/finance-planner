@@ -42,10 +42,13 @@ SENIOR_DEDUCTION,
 SS_THRESHOLDS,
 acaTableFor,
 fplFor,
+fullRetirementAgeMonths,
 jointDivisor,
 lawForYear,
 rmdAgeForBirthYear,
 saltScheduleForYear,
+ssBenefitFactor,
+survivorReductionFactor,
 uniformDivisor,
 type FilingStatus,
 type YearLaw,
@@ -2564,6 +2567,82 @@ export type RothPlanInputs = {
   survivorEnabled?: boolean;
   survivorWho?: "primary" | "spouse"; // who dies
   survivorDeathYear?: number | null; // calendar year of death
+  // OPT-IN ENHANCED SURVIVOR MODE (Engine Review 5, E5-S1):
+  // the survivor's claiming age for the survivor benefit, in
+  // whole years. Absent / null = the SIMPLIFIED mode: the
+  // survivor keeps the larger of the two entered benefits at
+  // its claim-age amount, with no survivor claiming-age
+  // reduction, no 82.5%-of-PIA floor, and no benefit before
+  // the deceased's would-be claim age (see the note on the
+  // simplified rule at the year loop's SS step and the
+  // survivorBenefitAnnualEnhanced helper below). When set,
+  // survivor years price the survivor benefit under the SSA
+  // rules instead: the survivor FRA table (taxLaw's
+  // survivorFraMonths — NOT the retirement FRA), the 28.5%
+  // maximum reduction spread from age 60 (survivorReduction
+  // Factor), the widow(er)'s limit (greater of the deceased's
+  // reduced benefit and 82.5% of the deceased's PIA, when the
+  // deceased claimed early), delayed credits accrued to the
+  // month of death when the deceased died before claiming,
+  // and eligibility from age 60. The survivor still receives
+  // only the LARGER of their own benefit and the survivor
+  // benefit — never both — and claim-one-then-switch
+  // optimization is NOT modeled (the year's max is the
+  // optimistic envelope of the two). Never auto-assigned:
+  // no input, no enhanced mode, and no claiming age is ever
+  // invented for a survivor. Inert without a survivor
+  // scenario (survivorEnabled + survivorDeathYear).
+  survivorClaimAge?: number | null;
+  // FIRST-RMD DEFERRAL ELECTION (Engine Review 5, E5-S2):
+  // per-person opt-in to defer the FIRST required minimum
+  // distribution to the required beginning date — April 1 of
+  // the year following the year the owner reaches their RMD
+  // age (SECURE 2.0 / Pub. 590-B). Absent / false = the
+  // first RMD is taken in its year, exactly as before, and
+  // every figure is bit-identical. When true, that person's
+  // first RMD year prices $0 of RMD and the computed amount
+  // is carried as pending; the following year prices the
+  // pending amount PLUS that year's normal RMD (computed on
+  // the Dec 31 balance of the first RMD year, which still
+  // holds the deferred dollars), so two RMDs land in one
+  // tax year. The deferred amount is priced as income and
+  // cash only in the year actually paid (never twice, never
+  // as a spending withdrawal on top of the RMD cash). A
+  // person who dies in their first RMD year does NOT defer:
+  // the deferred amount is owed, so it is taken in the
+  // death year instead. Eligibility follows
+  // rmdAgeForBirthYear, and "first RMD year" means the year
+  // the owner attains the RMD age (the first year a positive
+  // RMD is payable — ceil of the RMD age, so 70.5 is first
+  // payable at 71). A $0-balance attainment year still
+  // counts as the first RMD year (it defers $0), so a later
+  // positive-balance year cannot defer — the march, the
+  // roll, and the single-year pricer all read it this way
+  // (see settleFirstRmdDeferral's rmdAgeReached).
+  firstRmdDeferralPrimary?: boolean;
+  firstRmdDeferralSpouse?: boolean;
+  // FIRST-RMD DEFERRAL CARRY-IN (E5-S2, cross-engine): a
+  // first RMD already deferred by an earlier engine — the
+  // work-years roll hands the march the amount it deferred
+  // in its last work year, in dollars — owed in the march's
+  // FIRST simulated year. Absent / 0 = nothing owed, and
+  // the march prices as before. A positive carry also marks
+  // that person's first RMD as already past (see
+  // firstRmdAlreadyPriced* below): the march's first
+  // computed RMD is then the SECOND RMD year, so the
+  // election cannot defer it a second time.
+  firstRmdDeferredCarryPrimary?: number;
+  firstRmdDeferredCarrySpouse?: number;
+  // FIRST-RMD ALREADY PRICED (E5-S2, cross-engine): true
+  // when an earlier engine already priced a positive RMD
+  // for that person — the work-years roll sets it when its
+  // years took (or deferred) a first RMD — so the march
+  // does not treat its first computed RMD as a first RMD
+  // year and the election cannot defer an RMD whose first
+  // year already passed. Absent / false = no earlier RMD,
+  // and the march's own first computed RMD is the first.
+  firstRmdAlreadyPricedPrimary?: boolean;
+  firstRmdAlreadyPricedSpouse?: boolean;
   rothStart: number;
   taxableStart: number;
   hsaStart: number;
@@ -3091,6 +3170,240 @@ export function effectiveSsSpouseAnnual(inputs: RothPlanInputs): number {
   return inputs.ssSpouseNoBenefit ? 0 : inputs.ssSpouseAnnual;
 }
 
+export type SurvivorSsMode = "simplified" | "enhanced";
+
+/* ---------------- Survivor Social Security (Engine Review 5) ----
+   TWO MODES, both pricing "the survivor keeps the LARGER of the
+   two benefits, never the sum":
+   · SIMPLIFIED (default — survivorClaimAge absent/null): the
+     survivor keeps the larger of the two entered benefits at
+     its claim-age amount, each side counted once its own claim
+     age is reached (the deceased's side by the age they would
+     have been). LIMITATIONS, verified against SSA rules
+     (20 CFR §§404.335, 404.338, 404.409, 404.410; SSA
+     Publication 05-10084) and quantified by the survivor-gap
+     fixtures in taxFixtures.ts: (1) no survivor claiming-age
+     reduction — a survivor aged 60–66 is paid the deceased's
+     FULL benefit where SSA would pay 71.5%–99% (overstates by
+     up to 28.5% for a young survivor); (2) no benefit before
+     the deceased's would-be claim age — SSA allows a survivor
+     benefit from age 60 (understates the gap years when the
+     deceased dies unclaimed); (3) no 82.5%-of-PIA floor — when
+     the deceased claimed early the survivor is paid the
+     reduced benefit where SSA pays at least 82.5% of the PIA
+     (understates); (4) no delayed credits to death — a
+     deceased who delayed past FRA but died before claiming
+     contributes only the un-scaled anchor (understates);
+     (5) the death year pays BOTH benefits in full — SSA pays
+     only through the month of death, plus a $255 one-time
+     lump-sum death benefit that is not modeled (overstates
+     the death year); (6) no remarriage and no claim-one-
+     benefit-then-switch optimization (a survivor who claims
+     the survivor benefit at 60 and switches to their own at
+     70 is priced as the year's max instead — the optimistic
+     envelope). Any household whose survivor is young, whose
+     deceased claimed early, or who died before claiming
+     should treat the simplified survivor years as an
+     approximation and set survivorClaimAge for the enhanced
+     mode below.
+   · ENHANCED (opt-in — survivorClaimAge set, whole years):
+     the survivor benefit prices under the SSA rules: the
+     survivor FRA table (survivorFraMonths — NOT the retirement
+     FRA), the 28.5% maximum reduction spread from age 60
+     (survivorReductionFactor), the widow(er)'s limit (the
+     greater of the deceased's reduced benefit and 82.5% of
+     the deceased's PIA, when the deceased claimed early),
+     delayed credits accrued to the month of death when the
+     deceased died before claiming (whole-year: 8% per whole
+     year from FRA to death, capped at 70), and eligibility
+     from age 60. The survivor still receives only the larger
+     of their own benefit and the survivor benefit. The PIA is
+     backed out of the deceased's entered anchor exactly as
+     ssAnnualAtClaimAge backs it out (anchor ÷ the anchor
+     age's factor); when no anchor age was entered the PIA
+     cannot be derived and the enhanced side prices $0 (the
+     own benefit stands). Whole-year approximation throughout:
+     ages are whole years, so a claim at "age 62" prices the
+     age-62 row exactly and fractional months are not modeled.
+   Never auto-assigned: the enhanced mode runs only on an
+   explicitly entered survivorClaimAge, and no claiming age is
+   ever invented for a survivor. */
+
+// One survivor year's benefit under the ENHANCED mode: the
+// larger of the survivor's own benefit this year and the SSA
+// survivor benefit for this year ($0 for the survivor side
+// before the survivor's claiming age — the earlier of which
+// is 60). See the mode note above for the rules priced here.
+export function survivorBenefitAnnualEnhanced(args: {
+  deceasedAnchorAnnual: number; // entered yearly benefit at the deceased's entered start age
+  deceasedAnchorAge: number | null; // the deceased's entered start age (= their claim age); null = no benefit entered
+  deceasedBirthYear: number;
+  deceasedDeathAge: number; // whole-year age at death
+  survivorBirthYear: number;
+  survivorAge: number; // whole-year age this year
+  survivorClaimAge: number; // the opted-in survivor claiming age (whole years)
+  ownAnnualThisYear: number; // survivor's own benefit this year ($0 when own claim age not reached)
+}): number {
+  const { deceasedAnchorAnnual, deceasedAnchorAge } = args;
+  if (deceasedAnchorAnnual <= 0 || deceasedAnchorAge == null) {
+    return r2(args.ownAnnualThisYear);
+  }
+  const anchorFactor = ssBenefitFactor(deceasedAnchorAge, args.deceasedBirthYear);
+  if (anchorFactor <= 0) return r2(args.ownAnnualThisYear);
+  const pia = deceasedAnchorAnnual / anchorFactor;
+  // Clamped to the claiming window (60–70): below 60 the
+  // survivor cannot claim yet (the own benefit prices until
+  // the claiming age, below); above 70 no further credit
+  // accrues, so 70 is the effective cap.
+  const claimAge = Math.min(70, Math.max(60, Math.round(args.survivorClaimAge)));
+  if (args.survivorAge < claimAge) return r2(args.ownAnnualThisYear);
+  const reduction = survivorReductionFactor(claimAge, args.survivorBirthYear);
+  let survivorBenefit: number;
+  if (args.deceasedDeathAge >= deceasedAnchorAge) {
+    // The deceased was receiving. ORDERING — verified against
+    // POMS RS 00615.320 §A.3 (not the first draft's guess):
+    // the survivor's own claiming-age reduction applies FIRST
+    // to the deceased's base benefit, and the widow(er)'s
+    // limit then CAPS the reduced amount at the greater of
+    // the deceased's reduced benefit and 82.5% of the PIA.
+    // It is a cap on the reduced benefit, NOT a base to be
+    // reduced a second time. RS 00615.320 §A.3: "The RIB LIM
+    // will apply when the WIB after adjustment for the family
+    // maximum and reduction for age is more than BOTH 82 1/2
+    // percent of the NH's death PIA and the RIB or DIB if
+    // they were alive." Corroboration: a worker who claimed
+    // at 62 leaves a survivor who claims at 60 with 71.5%
+    // of the PIA — not 71.5% of 82.5% of the PIA — and the
+    // survivor reaches the full 82.5% of PIA at about age
+    // 62–62½, when the shrinking reduction first lets the
+    // reduced benefit hit the cap (Maximize My Social
+    // Security, "Can The Benefit Limits Imposed By RIB-LIM
+    // Cause Surviving Spouses To Reach The Maximum Widow's
+    // Benefit Before FRA?", 2019-10-12; the same 71.5%-of-PIA
+    // floor at 60 is stated in the SSA-4111 election form's
+    // limit note, which calls the limit a MAXIMUM).
+    // The base is the PIA when the deceased claimed EARLY
+    // (the limit's own base, RS 00615.322 §D.1) and the
+    // deceased's benefit INCLUDING delayed credits when the
+    // deceased claimed at or after FRA (20 CFR §404.338(b);
+    // the limit caps only a worker who claimed early, and
+    // reducing the bare PIA would otherwise strip the
+    // credits: a survivor at FRA of a worker who claimed at
+    // 70 is owed the 124% benefit, not 100% of PIA).
+    const fraYears = fullRetirementAgeMonths(args.deceasedBirthYear) / 12;
+    const base =
+      deceasedAnchorAge < fraYears ? pia : deceasedAnchorAnnual;
+    const cap = Math.max(deceasedAnchorAnnual, 0.825 * pia);
+    survivorBenefit = Math.min(base * reduction, cap);
+  } else {
+    // The deceased died before claiming: the base is the PIA
+    // plus delayed retirement credits accrued to the month of
+    // death (whole-year: 8% per whole year from FRA to the
+    // death age, capped at 70 — no credits before FRA), then
+    // reduced for the survivor's own claiming age. No
+    // widow(er)'s-limit cap applies: the limit caps only a
+    // benefit on a worker who claimed early.
+    const fraYears = fullRetirementAgeMonths(args.deceasedBirthYear) / 12;
+    const drcYears = Math.min(
+      Math.max(0, args.deceasedDeathAge - fraYears),
+      Math.max(0, 70 - fraYears),
+    );
+    survivorBenefit = pia * (1 + 0.08 * drcYears) * reduction;
+  }
+  return r2(Math.max(args.ownAnnualThisYear, survivorBenefit));
+}
+
+/* ---------------- First-RMD deferral (Engine Review 5, E5-S2) ----
+   Shared settle step for one person's RMD in one year, used by
+   the Roth march (simulateRothPlan) and the work-years roll
+   (priceOneWorkYear) so the two engines can never disagree
+   about what deferral means. `state` is the per-person
+   deferral state the caller carries across years (the march's
+   locals; the roll's threaded object): whether a positive RMD
+   has ever been computed for that person, and the amount
+   deferred from the prior year, still owed. The caller passes
+   `carryIn` only for the march's first simulated year (an
+   amount an earlier engine already deferred — otherwise 0);
+   `deathYearForPerson` only for the deceased's death year
+   (a death voids a new deferral: the amount is owed, so it is
+   taken that year — a pending amount from a prior year is
+   still paid that year, on top of the year's own RMD). An
+   election that is absent / false, a year that is not the
+   person's first RMD year, and a $0 computed RMD all settle
+   to the computed amount with nothing deferred — the pre-
+   deferral behavior, exactly. */
+export type FirstRmdDeferralState = {
+  hadPrimary: boolean;
+  hadSpouse: boolean;
+  pendingPrimary: number;
+  pendingSpouse: number;
+};
+
+export function settleFirstRmdDeferral(
+  state: FirstRmdDeferralState,
+  args: {
+    who: "primary" | "spouse";
+    computed: number; // the RMD computed on the prior Dec 31 balance (rmdForYear / uniformRmdFor)
+    deferElected: boolean;
+    deathYearForPerson: boolean;
+    carryIn: number; // already-deferred amount owed into this year (march first year only; 0 elsewhere)
+    // The owner has attained the RMD age this year (age >=
+    // ceil(rmdAgeForBirthYear(birthYear))). The FIRST RMD YEAR
+    // is the attainment year by statute (SECURE 2.0 §107) —
+    // even when that year's computed RMD is $0 (zero
+    // prior-year-end balance): the attainment year still
+    // counts, so it sets had (and an election applied to it
+    // defers $0), and a later positive-balance year cannot
+    // defer. Without the flag the march/roll and the
+    // single-year pricer disagreed on exactly that case (the
+    // pricer seeds had from the age; the settle only counted
+    // a positive computed RMD). isFirst still requires a
+    // positive computed RMD — the deferred amount itself is
+    // only ever a positive computed RMD.
+    rmdAgeReached?: boolean;
+  },
+): { pay: number; deferredThisYear: number; deferredPaid: number } {
+  const who = args.who;
+  const pending =
+    who === "primary" ? state.pendingPrimary : state.pendingSpouse;
+  const had = who === "primary" ? state.hadPrimary : state.hadSpouse;
+  const isFirst = args.computed > 0 && !had;
+  if (args.computed > 0 || args.rmdAgeReached === true) {
+    if (who === "primary") state.hadPrimary = true;
+    else state.hadSpouse = true;
+  }
+  let pay = args.computed;
+  let deferredThisYear = 0;
+  let deferredPaid = 0;
+  if (args.deferElected && isFirst && !args.deathYearForPerson) {
+    // First RMD year, deferred: nothing is taken this year;
+    // the computed amount is owed by April 1 of next year.
+    // (A pending amount — unreachable in the march/roll, whose
+    // state only ever holds one — would carry forward beside it
+    // rather than being dropped.)
+    deferredThisYear = args.computed;
+    pay = 0;
+    if (who === "primary") state.pendingPrimary = pending + args.computed;
+    else state.pendingSpouse = pending + args.computed;
+  } else {
+    // Every other year: the year's own RMD plus anything
+    // deferred from the prior year (the two-RMD year).
+    deferredPaid = pending;
+    pay = args.computed + pending;
+    if (who === "primary") state.pendingPrimary = 0;
+    else state.pendingSpouse = 0;
+  }
+  if (args.carryIn > 0) {
+    deferredPaid += args.carryIn;
+    pay += args.carryIn;
+  }
+  return {
+    pay: r2(pay),
+    deferredThisYear: r2(deferredThisYear),
+    deferredPaid: r2(deferredPaid),
+  };
+}
+
 export type RothStrategy = {
   id: string;
   name: string;
@@ -3186,6 +3499,23 @@ export type RothYearDetail = {
   rmdDivisorSpouse: number | null;
   rmdTablePrimary: "joint" | "uniform" | null;
   rmdTableSpouse: "joint" | "uniform" | null;
+  // First-RMD deferral (Engine Review 5, E5-S2): the amount
+  // deferred THIS year (a first RMD year priced at $0) and the
+  // amount deferred from a prior year — or carried in from the
+  // work-years roll — PAID this year (part of rmdPrimary /
+  // rmdSpouse above, named here so the two-RMD year is
+  // readable). All four are $0 on a plan with no deferral.
+  rmdDeferredPrimary: number;
+  rmdDeferredSpouse: number;
+  rmdDeferredPaidPrimary: number;
+  rmdDeferredPaidSpouse: number;
+  // Survivor Social Security mode (Engine Review 5, E5-S1):
+  // null when no survivor scenario prices this year;
+  // "simplified" when the year prices the max-of-two rule,
+  // "enhanced" when it prices the opted-in survivor claiming
+  // age (survivorClaimAge, the entered age, echoed beside it).
+  survivorSsMode: "simplified" | "enhanced" | null;
+  survivorClaimAge: number | null;
   // The filing status this year was actually priced under —
   // the plan's own status, or "single" after the death year of
   // an enabled survivor scenario.
@@ -4314,6 +4644,36 @@ export function simulateRothPlan(
   // pre-retirement year's return.
   let priorYearReturnPct: number | null = null;
 
+  // First-RMD deferral state (Engine Review 5, E5-S2): carried
+  // across the march's years by settleFirstRmdDeferral. Seeded
+  // from the cross-engine inputs: a person whose first RMD an
+  // earlier engine already priced (or deferred, via a positive
+  // carry-in) has had their first RMD year, so the march's
+  // first computed RMD for them is the SECOND one and the
+  // election cannot defer it a second time. The attainment
+  // year itself counts too: a march whose first simulated year
+  // is already PAST a person's first RMD year (ceil of the RMD
+  // age below the starting age) seeds had true for them — the
+  // first RMD year passed unpriced, so the first computed RMD
+  // here is not the first. Pending starts at $0: a carried-in
+  // amount is owed through the first year's carryIn, not
+  // through pending, so it is never paid twice.
+  const deferralState: FirstRmdDeferralState = {
+    hadPrimary:
+      inputs.firstRmdAlreadyPricedPrimary === true ||
+      (inputs.firstRmdDeferredCarryPrimary ?? 0) > 0 ||
+      inputs.startYear - inputs.birthYearPrimary >
+        Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary)),
+    hadSpouse:
+      inputs.firstRmdAlreadyPricedSpouse === true ||
+      (inputs.firstRmdDeferredCarrySpouse ?? 0) > 0 ||
+      (inputs.birthYearSpouse != null &&
+        inputs.startYear - inputs.birthYearSpouse >
+          Math.ceil(rmdAgeForBirthYear(inputs.birthYearSpouse))),
+    pendingPrimary: 0,
+    pendingSpouse: 0,
+  };
+
   for (
     let year = inputs.startYear;
     year - inputs.birthYearPrimary <= inputs.endAgePrimary;
@@ -4469,6 +4829,22 @@ export function simulateRothPlan(
     let divisorS: number | null = null;
     let tableP: "joint" | "uniform" | null = null;
     let tableS: "joint" | "uniform" | null = null;
+    // First-RMD deferral (Engine Review 5, E5-S2): the amounts
+    // deferred / paid-from-deferral this year, per person, for
+    // the year detail. The settle step below prices them; with
+    // no election all four stay $0 and the RMDs are exactly the
+    // computed ones, as before.
+    let rmdDeferredP = 0;
+    let rmdDeferredS = 0;
+    let rmdDeferredPaidP = 0;
+    let rmdDeferredPaidS = 0;
+    // A carry-in owed into the march's FIRST simulated year
+    // (E5-S2, cross-engine): an amount the work-years roll
+    // already deferred. $0 in every other year.
+    const carryP =
+      year === inputs.startYear ? (inputs.firstRmdDeferredCarryPrimary ?? 0) : 0;
+    const carryS =
+      year === inputs.startYear ? (inputs.firstRmdDeferredCarrySpouse ?? 0) : 0;
     if (survCombined) {
       const combinedPrior = survWho === "primary" ? priorS : priorP;
       const u =
@@ -4479,12 +4855,47 @@ export function simulateRothPlan(
               birthYear: survivorBirthYear,
             })
           : { rmd: 0, divisor: null };
+      // In a combined year the RMD is the SURVIVOR's, on the
+      // survivor's clock — so the survivor's own deferral
+      // election settles it (the deceased's election cannot
+      // defer a distribution the survivor takes).
       if (survWho === "primary") {
-        rmdS = u.rmd;
+        const settled = settleFirstRmdDeferral(deferralState, {
+          who: "spouse",
+          computed: u.rmd,
+          deferElected: inputs.firstRmdDeferralSpouse === true,
+          deathYearForPerson: false,
+          carryIn: carryS,
+          // The survivor's attainment flag (their own clock):
+          // a $0-balance first RMD year still counts, so a
+          // later combined-balance year cannot defer.
+          rmdAgeReached:
+            survivorAge != null &&
+            survivorBirthYear != null &&
+            survivorAge >=
+              Math.ceil(rmdAgeForBirthYear(survivorBirthYear)),
+        });
+        rmdS = settled.pay;
+        rmdDeferredS = settled.deferredThisYear;
+        rmdDeferredPaidS = settled.deferredPaid;
         divisorS = u.divisor;
         tableS = u.divisor != null ? "uniform" : null;
       } else {
-        rmdP = u.rmd;
+        const settled = settleFirstRmdDeferral(deferralState, {
+          who: "primary",
+          computed: u.rmd,
+          deferElected: inputs.firstRmdDeferralPrimary === true,
+          deathYearForPerson: false,
+          carryIn: carryP,
+          rmdAgeReached:
+            survivorAge != null &&
+            survivorBirthYear != null &&
+            survivorAge >=
+              Math.ceil(rmdAgeForBirthYear(survivorBirthYear)),
+        });
+        rmdP = settled.pay;
+        rmdDeferredP = settled.deferredThisYear;
+        rmdDeferredPaidP = settled.deferredPaid;
         divisorP = u.divisor;
         tableP = u.divisor != null ? "uniform" : null;
       }
@@ -4496,7 +4907,22 @@ export function simulateRothPlan(
         birthYearPrimary: inputs.birthYearPrimary,
         spouseSoleBeneficiary: inputs.spouseSoleBeneficiary,
       });
-      rmdP = rp.rmd;
+      const settledP = settleFirstRmdDeferral(deferralState, {
+        who: "primary",
+        computed: rp.rmd,
+        deferElected: inputs.firstRmdDeferralPrimary === true,
+        // A death in the first RMD year voids the deferral:
+        // the amount is owed, so it is taken in the death year.
+        deathYearForPerson: isDeathYear && survWho === "primary",
+        carryIn: carryP,
+        // Attainment flag: a $0-balance first RMD year still
+        // counts as the first (see settleFirstRmdDeferral).
+        rmdAgeReached:
+          age >= Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary)),
+      });
+      rmdP = settledP.pay;
+      rmdDeferredP = settledP.deferredThisYear;
+      rmdDeferredPaidP = settledP.deferredPaid;
       divisorP = rp.divisor;
       tableP = rp.table;
       if (spouseAge != null && inputs.birthYearSpouse != null) {
@@ -4516,7 +4942,21 @@ export function simulateRothPlan(
           spouseSoleBeneficiary:
             inputs.primarySoleBeneficiaryOfSpouse === true,
         });
-        rmdS = rs.rmd;
+        const settledS = settleFirstRmdDeferral(deferralState, {
+          who: "spouse",
+          computed: rs.rmd,
+          deferElected: inputs.firstRmdDeferralSpouse === true,
+          deathYearForPerson: isDeathYear && survWho === "spouse",
+          carryIn: carryS,
+          rmdAgeReached:
+            spouseAge != null &&
+            inputs.birthYearSpouse != null &&
+            spouseAge >=
+              Math.ceil(rmdAgeForBirthYear(inputs.birthYearSpouse)),
+        });
+        rmdS = settledS.pay;
+        rmdDeferredS = settledS.deferredThisYear;
+        rmdDeferredPaidS = settledS.deferredPaid;
         divisorS = rs.divisor;
         tableS = rs.table;
       }
@@ -4544,9 +4984,64 @@ export function simulateRothPlan(
       spouseAge >= inputs.ssSpouseStartAge
         ? effectiveSsSpouseAnnual(inputs)
         : 0;
-    const ssBenefits = isSurvivorYear
-      ? Math.max(ssPrimaryThisYear, ssSpouseThisYear)
-      : ssPrimaryThisYear + ssSpouseThisYear;
+    // Survivor Social Security mode (Engine Review 5, E5-S1):
+    // SIMPLIFIED (default — survivorClaimAge absent) keeps the
+    // larger of the two entered benefits, with the limitations
+    // the note above survivorBenefitAnnualEnhanced quantifies
+    // (no survivor claiming-age reduction, no benefit before
+    // the deceased's would-be claim age, no 82.5%-of-PIA
+    // floor, no delayed credits to death). ENHANCED (opt-in —
+    // survivorClaimAge set) prices the SSA survivor rules
+    // through that helper instead: the survivor FRA table, the
+    // claiming-age reduction from 60, the widow(er)'s limit as
+    // a cap on the reduced benefit, delayed credits accrued to
+    // the month of death, eligibility from 60 — the survivor
+    // still keeping only the larger of their own benefit and
+    // the survivor benefit, never the sum. The death year
+    // itself prices both benefits as entered (the survivor
+    // year starts the year AFTER the death year), so neither
+    // mode touches it; a survivor year whose birth years are
+    // missing falls back to the simplified max rather than
+    // pricing the helper on an invented birth year.
+    const survivorClaimAgeInput =
+      inputs.survivorClaimAge != null
+        ? Math.round(inputs.survivorClaimAge)
+        : null;
+    const deceasedBirthYear =
+      survWho === "primary"
+        ? inputs.birthYearPrimary
+        : inputs.birthYearSpouse;
+    const survivorEnhanced =
+      isSurvivorYear &&
+      survivorClaimAgeInput != null &&
+      survivorBirthYear != null &&
+      survivorAge != null &&
+      deceasedBirthYear != null;
+    let ssBenefits: number;
+    if (survivorEnhanced) {
+      const deceasedIsPrimary = survWho === "primary";
+      ssBenefits = survivorBenefitAnnualEnhanced({
+        deceasedAnchorAnnual: deceasedIsPrimary
+          ? effectiveSsPrimaryAnnual(inputs)
+          : effectiveSsSpouseAnnual(inputs),
+        deceasedAnchorAge: deceasedIsPrimary
+          ? inputs.ssPrimaryStartAge
+          : inputs.ssSpouseStartAge,
+        deceasedBirthYear: deceasedBirthYear as number,
+        deceasedDeathAge:
+          (survDeathYear ?? year) - (deceasedBirthYear as number),
+        survivorBirthYear: survivorBirthYear as number,
+        survivorAge: survivorAge as number,
+        survivorClaimAge: survivorClaimAgeInput as number,
+        ownAnnualThisYear: deceasedIsPrimary
+          ? ssSpouseThisYear
+          : ssPrimaryThisYear,
+      });
+    } else {
+      ssBenefits = isSurvivorYear
+        ? Math.max(ssPrimaryThisYear, ssSpouseThisYear)
+        : ssPrimaryThisYear + ssSpouseThisYear;
+    }
 
     // ACA state for the year: ACA pricing is active only from
     // the retirement-age year onward, while anyone in the
@@ -7478,6 +7973,27 @@ export function simulateRothPlan(
       rmdDivisorSpouse: divisorS,
       rmdTablePrimary: tableP,
       rmdTableSpouse: tableS,
+      // First-RMD deferral (Engine Review 5, E5-S2): the amount
+      // deferred THIS year and the amount deferred from a prior
+      // year — or carried in from the work-years roll — PAID
+      // this year (part of rmdPrimary / rmdSpouse above, named
+      // here so the two-RMD year is readable). All four are $0
+      // on a plan with no deferral.
+      rmdDeferredPrimary: r2(rmdDeferredP),
+      rmdDeferredSpouse: r2(rmdDeferredS),
+      rmdDeferredPaidPrimary: r2(rmdDeferredPaidP),
+      rmdDeferredPaidSpouse: r2(rmdDeferredPaidS),
+      // Survivor Social Security mode (Engine Review 5, E5-S1):
+      // null in every year that is not a survivor year (the
+      // death year included — it prices both benefits as
+      // entered); "simplified" / "enhanced" in a survivor year,
+      // with the opted-in claiming age echoed beside it.
+      survivorSsMode: isSurvivorYear
+        ? survivorEnhanced
+          ? "enhanced"
+          : "simplified"
+        : null,
+      survivorClaimAge: isSurvivorYear ? survivorClaimAgeInput : null,
       filingStatus: effFilingStatus,
       isDeathYear,
       isSurvivorYear,

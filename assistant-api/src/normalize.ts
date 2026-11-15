@@ -88,6 +88,18 @@ export interface NormalizedScenario {
   ssPrimaryStartAge: number | null;
   ssSpouseAnnual: number;
   ssSpouseStartAge: number | null;
+  // First-RMD deferral election, per owner (Engine Review 5,
+  // E5-S2). Null = omitted → the immediate-payment default.
+  firstRmdDeferralPrimary: boolean | null;
+  firstRmdDeferralSpouse: boolean | null;
+  // Survivor scenario (Engine Review 5, E5-S1). Enabled only
+  // when the caller turns it on with a death year; survivorWho
+  // defaults to "primary"; survivorClaimAge null = the
+  // simplified max-of-two-benefits rule.
+  survivorEnabled: boolean;
+  survivorWho: "primary" | "spouse";
+  survivorDeathYear: number | null;
+  survivorClaimAge: number | null;
   pretaxDollars: number;
   taxableDollars: number;
   rothDollars: number;
@@ -140,12 +152,18 @@ export interface NormalizedScenario {
     // pretaxPriorYearEnd* are prior-Dec-31 balances (null = no
     // RMD from that balance); rmdAlreadyReceived null = $0;
     // primarySoleBeneficiaryOfSpouse null = not established.
+    // E5-S2: firstRmdDeferral* null = no election (immediate
+    // payment); firstRmdDeferredCarry* null = no carry ($0).
     stockSold: number | null;
     stockBasis: number | null;
     pretaxPriorYearEnd: number | null;
     pretaxSpousePriorYearEnd: number | null;
     rmdAlreadyReceived: number | null;
     primarySoleBeneficiaryOfSpouse: boolean | null;
+    firstRmdDeferralPrimary: boolean | null;
+    firstRmdDeferralSpouse: boolean | null;
+    firstRmdDeferredCarryPrimary: number | null;
+    firstRmdDeferredCarrySpouse: number | null;
   };
   mcSeed: number;
   mcRuns: number;
@@ -194,6 +212,8 @@ export const MISSING_INPUT_QUESTIONS: Record<string, string> = {
     "At what age does your spouse plan to start collecting Social Security?",
   spendingIncludesHealthPremiums:
     "Does your monthly spending already include health insurance premiums?",
+  survivorDeathYear:
+    "In what calendar year does the spouse who dies pass away?",
 };
 
 /** One `{ field, question }` entry per missing field, in field order. */
@@ -387,6 +407,15 @@ export function normalizeInputs(
     input.spendingIncludesHealthPremiums === undefined
   ) {
     missing.push("spendingIncludesHealthPremiums");
+  }
+  // Survivor scenario (Engine Review 5, E5-S1): an enabled
+  // scenario needs the death year — without it the engine
+  // cannot price any survivor year.
+  if (
+    input.survivorEnabled === true &&
+    input.survivorDeathYear === undefined
+  ) {
+    missing.push("survivorDeathYear");
   }
   if (missing.length > 0) {
     return { ok: false, error: missingInputError(missing) };
@@ -1208,6 +1237,12 @@ export function normalizeInputs(
     rmdAlreadyReceived: input.rmdAlreadyReceivedAnnual ?? null,
     primarySoleBeneficiaryOfSpouse:
       input.primarySoleBeneficiaryOfSpouse ?? null,
+    firstRmdDeferralPrimary: input.firstRmdDeferralPrimary ?? null,
+    firstRmdDeferralSpouse: input.firstRmdDeferralSpouse ?? null,
+    firstRmdDeferredCarryPrimary:
+      input.firstRmdDeferredCarryPrimaryAnnual ?? null,
+    firstRmdDeferredCarrySpouse:
+      input.firstRmdDeferredCarrySpouseAnnual ?? null,
   };
   const singleYearInputs = [
     ["singleYear.interest", input.interestAnnual, singleYear.interest],
@@ -1276,6 +1311,30 @@ export function normalizeInputs(
       singleYear.primarySoleBeneficiaryOfSpouse,
       "Not established whether the primary is the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table.",
     ],
+    [
+      "singleYear.firstRmdDeferralPrimary",
+      input.firstRmdDeferralPrimary,
+      singleYear.firstRmdDeferralPrimary,
+      "No deferral elected for the primary's first RMD — it is paid in its own year.",
+    ],
+    [
+      "singleYear.firstRmdDeferralSpouse",
+      input.firstRmdDeferralSpouse,
+      singleYear.firstRmdDeferralSpouse,
+      "No deferral elected for the spouse's first RMD — it is paid in its own year.",
+    ],
+    [
+      "singleYear.firstRmdDeferredCarryPrimary",
+      input.firstRmdDeferredCarryPrimaryAnnual,
+      singleYear.firstRmdDeferredCarryPrimary,
+      "No first RMD deferred from a prior year for the primary — $0 carry.",
+    ],
+    [
+      "singleYear.firstRmdDeferredCarrySpouse",
+      input.firstRmdDeferredCarrySpouseAnnual,
+      singleYear.firstRmdDeferredCarrySpouse,
+      "No first RMD deferred from a prior year for the spouse — $0 carry.",
+    ],
   ] as const;
   for (const [field, rawValue, value, omittedNote] of
     singleYearNullableInputs) {
@@ -1343,6 +1402,68 @@ export function normalizeInputs(
     );
   }
 
+  // --- First-RMD deferral + survivor scenario (Engine Review 5,
+  // E5-S1/S2). ---
+  const survivorEnabled = input.survivorEnabled === true;
+  const survivorWho = input.survivorWho ?? "primary";
+  const survivorDeathYear = input.survivorDeathYear ?? null;
+  const survivorClaimAge = input.survivorClaimAge ?? null;
+  const firstRmdDeferralPrimary = input.firstRmdDeferralPrimary ?? null;
+  const firstRmdDeferralSpouse = input.firstRmdDeferralSpouse ?? null;
+  record(
+    "survivorEnabled",
+    survivorEnabled,
+    input.survivorEnabled === undefined ? "assumption" : "user",
+    survivorEnabled
+      ? "Survivor scenario on — one spouse dies in the given year; survivor years price under Single from the year after."
+      : "No survivor scenario — both spouses modeled through the plan horizon.",
+  );
+  record(
+    "survivorWho",
+    survivorWho,
+    input.survivorWho === undefined ? "assumption" : "user",
+    input.survivorWho === undefined
+      ? "No survivor named — the primary is assumed to be the one who dies."
+      : "Provided by caller.",
+  );
+  record(
+    "survivorDeathYear",
+    survivorDeathYear,
+    input.survivorDeathYear === undefined ? "assumption" : "user",
+    input.survivorDeathYear === undefined
+      ? "No death year — no survivor scenario is priced."
+      : "Provided by caller.",
+  );
+  record(
+    "survivorClaimAge",
+    survivorClaimAge,
+    input.survivorClaimAge === undefined ? "assumption" : "user",
+    input.survivorClaimAge === undefined
+      ? "No survivor claiming age entered — survivor years price on the simplified max-of-two-benefits rule."
+      : "Provided by caller.",
+  );
+  record(
+    "firstRmdDeferralPrimary",
+    firstRmdDeferralPrimary,
+    input.firstRmdDeferralPrimary === undefined ? "assumption" : "user",
+    input.firstRmdDeferralPrimary === undefined
+      ? "No deferral elected for the primary's first RMD — it is paid in its own year."
+      : "Provided by caller.",
+  );
+  record(
+    "firstRmdDeferralSpouse",
+    firstRmdDeferralSpouse,
+    input.firstRmdDeferralSpouse === undefined ? "assumption" : "user",
+    input.firstRmdDeferralSpouse === undefined
+      ? "No deferral elected for the spouse's first RMD — it is paid in its own year."
+      : "Provided by caller.",
+  );
+  if (survivorClaimAge != null && !survivorEnabled) {
+    warnings.push(
+      "survivorClaimAge has no effect without a survivor scenario (survivorEnabled + survivorDeathYear) — survivor years price on the simplified max-of-two-benefits rule.",
+    );
+  }
+
   const scenario: NormalizedScenario = {
     portfolioCents,
     annualSpendingCents,
@@ -1362,6 +1483,12 @@ export function normalizeInputs(
     ssPrimaryStartAge,
     ssSpouseAnnual,
     ssSpouseStartAge,
+    firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse,
+    survivorEnabled,
+    survivorWho,
+    survivorDeathYear,
+    survivorClaimAge,
     pretaxDollars,
     taxableDollars,
     rothDollars,

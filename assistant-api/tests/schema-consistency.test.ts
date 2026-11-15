@@ -134,6 +134,14 @@ describe("advertised schema == accepting schema", () => {
       "stateRatePct",
       "state",
       "comparisonScope",
+      // Engine Review 5: the first-RMD deferral election + the
+      // survivor scenario price in the march.
+      "firstRmdDeferralPrimary",
+      "firstRmdDeferralSpouse",
+      "survivorEnabled",
+      "survivorWho",
+      "survivorDeathYear",
+      "survivorClaimAge",
     ];
     const taxYear = [
       "spouseAge",
@@ -168,6 +176,12 @@ describe("advertised schema == accepting schema", () => {
       "pretaxSpousePriorYearEndAnnual",
       "rmdAlreadyReceivedAnnual",
       "primarySoleBeneficiaryOfSpouse",
+      // Engine Review 5: the deferral election + carry price in
+      // the single-year pricer.
+      "firstRmdDeferralPrimary",
+      "firstRmdDeferralSpouse",
+      "firstRmdDeferredCarryPrimaryAnnual",
+      "firstRmdDeferredCarrySpouseAnnual",
     ];
     const expected: Record<string, string[]> = {
       retirement_calculate: sim.filter((f) => f !== "volatilityPct"),
@@ -264,6 +278,10 @@ describe("canonical names land; old names are rejected", () => {
       pretaxSpousePriorYearEnd: null,
       rmdAlreadyReceived: null,
       primarySoleBeneficiaryOfSpouse: null,
+      firstRmdDeferralPrimary: null,
+      firstRmdDeferralSpouse: null,
+      firstRmdDeferredCarryPrimary: null,
+      firstRmdDeferredCarrySpouse: null,
     });
   });
 
@@ -276,6 +294,11 @@ describe("canonical names land; old names are rejected", () => {
         pretaxSpousePriorYearEndAnnual: 300000,
         rmdAlreadyReceivedAnnual: 5000,
         primarySoleBeneficiaryOfSpouse: true,
+        // Engine Review 5: the first-RMD deferral election + carry.
+        firstRmdDeferralPrimary: true,
+        firstRmdDeferralSpouse: false,
+        firstRmdDeferredCarryPrimaryAnnual: 8000,
+        firstRmdDeferredCarrySpouseAnnual: 4000,
       }),
     );
     expect(n.ok).toBe(true);
@@ -286,6 +309,10 @@ describe("canonical names land; old names are rejected", () => {
     expect(n.scenario.singleYear.pretaxSpousePriorYearEnd).toBe(300000);
     expect(n.scenario.singleYear.rmdAlreadyReceived).toBe(5000);
     expect(n.scenario.singleYear.primarySoleBeneficiaryOfSpouse).toBe(true);
+    expect(n.scenario.singleYear.firstRmdDeferralPrimary).toBe(true);
+    expect(n.scenario.singleYear.firstRmdDeferralSpouse).toBe(false);
+    expect(n.scenario.singleYear.firstRmdDeferredCarryPrimary).toBe(8000);
+    expect(n.scenario.singleYear.firstRmdDeferredCarrySpouse).toBe(4000);
     const byField = new Map(n.scenario.assumptions.map((a) => [a.field, a]));
     for (const field of [
       "singleYear.stockSold",
@@ -294,6 +321,10 @@ describe("canonical names land; old names are rejected", () => {
       "singleYear.pretaxSpousePriorYearEnd",
       "singleYear.rmdAlreadyReceived",
       "singleYear.primarySoleBeneficiaryOfSpouse",
+      "singleYear.firstRmdDeferralPrimary",
+      "singleYear.firstRmdDeferralSpouse",
+      "singleYear.firstRmdDeferredCarryPrimary",
+      "singleYear.firstRmdDeferredCarrySpouse",
     ]) {
       expect(byField.get(field)?.provenance).toBe("user");
     }

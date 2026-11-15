@@ -78,12 +78,15 @@ irmaaAnnualPerPerson,
 priceYear,
 resolveAcaHouseholdSchedule,
 rmdForYear,
+settleFirstRmdDeferral,
 simulateRothPlan,
+survivorBenefitAnnualEnhanced,
 type AcaHouseholdStep,
 type DrawOrder,
 type EducationStudent,
 type FilingStatus,
 type FillCeilings,
+type FirstRmdDeferralState,
 type PriceYearInput,
 type RothPlanInputs,
 type RothPlanResult,
@@ -95,9 +98,20 @@ import {
 CURRENT_LAW,
 FPL_GUIDELINES,
 fplFor,
+fullRetirementAgeMonths,
 lawForYear,
 rmdAgeForBirthYear,
+ssAnnualAtClaimAge,
+ssBenefitFactor,
 } from "./taxLaw";
+// Social Security claiming law lives in taxLaw.ts (Engine
+// Review 5) and is re-exported here so the import sites that
+// read it from this module — fixtures, hardening, the
+// optimizer's own claiming-age search — keep working unchanged.
+// The import above (not a bare `export ... from`) is what puts
+// the names in this module's own scope: the optimizer's search
+// calls ssAnnualAtClaimAge directly.
+export { fullRetirementAgeMonths, ssAnnualAtClaimAge, ssBenefitFactor };
 import { irmaaTierFor, irmaaTierUpTo } from "./taxEngine";
 import {
   impliedYieldPctsFromTaxReturn,
@@ -115,59 +129,11 @@ function r2(n: number): number {
    entered, at the start age they entered. Any other claiming age
    is priced from the primary insurance amount (PIA) the anchor
    implies, using the statutory adjustments against the person's
-   own full retirement age (FRA) from their birth year:
-     · claiming before FRA reduces the benefit by 5/9 of 1% per
-       month for the first 36 months early and 5/12 of 1% per
-       month beyond that;
-     · delaying past FRA adds 2/3 of 1% per month (8%/yr), with
-       no credit past age 70.
-   FRA by birth year (SSA): 1937 and earlier 65; 1938–1942 rise
-   two months per year to 66; 1943–1954 are 66; 1955–1959 rise
-   two months per year; 1960 or later are 67. */
-
-// FRA in months from birth year.
-export function fullRetirementAgeMonths(birthYear: number): number {
-  if (birthYear >= 1960) return 67 * 12;
-  if (birthYear >= 1955) return 66 * 12 + (birthYear - 1954) * 2;
-  if (birthYear >= 1943) return 66 * 12;
-  if (birthYear >= 1938) return 65 * 12 + (birthYear - 1937) * 2;
-  return 65 * 12;
-}
-
-// Benefit at `claimAge` as a fraction of the PIA.
-export function ssBenefitFactor(claimAge: number, birthYear: number): number {
-  const fraMonths = fullRetirementAgeMonths(birthYear);
-  const diff = Math.round(claimAge * 12) - fraMonths;
-  if (diff < 0) {
-    const early = -diff;
-    const reduction =
-      Math.min(early, 36) * (5 / 9 / 100) + Math.max(0, early - 36) * (5 / 12 / 100);
-    return 1 - reduction;
-  }
-  if (diff > 0) {
-    const delayed = Math.min(diff, 70 * 12 - fraMonths);
-    return 1 + Math.max(0, delayed) * (2 / 3 / 100);
-  }
-  return 1;
-}
-
-// The yearly benefit at `claimAge` implied by an anchor benefit
-// (`anchorAnnual` at `anchorAge`). Returns the anchor unchanged
-// when the anchor age is missing or equals the claim age.
-export function ssAnnualAtClaimAge(
-  anchorAnnual: number,
-  anchorAge: number | null,
-  claimAge: number,
-  birthYear: number,
-): number {
-  if (anchorAge == null || anchorAge === claimAge || anchorAnnual <= 0) {
-    return anchorAnnual;
-  }
-  const anchorFactor = ssBenefitFactor(anchorAge, birthYear);
-  if (anchorFactor <= 0) return anchorAnnual;
-  const pia = anchorAnnual / anchorFactor;
-  return r2(pia * ssBenefitFactor(claimAge, birthYear));
-}
+   own full retirement age (FRA) from their birth year — the
+   functions themselves live in taxLaw.ts (Engine Review 5:
+   pure law, so taxEngine can price survivor rules from them
+   without an import cycle) and are re-exported here, so every
+   existing import site and every figure is unchanged. */
 
 // Which claiming ages a scored candidate was priced at, and the
 // yearly benefits those ages imply. `searched*` marks the
@@ -1349,12 +1315,15 @@ export type JointSearchInfo = {
 // One row of the per-claiming-age pricing table: the best
 // FULLY-priced candidate found at one primary claiming age, the
 // yearly benefit that age pays, and the yearly benefit a
-// surviving spouse would keep at that age (the larger of the
-// two claimed benefits under the row's best candidate — the
-// amount the engine's survivor years continue). Present only
-// for ages the joint search actually varied (the primary's
-// ages 62–70); empty when the primary's claiming age was not
-// searched.
+// surviving spouse would keep at that age — the amount the
+// engine's survivor years continue. Under the simplified rule
+// it is the larger of the two claimed benefits under the row's
+// best candidate; under the enhanced mode (a survivor scenario
+// with an explicit survivorClaimAge) it is the SSA survivor
+// benefit at that claiming age, priced through
+// survivorBenefitAnnualEnhanced. Present only for ages the
+// joint search actually varied (the primary's ages 62–70);
+// empty when the primary's claiming age was not searched.
 export type ClaimAgeRow = {
   primaryAge: number;
   primaryAnnual: number;
@@ -1542,6 +1511,65 @@ function screenSpecs(inputs: RothPlanInputs): OptimizerCandidateSpec[] {
   return specs;
 }
 
+// The claiming-age table's "Survivor keeps / yr" column for one
+// row's claim ages: the simplified max() of the two claimed
+// benefits, or — when a survivor scenario with an explicit
+// claiming age is priced — the enhanced SSA survivor benefit at
+// that claiming age, the steady-state amount the march's
+// survivor years price once both claim ages are reached (the
+// survivor's age here is the later of the survivor claiming age
+// and the survivor's own claim age, so both sides are active).
+// The anchors are the row's claim-age amounts, the death age is
+// the death year minus the deceased's birth year — the same
+// mapping the march uses, with the row's claim ages in place of
+// the plan's entered ones. Falls back to the simplified max()
+// whenever the scenario is incomplete (no death year, no
+// claiming age, or a missing birth year), so an unpriced
+// scenario never changes a row.
+export function claimAgeRowSurvivorAnnual(
+  inputs: RothPlanInputs,
+  claimAges: ClaimAgeInfo,
+): number {
+  const simple = Math.max(claimAges.primaryAnnual, claimAges.spouseAnnual);
+  const claimAge = inputs.survivorClaimAge;
+  if (
+    !inputs.survivorEnabled ||
+    inputs.survivorDeathYear == null ||
+    claimAge == null
+  ) {
+    return simple;
+  }
+  const deceasedIsPrimary = (inputs.survivorWho ?? "primary") === "primary";
+  const deceasedBirthYear = deceasedIsPrimary
+    ? inputs.birthYearPrimary
+    : inputs.birthYearSpouse;
+  const survivorBirthYear = deceasedIsPrimary
+    ? inputs.birthYearSpouse
+    : inputs.birthYearPrimary;
+  if (deceasedBirthYear == null || survivorBirthYear == null) {
+    return simple;
+  }
+  const survivorOwnAge = deceasedIsPrimary
+    ? claimAges.spouseAge
+    : claimAges.primaryAge;
+  return survivorBenefitAnnualEnhanced({
+    deceasedAnchorAnnual: deceasedIsPrimary
+      ? claimAges.primaryAnnual
+      : claimAges.spouseAnnual,
+    deceasedAnchorAge: deceasedIsPrimary
+      ? claimAges.primaryAge
+      : claimAges.spouseAge,
+    deceasedBirthYear,
+    deceasedDeathAge: inputs.survivorDeathYear - deceasedBirthYear,
+    survivorBirthYear,
+    survivorAge: Math.max(claimAge, survivorOwnAge ?? claimAge),
+    survivorClaimAge: claimAge,
+    ownAnnualThisYear: deceasedIsPrimary
+      ? claimAges.spouseAnnual
+      : claimAges.primaryAnnual,
+  });
+}
+
 function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const combos = claimAgeCombos(inputs);
   const first = combos[0];
@@ -1721,10 +1749,7 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
       claimAgeTable.push({
         primaryAge: age,
         primaryAnnual: best.claimAges.primaryAnnual,
-        survivorAnnual: Math.max(
-          best.claimAges.primaryAnnual,
-          best.claimAges.spouseAnnual,
-        ),
+        survivorAnnual: claimAgeRowSurvivorAnnual(inputs, best.claimAges),
         belowFloor: floor != null && age < floor,
         isWinner: best === winner,
         best,
@@ -2664,6 +2689,15 @@ export type RothSavedLike = {
   survivorEnabled?: boolean | null;
   survivorWho?: "primary" | "spouse" | null;
   survivorDeathYear?: number | null;
+  // Survivor claiming age + first-RMD deferral elections
+  // (Engine Review 5). Optional: a saved record written before
+  // this build has none of them — survivorClaimAge absent reads
+  // as the simplified max-of-two-benefits rule, the elections
+  // absent read as the immediate-payment default — so an
+  // untouched record prices exactly as before.
+  survivorClaimAge?: number | null;
+  firstRmdDeferralPrimary?: boolean | null;
+  firstRmdDeferralSpouse?: boolean | null;
   rothCents: number | null;
   taxableCents: number | null;
   // Exclude-from-plan amount for the taxable pool (added with
@@ -3728,6 +3762,26 @@ export type PlaygroundYearInputs = {
   //   dial — before S-2 the Playground passed none, so a
   //   year whose entered income already held a paid RMD
   //   priced that RMD twice.
+  // · firstRmdDeferralPrimary / firstRmdDeferralSpouse
+  //   (Engine Review 5, E5-S2): the first-RMD deferral
+  //   election, per owner — true defers a first RMD year to
+  //   April 1 of the following year, exactly as the march
+  //   prices it. A single-year price has no threaded state,
+  //   so first-RMD status reads off the ages (the priced
+  //   age is the year the owner reaches their RMD age); an
+  //   election entered past the first-RMD year is a no-op
+  //   and the response names $0 deferred. The deferred
+  //   amount from a prior year's election enters as
+  //   firstRmdDeferredCarryPrimary / firstRmdDeferredCarrySpouse
+  //   (dollars) and prices on top of this year's own RMD —
+  //   the two-RMD year. A standalone year prices no death
+  //   (the single-year inputs carry no survivor scenario),
+  //   so the death-year rule — no deferral in a death year —
+  //   never engages here.
+  firstRmdDeferralPrimary?: boolean | null;
+  firstRmdDeferralSpouse?: boolean | null;
+  firstRmdDeferredCarryPrimary?: number | null;
+  firstRmdDeferredCarrySpouse?: number | null;
   // · dependentMagiForAca: a filing dependent's MAGI that
   //   belongs in the §36B household MAGI (Form 8962 line 2b)
   //   ONLY. It is added to the ACA MAGI the credit / cliff
@@ -4042,6 +4096,19 @@ export type PlaygroundYearResult = {
   rmdPrimary: number;
   rmdSpouse: number;
   rmdAlreadyReceived: number;
+  // First-RMD deferral detail (Engine Review 5, E5-S2):
+  // the amount deferred THIS year (a first RMD year the
+  // election priced at $0) and the amount deferred from a
+  // prior year PAID this year (part of rmdPrimary /
+  // rmdSpouse above, named here so the two-RMD year is
+  // readable). The rmdPrimary / rmdSpouse figures above
+  // are the SETTLED amounts paid this year — $0 for an
+  // owner whose first RMD was deferred, the carry plus
+  // this year's own RMD in a two-RMD year.
+  rmdDeferredPrimary: number;
+  rmdDeferredSpouse: number;
+  rmdDeferredPaidPrimary: number;
+  rmdDeferredPaidSpouse: number;
   // The dependent MAGI added to the ACA MAGI only (the
   // dependentMagiForAca input, echoed; $0 when absent).
   dependentMagiForAca: number;
@@ -4784,6 +4851,68 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       rmdTable = rs.table;
     }
   }
+  // FIRST-RMD DEFERRAL (Engine Review 5, E5-S2): each
+  // owner's computed RMD settles through the shared helper.
+  // A single-year price has no threaded state, so the
+  // year's first-RMD status reads off the ages: an owner
+  // is in their first RMD year when the priced age is the
+  // first year a computed RMD is PAYABLE — ceil(rmdAge),
+  // so a 70.5 RMD age is first payable in the year they
+  // turn 71 (at 70 the computed RMD is $0, and the march's
+  // settle only counts a year with a positive computed RMD
+  // as the first — see settleFirstRmdDeferral's isFirst).
+  // Ceil is the identity on integer RMD ages, so no other
+  // cohort changes, and it matches the optimizer's own
+  // window stop (buildOptimizerCandidates uses ceil too).
+  // The fresh state seeds had the same way the march's
+  // threaded state would stand at this one year: false in
+  // the first RMD year (so an election defers), true in any
+  // later year (so an election entered past the first RMD
+  // year is a no-op and names $0 deferred). The attainment
+  // year itself counts even on a $0 balance (it defers $0),
+  // so a later positive-balance year is past the first —
+  // the march and the roll read it the same way through
+  // settleFirstRmdDeferral's rmdAgeReached, so all three
+  // engines agree.
+  // a deferred first RMD from a prior year on top of this
+  // year's own RMD — the two-RMD year. The settled amount
+  // is what the year prices as RMD income, what the
+  // balance caps read, and what the deferred fields below
+  // name; the divisor and table stay the computed ones.
+  // No death year is priced here (the single-year inputs
+  // carry no survivor scenario), so deathYearForPerson is
+  // always false.
+  const dState: FirstRmdDeferralState = {
+    hadPrimary: !(
+      inp.pretaxBalance != null &&
+      Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary)) ===
+        inp.agePrimary
+    ),
+    hadSpouse: !(
+      hasSpouseBalance &&
+      ageSpouse != null &&
+      Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse)) ===
+        ageSpouse
+    ),
+    pendingPrimary: 0,
+    pendingSpouse: 0,
+  };
+  const settledP = settleFirstRmdDeferral(dState, {
+    who: "primary",
+    computed: rmdPrimary,
+    deferElected: inp.firstRmdDeferralPrimary === true,
+    deathYearForPerson: false,
+    carryIn: Math.max(0, inp.firstRmdDeferredCarryPrimary ?? 0),
+  });
+  const settledS = settleFirstRmdDeferral(dState, {
+    who: "spouse",
+    computed: rmdSpouse,
+    deferElected: inp.firstRmdDeferralSpouse === true,
+    deathYearForPerson: false,
+    carryIn: Math.max(0, inp.firstRmdDeferredCarrySpouse ?? 0),
+  });
+  rmdPrimary = settledP.pay;
+  rmdSpouse = settledS.pay;
   const rmdGross = r2(rmdPrimary + rmdSpouse);
   const rmdAlreadyReceived = Math.min(
     rmdGross,
@@ -5588,6 +5717,10 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     rmdPrimary,
     rmdSpouse,
     rmdAlreadyReceived,
+    rmdDeferredPrimary: settledP.deferredThisYear,
+    rmdDeferredSpouse: settledS.deferredThisYear,
+    rmdDeferredPaidPrimary: settledP.deferredPaid,
+    rmdDeferredPaidSpouse: settledS.deferredPaid,
     dependentMagiForAca,
     rmdDivisor,
     rmdTable,
@@ -8209,6 +8342,9 @@ export function planInputsFromSaved(
     survivorEnabled: saved.survivorEnabled ?? false,
     survivorWho: saved.survivorWho ?? "primary",
     survivorDeathYear: saved.survivorDeathYear ?? null,
+    survivorClaimAge: saved.survivorClaimAge ?? null,
+    firstRmdDeferralPrimary: saved.firstRmdDeferralPrimary ?? undefined,
+    firstRmdDeferralSpouse: saved.firstRmdDeferralSpouse ?? undefined,
     rothStart: dollars(saved.rothCents),
     taxableStart: dollars(saved.taxableCents),
     hsaStart: dollars(saved.hsaCents),
@@ -8910,6 +9046,25 @@ export type RothCompareScenarioYear = {
   // draws alone breach. See the ceilingBreachedSemantics
   // convention describeApi publishes. Display only.
   ceilingBreached: boolean;
+  // RMD + survivor readouts (Engine Review 5, display only —
+  // carried through from the same priced march row the other
+  // readouts read, no new derivation, no pricing reads them):
+  // the year's settled RMDs by owner, the amount deferred THIS
+  // year and the amount deferred from a prior year PAID this
+  // year (the two-RMD year), the year's total Social Security
+  // collected (both benefits before a death; the survivor's
+  // benefit alone in survivor years), and the survivor-benefit
+  // modeling mode + claiming age for survivor years (null when
+  // the year is not a survivor year).
+  ssCollectedCents: number;
+  rmdPrimaryCents: number;
+  rmdSpouseCents: number;
+  rmdDeferredPrimaryCents: number;
+  rmdDeferredSpouseCents: number;
+  rmdDeferredPaidPrimaryCents: number;
+  rmdDeferredPaidSpouseCents: number;
+  survivorSsMode: "simplified" | "enhanced" | null;
+  survivorClaimAge: number | null;
 };
 
 export type RothCompareScenarioResult = {
@@ -9082,6 +9237,17 @@ export function runRothCompare(
         settlementConverged: y.settlementConverged,
         settlementMismatchCents: y.settlementMismatchCents,
         ceilingBreached: y.ceilingBreached,
+        // RMD + survivor readouts (Engine Review 5, display
+        // only): the march row's own detail, in cents.
+        ssCollectedCents: toCents(y.ssBenefits),
+        rmdPrimaryCents: toCents(y.detail.rmdPrimary),
+        rmdSpouseCents: toCents(y.detail.rmdSpouse),
+        rmdDeferredPrimaryCents: toCents(y.detail.rmdDeferredPrimary),
+        rmdDeferredSpouseCents: toCents(y.detail.rmdDeferredSpouse),
+        rmdDeferredPaidPrimaryCents: toCents(y.detail.rmdDeferredPaidPrimary),
+        rmdDeferredPaidSpouseCents: toCents(y.detail.rmdDeferredPaidSpouse),
+        survivorSsMode: y.detail.survivorSsMode,
+        survivorClaimAge: y.detail.survivorClaimAge,
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),

@@ -485,9 +485,18 @@ export function buildRothCompareBase(
     filingStatus: scenario.filingStatus,
     pretaxCents: dollarsToCents(scenario.pretaxDollars),
     pretaxSpouseCents: 0,
-    survivorEnabled: false,
-    survivorWho: "primary",
-    survivorDeathYear: null,
+    // Engine Review 5: the survivor scenario + first-RMD
+    // deferral ride the scenario the caller entered (default:
+    // scenario off, no deferral — every existing call prices
+    // bit-identically). The spouse's pre-tax balance is $0 in
+    // the adapter's model (one pre-tax pool), so the spouse's
+    // deferral election names $0 deferred there.
+    survivorEnabled: scenario.survivorEnabled,
+    survivorWho: scenario.survivorWho,
+    survivorDeathYear: scenario.survivorDeathYear,
+    survivorClaimAge: scenario.survivorClaimAge,
+    firstRmdDeferralPrimary: scenario.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse,
     rothCents: dollarsToCents(scenario.rothDollars),
     taxableCents: dollarsToCents(scenario.taxableDollars),
     taxableExcludeCents: null,
@@ -629,9 +638,19 @@ export function buildRothPlanInputs(
     endAgePrimary: scenario.endAge,
     pretaxStart: scenario.pretaxDollars,
     pretaxSpouseStart: 0,
-    survivorEnabled: false,
-    survivorWho: "primary",
-    survivorDeathYear: null,
+    // Engine Review 5: the survivor scenario + first-RMD
+    // deferral ride the scenario the caller entered (default:
+    // scenario off, no deferral — every existing call prices
+    // bit-identically). The spouse's pre-tax balance is $0 in
+    // the adapter's model (one pre-tax pool), so the spouse's
+    // deferral election names $0 deferred there.
+    survivorEnabled: scenario.survivorEnabled,
+    survivorWho: scenario.survivorWho,
+    survivorDeathYear: scenario.survivorDeathYear,
+    survivorClaimAge: scenario.survivorClaimAge,
+    firstRmdDeferralPrimary:
+      scenario.firstRmdDeferralPrimary ?? undefined,
+    firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse ?? undefined,
     rothStart: scenario.rothDollars,
     taxableStart: scenario.taxableDollars,
     hsaStart: scenario.hsaDollars,
@@ -759,7 +778,70 @@ type MappedCompareScenario = {
   endingHsa: number;
   conversionsTotal: number;
   terminalTax: number;
+  // First-RMD deferral + survivor-benefit summary (Engine
+  // Review 5): the lifetime amount deferred, the lifetime
+  // amount deferred from a prior year and paid, the years a
+  // deferred amount was paid (the two-RMD years), and the
+  // survivor-benefit modeling mode + claiming age of the
+  // survivor years (null = no survivor years priced). $0 /
+  // [] / null on a plan with no deferral and no survivor
+  // scenario.
+  rmdDeferral: {
+    deferredTotal: number;
+    deferredPaidTotal: number;
+    twoRmdYears: number[];
+    survivorSsMode: "simplified" | "enhanced" | null;
+    survivorClaimAge: number | null;
+  };
 };
+
+/** First-RMD deferral + survivor-benefit summary for one priced
+ *  march (Engine Review 5, §7 disclosure): the lifetime amount
+ *  deferred, the lifetime amount deferred from a prior year and
+ *  paid, the years a deferred amount was paid (the two-RMD
+ *  years), and the survivor-benefit modeling mode + claiming age
+ *  of the survivor years (null = no survivor years priced).
+ *  Rows arrive in dollars (callers convert cents first). */
+function rmdSurvivorSummary(
+  rows: Array<{
+    year: number;
+    rmdDeferredPrimary: number;
+    rmdDeferredSpouse: number;
+    rmdDeferredPaidPrimary: number;
+    rmdDeferredPaidSpouse: number;
+    survivorSsMode: "simplified" | "enhanced" | null;
+    survivorClaimAge: number | null;
+  }>,
+): {
+  deferredTotal: number;
+  deferredPaidTotal: number;
+  twoRmdYears: number[];
+  survivorSsMode: "simplified" | "enhanced" | null;
+  survivorClaimAge: number | null;
+} {
+  let deferredTotal = 0;
+  let deferredPaidTotal = 0;
+  const twoRmdYears: number[] = [];
+  let survivorSsMode: "simplified" | "enhanced" | null = null;
+  let survivorClaimAge: number | null = null;
+  for (const row of rows) {
+    deferredTotal += row.rmdDeferredPrimary + row.rmdDeferredSpouse;
+    const paid = row.rmdDeferredPaidPrimary + row.rmdDeferredPaidSpouse;
+    deferredPaidTotal += paid;
+    if (paid > 0) twoRmdYears.push(row.year);
+    if (row.survivorSsMode != null) {
+      survivorSsMode = row.survivorSsMode;
+      survivorClaimAge = row.survivorClaimAge;
+    }
+  }
+  return {
+    deferredTotal: r2(deferredTotal),
+    deferredPaidTotal: r2(deferredPaidTotal),
+    twoRmdYears,
+    survivorSsMode,
+    survivorClaimAge,
+  };
+}
 
 function mapCompareScenario(
   s: RothCompareScenarioResult,
@@ -789,6 +871,21 @@ function mapCompareScenario(
     endingHsa: centsToDollars(s.endingHsaCents),
     conversionsTotal: centsToDollars(conversionsCents),
     terminalTax: centsToDollars(s.terminalCents),
+    rmdDeferral: rmdSurvivorSummary(
+      s.years.map((y) => ({
+        year: y.year,
+        rmdDeferredPrimary: centsToDollars(y.rmdDeferredPrimaryCents),
+        rmdDeferredSpouse: centsToDollars(y.rmdDeferredSpouseCents),
+        rmdDeferredPaidPrimary: centsToDollars(
+          y.rmdDeferredPaidPrimaryCents,
+        ),
+        rmdDeferredPaidSpouse: centsToDollars(
+          y.rmdDeferredPaidSpouseCents,
+        ),
+        survivorSsMode: y.survivorSsMode,
+        survivorClaimAge: y.survivorClaimAge,
+      })),
+    ),
   };
 }
 
@@ -813,6 +910,25 @@ type YearlyCompareRow = {
   healthPremiumNet: number;
   conversion: number;
   pretaxOutByChoice: number;
+  // The year's total Social Security collected (Engine Review
+  // 5): both benefits while both spouses live; the survivor's
+  // benefit alone in survivor years. Display only.
+  ssCollected: number;
+  // The year's settled RMDs by owner + first-RMD deferral
+  // (Engine Review 5): the amount deferred THIS year and the
+  // amount deferred from a prior year PAID this year (part of
+  // rmdPrimary / rmdSpouse above); the survivor-benefit
+  // modeling mode + claiming age on survivor years (null
+  // otherwise). $0 / null on a plan with no deferral and no
+  // survivor scenario.
+  rmdPrimary: number;
+  rmdSpouse: number;
+  rmdDeferredPrimary: number;
+  rmdDeferredSpouse: number;
+  rmdDeferredPaidPrimary: number;
+  rmdDeferredPaidSpouse: number;
+  survivorSsMode: "simplified" | "enhanced" | null;
+  survivorClaimAge: number | null;
   settlementConverged: boolean;
   settlementMismatchGains: number;
   settlementMismatchPretax: number;
@@ -844,6 +960,15 @@ function yearlyTable(
     healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
     pretaxOutByChoice: centsToDollars(y.pretaxOutByChoiceCents),
+    ssCollected: centsToDollars(y.ssCollectedCents),
+    rmdPrimary: centsToDollars(y.rmdPrimaryCents),
+    rmdSpouse: centsToDollars(y.rmdSpouseCents),
+    rmdDeferredPrimary: centsToDollars(y.rmdDeferredPrimaryCents),
+    rmdDeferredSpouse: centsToDollars(y.rmdDeferredSpouseCents),
+    rmdDeferredPaidPrimary: centsToDollars(y.rmdDeferredPaidPrimaryCents),
+    rmdDeferredPaidSpouse: centsToDollars(y.rmdDeferredPaidSpouseCents),
+    survivorSsMode: y.survivorSsMode,
+    survivorClaimAge: y.survivorClaimAge,
     settlementConverged: y.settlementConverged,
     settlementMismatchGains: centsToDollars(
       y.settlementMismatchCents.gains,
@@ -1073,6 +1198,17 @@ function mapScoredCandidate(
     endingHsa: r2(s.result.endingHsa),
     conversionsTotal: r2(conversionsTotal),
     terminalTax: r2(s.cost.terminal),
+    rmdDeferral: rmdSurvivorSummary(
+      s.result.years.map((y) => ({
+        year: y.year,
+        rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+        rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+        rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+        rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+        survivorSsMode: y.detail.survivorSsMode,
+        survivorClaimAge: y.detail.survivorClaimAge,
+      })),
+    ),
   };
 }
 
@@ -1113,6 +1249,15 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     healthPremiumNet: r2(y.healthPremiumNet),
     conversion: r2(y.conversion),
     pretaxOutByChoice: r2(y.conversion + y.detail.pretaxSpendingDraw),
+    ssCollected: r2(y.ssBenefits),
+    rmdPrimary: r2(y.detail.rmdPrimary),
+    rmdSpouse: r2(y.detail.rmdSpouse),
+    rmdDeferredPrimary: r2(y.detail.rmdDeferredPrimary),
+    rmdDeferredSpouse: r2(y.detail.rmdDeferredSpouse),
+    rmdDeferredPaidPrimary: r2(y.detail.rmdDeferredPaidPrimary),
+    rmdDeferredPaidSpouse: r2(y.detail.rmdDeferredPaidSpouse),
+    survivorSsMode: y.detail.survivorSsMode,
+    survivorClaimAge: y.detail.survivorClaimAge,
     settlementConverged: y.settlementConverged,
     settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
     settlementMismatchPretax: centsToDollars(
@@ -1862,6 +2007,17 @@ function compareRothConversionsFull(
             endingWealth: r2(winner.result.endingAfterTaxWealth),
             conversionsTotal: r2(winnerTotal),
             yearlyConversions: winnerConversions,
+            rmdDeferral: rmdSurvivorSummary(
+              winner.result.years.map((y) => ({
+                year: y.year,
+                rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+                rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+                rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+                rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+                survivorSsMode: y.detail.survivorSsMode,
+                survivorClaimAge: y.detail.survivorClaimAge,
+              })),
+            ),
           },
           runnersUp: result.runnersUp.map((s) => ({
             name: optimizerCandidateDisplayName(s.spec),
@@ -1875,6 +2031,17 @@ function compareRothConversionsFull(
           doNothing: {
             netCost: r2(doNothing.cost.netCost),
             endingWealth: r2(doNothing.result.endingAfterTaxWealth),
+            rmdDeferral: rmdSurvivorSummary(
+              doNothing.result.years.map((y) => ({
+                year: y.year,
+                rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+                rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+                rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+                rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+                survivorSsMode: y.detail.survivorSsMode,
+                survivorClaimAge: y.detail.survivorClaimAge,
+              })),
+            ),
           },
           candidateFamiliesEvaluated,
           excludedCandidateFamilies,
@@ -2402,6 +2569,18 @@ export function calculateSingleYearTax(
       pretaxBalance: primaryBalance,
       pretaxBalanceSpouse: spouseBalance,
       rmdAlreadyReceived,
+      // Engine Review 5, E5-S2: the deferral election + carry
+      // price in the single-year pricer (the priced year is a
+      // first RMD year when the owner's age is the year they
+      // reach their RMD age); the response echoes the settled
+      // amounts (rmdDeferred*), so a deferred year reads $0
+      // RMD with the deferred amount named.
+      firstRmdDeferralPrimary: sy.firstRmdDeferralPrimary ?? undefined,
+      firstRmdDeferralSpouse: sy.firstRmdDeferralSpouse ?? undefined,
+      firstRmdDeferredCarryPrimary:
+        sy.firstRmdDeferredCarryPrimary ?? undefined,
+      firstRmdDeferredCarrySpouse:
+        sy.firstRmdDeferredCarrySpouse ?? undefined,
       primarySoleBeneficiaryOfSpouse: sy.primarySoleBeneficiaryOfSpouse,
       spouseSoleBeneficiary: joint,
       acaHouseholdSize: scenario.householdSize,

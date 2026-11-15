@@ -141,6 +141,14 @@ export const FIELD_ORDER: string[] = [
   "pretaxSpousePriorYearEndAnnual",
   "rmdAlreadyReceivedAnnual",
   "primarySoleBeneficiaryOfSpouse",
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "firstRmdDeferredCarryPrimaryAnnual",
+  "firstRmdDeferredCarrySpouseAnnual",
+  "survivorEnabled",
+  "survivorWho",
+  "survivorDeathYear",
+  "survivorClaimAge",
   "mcSeed",
   "mcRuns",
   "compareAges",
@@ -217,6 +225,16 @@ const COMPARE_OPTIONAL_INPUTS: string[] = [
   "stateRatePct",
   "state",
   "comparisonScope",
+  // Engine Review 5: the first-RMD deferral election and the
+  // survivor scenario price in the march (and, for the
+  // deferral, in the work-years roll that feeds it). The
+  // carry-in is NOT a plan-tool input — the roll produces it.
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "survivorEnabled",
+  "survivorWho",
+  "survivorDeathYear",
+  "survivorClaimAge",
 ];
 
 const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
@@ -252,6 +270,14 @@ const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
   "pretaxSpousePriorYearEndAnnual",
   "rmdAlreadyReceivedAnnual",
   "primarySoleBeneficiaryOfSpouse",
+  // Engine Review 5: the deferral election + carry price in the
+  // single-year pricer. The survivor scenario does not exist
+  // there (no survivor inputs on the single-year pricer), so the
+  // survivor fields are NOT priced by this tool.
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "firstRmdDeferredCarryPrimaryAnnual",
+  "firstRmdDeferredCarrySpouseAnnual",
 ];
 
 export const PRICED_OPTIONAL: Record<FinancialToolName, string[]> = {
@@ -337,6 +363,14 @@ const FIELD_BLURBS: Record<string, string> = {
   pretaxSpousePriorYearEndAnnual: "the spouse's pre-tax balance at Dec 31 of the year before the priced year",
   rmdAlreadyReceivedAnnual: "the part of this year's RMD already received and already counted in the entered income",
   primarySoleBeneficiaryOfSpouse: "whether the primary is the spouse's sole beneficiary (gates the spouse's RMD table)",
+  firstRmdDeferralPrimary: "whether to defer the primary's first RMD to April 1 of the following year",
+  firstRmdDeferralSpouse: "whether to defer the spouse's first RMD to April 1 of the following year",
+  firstRmdDeferredCarryPrimaryAnnual: "the primary's first RMD deferred from a prior year (priced on top of the priced year's own RMD)",
+  firstRmdDeferredCarrySpouseAnnual: "the spouse's first RMD deferred from a prior year (priced on top of the priced year's own RMD)",
+  survivorEnabled: "whether the survivor scenario is on (one spouse dies in a given year)",
+  survivorWho: "who dies in the survivor scenario",
+  survivorDeathYear: "the calendar year of death in the survivor scenario",
+  survivorClaimAge: "the survivor's Social Security claiming age for the enhanced survivor benefit (absent = the simplified max-of-two-benefits rule)",
   mcSeed: "the Monte Carlo random seed",
   mcRuns: "the number of Monte Carlo simulations",
   compareAges: "the retirement ages to compare",

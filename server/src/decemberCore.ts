@@ -275,6 +275,16 @@ export const decemberState = z.object({
   // from the computed RMD, floored at $0, so a paid RMD is
   // never counted twice.
   rmdAlreadyReceived: z.number().finite().min(0),
+  // First-RMD deferral (Engine Review 5, E5-S2): the
+  // election, per owner — true defers a first RMD year to
+  // April 1 of the following year — and the amount deferred
+  // from a prior year, carried into this year's price (the
+  // two-RMD year). Both default inertly: no election, no
+  // carry, and the console prices exactly as before.
+  firstRmdDeferralPrimary: z.boolean(),
+  firstRmdDeferralSpouse: z.boolean(),
+  firstRmdDeferredCarryPrimary: z.number().finite().min(0),
+  firstRmdDeferredCarrySpouse: z.number().finite().min(0),
   spouseSoleBeneficiary: z.boolean(),
   // The SECOND beneficiary fact (round-3 fix; tri-state
   // since the round-4 fix): the primary is the sole
@@ -485,6 +495,10 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     pretaxBalanceSpouse: null,
     pretaxSplitExplicit: false,
     rmdAlreadyReceived: 0,
+    firstRmdDeferralPrimary: false,
+    firstRmdDeferralSpouse: false,
+    firstRmdDeferredCarryPrimary: 0,
+    firstRmdDeferredCarrySpouse: 0,
     spouseSoleBeneficiary: true,
     primarySoleBeneficiaryOfSpouse: null,
     stateRatePct: 0,
@@ -739,6 +753,14 @@ export function parseDecemberState(
   const txFunded = nullableNonNeg("taxableFunded");
   if (txFunded.seen) out.taxableFunded = txFunded.value;
   nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
+  if (typeof p.firstRmdDeferralPrimary === "boolean") {
+    out.firstRmdDeferralPrimary = p.firstRmdDeferralPrimary;
+  }
+  if (typeof p.firstRmdDeferralSpouse === "boolean") {
+    out.firstRmdDeferralSpouse = p.firstRmdDeferralSpouse;
+  }
+  nonNeg("firstRmdDeferredCarryPrimary", (n) => (out.firstRmdDeferredCarryPrimary = n));
+  nonNeg("firstRmdDeferredCarrySpouse", (n) => (out.firstRmdDeferredCarrySpouse = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
   }
@@ -2423,6 +2445,10 @@ export function decemberCaseInputs(
       ? state.pretaxBalanceSpouse
       : undefined,
     rmdAlreadyReceived: state.rmdAlreadyReceived,
+    firstRmdDeferralPrimary: state.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: state.firstRmdDeferralSpouse,
+    firstRmdDeferredCarryPrimary: state.firstRmdDeferredCarryPrimary,
+    firstRmdDeferredCarrySpouse: state.firstRmdDeferredCarrySpouse,
     dependentMagiForAca: strayAmount(state.strayDependent),
     spouseSoleBeneficiary: state.spouseSoleBeneficiary,
     primarySoleBeneficiaryOfSpouse: state.primarySoleBeneficiaryOfSpouse,
@@ -4440,6 +4466,10 @@ export function runDecemberFixtures(): {
     // Every new field defaults inertly on a legacy blob.
     if (
       legacy.rmdAlreadyReceived !== 0 ||
+      legacy.firstRmdDeferralPrimary !== false ||
+      legacy.firstRmdDeferralSpouse !== false ||
+      legacy.firstRmdDeferredCarryPrimary !== 0 ||
+      legacy.firstRmdDeferredCarrySpouse !== 0 ||
       legacy.acaEnrollmentPremiumAnnual !== null ||
       legacy.strayJanPaidQualifiedAmount !== 0 ||
       legacy.strayROCOrdinary.status !== "na"

@@ -158,10 +158,17 @@ import {
   deflationFactor,
   priceYear,
   rmdForYear,
+  settleFirstRmdDeferral,
+  type FirstRmdDeferralState,
   type LossCarryforward,
   type RothPlanInputs,
 } from "./taxEngine";
-import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
+import {
+  lawForYear,
+  rmdAgeForBirthYear,
+  type FilingStatus,
+  type YearLaw,
+} from "./taxLaw";
 import {
 runJointOptimizer,
 type JointOptimizerResult,
@@ -793,6 +800,15 @@ export type WorkYearLine = {
   rmdDivisorSpouse: number | null;
   rmdTablePrimary: "joint" | "uniform" | null;
   rmdTableSpouse: "joint" | "uniform" | null;
+  // First-RMD deferral (Engine Review 5, E5-S2): the amount
+  // deferred THIS year (a first RMD year priced at $0) and the
+  // amount deferred from a prior year PAID this year (part of
+  // rmdPrimary / rmdSpouse above, named here so the two-RMD
+  // year is readable). All $0 on a plan with no deferral.
+  rmdDeferredPrimary: number;
+  rmdDeferredSpouse: number;
+  rmdDeferredPaidPrimary: number;
+  rmdDeferredPaidSpouse: number;
   // The long-term capital gain realized by this year's
   // deficit-funding Taxable sale (F1): priced into the year
   // only when the roll supplies the taxable context and the
@@ -960,6 +976,16 @@ export function priceOneWorkYear(
   // omitted for a standalone price, which reads the plan's
   // capitalLossCarryInSt/Lt as its entering state.
   lossCtx?: WorkYearLossContext | null,
+  // The roll's first-RMD deferral state (Engine Review 5,
+  // E5-S2): the ONE state object the roll threads across its
+  // years — the settled per-owner had/pending — so a deferral
+  // in one work year is paid in the next and the march can
+  // never defer the same first RMD twice. Omitted (a
+  // standalone price) the year prices with a fresh state
+  // seeded from the plan's firstRmdAlreadyPriced* flags, so
+  // a standalone first-RMD year defers exactly as the roll's
+  // would.
+  deferralState?: FirstRmdDeferralState | null,
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
@@ -1036,7 +1062,59 @@ export function priceOneWorkYear(
             plan.primarySoleBeneficiaryOfSpouse === true,
         })
       : { rmd: 0, divisor: null, table: null };
-  const rmdTotal = r2(rmdPrimaryRes.rmd + rmdSpouseRes.rmd);
+  // FIRST-RMD DEFERRAL (Engine Review 5, E5-S2): each owner's
+  // computed RMD settles through the shared helper — a
+  // first-RMD year with the election pays $0 and banks the
+  // amount in the state, the following year pays the banked
+  // amount on top of its own RMD. The state is the roll's
+  // shared object when the roll passes one (so the election
+  // cannot defer the same first RMD twice), else a fresh
+  // state seeded from the plan's firstRmdAlreadyPriced*
+  // flags, so a standalone price defers exactly as the
+  // roll's would. No death is priced during the work years
+  // (the roll models no survivor change), so every year's
+  // deathYearForPerson is false; the roll carries no
+  // carry-in (it IS the first engine — the march receives
+  // the carry from the roll, below).
+  const dState: FirstRmdDeferralState =
+    deferralState ?? {
+      hadPrimary:
+        plan.firstRmdAlreadyPricedPrimary === true ||
+        age > Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
+      hadSpouse:
+        plan.firstRmdAlreadyPricedSpouse === true ||
+        (ageSpouse != null &&
+          plan.birthYearSpouse != null &&
+          ageSpouse >
+            Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse))),
+      pendingPrimary: 0,
+      pendingSpouse: 0,
+    };
+  const settledP = settleFirstRmdDeferral(dState, {
+    who: "primary",
+    computed: rmdPrimaryRes.rmd,
+    deferElected: plan.firstRmdDeferralPrimary === true,
+    deathYearForPerson: false,
+    carryIn: 0,
+    // Attainment flag (see settleFirstRmdDeferral): a
+    // $0-balance first RMD year still counts as the first.
+    rmdAgeReached:
+      age >= Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
+  });
+  const settledS = settleFirstRmdDeferral(dState, {
+    who: "spouse",
+    computed: rmdSpouseRes.rmd,
+    deferElected: plan.firstRmdDeferralSpouse === true,
+    deathYearForPerson: false,
+    carryIn: 0,
+    rmdAgeReached:
+      ageSpouse != null &&
+      plan.birthYearSpouse != null &&
+      ageSpouse >= Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse)),
+  });
+  const rmdPrimary = settledP.pay;
+  const rmdSpouse = settledS.pay;
+  const rmdTotal = r2(rmdPrimary + rmdSpouse);
   // TAXABLE YIELDS (build v58, F3): priced exactly as the
   // retirement march prices them — interest and dividend
   // income on the balance the year OPENS with (in the roll,
@@ -1410,12 +1488,16 @@ export function priceOneWorkYear(
     dividendIncome,
     ssBenefits,
     rmd: rmdTotal,
-    rmdPrimary: rmdPrimaryRes.rmd,
-    rmdSpouse: rmdSpouseRes.rmd,
+    rmdPrimary,
+    rmdSpouse,
     rmdDivisorPrimary: rmdPrimaryRes.divisor,
     rmdDivisorSpouse: rmdSpouseRes.divisor,
     rmdTablePrimary: rmdPrimaryRes.table,
     rmdTableSpouse: rmdSpouseRes.table,
+    rmdDeferredPrimary: settledP.deferredThisYear,
+    rmdDeferredSpouse: settledS.deferredThisYear,
+    rmdDeferredPaidPrimary: settledP.deferredPaid,
+    rmdDeferredPaidSpouse: settledS.deferredPaid,
     ltcg: r2(ltcg),
     // The year's loss-ledger outcome (build v100; round-2
     // SHOULD-1): with no carry-in and no loss, the net
@@ -1669,6 +1751,32 @@ export function rollWorkYears(
     lossCarryLt,
     Math.max(0, plan.capitalLossCarryInLtWa ?? 0),
   );
+  // FIRST-RMD DEFERRAL STATE (Engine Review 5, E5-S2): the
+  // one state object threaded across the roll's years — the
+  // settled per-owner had/pending — seeded from the plan's
+  // firstRmdAlreadyPriced* flags (an earlier engine already
+  // priced a first RMD) so the roll can never defer the same
+  // first RMD twice. A roll whose first priced year is
+  // already PAST a person's first RMD year (ceil of the RMD
+  // age below the effective start age) seeds had true for
+  // them too — the first RMD year passed unpriced. Pending
+  // at the roll's end is the amount the rolled march must pay
+  // in its first year (the carry-in, below), and had at the
+  // roll's end tells the march its first computed RMD is the
+  // second one.
+  const deferralState: FirstRmdDeferralState = {
+    hadPrimary:
+      plan.firstRmdAlreadyPricedPrimary === true ||
+      effectiveStart >
+        Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
+    hadSpouse:
+      plan.firstRmdAlreadyPricedSpouse === true ||
+      (plan.birthYearSpouse != null &&
+        plan.birthYearPrimary + effectiveStart - plan.birthYearSpouse >
+          Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse))),
+    pendingPrimary: 0,
+    pendingSpouse: 0,
+  };
   for (let i = 0; i < count; i++) {
     const age = effectiveStart + i;
     // EDUCATION REFUND DEPOSIT (build v96, Build D
@@ -1741,6 +1849,10 @@ export function rollWorkYears(
       // with its Washington-attributable sub-state (contract
       // v101) riding the same context.
       { st: lossCarrySt, lt: lossCarryLt, waSt: lossCarryWaSt, waLt: lossCarryWaLt },
+      // The roll's shared first-RMD deferral state (E5-S2):
+      // the year's settlement mutates it, so the next year
+      // pays what this year deferred.
+      deferralState,
     );
     priorYearWages = pricedLine.ficaWages;
     // This year's reconciled carry-out becomes the next
@@ -1908,6 +2020,23 @@ export function rollWorkYears(
     // would otherwise pass through.
     capitalLossCarryInStWa: r2(lossCarryWaSt),
     capitalLossCarryInLtWa: r2(lossCarryWaLt),
+    // FIRST-RMD DEFERRAL HANDOFF (Engine Review 5, E5-S2):
+    // the march initializes its deferral state from these
+    // fields, so they must carry the roll's SETTLED outcome
+    // after the LAST work year — a pending amount deferred
+    // in the roll's last work year is paid by the march in
+    // its first year (its carry-in, on top of that year's
+    // own RMD), and had tells the march its first computed
+    // RMD is the second one (never a deferrable first). The
+    // explicit fields override the spread above (which would
+    // otherwise pass the plan's entering flags through a
+    // second time). The deferral ELECTION itself rides the
+    // spread, so a first RMD year that falls after the roll
+    // can still defer in the march.
+    firstRmdDeferredCarryPrimary: r2(deferralState.pendingPrimary),
+    firstRmdDeferredCarrySpouse: r2(deferralState.pendingSpouse),
+    firstRmdAlreadyPricedPrimary: deferralState.hadPrimary,
+    firstRmdAlreadyPricedSpouse: deferralState.hadSpouse,
     taxableBasisPct: basisFields.taxableBasisPct,
     taxableTiers: basisFields.taxableTiers,
     // IRMAA LOOKBACK SEED (Build E): the work years this roll

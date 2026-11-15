@@ -2670,6 +2670,15 @@ const rothInputFields = {
   survivorEnabled: z.boolean().nullable(),
   survivorWho: z.enum(["primary", "spouse"]).nullable(),
   survivorDeathYear: z.number().int().min(1900).max(2200).nullable(),
+  // Survivor claiming age + first-RMD deferral elections
+  // (Engine Review 5). Null on records written before this
+  // build = the simplified survivor rule / the
+  // immediate-payment default, so an untouched record prices
+  // exactly as before. The first save after this build writes
+  // these fields at those same defaults.
+  survivorClaimAge: z.number().int().min(60).max(70).nullable(),
+  firstRmdDeferralPrimary: z.boolean().nullable(),
+  firstRmdDeferralSpouse: z.boolean().nullable(),
   rothCents: rothBalanceField,
   taxableCents: rothBalanceField,
   // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
@@ -3523,6 +3532,12 @@ function parseRothInputs(raw: unknown): RothInputs | null {
         ? r.survivorWho
         : null,
     survivorDeathYear: num(r.survivorDeathYear),
+    // Engine Review 5, read leniently like every field here:
+    // absent on a pre-build record reads as null = the
+    // simplified survivor rule / the immediate-payment default.
+    survivorClaimAge: num(r.survivorClaimAge),
+    firstRmdDeferralPrimary: bool(r.firstRmdDeferralPrimary),
+    firstRmdDeferralSpouse: bool(r.firstRmdDeferralSpouse),
     rothCents: num(r.rothCents),
     taxableCents: num(r.taxableCents),
     // Exclude-from-plan, read leniently like every field here:

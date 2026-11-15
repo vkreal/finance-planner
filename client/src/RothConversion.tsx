@@ -584,6 +584,15 @@ export function RothConversion({
   const [survivorOn, setSurvivorOn] = useState(false);
   const [survivorWho, setSurvivorWho] = useState<"primary" | "spouse">("primary");
   const [survivorDeathYear, setSurvivorDeathYear] = useState("");
+  // Survivor claiming age (Engine Review 5, E5-S1): the
+  // survivor's Social Security claiming age, 60–70. Blank =
+  // the simplified max-of-two-benefits rule; entered = the
+  // enhanced SSA survivor rules.
+  const [survivorClaimAge, setSurvivorClaimAge] = useState("");
+  // First-RMD deferral elections (Engine Review 5, E5-S2):
+  // defer a first RMD year to April 1 of the following year.
+  const [firstRmdDeferralPrimary, setFirstRmdDeferralPrimary] = useState(false);
+  const [firstRmdDeferralSpouse, setFirstRmdDeferralSpouse] = useState(false);
   const [rothBal, setRothBal] = useState("");
   const [taxableBal, setTaxableBal] = useState("");
   // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
@@ -1458,6 +1467,9 @@ export function RothConversion({
     survivorEnabled?: boolean | null;
     survivorWho?: "primary" | "spouse" | null;
     survivorDeathYear?: number | null;
+    survivorClaimAge?: number | null;
+    firstRmdDeferralPrimary?: boolean | null;
+    firstRmdDeferralSpouse?: boolean | null;
     rothCents: number | null;
     taxableCents: number | null;
     taxableExcludeCents?: number | null;
@@ -1568,6 +1580,9 @@ export function RothConversion({
     setSurvivorOn(src.survivorEnabled ?? false);
     setSurvivorWho(src.survivorWho ?? "primary");
     setSurvivorDeathYear(num(src.survivorDeathYear ?? null));
+    setSurvivorClaimAge(num(src.survivorClaimAge ?? null));
+    setFirstRmdDeferralPrimary(src.firstRmdDeferralPrimary ?? false);
+    setFirstRmdDeferralSpouse(src.firstRmdDeferralSpouse ?? false);
     setRothBal(money(resolvedRoth));
     setTaxableBal(money(resolvedTaxable));
     setTaxableExclude(money(src.taxableExcludeCents ?? null));
@@ -2455,6 +2470,12 @@ export function RothConversion({
       const n = parseIntField(s);
       return n == null ? null : Math.min(2100, Math.max(1900, n));
     };
+    // Survivor claiming age, clamped to the 60–70 window the
+    // engine prices (blank = the simplified rule).
+    const claimAge = (s: string): number | null => {
+      const n = parseIntField(s);
+      return n == null ? null : Math.min(70, Math.max(60, n));
+    };
     const pct = (s: string): number | null => {
       const n = parseNum(s);
       return n == null ? null : Math.min(100, Math.max(0, n));
@@ -2489,6 +2510,9 @@ export function RothConversion({
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: year(survivorDeathYear),
+      survivorClaimAge: claimAge(survivorClaimAge),
+      firstRmdDeferralPrimary,
+      firstRmdDeferralSpouse,
       rothCents: parseMoney(rothBal),
       taxableCents: taxableEffectiveCents,
       taxableExcludeCents,
@@ -2935,7 +2959,7 @@ export function RothConversion({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     init, birthYearP, birthYearS, filingStatus, pretax, pretaxSpouse,
-    survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude, cashSetAside, hsaBal,
+    survivorOn, survivorWho, survivorDeathYear, survivorClaimAge, firstRmdDeferralPrimary, firstRmdDeferralSpouse, rothBal, taxableBal, taxableExclude, cashSetAside, hsaBal,
     basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS, ssSAge,
     ssPrimaryNoBenefit, ssSpouseNoBenefit,
     otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom, protectMin,
@@ -3551,6 +3575,12 @@ export function RothConversion({
       survivorEnabled: sc.survivorEnabled ?? false,
       survivorWho: sc.survivorWho ?? "primary",
       survivorDeathYear: clampYear(sc.survivorDeathYear ?? null),
+      survivorClaimAge:
+        sc.survivorClaimAge == null
+          ? null
+          : Math.min(70, Math.max(60, sc.survivorClaimAge)),
+      firstRmdDeferralPrimary: sc.firstRmdDeferralPrimary ?? null,
+      firstRmdDeferralSpouse: sc.firstRmdDeferralSpouse ?? null,
       rothCents: sc.rothCents ?? null,
       taxableCents: sc.taxableCents ?? null,
       taxableExcludeCents: sc.taxableExcludeCents ?? null,
@@ -4287,6 +4317,12 @@ export function RothConversion({
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: parseIntField(survivorDeathYear),
+      survivorClaimAge: (() => {
+        const n = parseIntField(survivorClaimAge);
+        return n == null ? null : Math.min(70, Math.max(60, n));
+      })(),
+      firstRmdDeferralPrimary,
+      firstRmdDeferralSpouse,
       rothStart: parseDollars(rothBal) ?? 0,
       // Exclude-from-plan: while the taxable balance follows
       // the snapshot, the priced pool is the displayed pool
@@ -4450,7 +4486,7 @@ export function RothConversion({
     return inputs;
   }, [
     init, startYear, birthYearP, birthYearS, filingStatus, pretax, pretaxSpouse,
-    survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude,
+    survivorOn, survivorWho, survivorDeathYear, survivorClaimAge, firstRmdDeferralPrimary, firstRmdDeferralSpouse, rothBal, taxableBal, taxableExclude,
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
     protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
@@ -4791,8 +4827,9 @@ export function RothConversion({
       "Filing status": filingStatus,
       "Starting balances": `${parseMoney(pretax) ?? "blank"}|${parseMoney(pretaxSpouse) ?? "blank"}|${parseMoney(rothBal) ?? "blank"}|${parseMoney(taxableBal) ?? "blank"}|${parseMoney(hsaBal) ?? "blank"}`,
       "Survivor scenario": survivorOn
-        ? `${survivorWho}@${survivorDeathYear || "blank"}`
+        ? `${survivorWho}@${survivorDeathYear || "blank"}${survivorClaimAge ? ` claim ${survivorClaimAge}` : ""}`
         : "off",
+      "First RMD deferral": `${firstRmdDeferralPrimary ? "you" : ""}${firstRmdDeferralPrimary && firstRmdDeferralSpouse ? "+" : ""}${firstRmdDeferralSpouse ? "spouse" : ""}` || "off",
       "Taxable cost basis": basisPct === "" ? "blank" : basisPct,
       "Taxable excluded from plan": String(parseMoney(taxableExclude) ?? "blank"),
       "Taxable yields": `${divYieldPct === "" ? "blank" : divYieldPct}/${intYieldPct === "" ? "blank" : intYieldPct}`,
@@ -4836,7 +4873,7 @@ export function RothConversion({
       .map((d) => d.label);
   }, [
     birthYearP, birthYearS, filingStatus, pretax, pretaxSpouse,
-    survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude, hsaBal, basisPct,
+    survivorOn, survivorWho, survivorDeathYear, survivorClaimAge, firstRmdDeferralPrimary, firstRmdDeferralSpouse, rothBal, taxableBal, taxableExclude, hsaBal, basisPct,
     divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct,
     spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS, ssSAge,
     ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd,
@@ -4945,6 +4982,9 @@ export function RothConversion({
     survivorOn: boolChanged(survivorOn, savedResolved?.survivorEnabled, false),
     survivorWho: savedResolved != null && survivorWho !== (savedResolved.survivorWho ?? "primary"),
     survivorDeathYear: intChanged(survivorDeathYear, savedResolved?.survivorDeathYear),
+    survivorClaimAge: intChanged(survivorClaimAge, savedResolved?.survivorClaimAge),
+    firstRmdDeferralPrimary: boolChanged(firstRmdDeferralPrimary, savedResolved?.firstRmdDeferralPrimary, false),
+    firstRmdDeferralSpouse: boolChanged(firstRmdDeferralSpouse, savedResolved?.firstRmdDeferralSpouse, false),
     pretax: moneyChanged(pretax, savedResolved?.pretaxCents),
     pretaxSpouse: moneyChanged(pretaxSpouse, savedResolved?.pretaxSpouseCents),
     rothBal: moneyChanged(rothBal, savedResolved?.rothCents),
@@ -5144,7 +5184,12 @@ export function RothConversion({
     }
     if (survivorOn) {
       parts.push({
-        text: `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"}${survivorDeathYear ? ` in ${survivorDeathYear}` : ""}`,
+        text: `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"}${survivorDeathYear ? ` in ${survivorDeathYear}` : ""}${survivorClaimAge ? `, survivor claims at ${survivorClaimAge}` : " (simplified survivor benefit)"}`,
+      });
+    }
+    if (firstRmdDeferralPrimary || firstRmdDeferralSpouse) {
+      parts.push({
+        text: `first RMD deferred to April 1 next year: ${firstRmdDeferralPrimary ? "you" : ""}${firstRmdDeferralPrimary && firstRmdDeferralSpouse ? " + " : ""}${firstRmdDeferralSpouse ? "spouse" : ""}`,
       });
     }
     return parts;
@@ -6596,7 +6641,10 @@ export function RothConversion({
       : "spending not entered",
     winStart || winStop ? `convert ${winStart || "—"} → ${winStop || "—"}` : null,
     survivorOn
-      ? `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"} in ${survivorDeathYear || "—"}`
+      ? `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"} in ${survivorDeathYear || "—"}${survivorClaimAge ? `, claims at ${survivorClaimAge}` : ""}`
+      : null,
+    firstRmdDeferralPrimary || firstRmdDeferralSpouse
+      ? `first RMD deferred: ${firstRmdDeferralPrimary ? "you" : ""}${firstRmdDeferralPrimary && firstRmdDeferralSpouse ? " + " : ""}${firstRmdDeferralSpouse ? "spouse" : ""}`
       : null,
   ]
     .filter((p): p is string => p != null)
@@ -7461,6 +7509,14 @@ export function RothConversion({
         {planInputs.survivorEnabled && planInputs.survivorDeathYear != null ? (
           <p>
             Survivor scenario: {planInputs.survivorWho === "spouse" ? "spouse dies" : "you die"} in {planInputs.survivorDeathYear} — single filer from {planInputs.survivorDeathYear + 1}
+            {planInputs.survivorClaimAge != null
+              ? ` — survivor claims at ${planInputs.survivorClaimAge} (enhanced SSA survivor rules)`
+              : " — survivor keeps the larger benefit (simplified rule)"}
+          </p>
+        ) : null}
+        {planInputs.firstRmdDeferralPrimary || planInputs.firstRmdDeferralSpouse ? (
+          <p>
+            First RMD deferred to April 1 next year: {planInputs.firstRmdDeferralPrimary ? "you" : ""}{planInputs.firstRmdDeferralPrimary && planInputs.firstRmdDeferralSpouse ? " + " : ""}{planInputs.firstRmdDeferralSpouse ? "spouse" : ""} — the following year pays both RMDs
           </p>
         ) : null}
         {reserveSet ? (
@@ -8043,8 +8099,46 @@ export function RothConversion({
                 idLabel: "Change the plan — year of death",
                 changed: changedFields.survivorDeathYear,
               })}
+              {numField("Survivor claiming age (60–70)", survivorClaimAge, setSurvivorClaimAge, {
+                idLabel: "Change the plan — survivor claiming age",
+                hint: "The survivor's Social Security claiming age. Leave blank for the simplified rule — the survivor keeps the larger of the two benefits. With an age entered, survivor years use the SSA survivor rules (claiming-age reduction, widow(er)'s limit, delayed credits).",
+                changed: changedFields.survivorClaimAge,
+              })}
             </div>
           )}
+          <div className="mt-3 flex flex-col gap-2">
+            <div className="flex items-start gap-2">
+              <input
+                id="guided-first-rmd-deferral-primary"
+                type="checkbox"
+                aria-label="Defer your first RMD to April 1 of the following year"
+                className="mt-1 h-4 w-4"
+                checked={firstRmdDeferralPrimary}
+                onChange={(e) => setFirstRmdDeferralPrimary(e.target.checked)}
+              />
+              <label htmlFor="guided-first-rmd-deferral-primary" className="text-sm">
+                <strong>Defer your first RMD</strong> — pay your first required
+                minimum distribution on April 1 of the following year instead
+                of in its own year. The following year pays both RMDs.
+                {changedFields.firstRmdDeferralPrimary && <ChangedMark />}
+              </label>
+            </div>
+            <div className="flex items-start gap-2">
+              <input
+                id="guided-first-rmd-deferral-spouse"
+                type="checkbox"
+                aria-label="Defer your spouse's first RMD to April 1 of the following year"
+                className="mt-1 h-4 w-4"
+                checked={firstRmdDeferralSpouse}
+                onChange={(e) => setFirstRmdDeferralSpouse(e.target.checked)}
+              />
+              <label htmlFor="guided-first-rmd-deferral-spouse" className="text-sm">
+                <strong>Defer your spouse&apos;s first RMD</strong> — same
+                April 1 deferral, on the spouse&apos;s own RMD-age clock.
+                {changedFields.firstRmdDeferralSpouse && <ChangedMark />}
+              </label>
+            </div>
+          </div>
           <div className="mt-3 grid max-w-xl grid-cols-2 gap-3">
             {numField("College years — first fall", collegeFromYear, setCollegeFromYear, {
               idLabel: "Change the plan — college first fall",
@@ -11981,7 +12075,7 @@ export function RothConversion({
                     Best strategy at each claiming age
                     <InfoNote
                       ariaLabel="About the claiming-age table"
-                      text={`Every claiming age, fully priced: the best strategy found at that age, its lifetime net cost, and the Social Security it collects. The last column is the yearly benefit a surviving spouse would keep at that claim age — the larger of the two claimed benefits.${optResult.claimAgeFloor != null ? ` Ages below your earliest claiming age to consider (${optResult.claimAgeFloor}) are marked as below your floor — priced and shown, but the winner is chosen from the ages at or above it.` : ""}`}
+                      text={`Every claiming age, fully priced: the best strategy found at that age, its lifetime net cost, and the Social Security it collects. The last column is the yearly benefit a surviving spouse would keep at that claim age — ${planInputs?.survivorClaimAge != null ? `the SSA survivor benefit at that claiming age (enhanced survivor rules, survivor claims at ${planInputs.survivorClaimAge})` : "the larger of the two claimed benefits (simplified rule)"}.${optResult.claimAgeFloor != null ? ` Ages below your earliest claiming age to consider (${optResult.claimAgeFloor}) are marked as below your floor — priced and shown, but the winner is chosen from the ages at or above it.` : ""}`}
                     />
                   </h3>
                   <div className="mt-3 overflow-x-auto">

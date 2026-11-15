@@ -82,6 +82,13 @@ export type RothSeedInputs = {
   survivorEnabled: boolean;
   survivorWho: "primary";
   survivorDeathYear: null;
+  // Survivor claiming age + first-RMD deferral elections
+  // (Engine Review 5) seed blank (null = the simplified
+  // survivor rule / the immediate-payment default), like
+  // every optional pricing input the seed does not presume.
+  survivorClaimAge: null;
+  firstRmdDeferralPrimary: null;
+  firstRmdDeferralSpouse: null;
   rothCents: null;
   taxableCents: null;
   // Exclude-from-plan seeds blank (null = no exclusion), like
@@ -218,6 +225,9 @@ export function seedRothInputs(derived: {
     survivorEnabled: false,
     survivorWho: "primary",
     survivorDeathYear: null,
+    survivorClaimAge: null,
+    firstRmdDeferralPrimary: null,
+    firstRmdDeferralSpouse: null,
     rothCents: null,
     taxableCents: null,
     taxableExcludeCents: null,

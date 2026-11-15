@@ -282,6 +282,62 @@ export const RetirementQuestionInputs = z.strictObject({
    *  for mfj); one never implies the other. */
   primarySoleBeneficiaryOfSpouse: z.boolean().optional(),
 
+  // --- First-RMD deferral + survivor inputs (Engine Review 5,
+  // E5-S1/S2). ---
+  // firstRmdDeferralPrimary / firstRmdDeferralSpouse: the
+  // first-RMD deferral election, per owner — true defers a first
+  // RMD year to April 1 of the following year (26 U.S.C.
+  // §401(a)(9)(C)(i)(II)). Priced by the tax-year tool (the
+  // priced year is a first RMD year when the owner's age is the
+  // year they reach their RMD age) and by the plan tools (the
+  // march and the work-years roll settle each owner's first RMD
+  // through the same shared rule). An election entered past the
+  // first RMD year is a no-op — the response names $0 deferred.
+  // Omitted → no deferral (the immediate-payment default).
+  /** Defer the primary's first RMD to April 1 of the following
+   *  year. Omitted → the first RMD is paid in its own year. */
+  firstRmdDeferralPrimary: z.boolean().optional(),
+  /** Defer the spouse's first RMD to April 1 of the following
+   *  year. Omitted → the first RMD is paid in its own year. */
+  firstRmdDeferralSpouse: z.boolean().optional(),
+  // firstRmdDeferredCarryPrimaryAnnual / ...SpouseAnnual: the
+  // amount deferred from a prior year's election (dollars),
+  // priced by the tax-year tool ON TOP of the priced year's own
+  // RMD — the two-RMD year. The plan tools never take a
+  // carry-in: their carry is produced by the work-years roll
+  // and handed to the march internally, never entered by the
+  // caller. Omitted → $0.
+  /** Primary's first RMD deferred from a prior year, $ — priced
+   *  on top of the priced year's own RMD (tax-year tool only). */
+  firstRmdDeferredCarryPrimaryAnnual: dollars.optional(),
+  /** Spouse's first RMD deferred from a prior year, $ — priced
+   *  on top of the priced year's own RMD (tax-year tool only). */
+  firstRmdDeferredCarrySpouseAnnual: dollars.optional(),
+  // Survivor scenario (plan tools only — the single-year pricer
+  // carries no survivor scenario, so these are inert there).
+  // survivorEnabled turns the scenario on; survivorWho names
+  // who dies; survivorDeathYear is the calendar year of death
+  // (REQUIRED when enabled — normalize returns missing_input
+  // without it). survivorClaimAge is the survivor's claiming
+  // age for the enhanced survivor benefit (60–70, whole years):
+  // the engine prices the SSA survivor rules from it — the
+  // widow(er)'s limit, the claiming-age reduction from 60, the
+  // delayed credits accrued to the month of death. Absent → the
+  // simplified max-of-two-benefits rule. Never auto-assigned: no
+  // claiming age is inferred from anything the caller entered.
+  /** Turn the survivor scenario on (plan tools). Omitted → off. */
+  survivorEnabled: z.boolean().optional(),
+  /** Who dies in the survivor scenario. Default (in normalize):
+   *  "primary". */
+  survivorWho: z.enum(["primary", "spouse"]).optional(),
+  /** Calendar year of death in the survivor scenario. Required
+   *  when survivorEnabled is true. */
+  survivorDeathYear: z.number().int().finite().min(1900).max(2100).optional(),
+  /** The survivor's Social Security claiming age for the enhanced
+   *  survivor benefit, 60–70. Absent → the simplified
+   *  max-of-two-benefits rule. */
+  survivorClaimAge: z.number().int().finite().min(60).max(70).optional(),
+
   // --- Monte Carlo. ---
   /** Monte Carlo seed. Default (in normalize): 12345
    *  (MONTE_CARLO_TAB_SEED_DEFAULT). */

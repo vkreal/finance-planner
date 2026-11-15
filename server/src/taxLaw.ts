@@ -1622,3 +1622,127 @@ export function jointDivisor(ownerAge: number, spouseAge: number): number {
   const row = JOINT_LIFE_TABLE[o] ?? JOINT_LIFE_TABLE[120] ?? [];
   return row[s - 20] ?? row[row.length - 1] ?? 2.0;
 }
+
+/* -------- Social Security claiming law (SSA) --------
+   Moved here from rothOptimizer.ts (Engine Review 5): these
+   are pure law — the claiming-age factors the engines price
+   from — and taxLaw is the module taxEngine already imports,
+   so the march can price survivor rules without a
+   taxEngine↔rothOptimizer import cycle. rothOptimizer
+   re-exports all three, so every existing import site is
+   untouched and every figure is bit-identical. */
+
+/* Round to cents (local copy of the engines' r2 — taxLaw
+   has no other rounding helper and imports nothing). */
+function r2law(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+// FRA by birth year (SSA): 1937 and earlier 65; 1938–1942 rise
+// two months per year to 66; 1943–1954 are 66; 1955–1959 rise
+// two months per year; 1960 or later are 67.
+
+// FRA in months from birth year.
+export function fullRetirementAgeMonths(birthYear: number): number {
+  if (birthYear >= 1960) return 67 * 12;
+  if (birthYear >= 1955) return 66 * 12 + (birthYear - 1954) * 2;
+  if (birthYear >= 1943) return 66 * 12;
+  if (birthYear >= 1938) return 65 * 12 + (birthYear - 1937) * 2;
+  return 65 * 12;
+}
+
+// Benefit at `claimAge` as a fraction of the PIA.
+// Claiming early reduces the benefit 5/9 of 1% per month for
+// the first 36 months early and 5/12 of 1% per month beyond
+// that; delaying past FRA adds 2/3 of 1% per month (8%/yr),
+// with no credit past age 70.
+export function ssBenefitFactor(claimAge: number, birthYear: number): number {
+  const fraMonths = fullRetirementAgeMonths(birthYear);
+  const diff = Math.round(claimAge * 12) - fraMonths;
+  if (diff < 0) {
+    const early = -diff;
+    const reduction =
+      Math.min(early, 36) * (5 / 9 / 100) + Math.max(0, early - 36) * (5 / 12 / 100);
+    return 1 - reduction;
+  }
+  if (diff > 0) {
+    const delayed = Math.min(diff, 70 * 12 - fraMonths);
+    return 1 + Math.max(0, delayed) * (2 / 3 / 100);
+  }
+  return 1;
+}
+
+// The yearly benefit at `claimAge` implied by an anchor benefit
+// (`anchorAnnual` at `anchorAge`). Returns the anchor unchanged
+// when the anchor age is missing or equals the claim age.
+export function ssAnnualAtClaimAge(
+  anchorAnnual: number,
+  anchorAge: number | null,
+  claimAge: number,
+  birthYear: number,
+): number {
+  if (anchorAge == null || anchorAge === claimAge || anchorAnnual <= 0) {
+    return anchorAnnual;
+  }
+  const anchorFactor = ssBenefitFactor(anchorAge, birthYear);
+  if (anchorFactor <= 0) return anchorAnnual;
+  const pia = anchorAnnual / anchorFactor;
+  return r2law(pia * ssBenefitFactor(claimAge, birthYear));
+}
+
+/* -------- Survivor (widow(er)) benefit law --------
+   Engine Review 5. A survivor benefit runs on its OWN full
+   retirement age table — NOT the retirement FRA table above
+   (20 CFR §404.409(b)): the survivor FRA is 65 for birth
+   years 1939 or earlier, rises two months per birth year from
+   1940 (65 and 2 months) to 1944 (65 and 10 months), is 66
+   for birth years 1945–1956, rises two months per birth year
+   from 1957 (66 and 2 months) to 1961 (66 and 10 months), and
+   is 67 for 1962 or later. (Equivalently: the retirement table with two
+   years added to each birth year — so a person born in 1960
+   reaches retirement FRA at 67 but survivor FRA at 66 and
+   8 months.) A survivor who claims before that FRA is reduced
+   by at most 28.5% — 71.5% at age 60 — spread evenly over the
+   months from 60 to the survivor FRA (20 CFR §404.410(c));
+   there are no delayed retirement credits on a survivor
+   benefit — 100% at survivor FRA is the maximum. The
+   widow(er)'s limit (42 U.S.C. §402(e)(2)(D); 20 CFR
+   §404.338(c)) caps the survivor benefit, when the deceased
+   claimed early, at the greater of the deceased's reduced
+   benefit and 82.5% of the deceased's PIA. Delayed credits
+   the deceased earned DO carry into the survivor benefit
+   (20 CFR §404.338(b)) — including credits earned to the
+   month of death when the deceased died before claiming.
+   Whole-year approximation, as everywhere in the engines:
+   ages are whole years, so a claim at "age 62" prices the
+   age-62 row exactly, and fractional months are not modeled. */
+
+// Survivor FRA in months from birth year.
+export function survivorFraMonths(birthYear: number): number {
+  if (birthYear >= 1962) return 67 * 12;
+  if (birthYear >= 1957) return 66 * 12 + (birthYear - 1956) * 2;
+  if (birthYear >= 1945) return 66 * 12;
+  if (birthYear >= 1940) return 65 * 12 + (birthYear - 1939) * 2;
+  return 65 * 12;
+}
+
+// The fraction of the deceased's base benefit payable when
+// the survivor claims at `claimAge` (whole years): 1.0 at or
+// past the survivor FRA, 0.715 at age 60 for a survivor FRA
+// of 67, rising linearly in between (the 28.5% maximum
+// reduction spread over the months from 60 to survivor FRA).
+// A claim age below 60 prices at the age-60 row — 60 is the
+// earliest non-disabled survivor claiming age, so an earlier
+// age cannot price a smaller fraction than the age-60 one.
+export function survivorReductionFactor(
+  claimAge: number,
+  birthYear: number,
+): number {
+  const fraMonths = survivorFraMonths(birthYear);
+  const claimMonths = Math.max(60 * 12, Math.round(claimAge * 12));
+  if (claimMonths >= fraMonths) return 1;
+  const spanMonths = fraMonths - 60 * 12;
+  if (spanMonths <= 0) return 1;
+  const earlyMonths = fraMonths - claimMonths;
+  return 1 - (0.285 * earlyMonths) / spanMonths;
+}

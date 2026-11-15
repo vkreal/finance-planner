@@ -320,6 +320,51 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       description:
         "Is the primary person the sole beneficiary of the spouse's pre-tax accounts? Gates ONLY the spouse's RMD table: true lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table. Absent means not established — the spouse's RMD prices on the Uniform table (the conservative direction). This is a separate fact from the spouse being the primary's sole beneficiary; one never implies the other.",
     },
+    firstRmdDeferralPrimary: {
+      type: "boolean",
+      description:
+        "Defer the primary's first RMD to April 1 of the following year (26 U.S.C. §401(a)(9)(C)(i)(II)). The first RMD year is the year the owner reaches their RMD age; an election entered past that year has no effect (the response names $0 deferred). Omitted means the first RMD is paid in its own year.",
+    },
+    firstRmdDeferralSpouse: {
+      type: "boolean",
+      description:
+        "Defer the spouse's first RMD to April 1 of the following year. Same rule as firstRmdDeferralPrimary, on the spouse's own RMD-age clock. Omitted means the first RMD is paid in its own year.",
+    },
+    firstRmdDeferredCarryPrimaryAnnual: {
+      ...MONEY,
+      description:
+        "Primary's first RMD deferred from a prior year, in dollars — priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only; the plan tools never take a carry-in (their carry is produced by the work-years roll). Omitted means $0.",
+    },
+    firstRmdDeferredCarrySpouseAnnual: {
+      ...MONEY,
+      description:
+        "Spouse's first RMD deferred from a prior year, in dollars — priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only. Omitted means $0.",
+    },
+    survivorEnabled: {
+      type: "boolean",
+      description:
+        "Turn the survivor scenario on (plan tools only): one spouse dies in survivorDeathYear and the survivor's years price under Single from the year after. Omitted means off — both spouses are modeled through the plan horizon.",
+    },
+    survivorWho: {
+      type: "string",
+      enum: ["primary", "spouse"],
+      description:
+        "Who dies in the survivor scenario. Default is \"primary\".",
+    },
+    survivorDeathYear: {
+      type: "integer",
+      minimum: 1900,
+      maximum: 2100,
+      description:
+        "Calendar year of death in the survivor scenario. Required when survivorEnabled is true.",
+    },
+    survivorClaimAge: {
+      type: "integer",
+      minimum: 60,
+      maximum: 70,
+      description:
+        "The survivor's Social Security claiming age for the enhanced survivor benefit (60–70). The engine prices the SSA survivor rules from it — the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. Absent means the simplified max-of-two-benefits rule. Never inferred: no claiming age is assigned from anything else entered.",
+    },
     mcSeed: {
       type: "integer",
       description: "Random seed for the Monte Carlo run, for reproducibility.",
@@ -558,7 +603,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional), and health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price. minimumAnnualSpending does not change this year's price either — the floor is a retirement-simulation input; a single tax year prices no simulation. The four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
+      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional), and health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. A first RMD can be deferred to April 1 of the following year with firstRmdDeferralPrimary / firstRmdDeferralSpouse (true) — the priced year must be the owner's first RMD year or the election has no effect; a first RMD deferred from a prior year enters as firstRmdDeferredCarryPrimaryAnnual / firstRmdDeferredCarrySpouseAnnual and prices on top of the priced year's own RMD. The response names the deferred and deferred-paid amounts (rmdDeferredPrimary, rmdDeferredSpouse, rmdDeferredPaidPrimary, rmdDeferredPaidSpouse). retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price. minimumAnnualSpending does not change this year's price either — the floor is a retirement-simulation input; a single tax year prices no simulation. The four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
       `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` +
       `Returns: the single-year federal and state tax, ACA premium credit, IRMAA price, and health premiums (gross and net, when premium fields are supplied) for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
