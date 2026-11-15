@@ -787,20 +787,32 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       // floor-exempt Do Nothing). Regression: the first E4
       // cut passed the empty eligible list straight to
       // crownOptimizerWinners, which requires a non-empty list.
-      const inputs = singleFilerInputs();
-      inputs.ssPrimaryStartAge = 58;
-      inputs.claimAgeFloor = 70;
+      // MFJ shape on purpose: the single-filer shape yields
+      // exactly 1 combination and takes the combos.length <= 1
+      // early return, which never executes the fallback — with
+      // 9 combinations (1 locked primary age × 9 spouse ages
+      // 62–70) this test genuinely runs the empty-eligible
+      // fallback (rothOptimizer.ts:1677).
+      const inputs = samplePlanInputs({
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 58,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+        claimAgeFloor: 70,
+      });
       const joint = runJointOptimizer(inputs);
-      expect(joint.jointSearch.combosTested).toBe(1);
+      expect(joint.jointSearch.combosTested).toBe(9);
       expect(joint.jointSearch.lockedPrimary).toBe(true);
+      expect(joint.jointSearch.searchedSpouse).toBe(true);
       expect(joint.winner.claimAges.primaryAge).toBe(58);
-      expect(joint.winner.claimAges.primaryAge!).toBeLessThan(70);
-      expect(joint.claimAgeFloorMet).toBe(
-        joint.winner.spec.key === "do-nothing",
-      );
+      expect(joint.claimAgeFloorMet).toBe(false);
       expect(joint.winnerQualified).toBe(true);
+      expect(joint.candidatesTested).toBe(4545);
+      // The early-return path clears the per-age table; a
+      // non-empty table proves the fallback branch ran.
+      expect(joint.claimAgeTable.length).toBeGreaterThan(0);
     },
-    300_000,
+    900_000,
   );
 });
 
@@ -815,22 +827,32 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
     expect(ssAnnualAtClaimAge(48000, 67, 62, 1968)).toBe(33600);
   });
 
-  test("Social Security from both spouses: $48,000 + $30,000 once both claim", () => {
-    const opt = mfjOptimizer();
-    const y2035 = opt.winner.result.years.find((y) => y.year === 2035)!;
-    const y2037 = opt.winner.result.years.find((y) => y.year === 2037)!;
-    // Primary turns 67 in 2035; spouse turns 67 in 2037.
-    expect(y2035.ssBenefits).toBe(48000);
-    expect(y2037.ssBenefits).toBe(78000);
-    // Lifetime: primary 29 years (2035–2063) × $48,000 plus
-    // spouse 27 years (2037–2063) × $30,000.
-    expect(opt.winner.result.lifetimeSsCollected).toBe(29 * 48000 + 27 * 30000);
-    expect(opt.winner.result.lifetimeSsCollected).toBe(2202000);
-    const sum = r2(
-      opt.winner.result.years.reduce((a, y) => a + y.ssBenefits, 0),
-    );
-    expect(sum).toBe(opt.winner.result.lifetimeSsCollected);
-  });
+  test(
+    "Social Security from both spouses: $48,000 + $30,000 once both claim",
+    () => {
+      // First caller of the cached mfjOptimizer() in this
+      // block: without an explicit timeout it dies on Bun's
+      // 5s default while the ~45–63s optimizer run is still
+      // computing, but only when Section 4 runs filtered
+      // (in full-file order the earlier engine tests warm the
+      // cache). 900_000 matches the neighboring heavy tests.
+      const opt = mfjOptimizer();
+      const y2035 = opt.winner.result.years.find((y) => y.year === 2035)!;
+      const y2037 = opt.winner.result.years.find((y) => y.year === 2037)!;
+      // Primary turns 67 in 2035; spouse turns 67 in 2037.
+      expect(y2035.ssBenefits).toBe(48000);
+      expect(y2037.ssBenefits).toBe(78000);
+      // Lifetime: primary 29 years (2035–2063) × $48,000 plus
+      // spouse 27 years (2037–2063) × $30,000.
+      expect(opt.winner.result.lifetimeSsCollected).toBe(29 * 48000 + 27 * 30000);
+      expect(opt.winner.result.lifetimeSsCollected).toBe(2202000);
+      const sum = r2(
+        opt.winner.result.years.reduce((a, y) => a + y.ssBenefits, 0),
+      );
+      expect(sum).toBe(opt.winner.result.lifetimeSsCollected);
+    },
+    900_000,
+  );
 
   test("terminal tax: the stated rule, hand-computed, with and without the reserve", () => {
     const opt = mfjOptimizer();
