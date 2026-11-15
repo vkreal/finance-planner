@@ -94,6 +94,51 @@
 //       taxLawYear 2025 while the march priced from 2026). Only
 //       calculateSingleYearTax overrides it, with the year it
 //       actually priced (scenario.taxYear).
+//   D11. Success rates are probabilities, not money: NEVER pass
+//       one through r2. The engine reports them in percent units
+//       0–100 as (whole successful runs / runs) * 100, so the
+//       finest real granularity is one run (0.1% at 1,000 runs);
+//       r2 collapsed 84.6% and 85.4% both to 0.85 and 99.9% to
+//       1.0. The adapter converts at engine precision instead:
+//       ratePercentToFraction rounds to the nearest whole run
+//       (Math.round(rate * runs / 100) / runs), so the reported
+//       0–1 fraction always equals a whole run count over the
+//       run count, and successfulRunsFromRate recovers that
+//       count. The run count is the caller's mcRuns for the
+//       Monte Carlo tool, MONTE_CARLO_TAB_RUNS (1,000) for the
+//       max-spending solver's Monte Carlo leg, and hist.count
+//       for historical legs. Presentation rounding stays in
+//       docs only — no API rounding of a probability anywhere.
+//   D12. solveMaxSpending returns the solver's own percent for
+//       the percent strategy (SolverResult.percent: a NUMBER,
+//       pctFor(k), only for "percent"; null for constant /
+//       phased / guardrails) and 0 in the at-zero-fails case —
+//       the adapter reports it verbatim as
+//       solvedPortfolioWithdrawalPct (plus the historical leg's
+//       as historicalSolvedPortfolioWithdrawalPct) and never
+//       recomputes it. The dollars a strategy solves for mean
+//       different things per strategy, so every max-spending
+//       result carries spendingAmountMeaning (see
+//       spendingAmountMeaning) and the target as
+//       targetSuccessRate 0.85. When even $0 spending fails the
+//       target the result is feasible: false with a warning,
+//       never a silent 0. When the percent strategy hits the
+//       engine's 30%/yr bound the result is cappedAtPercentBound:
+//       true — a capped result, not a true maximum — and the
+//       historical leg carries the same flag as
+//       historicalCappedAtPercentBound, detected the same way
+//       from its own solve. The bound is the engine's step count
+//       (maxSteps = floor(startCents * 0.3 / STEP), STEP = $100
+//       in cents), so the capped percent equals 30 only when the
+//       starting portfolio is an exact $1,000 multiple; on any
+//       other portfolio it reads slightly below 30 (e.g.
+//       29.9985… on $1,000,050) and the percent alone never
+//       decides capped-ness — the solved dollars against the
+//       bound step count do (see
+//       maxSpendingCappedAtPercentBound). Constant / phased /
+//       guardrails have an internal engine search cap with no
+//       adapter-visible flag, so a capped result there cannot
+//       be flagged and is documented as a limitation instead.
 
 import {
   GUARDRAILS_ADJUSTMENT_DEFAULT,
@@ -211,6 +256,110 @@ export function dollarsToCents(dollars: number): number {
 /** Dollar-native engine figures -> API dollars, rounded to 2dp. */
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Engine success rate (percent units 0–100) -> API fraction 0–1,
+ * at the engine's own precision (D11). The engine's rate is
+ * (whole successful runs / runs) * 100, so rounding to the
+ * nearest whole run recovers the engine's count exactly; r2 must
+ * never be applied to a probability.
+ */
+export function ratePercentToFraction(
+  ratePercent: number,
+  runs: number,
+): number {
+  return Math.round((ratePercent * runs) / 100) / runs;
+}
+
+/**
+ * Whole successful runs behind an engine success rate, derived
+ * from the engine rate × run count (D11). This recovers the
+ * engine's own whole-run count — it is not a separately counted
+ * value, and it is labeled as derived in the tool docs.
+ */
+export function successfulRunsFromRate(
+  ratePercent: number,
+  runs: number,
+): number {
+  return Math.round((ratePercent * runs) / 100);
+}
+
+/**
+ * What the solved dollars mean for a spending strategy (D12).
+ * The solver's dollars are a starting / base / first-year figure
+ * except for constant spending, where they are the fixed amount
+ * every year — a reader who treats a percent-strategy result as
+ * fixed annual spending will misread the plan.
+ */
+export function spendingAmountMeaning(strategy: SpendingStrategy): string {
+  switch (strategy) {
+    case "percent":
+      return "Initial-year-equivalent spending: the dollars are the solved first-year spend at the solved percent of the starting portfolio; later years scale with the portfolio balance.";
+    case "phased":
+      return "Starting spending before the planned reductions: the dollars are the pre-decline amount; later years fall by the phased schedule.";
+    case "guardrails":
+      return "Base spending: the actual amount may rise or fall on the engine's guardrail triggers.";
+    case "constant":
+    default:
+      return "Fixed annual spending: the same dollar amount in every retired year.";
+  }
+}
+
+/**
+ * Whether any spending level meets the target (D12). The solver
+ * reports maxSpendingCents 0 with a below-target rate when even
+ * $0 spending fails; a 0 with a rate at/above target is a plan
+ * that meets the target only by spending nothing. Anything above
+ * $0 passed the target by construction.
+ */
+export function maxSpendingFeasible(
+  maxSpendingCents: number,
+  successRatePercent: number,
+  targetPercent = 85,
+): boolean {
+  return maxSpendingCents > 0 || successRatePercent >= targetPercent;
+}
+
+/**
+ * The engine's max-spending search step, in cents: solveMaxSpending
+ * searches in $100 steps (retirementEngines.ts: STEP = 10000).
+ */
+const MAX_SPENDING_STEP_CENTS = 10000;
+
+/**
+ * Whether the percent strategy hit the engine's 30%/yr bound
+ * (D12). The bound is a step count, not the number 30: the engine
+ * caps the percent search at maxSteps = floor(startCents * 0.3 /
+ * STEP) and a capped solve returns exactly maxSteps * STEP dollars
+ * with percent = pctFor(maxSteps) = maxSteps * STEP * 100 /
+ * startCents. That percent equals 30 only when the starting
+ * portfolio is an exact $1,000 multiple — on any other portfolio
+ * a capped percent reads slightly below 30 (29.9985… on
+ * $1,000,050), so the percent alone never decides it. The
+ * detector compares the solved dollars against the bound step
+ * count (exact integer arithmetic, no float tolerance) and
+ * requires a percent-strategy result (percent !== null): a
+ * constant / phased / guardrails solve whose dollars happen to
+ * equal the bound step count is not a percent-bound cap. The
+ * at-zero-fails return (0 cents, percent 0) is not capped — 0
+ * steps is never maxSteps, which is > 0 whenever the solver
+ * returns — and an interior binary-search result (fewer steps
+ * than maxSteps) is not capped either.
+ */
+export function maxSpendingCappedAtPercentBound(
+  percent: number | null,
+  maxSpendingCents: number,
+  startCents: number,
+): boolean {
+  if (percent === null || startCents <= 0) return false;
+  const maxSteps = Math.floor(
+    (startCents * 0.3) / MAX_SPENDING_STEP_CENTS,
+  );
+  return (
+    maxSteps > 0 &&
+    maxSpendingCents / MAX_SPENDING_STEP_CENTS === maxSteps
+  );
 }
 
 /** Recursively round every number in an engine result to 2dp. */
@@ -1647,6 +1796,8 @@ export function calculateRetirement(
   yearlyNetWithdrawals: Array<{ age: number; amount: number }>;
   strategy: string;
   historicalNeverOutRate: number | null;
+  historicalRuns: number | null;
+  historicalSuccessfulRuns: number | null;
   historicalMedianEnding: number | null;
   // Spending adequacy (E1-S1): the share of historical runs in
   // which every retired year's GROSS spending met or beat the
@@ -1697,8 +1848,17 @@ export function calculateRetirement(
           amount: centsToDollars(c),
         })),
         strategy: inputs.strategy,
+        // D11: whole-run precision from the historical run count,
+        // never r2 — plus the derived whole-run count behind it.
         historicalNeverOutRate:
-          hist === null ? null : r2(hist.neverOutSuccessRate / 100),
+          hist === null
+            ? null
+            : ratePercentToFraction(hist.neverOutSuccessRate, hist.count),
+        historicalRuns: hist === null ? null : hist.count,
+        historicalSuccessfulRuns:
+          hist === null
+            ? null
+            : successfulRunsFromRate(hist.neverOutSuccessRate, hist.count),
         historicalMedianEnding:
           hist === null ? null : centsToDollars(hist.medianEnding),
         historicalSpendingAdequacyRate:
@@ -1731,6 +1891,7 @@ export function runRetirementMonteCarlo(
   scenario: NormalizedScenario,
 ): AdapterResult<{
   successRate: number;
+  successfulRuns: number;
   endingP10: number;
   endingP50: number;
   endingP90: number;
@@ -1769,7 +1930,15 @@ export function runRetirementMonteCarlo(
     }
     const det = simulateDetailed(inputs, flatReturns(scenario));
     const detEnding = centsToDollars(det.balances[det.balances.length - 1] ?? 0);
-    const successRate = r2(mc.neverOutSuccessRate / 100);
+    // D11: whole-run precision over the caller's mcRuns, never r2.
+    const successRate = ratePercentToFraction(
+      mc.neverOutSuccessRate,
+      scenario.mcRuns,
+    );
+    const successfulRuns = successfulRunsFromRate(
+      mc.neverOutSuccessRate,
+      scenario.mcRuns,
+    );
     const detRunsOut = detEnding === 0;
     const mcMostlySucceeds = successRate >= 0.5;
     if (
@@ -1810,6 +1979,7 @@ export function runRetirementMonteCarlo(
       scenario,
       {
         successRate,
+        successfulRuns,
         endingP10: centsToDollars(mc.p10),
         endingP50: centsToDollars(mc.p50),
         endingP90: centsToDollars(mc.p90),
@@ -1863,9 +2033,17 @@ export function calculateMaxSpending(
   maxMonthlySpending: number;
   maxAnnualSpending: number;
   successRate: number;
+  successfulRuns: number;
   medianEnding: number;
   approximate: boolean;
   runs: number;
+  targetSuccessRate: number;
+  spendingStrategy: string;
+  spendingAmountMeaning: string;
+  seed: number;
+  feasible: boolean;
+  solvedPortfolioWithdrawalPct: number | null;
+  cappedAtPercentBound: boolean;
   historicalMaxMonthlySpending: number | null;
   historicalMaxAnnualSpending: number | null;
   // Feasibility metadata (Engine Review 2, E2-S1): rates here are
@@ -1882,7 +2060,6 @@ export function calculateMaxSpending(
   // (the percent leg's 30% cap, or twice the portfolio floored at
   // $1,000,000/yr), not a proven maximum above it. The historical
   // cross-check leg carries its own status the same way.
-  targetSuccessRate: number;
   achievedSuccessRate: number;
   targetAchieved: boolean;
   solutionStatus: "feasible" | "feasible_at_zero" | "infeasible_at_zero" | "capped";
@@ -1893,6 +2070,10 @@ export function calculateMaxSpending(
     | "infeasible_at_zero"
     | "capped"
     | null;
+  historicalRuns: number | null;
+  historicalSuccessfulRuns: number | null;
+  historicalSolvedPortfolioWithdrawalPct: number | null;
+  historicalCappedAtPercentBound: boolean;
 }> {
   return guard(() => {
     const { inputs, warnings } = toSimInputs(scenario);
@@ -1934,6 +2115,59 @@ export function calculateMaxSpending(
     const maxAnnual = centsToDollars(solved.maxSpendingCents);
     const histAnnual =
       histSolved === null ? null : centsToDollars(histSolved.maxSpendingCents);
+    // D11: the historical leg's run count comes from the same
+    // historical engine the solver scored on, so its rate converts
+    // at whole-run precision too. (Null exactly when histSolved
+    // is null: the solver's historical leg returns null only when
+    // runHistorical does.)
+    const histRuns =
+      histSolved === null
+        ? null
+        : runHistorical(inputs, scenario.stocksPct)?.count ?? null;
+    // D12: feasibility and the percent-strategy cap are the
+    // solver's own verdicts, reported verbatim — never inferred.
+    // The cap is detected from the solved dollars against the
+    // engine's bound step count (see
+    // maxSpendingCappedAtPercentBound), not from the percent
+    // reading 30.
+    const feasible = maxSpendingFeasible(
+      solved.maxSpendingCents,
+      solved.successRate,
+    );
+    const cappedAtPercentBound = maxSpendingCappedAtPercentBound(
+      solved.percent,
+      solved.maxSpendingCents,
+      inputs.startCents,
+    );
+    // SHOULD-1: the historical leg gets the same bound flag,
+    // detected the same way from its own solve. The same engine
+    // function produces both legs from the same inputs, so a
+    // capped historical leg is the same capped result, not a
+    // true maximum either; a null historical solve has no cap
+    // to report.
+    const historicalCappedAtPercentBound =
+      histSolved === null
+        ? false
+        : maxSpendingCappedAtPercentBound(
+            histSolved.percent,
+            histSolved.maxSpendingCents,
+            inputs.startCents,
+          );
+    if (!feasible) {
+      warnings.push(
+        "No spending level meets the 85% success target — not even $0/year. The plan cannot reach 85% success at any spending under these assumptions (seed, 1,000 simulations, model assumptions).",
+      );
+    }
+    if (cappedAtPercentBound) {
+      warnings.push(
+        "The percent strategy hit the engine's 30%/yr withdrawal bound: this is a capped result, not a true maximum — the solver stopped at the bound, not at a spending the plan fails above.",
+      );
+    }
+    if (historicalCappedAtPercentBound) {
+      warnings.push(
+        "The percent strategy's historical leg also hit the engine's 30%/yr withdrawal bound: its maximum is a capped result, not a true maximum — the historical solver stopped at the bound, not at a spending the plan fails above.",
+      );
+    }
     if (histAnnual !== null) {
       const relDiff =
         maxAnnual === 0 ? (histAnnual > 0 ? Infinity : 0) : Math.abs(histAnnual - maxAnnual) / maxAnnual;
@@ -1952,15 +2186,36 @@ export function calculateMaxSpending(
       {
         maxMonthlySpending: r2(maxAnnual / 12),
         maxAnnualSpending: maxAnnual,
-        successRate: r2(solved.successRate / 100),
+        // D11: whole-run precision over the solver's fixed 1,000
+        // runs, never r2 — plus the derived whole-run count.
+        successRate: ratePercentToFraction(
+          solved.successRate,
+          MONTE_CARLO_TAB_RUNS,
+        ),
+        successfulRuns: successfulRunsFromRate(
+          solved.successRate,
+          MONTE_CARLO_TAB_RUNS,
+        ),
         medianEnding: centsToDollars(solved.medianEnding),
         approximate: solved.approximate,
         // D9: the solver's fixed run count, not the caller's mcRuns.
         runs: MONTE_CARLO_TAB_RUNS,
+        // D2/D12: the target in the API's 0–1 units, the strategy
+        // as priced, what the solved dollars mean for it, and the
+        // seed the Monte Carlo leg ran on.
+        targetSuccessRate: 0.85,
+        spendingStrategy: inputs.strategy,
+        spendingAmountMeaning: spendingAmountMeaning(inputs.strategy),
+        seed: scenario.mcSeed,
+        feasible,
+        // D12: the solver's own percent, verbatim (a number only
+        // for the percent strategy; null otherwise) — and whether
+        // each leg stopped at the engine's 30%/yr bound.
+        solvedPortfolioWithdrawalPct: solved.percent,
+        cappedAtPercentBound,
         historicalMaxMonthlySpending:
           histAnnual === null ? null : r2(histAnnual / 12),
         historicalMaxAnnualSpending: histAnnual,
-        targetSuccessRate: r2(85 / 100),
         achievedSuccessRate: r2(solved.successRate / 100),
         targetAchieved: solved.targetAchieved,
         solutionStatus: solved.solutionStatus,
@@ -1968,6 +2223,14 @@ export function calculateMaxSpending(
           histSolved === null ? null : histSolved.targetAchieved,
         historicalSolutionStatus:
           histSolved === null ? null : histSolved.solutionStatus,
+        historicalRuns: histRuns,
+        historicalSuccessfulRuns:
+          histSolved === null || histRuns === null
+            ? null
+            : successfulRunsFromRate(histSolved.successRate, histRuns),
+        historicalSolvedPortfolioWithdrawalPct:
+          histSolved === null ? null : histSolved.percent,
+        historicalCappedAtPercentBound,
       },
       warnings,
       [

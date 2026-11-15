@@ -103,7 +103,12 @@ AI client ── JSON-RPC 2.0 / Streamable HTTP ──► server.ts (auth, rate 
   the engines; results come back in dollars rounded to 2dp. Percents
   are plain numbers outside (5 means 5%); the adapter divides
   by 100 where an engine takes a decimal, and reports rates back as
-  fractions 0–1 (a 97% success rate reads `0.97`, never `97`).
+  fractions 0–1 at whole-run precision (a 97.2% success rate over
+  1,000 runs reads `0.972`, never `97` or `0.97`). A success rate is
+  never rounded to 2dp: with N runs the finest step is 1/N, and
+  `successfulRuns` is the whole-run count behind the rate, derived
+  from the engine rate × run count (see "Success-rate precision and
+  max-spending semantics").
 - **Monte Carlo chart values are dollars**, passed through rounded —
   not cents.
 - **Tool → engine mapping:**
@@ -228,8 +233,8 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | Tool | Required extra | Optional that matters most | Returns |
 | --- | --- | --- | --- |
 | `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`, `minimumAnnualSpending` ($/yr floor — adds `historicalSpendingAdequacyRate`, read beside `historicalNeverOutRate`, never instead of it). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding`, `historicalSpendingAdequacyRate` (null without a floor), `minimumAnnualSpending` |
-| `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `spendingAdequacyRate` (null without `minimumAnnualSpending`; read beside `successRate` — a high funding rate is not proof spending held the floor), `minimumAnnualSpending`, `chart` (dollars), `deterministicEndingBalance` |
-| `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending`, plus feasibility: `targetSuccessRate` (0.85), `achievedSuccessRate`, `targetAchieved`, `solutionStatus` (`feasible` / `feasible_at_zero` / `infeasible_at_zero` / `capped` — a $0 maximum with `infeasible_at_zero` means no spending level reaches the target) and the historical leg's `historicalTargetAchieved` / `historicalSolutionStatus` |
+| `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1, at whole-run precision — finest step 1/`runs`), `successfulRuns`, `endingP10`/`endingP50`/`endingP90`, spending stats, `spendingAdequacyRate` (null without `minimumAnnualSpending`; read beside `successRate` — a high funding rate is not proof spending held the floor), `minimumAnnualSpending`, `chart` (dollars), `deterministicEndingBalance` |
+| `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate` (0–1, whole-run precision), `successfulRuns`, `medianEnding`, `runs`, `spendingStrategy`, `spendingAmountMeaning`, `seed`, `feasible`, `solvedPortfolioWithdrawalPct` (percent strategy only), `cappedAtPercentBound`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending`, `historicalRuns` / `historicalSuccessfulRuns` / `historicalSolvedPortfolioWithdrawalPct` / `historicalCappedAtPercentBound`, plus feasibility: `targetSuccessRate` (0.85), `achievedSuccessRate`, `targetAchieved`, `solutionStatus` (`feasible` / `feasible_at_zero` / `infeasible_at_zero` / `capped` — a $0 maximum with `infeasible_at_zero` means no spending level reaches the target) and the historical leg's `historicalTargetAchieved` / `historicalSolutionStatus` |
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`), `comparisonScope`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — the default compares three orders; `comparisonScope: "full"` compares all six permutations. | `scenarios` (3 by default — taxable-first / pre-tax-first / roth-first — 6 in full mode) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `comparisonScope` block, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1 by default; Do Nothing + winner + runners-up + ending-wealth winner in full mode) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `comparisonScope` block; in full mode an `optimizer` block (candidates evaluated, winning policy, yearly conversions); `yearly` table |
 | `retirement_dynamic_withdrawal` | — | Same as compare_strategies, except `comparisonScope` — the dynamic tool has no limited/full modes; a supplied `comparisonScope` is reported ignored. | Annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, federal and state tax, penalty, IRMAA, ACA credit kept, MAGI and ACA MAGI against the cliff, RMD, ending balances with taxable basis), lifetime totals (net cost, tax, penalty, IRMAA, ACA credit, RMDs, conversions), terminal block (terminal tax on the standing pre-tax balance and the step-up in basis on the taxable balance), and the best fixed policy for comparison |
@@ -647,8 +652,8 @@ Notes:
   and the optimizer parity leg ~80s are most of it). Per file
   (test counts, not passes): input 43, isolation 23, parity 26,
   schema-consistency 15, security 16, mcp-interop 5, cli 3,
-  strategy-comparison 16 — 147 tests total, agreeing with
-  143 pass + 4 skip (142 without strategy-comparison test 9, the
+  strategy-comparison 16, review7 29 — 176 tests total, agreeing with
+  143 pass + 4 skip (before review7's 29; 142 without strategy-comparison test 9, the
   full-optimizer parity leg, + test 9 = 143). NOTE: the parity
   work-years with-salary leg (1 of parity's 26) died silently 5×
   on this shared VM before this run (process gone, no output —
@@ -665,6 +670,10 @@ Notes:
   `retirement_compare_strategies` and `retirement_roth_conversion`,
   limited and full (4/4 MATCH on the full envelopes, including the
   full-optimizer leg).
+- Load-sensitive: input.test.ts "all eight tools still accept the valid
+  fictional scenario" can exceed bun's 5s default timeout when
+  the VM is busy (it dispatches all eight tools in one test; it
+  fails identically on the unmodified base).
 
 ## Worked conversation transcripts
 
@@ -731,15 +740,20 @@ Tool call: same household, retiring at 58, `mcRuns: 1000`,
 }
 ```
 
-Engine result (key figures): `successRate: 0.97`, `endingP10:
+Engine result (key figures): `successRate: 0.972`
+(`successfulRuns: 972` of `runs: 1000`), `endingP10:
 $2,929,179.57`, `endingP50: $21,651,743.88`, `endingP90:
 $100,031,364.32`, deterministic ending balance $43,901,094.30.
 
-Plain-English answer: "97 out of 100 random market paths last to
+Plain-English answer: "972 out of 1,000 random market paths last to
 95. The middle path ends with about $21.7M; even the weak path
-(the 1-in-10 bad one) ends with about $2.9M. The 3 paths in 100 that
+(the 1-in-10 bad one) ends with about $2.9M. The 28 paths in 1,000 that
 fail are the ones where bad returns arrive early, while you're still
 spending $9,500 a month."
+
+(The rate used to read `0.97`: the old 2dp rounding collapsed 97.2%
+to 97%. Rates now convert at whole-run precision — see "Success-rate
+precision and max-spending semantics".)
 
 ### (3) "How much can I safely spend?" → `retirement_max_spending`
 
@@ -766,10 +780,14 @@ this tool, and the result reports `runs: 1000` with an
 ```
 
 Engine result (key figures): `maxMonthlySpending: $14,358.33`,
-`maxAnnualSpending: $172,300`, `successRate: 0.85`, `runs: 1000`,
-`medianEnding: $13,982,528.25`,
+`maxAnnualSpending: $172,300`, `successRate: 0.85`
+(`successfulRuns: 850` of `runs: 1000`), `targetSuccessRate: 0.85`,
+`feasible: true`, `spendingStrategy: "constant"`,
+`spendingAmountMeaning: "Fixed annual spending: the same dollar
+amount in every retired year."`, `medianEnding: $13,982,528.25`,
 `historicalMaxMonthlySpending: $18,616.67`
-(`historicalMaxAnnualSpending: $223,400`), and feasibility:
+(`historicalMaxAnnualSpending: $223,400`, `historicalRuns: 57`,
+`historicalSuccessfulRuns: 49`), and feasibility:
 `targetSuccessRate: 0.85`, `achievedSuccessRate: 0.85`,
 `targetAchieved: true`, `solutionStatus: "feasible"` — the $172,300
 is a positive spending meeting the target, not the search cap.
@@ -778,6 +796,11 @@ it: `feasible_at_zero` means $0 is the highest sustainable
 spending, `infeasible_at_zero` means no spending level reaches
 the target, and `capped` means the figure is the solver's search
 cap (the percent strategy's 30% cap always binds).
+
+(The `successRate` here is unchanged by the Review 7 fix — 850 of
+1,000 is exactly 0.85, so the old 2dp rounding and the new whole-run
+conversion agree. See "Success-rate precision and max-spending
+semantics" for the cases where they don't.)
 
 Plain-English answer: "About $14,358 a month — that's the highest
 spending that still succeeds in 85 out of 100 random paths. Your
@@ -832,6 +855,77 @@ plus $33,737 of payroll tax, plus the tax on the bigger plan), so
 on tax alone, retiring at 56 wins. One caution: the two ending
 balances span different horizons, so compare the tax, not the
 balances — the adapter says so in its own warning."
+
+## Success-rate precision and max-spending semantics
+
+(Review 7: two adapter corrections, both in `src/adapter.ts` —
+adapter notes D11/D12. No engine file changed.)
+
+**Success rates are probabilities, never money.** The engine
+reports them in percent units 0–100 as (whole successful runs /
+runs) × 100, so the finest real granularity is one run: 0.1% at
+1,000 runs, 0.5% at 200 runs. The adapter used to push them through
+the money rounder (2dp), which collapsed 84.6% and 85.4% both to
+`0.85` and 99.9% to `1.0`. Rates now convert at whole-run
+precision — fraction = round(rate × runs / 100) / runs — so the
+reported 0–1 fraction always equals a whole run count over the run
+count. The run count is the caller's `mcRuns` for
+`retirement_monte_carlo`, the solver's fixed 1,000 for
+`retirement_max_spending`, and the historical run count
+(`hist.count`, 57 for the fictional household's 41-year horizon)
+for historical legs. `successfulRuns` /
+`historicalSuccessfulRuns` expose the whole-run count behind each
+rate, derived from the engine rate × run count — not a separately
+counted value, but the derivation recovers the engine's own count
+exactly. Presentation rounding stays in docs only; no API rounding
+of a probability exists anywhere. `respond()` never rounded — only
+the three rate call sites did. (The single-year tax tool's
+`roundDeep` prices dollars only; no success rate flows through it.)
+
+**What the max-spending dollars mean depends on the strategy.**
+`spendingAmountMeaning` says so on every result, and
+`spendingStrategy` + `seed` are echoed with it:
+
+| Strategy | `spendingAmountMeaning` |
+| --- | --- |
+| constant | Fixed annual spending: the same dollar amount in every retired year. |
+| percent | Initial-year-equivalent spending: the dollars are the solved first-year spend at the solved percent of the starting portfolio; later years scale with the portfolio balance. |
+| phased | Starting spending before the planned reductions: the dollars are the pre-decline amount; later years fall by the phased schedule. |
+| guardrails | Base spending: the actual amount may rise or fall on the engine's guardrail triggers. |
+
+For the percent strategy the solver's own percent is reported
+verbatim as `solvedPortfolioWithdrawalPct` (and the historical
+leg's as `historicalSolvedPortfolioWithdrawalPct`); it is `null`
+for constant / phased / guardrails. The dollars alone are never
+the whole answer for percent — read them with the percent.
+
+**The maximum is conditional, and two of its edges are explicit.**
+`targetSuccessRate: 0.85` is the target the solver aimed at. The
+maximum holds for this seed, 1,000 simulations, the model
+assumptions, and the engine's $100 search increment, and it is a
+portfolio-only (no-tax) simulation result — for a tax-aware answer
+use the compare tools. If even $0/year of spending fails the 85%
+target the result reports `feasible: false` with a warning, never a
+silent $0: in practice the engine's never-runs-out test cannot
+fail at $0 spending (a $0 net withdrawal never exceeds the
+balance), so the branch is defensive — no public input has been
+observed to reach it — but the signal exists for the solver's own
+verdict if it ever does. If the percent strategy hits the engine's
+30%/yr withdrawal bound, `cappedAtPercentBound: true` with a
+warning marks it as a capped result, not a true maximum — and the
+historical leg carries the same flag as
+`historicalCappedAtPercentBound` (same detection, from its own
+solve, with its own warning). The bound is the engine's step
+count, not the number 30: the solver caps the percent search at
+`maxSteps = floor(startCents * 0.3 / $100)`, so a capped percent
+equals 30 only when the starting portfolio is an exact $1,000
+multiple — on a $1,000,050 portfolio it reads 29.99850007499625
+and is capped all the same. Detection compares the solved dollars
+against the bound step count, so no tolerance and no "reads 30"
+check is involved. For
+constant / phased / guardrails the engine's internal search cap has
+no adapter-visible flag, so a capped result there cannot be flagged
+— a documented limitation (see "Known limitations" (xii)).
 
 ## Known limitations
 
@@ -987,6 +1081,18 @@ and is likewise not modeled. No exception is modeled in any
 year, Medicaid eligibility is never modeled or assumed, and
 the engine never infers immigration status or any special
 eligibility circumstance.
+
+
+(xvii) **Only the percent strategy's max-spending cap is
+flaggable.** `cappedAtPercentBound` (Monte Carlo leg) and
+`historicalCappedAtPercentBound` (historical leg) are true when the
+respective leg hits the engine's 30%/yr withdrawal bound. For constant,
+phased and guardrails the engine's internal search cap has no
+adapter-visible flag, so a maximum that is really the cap is not
+flagged — treat a suspiciously round or bound-shaped maximum for
+those strategies with care. (The guardrails solver's exhaustive
+scan is also slow: one adapter-level guardrails max-spending call
+took ~110s on this VM, both legs included.)
 
 ## Source layout
 

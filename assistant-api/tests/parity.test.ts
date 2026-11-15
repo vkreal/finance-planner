@@ -130,8 +130,17 @@ describe("calculateRetirement vs the sim engines directly", () => {
         amount: Math.round(c) / 100,
       })),
     );
+    // Review 7 (R7-S1): the historical rate converts at whole-run
+    // precision over hist.count — NOT round2(rate/100). The value
+    // here is unchanged (100% over 57 runs is exactly 1), but the
+    // formula is the exact one, and the derived count is pinned.
     expect(res.historicalNeverOutRate).toBe(
-      round2(hist!.neverOutSuccessRate / 100),
+      Math.round((hist!.neverOutSuccessRate * hist!.count) / 100) /
+        hist!.count,
+    );
+    expect(res.historicalRuns).toBe(hist!.count);
+    expect(res.historicalSuccessfulRuns).toBe(
+      Math.round((hist!.neverOutSuccessRate * hist!.count) / 100),
     );
     expect(res.historicalMedianEnding).toBe(
       Math.round(hist!.medianEnding) / 100,
@@ -141,18 +150,37 @@ describe("calculateRetirement vs the sim engines directly", () => {
 
 describe("Monte Carlo", () => {
   test("the reported success rate is a fraction 0–1, not a percent", () => {
-    const res = expectOk(
-      runRetirementMonteCarlo(normalizedScenario({ mcRuns: 200, mcSeed: 42 })),
-    );
+    const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
+    const res = expectOk(runRetirementMonteCarlo(s));
     expect(res.successRate).toBeGreaterThanOrEqual(0);
     expect(res.successRate).toBeLessThanOrEqual(1);
-    // Pinned at 0.94, not the pre-fix 0.99: the two Review 2 fixes
-    // both lower it for this household — the omitted return now
-    // resolves to the 5% factory default (was the 6.75% blend),
-    // and the spouse's $18,000 now starts at the primary's 69
-    // (was $54,000 combined from 67). Verified against a direct
-    // runMonteCarlo call on the same inputs (0.94 exactly).
-    expect(res.successRate).toBeCloseTo(0.94, 2);
+    // Review 7 (R7-S1) + Review 2: the old pin was toBeCloseTo(0.99, 2) —
+    // tolerant of the r2 rounding the adapter used to apply. The rate now
+    // converts at whole-run precision over the 200 runs, checked exactly
+    // against the engine. Under Review 2 the rate for this household is
+    // 0.94 — the omitted return now resolves to the 5% factory default
+    // (was the 6.75% blend), and the spouse's $18,000 now starts at the
+    // primary's 69 (was $54,000 combined from 67) — i.e. 188/200,
+    // verified against a direct runMonteCarlo call on the same inputs
+    // (0.94 exactly, 188 successful runs).
+    const inputs = directSimInputs();
+    const mc = runMonteCarlo(
+      inputs,
+      s.expectedReturnPct / 100,
+      s.volatilityPct / 100,
+      s.mcSeed,
+      s.mcRuns,
+    );
+    expect(mc).not.toBeNull();
+    expect(res.successRate).toBe(
+      Math.round((mc!.neverOutSuccessRate * s.mcRuns) / 100) / s.mcRuns,
+    );
+    expect(res.successRate).toBe(0.94);
+    expect(res.successfulRuns).toBe(
+      Math.round((mc!.neverOutSuccessRate * s.mcRuns) / 100),
+    );
+    expect(res.successfulRuns).toBe(188);
+    expect(res.runs).toBe(200);
   });
 
   test("same seed twice is identical; a different seed (usually) differs", () => {
@@ -463,7 +491,21 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
       Math.round((res.maxAnnualSpending / 12) * 100) / 100,
     );
     // Success rate is a 0–1 fraction, not the engine's 0–100 percent.
-    expect(res.successRate).toBe(Math.round(solved.successRate) / 100);
+    // Review 7 (R7-S1): the old pin was
+    // Math.round(solved.successRate) / 100 — the r2 rounding that
+    // collapsed 85.4% to 0.85 and 99.9% to 1.0. The rate now
+    // converts at whole-run precision over the solver's fixed
+    // 1,000 runs. The value here is unchanged (the solver lands
+    // on exactly 85.0% = 850/1,000), but the formula is the exact
+    // one, and the derived count is pinned.
+    expect(res.successRate).toBe(
+      Math.round((solved.successRate * 1000) / 100) / 1000,
+    );
+    expect(res.successfulRuns).toBe(
+      Math.round((solved.successRate * 1000) / 100),
+    );
+    expect(res.successfulRuns).toBe(850);
+    expect(res.runs).toBe(1000);
     expect(res.successRate).toBeGreaterThanOrEqual(0);
     expect(res.successRate).toBeLessThanOrEqual(1);
     expect(res.medianEnding).toBe(centsToDollars(solved.medianEnding));
