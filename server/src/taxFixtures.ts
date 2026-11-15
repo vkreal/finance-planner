@@ -427,6 +427,459 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "e6-aca-below100-2026",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S2 — ACA below 100% FPL, 2026 coverage (hand-derived; IRC §36B, Rev. Proc. 2025-25, 2025 guidelines HH2 FPL $21,150 → 100% $21,150, 400% cliff $84,600): MAGI $21,149 is $1 under the line — below100Fpl true, credit $0, and the note names the OBBBA §71302 repeal of the former §36B(c)(1)(B) exception (P.L. 119-21, effective tax years after 2025-12-31), so no exception is priced for 2026+. MAGI exactly $21,150 is AT 100% — the first band prices: applicable 2.10%, expected contribution 2.10% × $21,150 = $444.15, credit on a $20,000 benchmark $20,000 − $444.15 = $19,555.85, below100Fpl false, eligibilityNote null.",
+    expected: {
+      belowCredit: 0,
+      belowFlag: 1,
+      belowOverCliff: 0,
+      belowFpl: 21150,
+      belowCliff: 84600,
+      belowNoteRepeal: 1,
+      atCredit: 19555.85,
+      atFlag: 0,
+      atApplicablePct: 2.1,
+      atPctFpl: 100,
+      atNote: null,
+    },
+    actual: () => {
+      const below = acaCreditFor({ magi: 21149, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const at = acaCreditFor({ magi: 21150, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      return {
+        belowCredit: below.credit,
+        belowFlag: below.below100Fpl ? 1 : 0,
+        belowOverCliff: below.overCliff ? 1 : 0,
+        belowFpl: below.fpl,
+        belowCliff: below.cliff,
+        belowNoteRepeal: (below.eligibilityNote ?? "").includes("repealed by OBBBA §71302") ? 1 : 0,
+        atCredit: at.credit,
+        atFlag: at.below100Fpl ? 1 : 0,
+        atApplicablePct: at.applicablePct,
+        atPctFpl: at.pctFpl,
+        atNote: at.eligibilityNote,
+      };
+    },
+  },
+  {
+    id: "e6-aca-band-edges-2026",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S2 — ACA band edges, 2026 coverage (hand-derived; Rev. Proc. 2025-25, 2025 guidelines HH2 FPL $21,150; band edges lower-inclusive): 133% = $28,129.50 takes the second band's INITIAL percentage 3.14% (not the first band's 2.10%): contribution 3.14% × $28,129.50 = $883.2663 → $883.27, credit $20,000 − $883.27 = $19,116.73. 150% = $31,725 takes 4.19%: 4.19% × $31,725 = $1,329.2775 → $1,329.28, credit $18,670.72. 200% = $42,300 takes 6.60%: 6.60% × $42,300 = $2,791.80, credit $17,208.20.",
+    expected: {
+      pct133: 3.14,
+      credit133: 19116.73,
+      pct150: 4.19,
+      credit150: 18670.72,
+      pct200: 6.6,
+      credit200: 17208.2,
+    },
+    actual: () => {
+      const at133 = acaCreditFor({ magi: 28129.5, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const at150 = acaCreditFor({ magi: 31725, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const at200 = acaCreditFor({ magi: 42300, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      return {
+        pct133: at133.applicablePct,
+        credit133: at133.credit,
+        pct150: at150.applicablePct,
+        credit150: at150.credit,
+        pct200: at200.applicablePct,
+        credit200: at200.credit,
+      };
+    },
+  },
+  {
+    id: "e6-aca-below100-2027-and-2025",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S2 — below-100% is law-year-aware (hand-derived): 2027 coverage uses the 2026 guidelines (HH2 FPL $21,640 → cliff $86,560; Rev. Proc. 2026-26): MAGI $21,639 is below 100% — credit $0, note still cites the §71302 repeal — while MAGI exactly $21,640 prices the first band at 2.15%: contribution 2.15% × $21,640 = $465.26, credit $20,000 − $465.26 = $19,534.74. 2025 coverage uses the 2024 guidelines (HH1 FPL $15,060; enhanced schedule Rev. Proc. 2024-35, 0% under 150%): MAGI $15,059 is below 100% — credit $0, and the note names the pre-OBBBA §36B(c)(1)(B) exception as NOT modeled (it existed for 2025) and does NOT mention a repeal — while MAGI exactly $15,060 prices the 0% band: contribution $0, credit the full $10,000 benchmark.",
+    expected: {
+      y27BelowCredit: 0,
+      y27BelowFlag: 1,
+      y27BelowCliff: 86560,
+      y27BelowFpl: 21640,
+      y27AtCredit: 19534.74,
+      y27AtPct: 2.15,
+      y27AtFlag: 0,
+      y25BelowCredit: 0,
+      y25BelowFlag: 1,
+      y25NotePreObbba: 1,
+      y25NoteRepeal: 0,
+      y25AtCredit: 10000,
+      y25AtPct: 0,
+      y25AtFlag: 0,
+    },
+    actual: () => {
+      const y27Below = acaCreditFor({ magi: 21639, householdSize: 2, coverageYear: 2027, benchmarkAnnual: 20000 });
+      const y27At = acaCreditFor({ magi: 21640, householdSize: 2, coverageYear: 2027, benchmarkAnnual: 20000 });
+      const y25Below = acaCreditFor({ magi: 15059, householdSize: 1, coverageYear: 2025, benchmarkAnnual: 10000 });
+      const y25At = acaCreditFor({ magi: 15060, householdSize: 1, coverageYear: 2025, benchmarkAnnual: 10000 });
+      return {
+        y27BelowCredit: y27Below.credit,
+        y27BelowFlag: y27Below.below100Fpl ? 1 : 0,
+        y27BelowCliff: y27Below.cliff,
+        y27BelowFpl: y27Below.fpl,
+        y27AtCredit: y27At.credit,
+        y27AtPct: y27At.applicablePct,
+        y27AtFlag: y27At.below100Fpl ? 1 : 0,
+        y25BelowCredit: y25Below.credit,
+        y25BelowFlag: y25Below.below100Fpl ? 1 : 0,
+        y25NotePreObbba: (y25Below.eligibilityNote ?? "").includes("pre-OBBBA §36B(c)(1)(B) exception") ? 1 : 0,
+        y25NoteRepeal: (y25Below.eligibilityNote ?? "").includes("repealed") ? 1 : 0,
+        y25AtCredit: y25At.credit,
+        y25AtPct: y25At.applicablePct,
+        y25AtFlag: y25At.below100Fpl ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "e6-irmaa-annual-tiers",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — IRMAA annual surcharge per person, hand-derived from the CMS premium totals (Part B total − standard + Part D surcharge, × 12): 2026 (std Part B $202.90): T1 ($284.10 − $202.90 + $14.50) × 12 = $95.70 × 12 = $1,148.40; T2 ($405.80 − $202.90 + $37.50) × 12 = $240.40 × 12 = $2,884.80; T3 ($527.50 − $202.90 + $60.40) × 12 = $385.00 × 12 = $4,620.00; T4 ($649.20 − $202.90 + $83.30) × 12 = $529.60 × 12 = $6,355.20; T5 ($689.90 − $202.90 + $91.00) × 12 = $578.00 × 12 = $6,936.00. 2025 (std $185.00): T1 ($259.00 − $185.00 + $13.70) × 12 = $87.70 × 12 = $1,052.40; T2 ($370.00 − $185.00 + $35.30) × 12 = $220.30 × 12 = $2,643.60; T3 ($480.90 − $185.00 + $57.00) × 12 = $352.90 × 12 = $4,234.80; T4 ($591.90 − $185.00 + $78.60) × 12 = $485.50 × 12 = $5,826.00; T5 ($628.90 − $185.00 + $85.80) × 12 = $529.70 × 12 = $6,356.40. Tier classification (2026 law row): MFJ $218,000 tier 0 / $218,001 tier 1 / $274,000 tier 1 / $274,001 tier 2 / $342,000 tier 2 / $410,000 tier 3 / $750,000 tier 5; single $109,000 tier 0 / $109,001 tier 1 / $500,000 tier 5.",
+    expected: {
+      y26t0: 0,
+      y26t1: 1148.4,
+      y26t2: 2884.8,
+      y26t3: 4620,
+      y26t4: 6355.2,
+      y26t5: 6936,
+      y25t0: 0,
+      y25t1: 1052.4,
+      y25t2: 2643.6,
+      y25t3: 4234.8,
+      y25t4: 5826,
+      y25t5: 6356.4,
+      mfj218000: 0,
+      mfj218001: 1,
+      mfj274000: 1,
+      mfj274001: 2,
+      mfj342000: 2,
+      mfj410000: 3,
+      mfj750000: 5,
+      s109000: 0,
+      s109001: 1,
+      s500000: 5,
+    },
+    actual: () => {
+      const a26 = [0, 1, 2, 3, 4, 5].map((t) => irmaaAnnualPerPerson(t, TAX_LAW_2026));
+      const a25 = [0, 1, 2, 3, 4, 5].map((t) => irmaaAnnualPerPerson(t, TAX_LAW_2025));
+      const tier = (magi: number, status: "mfj" | "single") => irmaaTierFor(magi, status, TAX_LAW_2026, 2026, 2.5);
+      return {
+        y26t0: a26[0] ?? null,
+        y26t1: a26[1] ?? null,
+        y26t2: a26[2] ?? null,
+        y26t3: a26[3] ?? null,
+        y26t4: a26[4] ?? null,
+        y26t5: a26[5] ?? null,
+        y25t0: a25[0] ?? null,
+        y25t1: a25[1] ?? null,
+        y25t2: a25[2] ?? null,
+        y25t3: a25[3] ?? null,
+        y25t4: a25[4] ?? null,
+        y25t5: a25[5] ?? null,
+        mfj218000: tier(218000, "mfj"),
+        mfj218001: tier(218001, "mfj"),
+        mfj274000: tier(274000, "mfj"),
+        mfj274001: tier(274001, "mfj"),
+        mfj342000: tier(342000, "mfj"),
+        mfj410000: tier(410000, "mfj"),
+        mfj750000: tier(750000, "mfj"),
+        s109000: tier(109000, "single"),
+        s109001: tier(109001, "single"),
+        s500000: tier(500000, "single"),
+      };
+    },
+  },
+  {
+    id: "e6-irmaa-missing-lookback-march",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — a march that starts AT Medicare age has no lookback (hand-derived mechanism; year list is the engine's own march): the fictional sample household (primary born 1968, 65 in 2033; spouse born 1970, 65 in 2035) with startYear 2033 prices no year before 2033, so premium years 2033 and 2034 read lookback years 2031 and 2032, which no priced year covers and no seed covers — irmaaLookbackMissingYears [2033, 2034], both years irmaaSurchargeKnown false, irmaaPaid $0 with a null paid tier (the $0 is UNKNOWN, not a computed zero), lookbackAvailable false, lookbackYear 2031/2032, one person on Medicare. Premium year 2035 reads 2033, which the march prices itself — known, tier 0, two people on Medicare. No ACA year falls below 100% FPL on this plan.",
+    expected: {
+      missing: "[2033,2034]",
+      y33Known: 0,
+      y33Paid: 0,
+      y33Tier: null,
+      y33LookbackYear: 2031,
+      y33LookbackAvail: 0,
+      y33Persons: 1,
+      y34Known: 0,
+      y34Paid: 0,
+      y34Tier: null,
+      y35Known: 1,
+      y35Paid: 0,
+      y35Tier: 0,
+      y35Persons: 2,
+      acaBelow100: "[]",
+    },
+    actual: () => {
+      const res = simulateRothPlan(samplePlanInputs({ startYear: 2033 }), DO_NOTHING);
+      const y33 = res.years.find((y) => y.year === 2033);
+      const y34 = res.years.find((y) => y.year === 2034);
+      const y35 = res.years.find((y) => y.year === 2035);
+      return {
+        missing: JSON.stringify(res.irmaaLookbackMissingYears),
+        y33Known: y33?.irmaaSurchargeKnown ? 1 : 0,
+        y33Paid: y33?.irmaaPaid ?? null,
+        y33Tier: y33?.detail.irmaa.paidTier ?? null,
+        y33LookbackYear: y33?.detail.irmaa.lookbackYear ?? null,
+        y33LookbackAvail: y33?.detail.irmaa.lookbackAvailable ? 1 : 0,
+        y33Persons: y33?.detail.irmaa.personsOnMedicare ?? null,
+        y34Known: y34?.irmaaSurchargeKnown ? 1 : 0,
+        y34Paid: y34?.irmaaPaid ?? null,
+        y34Tier: y34?.detail.irmaa.paidTier ?? null,
+        y35Known: y35?.irmaaSurchargeKnown ? 1 : 0,
+        y35Paid: y35?.irmaaPaid ?? null,
+        y35Tier: y35?.detail.irmaa.paidTier ?? null,
+        y35Persons: y35?.detail.irmaa.personsOnMedicare ?? null,
+        acaBelow100: JSON.stringify(res.acaBelow100FplYears),
+      };
+    },
+  },
+  {
+    id: "e6-irmaa-seed-march",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — explicitly supplied prior-year returns grade the premium years (hand-derived tiers; the 2035 march-priced MAGI is an engine-derived regression pin): same late-start plan as e6-irmaa-missing-lookback-march, plus irmaaLookbackSeed [{2031, $100,000, mfj}, {2032, $300,000, mfj}]. No missing years. 2033 reads 2031: $100,000 MFJ is under the $218,000 tier-1 line → tier 0, $0 for the one person on Medicare, source year 2031 / MAGI $100,000 / mfj. 2034 reads 2032: $300,000 MFJ sits in tier 2 ($274,000–$342,000) → 2026 tier-2 annual $2,884.80 × 1 person = $2,884.80. 2035 reads the march-priced 2033 (MAGI $93,500, pinned) → tier 0.",
+    expected: {
+      missing: "[]",
+      y33Known: 1,
+      y33Paid: 0,
+      y33Tier: 0,
+      y33SrcYear: 2031,
+      y33SrcMagi: 100000,
+      y33SrcStatus: "mfj",
+      y34Known: 1,
+      y34Paid: 2884.8,
+      y34Tier: 2,
+      y34SrcYear: 2032,
+      y34SrcMagi: 300000,
+      y35Tier: 0,
+      y35SrcMagi: 93500,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        samplePlanInputs({
+          startYear: 2033,
+          irmaaLookbackSeed: [
+            { year: 2031, magi: 100000, filingStatus: "mfj" },
+            { year: 2032, magi: 300000, filingStatus: "mfj" },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const y33 = res.years.find((y) => y.year === 2033);
+      const y34 = res.years.find((y) => y.year === 2034);
+      const y35 = res.years.find((y) => y.year === 2035);
+      return {
+        missing: JSON.stringify(res.irmaaLookbackMissingYears),
+        y33Known: y33?.irmaaSurchargeKnown ? 1 : 0,
+        y33Paid: y33?.irmaaPaid ?? null,
+        y33Tier: y33?.detail.irmaa.paidTier ?? null,
+        y33SrcYear: y33?.detail.irmaa.paidSourceYear ?? null,
+        y33SrcMagi: y33?.detail.irmaa.paidSourceMagi ?? null,
+        y33SrcStatus: y33?.detail.irmaa.paidSourceFilingStatus ?? null,
+        y34Known: y34?.irmaaSurchargeKnown ? 1 : 0,
+        y34Paid: y34?.irmaaPaid ?? null,
+        y34Tier: y34?.detail.irmaa.paidTier ?? null,
+        y34SrcYear: y34?.detail.irmaa.paidSourceYear ?? null,
+        y34SrcMagi: y34?.detail.irmaa.paidSourceMagi ?? null,
+        y35Tier: y35?.detail.irmaa.paidTier ?? null,
+        y35SrcMagi: y35?.detail.irmaa.paidSourceMagi ?? null,
+      };
+    },
+  },
+  {
+    id: "e6-irmaa-seed-filing-status",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — the lookback is graded on the LOOKBACK return's filing status, not the premium year's (hand-derived; SSA POMS HI 01101.010 / HI 01101.020; 20 CFR 418.1135): the same $250,000 return for 2031 grades premium year 2033 two ways. Filed single it lands in tier 4 (single lines $205,000/$500,000) → 2026 tier-4 annual $6,355.20 × 1 person = $6,355.20. Filed jointly it lands in tier 1 (MFJ lines $218,000/$274,000) → $1,148.40. In both legs 2034 stays missing (no 2032 return supplied), so irmaaLookbackMissingYears is [2034].",
+    expected: {
+      singleTier: 4,
+      singlePaid: 6355.2,
+      singleSrcStatus: "single",
+      singleKnown: 1,
+      singleMissing: "[2034]",
+      mfjTier: 1,
+      mfjPaid: 1148.4,
+      mfjSrcStatus: "mfj",
+      mfjKnown: 1,
+      mfjMissing: "[2034]",
+    },
+    actual: () => {
+      const run = (status: "single" | "mfj") =>
+        simulateRothPlan(
+          samplePlanInputs({
+            startYear: 2033,
+            irmaaLookbackSeed: [{ year: 2031, magi: 250000, filingStatus: status }],
+          }),
+          DO_NOTHING,
+        );
+      const s = run("single");
+      const m = run("mfj");
+      const s33 = s.years.find((y) => y.year === 2033);
+      const m33 = m.years.find((y) => y.year === 2033);
+      return {
+        singleTier: s33?.detail.irmaa.paidTier ?? null,
+        singlePaid: s33?.irmaaPaid ?? null,
+        singleSrcStatus: s33?.detail.irmaa.paidSourceFilingStatus ?? null,
+        singleKnown: s33?.irmaaSurchargeKnown ? 1 : 0,
+        singleMissing: JSON.stringify(s.irmaaLookbackMissingYears),
+        mfjTier: m33?.detail.irmaa.paidTier ?? null,
+        mfjPaid: m33?.irmaaPaid ?? null,
+        mfjSrcStatus: m33?.detail.irmaa.paidSourceFilingStatus ?? null,
+        mfjKnown: m33?.irmaaSurchargeKnown ? 1 : 0,
+        mfjMissing: JSON.stringify(m.irmaaLookbackMissingYears),
+      };
+    },
+  },
+  {
+    id: "e6-irmaa-survivor-joint-lookback",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — survivor premium years keep the joint lookback (hand-derived tiers; the march MAGIs are engine-derived regression pins): the fictional sample household with $200,000 of other ordinary income, primary dying in 2034 (survivorWho primary, survivorDeathYear 2034). Premium years 2035 and 2036 read lookback years 2033 ($246,367.29) and 2034 ($248,723.23), both priced MFJ while both spouses lived — so the survivor year still grades them on the JOINT table: $246,367.29 in tier 1 ($218,000–$274,000) at $1,148.40 for the ONE person on Medicare (the spouse alone), source status mfj. Had the same MAGI been graded single it would be tier 4 (single lines $205,000/$500,000) at $6,355.20 — the joint grading is worth $5,206.80 a person that year. The no-death control prices the same tier from the same lookback but for TWO people ($2,296.80 in 2035), so the survivor/control paid difference is exactly the headcount, not a re-grading. No missing lookback years on either leg.",
+    expected: {
+      survMissing: "[]",
+      surv35Tier: 1,
+      surv35Paid: 1148.4,
+      surv35SrcStatus: "mfj",
+      surv35SrcMagi: 246367.29,
+      surv35Persons: 1,
+      ctrl35Paid: 2296.8,
+      ctrl35Persons: 2,
+      surv36Tier: 1,
+      surv36Paid: 1148.4,
+      surv36SrcMagi: 248723.23,
+      ctrl36Paid: 2296.8,
+    },
+    actual: () => {
+      const base = { startYear: 2026, otherOrdinaryAnnual: 200000 };
+      const ctrl = simulateRothPlan(samplePlanInputs(base), DO_NOTHING);
+      const surv = simulateRothPlan(
+        samplePlanInputs({ ...base, survivorEnabled: true, survivorWho: "primary", survivorDeathYear: 2034 }),
+        DO_NOTHING,
+      );
+      const s35 = surv.years.find((y) => y.year === 2035);
+      const c35 = ctrl.years.find((y) => y.year === 2035);
+      const s36 = surv.years.find((y) => y.year === 2036);
+      const c36 = ctrl.years.find((y) => y.year === 2036);
+      return {
+        survMissing: JSON.stringify(surv.irmaaLookbackMissingYears),
+        surv35Tier: s35?.detail.irmaa.paidTier ?? null,
+        surv35Paid: s35?.irmaaPaid ?? null,
+        surv35SrcStatus: s35?.detail.irmaa.paidSourceFilingStatus ?? null,
+        surv35SrcMagi: s35?.detail.irmaa.paidSourceMagi ?? null,
+        surv35Persons: s35?.detail.irmaa.personsOnMedicare ?? null,
+        ctrl35Paid: c35?.irmaaPaid ?? null,
+        ctrl35Persons: c35?.detail.irmaa.personsOnMedicare ?? null,
+        surv36Tier: s36?.detail.irmaa.paidTier ?? null,
+        surv36Paid: s36?.irmaaPaid ?? null,
+        surv36SrcMagi: s36?.detail.irmaa.paidSourceMagi ?? null,
+        ctrl36Paid: c36?.irmaaPaid ?? null,
+      };
+    },
+  },
+  {
+    id: "e6-aca-below100-march",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S2 — below-100% years surface across the whole march (hand-derived mechanism; the year span is the engine's own ACA-active span): the fictional sample household reshaped low — $100,000 pre-tax, no taxable/Roth/HSA, $12,000/yr spending, retire 62 — draws $12,000/yr of pre-tax income in every ACA year, under the household-of-4 poverty line ($33,000 on the carried-forward 2026 guidelines) every year. acaBelow100FplYears is [2030, 2031, 2032, 2033, 2034]: the primary ages onto Medicare in 2033 but the spouse (born 1970, 65 in 2035) stays on the marketplace through 2034, so the below-100% span runs past the primary's 65th birthday. Each year's detail carries below100Fpl true, a $0 credit, and the §71302-repeal eligibility note.",
+    expected: {
+      belowYears: "[2030,2031,2032,2033,2034]",
+      y30Magi: 12000,
+      y30Below: 1,
+      y30Credit: 0,
+      y30NoteRepeal: 1,
+      y34Below: 1,
+      y34Credit: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        samplePlanInputs({
+          pretaxStart: 100000,
+          taxableStart: 0,
+          rothStart: 0,
+          hsaStart: 0,
+          annualSpending: 12000,
+          retirementAge: 62,
+        }),
+        DO_NOTHING,
+      );
+      const y30 = res.years.find((y) => y.year === 2030);
+      const y34 = res.years.find((y) => y.year === 2034);
+      return {
+        belowYears: JSON.stringify(res.acaBelow100FplYears),
+        y30Magi: y30?.acaMagi ?? null,
+        y30Below: y30?.acaBelow100Fpl ? 1 : 0,
+        y30Credit: y30?.acaCreditKept ?? null,
+        y30NoteRepeal: (y30?.detail.aca.eligibilityNote ?? "").includes("repealed by OBBBA §71302") ? 1 : 0,
+        y34Below: y34?.acaBelow100Fpl ? 1 : 0,
+        y34Credit: y34?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "e6-workyears-seed-merge-and-march",
+    kind: "tax",
+    note: "ENGINE REVIEW 6, E6-S1 — the work-years roll merges a caller seed UNDER its own priced lines, and the rolled march prices IRMAA from the merged seed (merge rule hand-derived; the priced work-year MAGIs are engine-derived regression pins): sample plan, window start 55, $200,000 salary, quit 60 — the roll prices work years 2026 ($234,755.27) and 2027 ($236,735.02). A caller seed for 2024 ($90,000, mfj — a year the roll never prices) survives into the rolled seed; a caller seed for 2026 ($999,999 — a year the roll DOES price) is dropped, the priced line's $234,755.27 winning its year. A zero-work-year quit (58) carries the caller seed alone. Quit 65 prices work years 2026–2032 (2031 MAGI $245,764.30, 2032 $245,573.62, both MFJ) and the rolled march — starting at 65 in 2033 — prices premium year 2033 from the 2031 work-year return: $245,764.30 in MFJ tier 1 ($218,000–$274,000) → $1,148.40 for the one person on Medicare; 2034 likewise from 2032 ($1,148.40); 2035 reads the march-priced 2033 ($112,680.57, tier 0, two people). No missing lookback years on the quit-65 march.",
+    expected: {
+      seed60: "[{\"year\":2024,\"magi\":90000,\"filingStatus\":\"mfj\"},{\"year\":2026,\"magi\":234755.27,\"filingStatus\":\"mfj\"},{\"year\":2027,\"magi\":236735.02,\"filingStatus\":\"mfj\"}]",
+      seed0: "[{\"year\":2024,\"magi\":90000,\"filingStatus\":\"mfj\"}]",
+      march65Missing: "[]",
+      m65y33Paid: 1148.4,
+      m65y33Tier: 1,
+      m65y33SrcYear: 2031,
+      m65y33SrcMagi: 245764.3,
+      m65y33SrcStatus: "mfj",
+      m65y33Persons: 1,
+      m65y34Paid: 1148.4,
+      m65y34Tier: 1,
+      m65y34SrcMagi: 245573.62,
+      m65y35Tier: 0,
+      m65y35SrcMagi: 112680.57,
+      m65y35Persons: 2,
+    },
+    actual: () => {
+      const plan = samplePlanInputs({ windowStartAge: 55, retirementAge: 62 });
+      const job: WorkYearJob = { salary: 200000, employer401k: 0, employerHsa: 0 };
+      const roll60 = rollWorkYears(
+        {
+          ...plan,
+          irmaaLookbackSeed: [
+            { year: 2024, magi: 90000, filingStatus: "mfj" },
+            { year: 2026, magi: 999999, filingStatus: "mfj" },
+          ],
+        },
+        job,
+        60,
+      );
+      const roll0 = rollWorkYears(
+        { ...plan, irmaaLookbackSeed: [{ year: 2024, magi: 90000, filingStatus: "mfj" }] },
+        job,
+        58,
+      );
+      const roll65 = rollWorkYears(
+        { ...plan, irmaaLookbackSeed: [{ year: 2024, magi: 90000, filingStatus: "mfj" }] },
+        job,
+        65,
+      );
+      const march65 = simulateRothPlan(roll65.rolledInputs, DO_NOTHING);
+      const m33 = march65.years.find((y) => y.year === 2033);
+      const m34 = march65.years.find((y) => y.year === 2034);
+      const m35 = march65.years.find((y) => y.year === 2035);
+      return {
+        seed60: JSON.stringify(roll60.rolledInputs.irmaaLookbackSeed),
+        seed0: JSON.stringify(roll0.rolledInputs.irmaaLookbackSeed),
+        march65Missing: JSON.stringify(march65.irmaaLookbackMissingYears),
+        m65y33Paid: m33?.irmaaPaid ?? null,
+        m65y33Tier: m33?.detail.irmaa.paidTier ?? null,
+        m65y33SrcYear: m33?.detail.irmaa.paidSourceYear ?? null,
+        m65y33SrcMagi: m33?.detail.irmaa.paidSourceMagi ?? null,
+        m65y33SrcStatus: m33?.detail.irmaa.paidSourceFilingStatus ?? null,
+        m65y33Persons: m33?.detail.irmaa.personsOnMedicare ?? null,
+        m65y34Paid: m34?.irmaaPaid ?? null,
+        m65y34Tier: m34?.detail.irmaa.paidTier ?? null,
+        m65y34SrcMagi: m34?.detail.irmaa.paidSourceMagi ?? null,
+        m65y35Tier: m35?.detail.irmaa.paidTier ?? null,
+        m65y35SrcMagi: m35?.detail.irmaa.paidSourceMagi ?? null,
+        m65y35Persons: m35?.detail.irmaa.personsOnMedicare ?? null,
+      };
+    },
+  },
+  {
     id: "tax-fill-12-no-other-income",
     kind: "tax",
     note: "Fill to the top of the 12% bracket, no other income (2026 MFJ): taxable income = conversion − $32,200 standard deduction, and the top of the 12% bracket is $100,800 of taxable income, so the fill is a $133,000 gross conversion landing exactly on $100,800 taxable.",

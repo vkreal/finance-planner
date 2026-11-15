@@ -9198,13 +9198,23 @@ export function Playground({
                       ) : (
                         " — enter an ACA benchmark premium above to price the credit."
                       ))}
-                    {pg.aca.pctFpl != null && pg.aca.pctFpl < 138 && (
+                    {pg.aca.below100Fpl ? (
                       <>
                         {" "}
-                        Under 138% of the poverty line, coverage routes to
-                        Medicaid in most states rather than a marketplace plan —
-                        treat any credit as flagged, not bankable.
+                        Under 100% of the poverty line, so the premium credit is $0
+                        under the standard §36B income test.{" "}
+                        {pg.aca.eligibilityNote}
                       </>
+                    ) : (
+                      pg.aca.pctFpl != null &&
+                      pg.aca.pctFpl < 138 && (
+                        <>
+                          {" "}
+                          Under 138% of the poverty line, coverage routes to
+                          Medicaid in most states rather than a marketplace plan —
+                          treat any credit as flagged, not bankable.
+                        </>
+                      )
                     )}
                   </p>
                 )}

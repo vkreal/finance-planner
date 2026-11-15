@@ -560,6 +560,19 @@ export function buildRothCompareBase(
         ? null
         : dollarsToCents(scenario.acaBenchmarkFamily),
     acaSpouseEndAge: null,
+    // IRMAA lookback seed (Engine Review 6, E6-S1): the
+    // caller-supplied prior-year returns, in cents — the
+    // engine grades the first premium years from these real
+    // returns instead of finding no lookback at all. Null =
+    // none supplied; the march prices exactly as before.
+    irmaaLookbackSeedCents:
+      scenario.priorYearMagi == null
+        ? null
+        : scenario.priorYearMagi.map((e) => ({
+            year: e.taxYear,
+            magiCents: dollarsToCents(e.magi),
+            filingStatus: e.filingStatus,
+          })),
     // Health premiums (Review 3 R3-S1): wired only when the
     // caller supplied amounts AND declared spending excludes
     // them (premiumsCharged) — the engine's v208 term then funds
@@ -686,6 +699,19 @@ export function buildRothPlanInputs(
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
+    // IRMAA lookback seed (Engine Review 6, E6-S1): the
+    // caller-supplied prior-year returns, in dollars. The
+    // work-years roll merges these UNDER its own priced
+    // lines (a priced work year wins its year), so they fill
+    // only the years the roll does not price.
+    irmaaLookbackSeed:
+      scenario.priorYearMagi == null
+        ? null
+        : scenario.priorYearMagi.map((e) => ({
+            year: e.taxYear,
+            magi: e.magi,
+            filingStatus: e.filingStatus,
+          })),
     // Health premiums (Review 3 R3-S1): same rule as the cents
     // base above — wired in dollars only when premiumsCharged.
     healthPremiumAcaHousehold: scenario.premiumsCharged
@@ -766,6 +792,16 @@ type MappedCompareScenario = {
   lifetimeStateTax: number;
   acaCreditKept: number;
   irmaaTotal: number;
+  // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6):
+  // the premium years whose IRMAA surcharge is UNKNOWN
+  // (someone on Medicare, no lookback entry for year − 2 —
+  // the $0 in those years is not a computed $0, and
+  // irmaaTotal excludes the unknown amounts) and the
+  // ACA-priced years under 100% FPL (credit $0 under the
+  // standard §36B income test). Both empty on a scenario
+  // with complete lookbacks and no below-100% year.
+  irmaaLookbackMissingYears: number[];
+  acaBelow100FplYears: number[];
   // Lifetime health premiums (Review 3 R3-S1; $0 when the v208
   // term is not entered): the GROSS premium the score identity
   // adds beside acaCreditKept, and the NET premium actually
@@ -863,6 +899,8 @@ function mapCompareScenario(
     lifetimeStateTax: centsToDollars(s.stateTaxCents),
     acaCreditKept: centsToDollars(s.acaCreditCents),
     irmaaTotal: centsToDollars(s.irmaaCents),
+    irmaaLookbackMissingYears: s.irmaaLookbackMissingYears,
+    acaBelow100FplYears: s.acaBelow100FplYears,
     lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
     lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
@@ -900,6 +938,14 @@ type YearlyCompareRow = {
   taxableIncome: number;
   acaCredit: number;
   irmaa: number;
+  // LOOKBACK AVAILABILITY + ELIGIBILITY (Engine Review 6):
+  // whether the year's IRMAA surcharge is KNOWN (false =
+  // someone on Medicare, no lookback entry for year − 2, so
+  // irmaa is $0 UNKNOWN, not a computed $0) and whether the
+  // year's ACA MAGI is under 100% FPL (credit $0 under the
+  // standard §36B income test).
+  irmaaSurchargeKnown: boolean;
+  acaBelow100Fpl: boolean;
   // The year's health premiums (Review 3 R3-S1): GROSS premium
   // (marketplace gross + Medicare base for the year's persons
   // on Medicare) and NET premium actually funded (gross less
@@ -956,6 +1002,8 @@ function yearlyTable(
     taxableIncome: centsToDollars(y.taxableIncomeCents),
     acaCredit: centsToDollars(y.acaCreditCents),
     irmaa: centsToDollars(y.irmaaCents),
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+    acaBelow100Fpl: y.acaBelow100Fpl,
     healthPremiumGross: centsToDollars(y.healthPremiumGrossCents),
     healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
@@ -1190,6 +1238,8 @@ function mapScoredCandidate(
     lifetimeStateTax: r2(s.result.lifetimeStateTax),
     acaCreditKept: r2(s.cost.acaCredit),
     irmaaTotal: r2(s.cost.irmaa),
+    irmaaLookbackMissingYears: s.result.irmaaLookbackMissingYears,
+    acaBelow100FplYears: s.result.acaBelow100FplYears,
     lifetimeHealthPremiumGross: r2(s.result.lifetimeHealthPremiumGross),
     lifetimeHealthPremiumNet: r2(s.result.lifetimeHealthPremiumNet),
     endingPretax: r2(s.result.endingPretax),
@@ -1245,6 +1295,8 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     taxableIncome: r2(y.taxableIncome),
     acaCredit: r2(y.acaCreditKept),
     irmaa: r2(y.irmaaPaid),
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+    acaBelow100Fpl: y.acaBelow100Fpl,
     healthPremiumGross: r2(y.healthPremiumGross),
     healthPremiumNet: r2(y.healthPremiumNet),
     conversion: r2(y.conversion),
@@ -1279,6 +1331,48 @@ const YEARLY_TABLE_WARNING =
 
 const WORK_YEARS_HORIZON_WARNING =
   "The work-years rows price each quit age as its own plan starting at that quit age with rolled balances, so their ending balances span different horizons and are not like-for-like across quit ages; use the all-in tax and the Roth-compare scenarios for the quit-age decision.";
+
+// Engine Review 6 (E6-S1/E6-S2): warnings that keep a missing
+// IRMAA lookback and a below-100%-FPL ACA year from reading
+// as a verified $0. A missing lookback means the surcharge is
+// UNKNOWN — the year's $0 and the scenario's lifetime IRMAA
+// and net cost exclude amounts the engine could not price —
+// and a below-100% year means the $0 credit is the standard
+// §36B income test, not a modeled exception. Both are also
+// carried as structured fields on the scenario (the
+// irmaaLookbackMissingYears / acaBelow100FplYears lists) and
+// on each yearly row (irmaaSurchargeKnown / acaBelow100Fpl),
+// so an AI can read them without parsing this text. The
+// per-year detail.aca.eligibilityNote carries the law-year
+// specific note (OBBBA §71302 repeal for 2026+; the
+// pre-OBBBA §36B(c)(1)(B) exception unmodeled for 2025).
+function irmaaAcaCompareWarnings(
+  scenarios: Array<{
+    name: string;
+    irmaaLookbackMissingYears: number[];
+    acaBelow100FplYears: number[];
+  }>,
+): string[] {
+  const out: string[] = [];
+  for (const m of scenarios) {
+    if (m.irmaaLookbackMissingYears.length > 0) {
+      const years = m.irmaaLookbackMissingYears.join(", ");
+      const lookbacks = m.irmaaLookbackMissingYears
+        .map((y) => y - 2)
+        .join(", ");
+      out.push(
+        `IRMAA is unknown, not $0, for ${m.name} in ${years}: no MAGI is on record for the two-year lookback year(s) ${lookbacks}, so the $0 surcharge shown for those years is an unavailable computation — the scenario's lifetime IRMAA and net cost exclude the unknown amounts. Supply priorYearMagi entries for ${lookbacks} to price them.`,
+      );
+    }
+    if (m.acaBelow100FplYears.length > 0) {
+      const years = m.acaBelow100FplYears.join(", ");
+      out.push(
+        `ACA credit is $0 for ${m.name} in ${years} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
+      );
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // 1. Deterministic projection
@@ -1711,7 +1805,11 @@ export function compareWithdrawalStrategies(
         yearly: yearlyTable(outcome.baselineRaw),
         comparisonScope: scope,
       },
-      [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
+      [
+        ...healthPremiumWarnings(scenario),
+        YEARLY_TABLE_WARNING,
+        ...irmaaAcaCompareWarnings(outcome.mapped),
+      ],
       taxAwareAssumptions(scenario),
       null,
       "retirement_compare_strategies",
@@ -1754,6 +1852,12 @@ export type RothConversionResults = {
       netCost: number;
       endingWealth: number;
       conversionsTotal: number;
+      // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6):
+      // the winner march's premium years whose IRMAA is
+      // UNKNOWN and its ACA years under 100% FPL — read off
+      // the winner's own priced march, never re-derived.
+      irmaaLookbackMissingYears: number[];
+      acaBelow100FplYears: number[];
       yearlyConversions: Array<{
         year: number;
         agePrimary: number;
@@ -1767,7 +1871,15 @@ export type RothConversionResults = {
       endingWealth: number;
       conversionsTotal: number;
     }>;
-    doNothing: { netCost: number; endingWealth: number };
+    doNothing: {
+      netCost: number;
+      endingWealth: number;
+      // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6):
+      // the do-nothing march's premium years whose IRMAA is
+      // UNKNOWN and its ACA years under 100% FPL.
+      irmaaLookbackMissingYears: number[];
+      acaBelow100FplYears: number[];
+    };
     candidateFamiliesEvaluated: string[];
     excludedCandidateFamilies: string[];
     // Engine Review 4 (E4-S1/E4-S2): the objective the winner
@@ -1863,7 +1975,11 @@ export function compareRothConversions(
         yearly: yearlyTable(outcome.baselineRaw),
         comparisonScope: scope,
       },
-      [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING],
+      [
+        ...healthPremiumWarnings(scenario),
+        YEARLY_TABLE_WARNING,
+        ...irmaaAcaCompareWarnings(outcome.mapped),
+      ],
       taxAwareAssumptions(scenario),
       null,
       "retirement_roth_conversion",
@@ -2006,6 +2122,9 @@ function compareRothConversionsFull(
             netCost: r2(winner.cost.netCost),
             endingWealth: r2(winner.result.endingAfterTaxWealth),
             conversionsTotal: r2(winnerTotal),
+            irmaaLookbackMissingYears:
+              winner.result.irmaaLookbackMissingYears,
+            acaBelow100FplYears: winner.result.acaBelow100FplYears,
             yearlyConversions: winnerConversions,
             rmdDeferral: rmdSurvivorSummary(
               winner.result.years.map((y) => ({
@@ -2031,6 +2150,9 @@ function compareRothConversionsFull(
           doNothing: {
             netCost: r2(doNothing.cost.netCost),
             endingWealth: r2(doNothing.result.endingAfterTaxWealth),
+            irmaaLookbackMissingYears:
+              doNothing.result.irmaaLookbackMissingYears,
+            acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
             rmdDeferral: rmdSurvivorSummary(
               doNothing.result.years.map((y) => ({
                 year: y.year,
@@ -2074,6 +2196,22 @@ function compareRothConversionsFull(
       [
         HEALTH_PREMIUM_WARNING,
         YEARLY_TABLE_WARNING,
+        // Engine Review 6: the winner's and the do-nothing
+        // march's unknown-IRMAA / below-100% years.
+        ...irmaaAcaCompareWarnings([
+          {
+            name: winnerName,
+            irmaaLookbackMissingYears:
+              winner.result.irmaaLookbackMissingYears,
+            acaBelow100FplYears: winner.result.acaBelow100FplYears,
+          },
+          {
+            name: "do-nothing",
+            irmaaLookbackMissingYears:
+              doNothing.result.irmaaLookbackMissingYears,
+            acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+          },
+        ]),
         "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
         ...(result.excludedInvalidWinner == null
           ? []
@@ -2194,6 +2332,8 @@ export function compareRetirementAges(
       winnerStrategy: string;
       winnerClaimPrimaryAge: number | null;
       winnerClaimSpouseAge: number | null;
+      irmaaLookbackMissingYears: number[];
+      acaBelow100FplYears: number[];
     }> = [];
     let workYearsWinnerByAllInTax: string | null = null;
     const workYearsWarnings: string[] = [];
@@ -2229,6 +2369,12 @@ export function compareRetirementAges(
           winnerStrategy: row.optimizer.winner.spec.name,
           winnerClaimPrimaryAge: row.optimizer.winner.claimAges.primaryAge,
           winnerClaimSpouseAge: row.optimizer.winner.claimAges.spouseAge,
+          // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review
+          // 6): the winner march's premium years whose IRMAA
+          // is UNKNOWN and its ACA years under 100% FPL
+          // (see the row type in workYears.ts).
+          irmaaLookbackMissingYears: row.irmaaLookbackMissingYears,
+          acaBelow100FplYears: row.acaBelow100FplYears,
         })),
       );
       const wyWinner = pickWinner(
@@ -2285,6 +2431,17 @@ export function compareRetirementAges(
         ...healthPremiumWarnings(scenario),
         YEARLY_TABLE_WARNING,
         WORK_YEARS_HORIZON_WARNING,
+        ...irmaaAcaCompareWarnings(outcome.mapped),
+        // The work-years leg prices its own rolled marches,
+        // so their unknown-IRMAA / below-100% years are
+        // warned here too, keyed by quit age.
+        ...irmaaAcaCompareWarnings(
+          workYears.map((w) => ({
+            name: `retire-${w.quitAge}`,
+            irmaaLookbackMissingYears: w.irmaaLookbackMissingYears,
+            acaBelow100FplYears: w.acaBelow100FplYears,
+          })),
+        ),
         ...workYearsWarnings,
       ],
       taxAwareAssumptions(scenario),
@@ -2596,6 +2753,20 @@ export function calculateSingleYearTax(
     // the included case is warned by normalize at the scenario level.
     warnings.push(...healthPremiumWarnings(scenario));
     const priced: PlaygroundYearResult = pricePlaygroundYear(inputs);
+    // Engine Review 6 (E6-S2): a priced year whose ACA MAGI
+    // is under 100% FPL reads $0 credit under the standard
+    // §36B income test — the aca block carries the flag and
+    // the law-year eligibility note; the warning makes it
+    // visible here too instead of letting the $0 pass
+    // silently. (The single-year pricer has no IRMAA
+    // lookback — its IRMAA block is the forward readout for
+    // year + 2, always computable — so there is no unknown
+    // lookback to warn about here.)
+    if (priced.aca.below100Fpl) {
+      warnings.push(
+        `ACA credit is $0 for ${scenario.taxYear} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
+      );
+    }
     // Post-price overlap checks (need the computed RMD, which
     // only the engine knows): the RMD is priced as income IN
     // ADDITION to the typed draws. A draw that already includes

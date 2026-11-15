@@ -141,6 +141,31 @@ export const RetirementQuestionInputs = z.strictObject({
   /** ACA benchmark premium, family, $/yr. Default: null. */
   acaBenchmarkFamily: dollars.optional(),
 
+  // --- Prior-year returns for the IRMAA two-year lookback
+  // (Engine Review 6, E6-S1). ---
+  /** Filed returns the two-year IRMAA lookback reads: one entry
+   *  per tax year — that year's MAGI in dollars and the filing
+   *  status that year's return was filed under. Optional:
+   *  omitted → no supplied returns, and a premium year with no
+   *  recorded lookback prices $0 of IRMAA and is flagged
+   *  unknown (irmaaLookbackMissingYears on the compare result).
+   *  Entries are taken exactly as supplied — never inferred from
+   *  current balances or spending — and a duplicate tax year
+   *  keeps the LAST entry. Priced by the march tools
+   *  (compare_strategies, roth_conversion, work_years); the
+   *  single-year tax tool prices IRMAA forward from the priced
+   *  year and reads no lookback. */
+  priorYearMagi: z
+    .array(
+      z.strictObject({
+        taxYear: z.number().int().finite().min(1900).max(2200),
+        magi: dollars,
+        filingStatus: z.enum(["mfj", "single", "hoh"]),
+      }),
+    )
+    .max(40)
+    .optional(),
+
   // --- Health insurance premiums (annual dollars; Review 3 R3-S1).
   //  The engine's v208 premium term: when ANY of the three amounts
   //  is entered, the term is ACTIVE and annualSpending is read as

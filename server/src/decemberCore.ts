@@ -2545,6 +2545,15 @@ export type DecemberCaseResult = {
   // premium was entered and the case is not over the cliff —
   // over the cliff the allowable credit is $0 by law).
   creditAtHeadline: number | null;
+  // ELIGIBILITY (Engine Review 6, E6-S2): true when the
+  // headline year's ACA MAGI is under 100% FPL — the $0
+  // credit is the standard §36B income test, with the
+  // reason in acaEligibilityNoteAtHeadline (null when not
+  // below 100%). Read straight off the priced year's aca
+  // block; a case whose credit is null (unpriced) carries
+  // false, never a stale flag.
+  acaBelow100FplAtHeadline: boolean;
+  acaEligibilityNoteAtHeadline: string | null;
   // Excess-APTC repayment at the headline draw. For tax
   // years 2026 and later there are NO repayment caps
   // (P.L. 119-21 §71305), so ANY advance credit taken above
@@ -3174,6 +3183,8 @@ export function computeDecemberProjection(
       overCliffAtHeadline: overAtHeadline,
       overCliffEvenAtZero: cliff != null && zero.aca.overCliff,
       creditAtHeadline: finalCredit,
+      acaBelow100FplAtHeadline: atHeadline.aca.below100Fpl,
+      acaEligibilityNoteAtHeadline: atHeadline.aca.eligibilityNote,
       excessAptcRepayment,
       creditStillDue,
       repaymentExposure: excessAptcRepayment ?? 0,

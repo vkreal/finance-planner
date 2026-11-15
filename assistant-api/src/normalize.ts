@@ -113,6 +113,16 @@ export interface NormalizedScenario {
   acaBenchmarkCouple: number | null;
   acaBenchmarkSingle: number | null;
   acaBenchmarkFamily: number | null;
+  // Prior-year filed returns for the IRMAA two-year lookback
+  // (Engine Review 6, E6-S1; annual dollars, null = none
+  // supplied). Deduplicated by tax year (last entry wins),
+  // in ascending year order. The adapter maps these to the
+  // engine's irmaaLookbackSeed (compare base, cents) and to
+  // buildRothPlanInputs (work-years leg, dollars); the
+  // work-years roll merges them UNDER its own priced lines.
+  priorYearMagi:
+    | { taxYear: number; magi: number; filingStatus: "mfj" | "single" | "hoh" }[]
+    | null;
   // Health premiums (Review 3 R3-S1; annual dollars, null = not
   // provided). spendingIncludesHealthPremiums is null when the
   // caller did not declare a convention (only required — and only
@@ -973,6 +983,43 @@ export function normalizeInputs(
     );
   }
 
+  // --- Prior-year returns for the IRMAA lookback (E6-S1). ---
+  // Zod already validated the shape (integer year 1900–2200,
+  // finite MAGI, known filing status). Deduplicate by tax year
+  // — the LAST entry wins — and sort ascending, so the seed the
+  // adapter builds is deterministic regardless of caller order.
+  // An empty array is null (none supplied), never an empty seed.
+  const priorYearMagi =
+    input.priorYearMagi == null || input.priorYearMagi.length === 0
+      ? null
+      : [...input.priorYearMagi]
+          .sort((a, b) => a.taxYear - b.taxYear)
+          .reduce<
+            {
+              taxYear: number;
+              magi: number;
+              filingStatus: "mfj" | "single" | "hoh";
+            }[]
+          >((acc, e) => {
+            const i = acc.findIndex((x) => x.taxYear === e.taxYear);
+            const entry = {
+              taxYear: e.taxYear,
+              magi: e.magi,
+              filingStatus: e.filingStatus,
+            };
+            if (i >= 0) acc[i] = entry;
+            else acc.push(entry);
+            return acc;
+          }, []);
+  record(
+    "priorYearMagi",
+    priorYearMagi,
+    "user",
+    priorYearMagi == null
+      ? "No prior-year returns supplied — a premium year with no recorded lookback prices $0 of IRMAA and is flagged unknown."
+      : "Provided by caller.",
+  );
+
   // --- Health insurance premiums (Review 3 R3-S1). ---
   // The engine's v208 term activates when ANY amount is entered:
   // spending is then read as EXCLUDING premiums and the year's
@@ -1502,6 +1549,7 @@ export function normalizeInputs(
     acaBenchmarkCouple,
     acaBenchmarkSingle,
     acaBenchmarkFamily,
+    priorYearMagi,
     healthPremiumAcaHousehold,
     healthPremiumAcaSingle,
     healthPremiumMedicarePerPerson,
@@ -1585,6 +1633,10 @@ export function publicEffectiveInputs(
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
+    priorYearMagi:
+      scenario.priorYearMagi == null
+        ? null
+        : scenario.priorYearMagi.map((e) => ({ ...e })),
     healthPremiumAcaHouseholdAnnual: scenario.healthPremiumAcaHousehold,
     healthPremiumAcaSingleAnnual: scenario.healthPremiumAcaSingle,
     healthPremiumMedicarePerPersonAnnual:

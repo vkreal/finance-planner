@@ -2075,7 +2075,8 @@ export function rollWorkYears(
     firstRmdAlreadyPricedSpouse: deferralState.hadSpouse,
     taxableBasisPct: basisFields.taxableBasisPct,
     taxableTiers: basisFields.taxableTiers,
-    // IRMAA LOOKBACK SEED (Build E): the work years this roll
+    // IRMAA LOOKBACK SEED (Build E, merged with caller-supplied
+    // returns by Engine Review 6, E6-S1): the work years this roll
     // just priced, recorded with the filing status each was
     // priced under — the plan's own status, the only status
     // the roll prices (the roll models no survivor change
@@ -2086,12 +2087,24 @@ export function rollWorkYears(
     // finding no lookback at all. A quit age of 65 is the
     // case that bites: without the seed, premium years 65
     // and 66 would price $0 of IRMAA whatever the salary
-    // years' MAGI was.
-    irmaaLookbackSeed: lines.map((l) => ({
-      year: l.calendarYear,
-      magi: l.magi,
-      filingStatus: plan.filingStatus,
-    })),
+    // years' MAGI was. Caller-supplied prior-year returns
+    // (plan.irmaaLookbackSeed, from the adapter's
+    // priorYearMagi input) fill the years the roll does NOT
+    // price — a priced work year wins its year, so a supplied
+    // return never overrides a priced one — which also covers
+    // a quit age with no work years at all (a zero-year row
+    // prices its first premium years from the supplied
+    // returns alone).
+    irmaaLookbackSeed: [
+      ...(plan.irmaaLookbackSeed ?? []).filter(
+        (s) => !lines.some((l) => l.calendarYear === s.year),
+      ),
+      ...lines.map((l) => ({
+        year: l.calendarYear,
+        magi: l.magi,
+        filingStatus: plan.filingStatus,
+      })),
+    ],
     startYear: plan.birthYearPrimary + Math.floor(quitAge),
     retirementAge: Math.floor(quitAge),
     windowStartAge: Math.floor(quitAge),
@@ -2145,6 +2158,15 @@ export type WorkYearsCompareRow = {
   // the engine's endingAfterTaxWealth).
   endingNominal: number;
   endingAfterTax: number;
+  // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6,
+  // display only): the winner march's premium years whose
+  // IRMAA is UNKNOWN (someone on Medicare, no lookback entry
+  // — the $0 in those years is not a computed $0) and its
+  // ACA-priced years under 100% FPL (credit $0 under the
+  // standard §36B income test). Read off the winner's own
+  // priced march, never re-derived.
+  irmaaLookbackMissingYears: number[];
+  acaBelow100FplYears: number[];
 };
 
 export function runWorkYearsCompare(
@@ -2195,6 +2217,8 @@ export function runWorkYearsCompare(
         claim67 == null ? null : r2(claim67.best.cost.netCost + workTax),
       endingNominal,
       endingAfterTax: opt.winner.result.endingAfterTaxWealth,
+      irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
+      acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
     };
   });
 }

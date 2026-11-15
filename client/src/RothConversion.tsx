@@ -6484,8 +6484,10 @@ export function RothConversion({
                       </li>
                     ) : detailRow.detail.irmaa.personsOnMedicare > 0 ? (
                       <li>
-                        IRMAA paid this year: $0 — the MAGI that would set this year&rsquo;s
-                        tier predates the plan and is not known.
+                        IRMAA for this year is <strong>unknown, not $0</strong> — the{" "}
+                        {detailRow.detail.irmaa.lookbackYear} MAGI that would set this
+                        year&rsquo;s tier is not on record, so the $0 shown is an
+                        unavailable computation, not a priced surcharge.
                       </li>
                     ) : (
                       <li>Nobody is on Medicare this year, so no IRMAA is paid.</li>
@@ -6517,6 +6519,13 @@ export function RothConversion({
                         of income → credit kept:{" "}
                         <span className="tnum font-medium">{fmtDollars(detailRow.acaCreditKept)}</span>.
                       </li>
+                      {detailRow.detail.aca.below100Fpl && (
+                        <li>
+                          <strong>Below 100% of the poverty line:</strong> the $0 credit
+                          is the standard §36B income test.{" "}
+                          {detailRow.detail.aca.eligibilityNote}
+                        </li>
+                      )}
                     </ul>
                   ) : detailRow.detail.aca.active ? (
                     <p className="mt-1.5 text-sm">

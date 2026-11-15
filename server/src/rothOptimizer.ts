@@ -2898,6 +2898,27 @@ export type RothSavedLike = {
   // at 65 and her Medicare / IRMAA count starts at 65, exactly
   // as before.
   acaSpouseEndAge?: number | null;
+  // IRMAA LOOKBACK SEED (Engine Review 6, E6-S1): explicitly
+  // supplied prior-year returns — the tax year, that year's
+  // MAGI in cents, and the filing status that year's return
+  // was filed under — so a plan whose march starts within two
+  // years of a Medicare start can price its first premium
+  // years from real returns instead of finding no lookback at
+  // all. Optional: absent / null / empty = no supplied
+  // returns, and the march prices exactly as before (a
+  // premium year with no recorded lookback prices $0 of
+  // IRMAA and is now flagged unknown — see taxEngine). The
+  // work-years roll builds the same seed from its own priced
+  // lines (workYears.ts) and never passes through this field.
+  // Entries are NEVER invented: only returns the caller
+  // supplies, with their own MAGI and filing status, land
+  // here — current balances or retirement spending are never
+  // used to guess a prior-year income.
+  irmaaLookbackSeedCents?: {
+    year: number;
+    magiCents: number;
+    filingStatus: "mfj" | "single" | "hoh";
+  }[] | null;
   // Health premium term (build v208). Optional: a saved
   // record written before this build has none of these keys,
   // which reads as blank = the term is not entered, so an
@@ -4457,6 +4478,13 @@ export type PlaygroundYearResult = {
     // entered (the credit is then not priced at all).
     credit: number | null;
     applicablePct: number | null;
+    // ELIGIBILITY (Engine Review 6, E6-S2): true when the
+    // year's ACA MAGI is under 100% FPL — the credit is $0
+    // under the standard §36B income test, with the reason
+    // in eligibilityNote (null when not below 100%). False
+    // when the ACA block does not apply at all.
+    below100Fpl: boolean;
+    eligibilityNote: string | null;
   };
   // IRMAA: applies when at least one person is on Medicare
   // in the premium year (by premium-year age, not by the
@@ -5215,6 +5243,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     positionDollars: null,
     credit: null,
     applicablePct: null,
+    below100Fpl: false,
+    eligibilityNote: null,
   };
   // The §36B household MAGI: the year's own ACA MAGI plus
   // any filing dependent's MAGI (dependentMagiForAca). The
@@ -5242,6 +5272,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       positionDollars: r2(res.cliff - acaHouseholdMagi),
       credit: inp.acaBenchmarkAnnual != null ? res.credit : null,
       applicablePct: inp.acaBenchmarkAnnual != null ? res.applicablePct : null,
+      below100Fpl: res.below100Fpl,
+      eligibilityNote: res.eligibilityNote,
     };
   }
 
@@ -8075,6 +8107,15 @@ export type RothFundingRow = {
   // identity foots exactly as before. $0 in every year of
   // a plan that does not enter the health premium term.
   healthPremiumCents: number;
+  // LOOKBACK AVAILABILITY + ELIGIBILITY (Engine Review 6,
+  // display only): whether the year's IRMAA surcharge is
+  // KNOWN (false = someone on Medicare, no lookback entry
+  // for year − 2, so irmaaCents is $0 UNKNOWN, not a
+  // computed $0) and whether the year's ACA MAGI is under
+  // 100% FPL (credit $0 under the standard §36B income
+  // test). Read off the engine's RothYear.
+  irmaaSurchargeKnown: boolean;
+  acaBelow100Fpl: boolean;
   totalNeedCents: number;
   // Sources (integer cents, applied amounts — see the
   // RothYearFunding waterfall).
@@ -8240,6 +8281,8 @@ export function buildRothFunding(
       stateTaxCents: cents(f.stateTax),
       irmaaCents: cents(f.irmaa),
       healthPremiumCents: cents(f.healthPremium),
+      irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+      acaBelow100Fpl: y.acaBelow100Fpl,
       totalNeedCents: 0,
       ssCents: cents(f.ss),
       rmdCents: cents(f.rmd),
@@ -8506,6 +8549,40 @@ export function planInputsFromSaved(
     // Spouse ACA end age passthrough: absent / null = blank =
     // the engine's 65 default, bit-identical to before.
     acaSpouseEndAge: saved.acaSpouseEndAge ?? null,
+    // IRMAA lookback seed passthrough (Engine Review 6,
+    // E6-S1): explicitly supplied prior-year returns reach
+    // the engine as dollar seeds. Entries are sanitized —
+    // an integer year 1900–2200, a finite non-negative MAGI,
+    // a known filing status — and a malformed entry is
+    // dropped, never repaired by guessing. Absent / null /
+    // empty = no supplied returns, and the march prices
+    // exactly as before. Every pricing path builds its
+    // engine inputs from this one construction or spreads
+    // it, so the supplied returns reach every path exactly
+    // once; the work-years roll's own seed (workYears.ts)
+    // is built directly on RothPlanInputs and never passes
+    // through this field.
+    irmaaLookbackSeed:
+      saved.irmaaLookbackSeedCents == null
+        ? null
+        : saved.irmaaLookbackSeedCents
+            .filter(
+              (s): s is NonNullable<typeof s> =>
+                s != null &&
+                Number.isInteger(s.year) &&
+                s.year >= 1900 &&
+                s.year <= 2200 &&
+                Number.isFinite(s.magiCents) &&
+                s.magiCents >= 0 &&
+                (s.filingStatus === "mfj" ||
+                  s.filingStatus === "single" ||
+                  s.filingStatus === "hoh"),
+            )
+            .map((s) => ({
+              year: s.year,
+              magi: s.magiCents / 100,
+              filingStatus: s.filingStatus,
+            })),
     // Health premium term passthrough (build v208): absent /
     // null cents on all three = blank = the term is not
     // entered and the plan prices bit-identically to before.
@@ -9021,6 +9098,17 @@ export type RothCompareScenarioYear = {
   // tax — carried separately so a bill display never folds
   // them into a tax line).
   irmaaCents: number;
+  // LOOKBACK AVAILABILITY (Engine Review 6, E6-S1): whether
+  // the IRMAA surcharge for this year is KNOWN — false
+  // exactly when someone is on Medicare this year and no
+  // MAGI + filing status is recorded for the lookback year
+  // (year − 2). When false, irmaaCents is $0 and that $0 is
+  // UNKNOWN, not a computed $0 surcharge. Display only.
+  irmaaSurchargeKnown: boolean;
+  // ELIGIBILITY (Engine Review 6, E6-S2): the year's ACA MAGI
+  // is under 100% FPL, so the credit is $0 under the standard
+  // §36B income test. Display only.
+  acaBelow100Fpl: boolean;
   // Health premium (build v208): the year's NET health
   // premium funded (the engine's RothYear.healthPremiumNet).
   // $0 in every year of a plan that does not enter the
@@ -9100,6 +9188,16 @@ export type RothCompareScenarioResult = {
   penaltyCents: number;
   irmaaCents: number;
   acaCreditCents: number;
+  // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6,
+  // display only): the premium years whose IRMAA surcharge
+  // is UNKNOWN (someone on Medicare, no lookback entry for
+  // year − 2 — the $0 in those years is not a computed $0,
+  // and irmaaCents excludes the unknown amounts) and the
+  // ACA-priced years under 100% FPL (credit $0 under the
+  // standard §36B income test). Both empty on a scenario
+  // with complete lookbacks and no below-100% year.
+  irmaaLookbackMissingYears: number[];
+  acaBelow100FplYears: number[];
   // Lifetime health premiums (build v208): the GROSS
   // premium the score identity adds beside acaCreditCents,
   // and the NET premium (gross less the funded credits) for
@@ -9225,6 +9323,8 @@ export function runRothCompare(
         acaCreditCents: toCents(y.acaCreditKept),
         educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
+        irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+        acaBelow100Fpl: y.acaBelow100Fpl,
         healthPremiumCents: toCents(y.healthPremiumNet),
         healthPremiumGrossCents: toCents(y.healthPremiumGross),
         conversionCents: toCents(y.conversion),
@@ -9267,6 +9367,15 @@ export function runRothCompare(
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
       acaCreditCents: toCents(cost.acaCredit),
+      // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6,
+      // display only): the premium years whose IRMAA is
+      // UNKNOWN (someone on Medicare, no lookback entry —
+      // the $0 in those years is not a computed $0) and the
+      // ACA-priced years under 100% FPL (credit $0 under the
+      // standard §36B income test). Read off the priced
+      // march's own lists, never re-derived.
+      irmaaLookbackMissingYears: result.irmaaLookbackMissingYears,
+      acaBelow100FplYears: result.acaBelow100FplYears,
       healthPremiumCents: toCents(cost.healthPremium),
       healthPremiumNetCents: toCents(cost.healthPremiumNet),
       educationRefundableCents: toCents(cost.educationRefundable),
@@ -9298,6 +9407,8 @@ export function runRothCompare(
       penaltyCents: p.penaltyCents,
       irmaaCents: p.irmaaCents,
       acaCreditCents: p.acaCreditCents,
+      irmaaLookbackMissingYears: p.irmaaLookbackMissingYears,
+      acaBelow100FplYears: p.acaBelow100FplYears,
       healthPremiumCents: p.healthPremiumCents,
       healthPremiumNetCents: p.healthPremiumNetCents,
       educationRefundableCents: p.educationRefundableCents,

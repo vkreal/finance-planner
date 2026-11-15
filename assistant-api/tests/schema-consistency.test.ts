@@ -142,6 +142,9 @@ describe("advertised schema == accepting schema", () => {
       "survivorWho",
       "survivorDeathYear",
       "survivorClaimAge",
+      // Engine Review 6: explicitly supplied prior-year filed
+      // returns price the IRMAA lookback.
+      "priorYearMagi",
     ];
     const taxYear = [
       "spouseAge",

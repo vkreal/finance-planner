@@ -2080,6 +2080,13 @@ export function December() {
                             ? `Final credit: ${fmtDollars(c.creditAtHeadline)}`
                             : "Credit not priced"}
                     </p>
+                    {c.acaBelow100FplAtHeadline && (
+                      <p className="mt-1 text-sm">
+                        Below 100% of the poverty line: the $0 credit is the
+                        standard §36B income test.{" "}
+                        {c.acaEligibilityNoteAtHeadline}
+                      </p>
+                    )}
                     {result.cliff != null && state.aptcTaken > 0 && (
                       <p className="tnum mt-1 text-sm">
                         {c.overCliffAtHeadline ? (

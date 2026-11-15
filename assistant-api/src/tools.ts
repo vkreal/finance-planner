@@ -210,6 +210,36 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       description:
         "ACA benchmark premium per year in dollars for a family household.",
     },
+    priorYearMagi: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        properties: {
+          taxYear: {
+            type: "integer",
+            minimum: 1900,
+            maximum: 2200,
+            description: "The tax year the return was filed for.",
+          },
+          magi: {
+            ...MONEY,
+            description:
+              "That year's modified adjusted gross income (AGI plus tax-exempt interest) in dollars.",
+          },
+          filingStatus: {
+            type: "string",
+            enum: ["mfj", "single", "hoh"],
+            description:
+              "The filing status that year's return was filed under.",
+          },
+        },
+        required: ["taxYear", "magi", "filingStatus"],
+        additionalProperties: false,
+      },
+      description:
+        "Prior-year filed returns for the two-year IRMAA lookback: each entry is one tax year's MAGI and the filing status that return was filed under. A premium year's IRMAA is set by the return filed two years earlier, so these entries price the first Medicare years of a plan whose march starts near 65; without them those years price $0 of IRMAA and are flagged unknown. Entries are taken exactly as supplied — never inferred from current balances or spending. A duplicate tax year keeps the last entry. Priced by retirement_compare_strategies, retirement_roth_conversion and retirement_work_years.",
+    },
     healthPremiumAcaHouseholdAnnual: {
       ...MONEY,
       description:

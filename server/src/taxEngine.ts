@@ -1800,7 +1800,49 @@ export type AcaCreditResult = {
   fpl: number;
   cliff: number; // 400% FPL for the household size
   overCliff: boolean;
+  // ELIGIBILITY (Engine Review 6, E6-S2): below100Fpl is true
+  // when household income is under 100% of the poverty line
+  // for the household size — the standard §36B income test
+  // then allows NO premium credit, and the $0 credit on this
+  // result is that test's answer, not a priced $0 benefit.
+  // eligibilityNote names the rule whenever below100Fpl is
+  // true (null otherwise): for 2026+ coverage it states the
+  // former §36B(c)(1)(B) exception was repealed by OBBBA
+  // §71302, so no statutory exception is priced; for 2025
+  // coverage it states the pre-OBBBA exception is NOT
+  // modeled. Medicaid eligibility is never modeled and never
+  // assumed — the engine prices the marketplace credit only.
+  below100Fpl: boolean;
+  eligibilityNote: string | null;
 };
+
+// The eligibility note for a below-100%-FPL credit result, by
+// coverage year (Engine Review 6, E6-S2): the one wording
+// every pricing path surfaces, so the march, the single-year
+// pricer, and the December console can never disagree about
+// why the credit is $0. For 2026+ the former
+// §36B(c)(1)(B) exception — a lawfully present immigrant
+// ineligible for Medicaid treated as at 100% FPL — was
+// repealed by OBBBA §71302 (P.L. 119-21) for tax years
+// beginning after December 31, 2025 (CMS guidance Dec 22,
+// 2025; proposed regs REG-101576-26), so the standard test
+// is the priced rule for those years — but Treas. Reg.
+// §1.36B-2(b)(6) survives the repeal (a household the
+// Exchange estimated at 100%–400% of the poverty line keeps
+// a credit when actual income lands below 100%, provided
+// advance payments were made) and is NOT modeled, because
+// the engine never receives the Exchange's estimate. For
+// 2025 the (c)(1)(B) exception existed and is NOT modeled,
+// and (b)(6) is likewise NOT modeled: the result prices
+// the standard test only, and a household that qualified
+// under either exception would see a larger credit than this
+// result shows.
+export function acaBelow100Note(coverageYear: number): string {
+  if (coverageYear >= 2026) {
+    return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The former §36B(c)(1)(B) exception for lawfully present immigrants ineligible for Medicaid was repealed by OBBBA §71302 for tax years after 2025, so no statutory exception is priced for this coverage year. Medicaid eligibility is not modeled.";
+  }
+  return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The pre-OBBBA §36B(c)(1)(B) exception (a lawfully present immigrant ineligible for Medicaid treated as at 100% FPL) is not modeled, so this result prices the standard test only. Medicaid eligibility is not modeled.";
+}
 
 export function acaCreditFor(args: {
   magi: number;
@@ -1853,8 +1895,20 @@ export function acaCreditFor(args: {
   // its 8.5% cap and a credit is still priced (overCliff false).
   const hasCliff = args.coverageYear >= 2026;
   const overCliff = hasCliff && args.magi > cliff;
-  if (overCliff || magiCents < fplCents) {
-    return { credit: 0, pctFpl: r2(pctFpl), applicablePct: 0, fpl, cliff, overCliff };
+  const below100Fpl = magiCents < fplCents;
+  if (overCliff || below100Fpl) {
+    return {
+      credit: 0,
+      pctFpl: r2(pctFpl),
+      applicablePct: 0,
+      fpl,
+      cliff,
+      overCliff,
+      below100Fpl,
+      eligibilityNote: below100Fpl
+        ? acaBelow100Note(args.coverageYear)
+        : null,
+    };
   }
   const bands = acaTableFor(args.tableYear ?? args.coverageYear, {
     projected: args.projected ?? false,
@@ -1893,6 +1947,8 @@ export function acaCreditFor(args: {
     fpl,
     cliff,
     overCliff: false,
+    below100Fpl: false,
+    eligibilityNote: null,
   };
 }
 
@@ -3813,6 +3869,20 @@ export type RothYearDetail = {
     // paidTier is null (no lookback recorded).
     paidSourceFilingStatus: FilingStatus | null;
     personsOnMedicare: number;
+    // LOOKBACK AVAILABILITY (Engine Review 6, E6-S1): the
+    // year the surcharge reads (this year − 2), whether a
+    // MAGI + filing status is recorded for it, and whether
+    // the surcharge is KNOWN. surchargeKnown is false
+    // exactly when someone is on Medicare this year and
+    // no lookback entry exists — then paidTier is null and
+    // irmaaPaid is $0, and that $0 is UNKNOWN, not a
+    // computed $0 surcharge: a computed zero is tier 0
+    // with lookbackAvailable true. Nobody on Medicare
+    // means no surcharge is due, so surchargeKnown is
+    // true regardless of the lookback record.
+    lookbackYear: number;
+    lookbackAvailable: boolean;
+    surchargeKnown: boolean;
   };
   // ACA for the year (priced figures only when `priced`).
   aca: {
@@ -3825,6 +3895,13 @@ export type RothYearDetail = {
     pctFpl: number | null;
     applicablePct: number | null;
     overCliff: boolean;
+    // ELIGIBILITY (Engine Review 6, E6-S2): true when the
+    // year's ACA MAGI is under 100% FPL — the credit is $0
+    // under the standard §36B income test, with the reason
+    // in eligibilityNote (null when not below 100%). False
+    // when the year prices no credit at all (priced false).
+    below100Fpl: boolean;
+    eligibilityNote: string | null;
   };
 };
 
@@ -4022,6 +4099,14 @@ export type RothYear = {
   effectiveMarginalPct: number | null; // on the conversion; null when no conversion
   irmaaTierSet: number;
   irmaaPaid: number;
+  // LOOKBACK AVAILABILITY (Engine Review 6, E6-S1): whether
+  // the IRMAA surcharge for this year is KNOWN — false
+  // exactly when someone is on Medicare this year and no
+  // MAGI + filing status is recorded for the lookback year
+  // (year − 2). When false, irmaaPaid is $0 and that $0 is
+  // UNKNOWN, not a computed $0 surcharge (see detail.irmaa
+  // .lookbackAvailable / .surchargeKnown for the record).
+  irmaaSurchargeKnown: boolean;
   // The year's ACA premium credit kept: the benchmark-based
   // credit priced on the year's final ACA MAGI, capped at
   // the year's entered marketplace premium when the health
@@ -4048,6 +4133,11 @@ export type RothYear = {
   // priced credit is flagged, not presented as a marketplace
   // result (flag-only; no Medicaid modeling).
   acaUnder138: boolean;
+  // ELIGIBILITY (Engine Review 6, E6-S2): the year's ACA MAGI
+  // is under 100% FPL, so the credit is $0 under the standard
+  // §36B income test — see detail.aca.eligibilityNote for the
+  // reason. False when the year prices no credit at all.
+  acaBelow100Fpl: boolean;
   pretaxEnd: number;
   // Per-spouse pre-tax ending balances (Part 1). Their sum is
   // pretaxEnd. From the year AFTER a death the deceased's side
@@ -4130,6 +4220,17 @@ export type RothPlanResult = {
   lifetimePenalty: number;
   lifetimeIrmaa: number;
   lifetimeAcaKept: number;
+  // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6):
+  // premium years whose IRMAA surcharge is UNKNOWN (someone
+  // on Medicare, no lookback entry for year − 2 — the $0 in
+  // those years is not a computed $0, and lifetimeIrmaa
+  // excludes the unknown amounts), and ACA-priced years whose
+  // MAGI is under 100% FPL (credit $0 under the standard
+  // §36B income test). Both empty on a plan with complete
+  // lookbacks and no below-100% year. Display only — no
+  // score or ranking reads them.
+  irmaaLookbackMissingYears: number[];
+  acaBelow100FplYears: number[];
   // Lifetime education credits (T6): the sum of the years'
   // refundable AOTC portions (see RothYear
   // .educationRefundable). The nonrefundable portions are
@@ -4577,6 +4678,11 @@ export function simulateRothPlan(
   let lifetimePenalty = 0;
   let lifetimeIrmaa = 0;
   let lifetimeAcaKept = 0;
+  // LOOKBACK + ELIGIBILITY SUMMARIES (Engine Review 6): the
+  // premium years whose IRMAA is unknown (no lookback entry)
+  // and the ACA-priced years under 100% FPL, in year order.
+  const irmaaLookbackMissingYears: number[] = [];
+  const acaBelow100FplYears: number[] = [];
   let lifetimeEducationRefundable = 0;
   // EDUCATION REFUND DEPOSIT (Build D): the refundable AOTC
   // portion a year prices is cash the household receives when
@@ -5644,6 +5750,19 @@ export function simulateRothPlan(
       );
       irmaaPaidTier = tier;
       irmaaPaid = r2(irmaaAnnualPerPerson(tier, law) * personsOnMedicare);
+    }
+    // LOOKBACK AVAILABILITY (Engine Review 6, E6-S1): the
+    // surcharge is KNOWN exactly when nobody is on Medicare
+    // (no surcharge is due) or a lookback entry exists. When
+    // someone is on Medicare and the entry is missing,
+    // irmaaPaid stays $0 — and that $0 is UNKNOWN, not a
+    // computed $0: the year is recorded on the missing list
+    // (plan summary) and warned on below, and lifetimeIrmaa
+    // excludes the unknown amount rather than trusting it.
+    const irmaaSurchargeKnown =
+      personsOnMedicare === 0 || lookbackEntry != null;
+    if (personsOnMedicare > 0 && lookbackEntry == null) {
+      irmaaLookbackMissingYears.push(year);
     }
 
     // Price the year at any (gains, extra pre-tax draw,
@@ -7521,6 +7640,14 @@ export function simulateRothPlan(
       acaPriced = true;
     }
     const acaUnder138 = acaPriced && acaResult != null && acaResult.pctFpl < 138;
+    // ELIGIBILITY (Engine Review 6, E6-S2): the year's ACA
+    // MAGI is under 100% FPL, so the $0 credit is the
+    // standard §36B income test's answer (see the warning
+    // below and detail.aca.eligibilityNote) — never a priced
+    // $0 benefit. Recorded on the plan summary list.
+    const acaBelow100Fpl =
+      acaPriced && acaResult != null && acaResult.below100Fpl;
+    if (acaBelow100Fpl) acaBelow100FplYears.push(year);
 
     // HEALTH PREMIUM TERM (build v208): the year's funded
     // health premium, read off the KEPT settlement exactly
@@ -7713,6 +7840,19 @@ export function simulateRothPlan(
 
     const warnings: RothYearWarning[] = [];
     if (!leanDetail) {
+      // LOOKBACK MISSING (Engine Review 6, E6-S1): someone is
+      // on Medicare this year and no MAGI + filing status is
+      // recorded for the lookback year, so the $0 surcharge
+      // the row shows is UNKNOWN — never present it as a
+      // computed $0. The warning names the missing year and
+      // what would price it; the plan summary carries the
+      // full missing-years list.
+      if (!irmaaSurchargeKnown) {
+        warnings.push({
+          kind: "irmaa",
+          text: `IRMAA for ${year} is not priced — no MAGI on record for ${year - 2} (the two-year lookback year), so the $0 surcharge shown is unknown, not a computed $0. Supply that year's MAGI and filing status to price it; the plan's lifetime IRMAA and net cost exclude this unknown amount.`,
+        });
+      }
       // IRMAA cliff pill: only MAGI from age 63 onward can ever set
       // a premium (the surcharge lands at 65+, two years later), so
       // the pill never fires for younger conversion years.
@@ -7759,7 +7899,18 @@ export function simulateRothPlan(
             text: `Close to the ACA cliff — ACA MAGI ${fmtDollars(priced.acaMagi)} vs the 400% FPL line at ${fmtDollars(acaResult.cliff)}; $1 over loses the whole year's credit.`,
           });
         }
-        if (acaUnder138) {
+        if (acaBelow100Fpl) {
+          // ELIGIBILITY (Engine Review 6, E6-S2): under 100%
+          // FPL the $0 credit is the standard §36B income
+          // test's answer — the <138% wording below would
+          // wrongly imply a credit is shown, so this branch
+          // replaces it for the below-100% year (the
+          // acaUnder138 flag still reads true on the row).
+          warnings.push({
+            kind: "aca",
+            text: `Priced at ${acaResult.pctFpl.toFixed(0)}% of the poverty line — under 100% FPL, so the premium credit is $0 under the standard §36B income test. ${acaResult.eligibilityNote ?? ""}`,
+          });
+        } else if (acaUnder138) {
           warnings.push({
             kind: "aca",
             text: `Priced at ${acaResult.pctFpl.toFixed(0)}% of the poverty line — under 138% FPL, at that income coverage routes to Medicaid rather than a marketplace plan in most states, so the credit shown for this year is flagged rather than a marketplace result.`,
@@ -8178,6 +8329,9 @@ export function simulateRothPlan(
             ? lookbackEntry.filingStatus
             : null,
         personsOnMedicare,
+        lookbackYear: year - 2,
+        lookbackAvailable: lookbackEntry != null,
+        surchargeKnown: irmaaSurchargeKnown,
       },
       aca: {
         active: acaActive,
@@ -8189,6 +8343,8 @@ export function simulateRothPlan(
         pctFpl: acaResult ? acaResult.pctFpl : null,
         applicablePct: acaResult ? acaResult.applicablePct : null,
         overCliff: acaResult ? acaResult.overCliff : false,
+        below100Fpl: acaBelow100Fpl,
+        eligibilityNote: acaResult ? acaResult.eligibilityNote : null,
       },
     };
 
@@ -8217,9 +8373,11 @@ export function simulateRothPlan(
       effectiveMarginalPct,
       irmaaTierSet: priced.irmaaTier,
       irmaaPaid: r2(irmaaPaid),
+      irmaaSurchargeKnown,
       acaCreditKept: r2(acaCreditKept),
       acaPriced,
       acaUnder138,
+      acaBelow100Fpl,
       healthPremiumGross: r2(healthPremiumGrossYear),
       healthPremiumNet: r2(healthPremiumNetYear),
       pretaxEnd: r2(pretax),
@@ -8270,6 +8428,8 @@ export function simulateRothPlan(
     lifetimePenalty: r2(lifetimePenalty),
     lifetimeIrmaa: r2(lifetimeIrmaa),
     lifetimeAcaKept: r2(lifetimeAcaKept),
+    irmaaLookbackMissingYears,
+    acaBelow100FplYears,
     lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
     lifetimeAmt: r2(lifetimeAmt),
     lifetimeSsCollected: r2(lifetimeSsCollected),
