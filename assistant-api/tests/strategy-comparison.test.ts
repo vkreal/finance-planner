@@ -359,6 +359,26 @@ describe("Roth conversion — full optimizer mode (R4-S2)", () => {
       )!;
       expect(baseline).toBeDefined();
       expect(baseline.name).toBe(adapterResults.baselineName);
+      // Yearly table (P3-S1): the full-mode table comes from
+      // yearlyTableFromRothYears, not the compare mapper, so it
+      // gets its own provenance assertion — every row carries
+      // both provenances, and the 2028 projection row reads
+      // carried-forward / flat-rate-estimate.
+      expect(adapterResults.yearly.length).toBeGreaterThan(0);
+      for (const row of adapterResults.yearly) {
+        expect(row.lawProvenance).toBeDefined();
+        expect(row.stateTaxProvenance).toBeDefined();
+        expect(row.stateTaxProvenance.kind).toBe("flat-rate-estimate");
+        if (row.year <= 2026) {
+          expect(row.lawProvenance.status).toBe("exact");
+        } else {
+          expect(row.lawProvenance.status).toBe("carried-forward");
+        }
+      }
+      const row2028 = adapterResults.yearly.find((y) => y.year === 2028);
+      expect(row2028).toBeDefined();
+      expect(row2028!.lawProvenance.status).toBe("carried-forward");
+      expect(row2028!.stateTaxProvenance.kind).toBe("flat-rate-estimate");
       expect(o.doNothing.netCost).toBe(round2(direct.doNothing.cost.netCost));
       expect(o.doNothing.endingWealth).toBe(
         round2(direct.doNothing.result.endingAfterTaxWealth),
@@ -614,4 +634,111 @@ describe("comparisonScope input", () => {
       s.assumptions.find((a) => a.field === "comparisonScope"),
     ).toMatchObject({ value: "limited", provenance: "assumption" });
   });
+});
+
+describe("yearly table provenance (Review 3 P3-S1)", () => {
+  // The yearly rows in every multi-year compare carry the law
+  // row each year priced under and how its state tax was priced,
+  // so a flat-rate stateTax is never shown unlabeled and a
+  // projection year is never shown as published law for that
+  // year. All figures are the fictional household (helpers.ts).
+  type YearlyRowProvenance = {
+    year: number;
+    lawProvenance: {
+      lawYear: number;
+      status: string;
+      published: boolean;
+      isProjection: boolean;
+      note: string;
+    };
+    stateTaxProvenance: {
+      kind: string;
+      residenceState: string | null;
+      ratePct: number | null;
+      note: string;
+    };
+  };
+
+  function assertYearlyProvenance(yearly: YearlyRowProvenance[]): void {
+    expect(yearly.length).toBeGreaterThan(0);
+    for (const row of yearly) {
+      expect(row.lawProvenance).toBeDefined();
+      expect(row.stateTaxProvenance).toBeDefined();
+      expect(row.lawProvenance.note.length).toBeGreaterThan(0);
+      expect(row.stateTaxProvenance.note.length).toBeGreaterThan(0);
+      // The fictional household supplies no state rate, so every
+      // year prices the flat-rate estimate at 0%.
+      expect(row.stateTaxProvenance.kind).toBe("flat-rate-estimate");
+      expect(row.stateTaxProvenance.ratePct).toBe(0);
+      if (row.year <= 2026) {
+        expect(row.lawProvenance.status).toBe("exact");
+        expect(row.lawProvenance.lawYear).toBe(row.year);
+        expect(row.lawProvenance.published).toBe(true);
+        expect(row.lawProvenance.isProjection).toBe(false);
+      } else {
+        expect(row.lawProvenance.status).toBe("carried-forward");
+        expect(row.lawProvenance.lawYear).toBe(2026);
+        expect(row.lawProvenance.published).toBe(false);
+        expect(row.lawProvenance.isProjection).toBe(true);
+      }
+    }
+    // The 2028 row is the named projection case: carried-forward
+    // law, flat-rate-estimate state tax.
+    const row2028 = yearly.find((y) => y.year === 2028);
+    expect(row2028).toBeDefined();
+    expect(row2028!.lawProvenance.status).toBe("carried-forward");
+    expect(row2028!.stateTaxProvenance.kind).toBe("flat-rate-estimate");
+  }
+
+  test("withdrawal compare: every yearly row carries both provenances; 2028 reads carried-forward / flat-rate-estimate", () => {
+    const envelope = compareWithdrawalStrategies(normalizedScenario());
+    if (!envelope.ok) throw new Error("expected ok envelope");
+    assertYearlyProvenance(envelope.results.yearly);
+    expect(envelope.warnings.join(" ")).toContain(
+      "a flat-rate stateTax is an estimate only",
+    );
+  });
+
+  test("Roth conversion (limited): every yearly row carries both provenances; the response warns the flat-rate state tax is an estimate", () => {
+    const envelope = compareRothConversions(normalizedScenario());
+    if (!envelope.ok) throw new Error("expected ok envelope");
+    assertYearlyProvenance(envelope.results.yearly);
+    // The estimate label rides the response, not just the rows:
+    // the yearly-table warning names it on every compare.
+    expect(envelope.warnings.join(" ")).toContain(
+      "a flat-rate stateTax is an estimate only",
+    );
+  });
+
+  test(
+    "work-years (salary): yearly rows carry both provenances and the response-level note covers the work-years tax totals",
+    () => {
+      const envelope = compareRetirementAges(
+        normalizedScenario({
+          salaryAnnual: 120000,
+          spouseSocialSecurityAnnual: 0,
+          compareAges: [60, 62],
+          // Shorter horizon (end at 80, not 95) for this leg
+          // only: the joint optimizer prices each quit age's
+          // rolled plan to the end age, and the full horizon
+          // is the known OOM-prone shape on this VM (Pass 2
+          // flake). The yearly table still spans 2028, and
+          // every assertion here is horizon-independent.
+          endAge: 80,
+        }),
+      );
+      if (!envelope.ok) throw new Error("expected ok envelope");
+      expect(envelope.results.workYears.map((w) => w.quitAge)).toEqual([
+        60, 62,
+      ]);
+      assertYearlyProvenance(envelope.results.yearly);
+      // The work-years rows are per-quit-age aggregates over
+      // several salary years, so no single law row describes
+      // one — the response-level note is the label instead.
+      expect(envelope.warnings.join(" ")).toContain(
+        "Work-years tax totals (workTax, totalTax, allInTax) include flat-rate state tax: an estimate only",
+      );
+    },
+    600_000,
+  );
 });

@@ -10010,6 +10010,15 @@ export type RothCompareScenarioYear = {
   rmdDeferredPaidSpouseCents: number;
   survivorSsMode: "simplified" | "enhanced" | null;
   survivorClaimAge: number | null;
+  // Law + state-tax provenance (Engine Review 3, P3-S1: the
+  // Pass 3 SHOULD-1 fix): the law row this year actually
+  // priced under, and how its state tax was priced — copied
+  // from the priced march row's detail, so the adapter's
+  // yearly table can carry them beside the figures instead of
+  // dropping them. Display only, exactly like the settlement
+  // flags above; no score, ranking, or delta reads them.
+  lawProvenance: LawProvenance;
+  stateTaxProvenance: StateTaxProvenance;
 };
 
 export type RothCompareScenarioResult = {
@@ -10267,6 +10276,11 @@ export function runRothCompare(
         rmdDeferredPaidSpouseCents: toCents(y.detail.rmdDeferredPaidSpouse),
         survivorSsMode: y.detail.survivorSsMode,
         survivorClaimAge: y.detail.survivorClaimAge,
+        // Law + state-tax provenance (P3-S1): copied from the
+        // same priced march row's detail the settlement flags
+        // above read — pure pass-through, no pricing reads it.
+        lawProvenance: y.detail.lawProvenance,
+        stateTaxProvenance: y.detail.stateTaxProvenance,
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),

@@ -137,8 +137,13 @@ import {
   type DrawOrder,
   type RothPlanInputs,
   type RothYear,
+  type StateTaxProvenance,
 } from "../../server/src/taxEngine";
-import { rmdAgeForBirthYear, TAX_LAW_YEARS } from "../../server/src/taxLaw";
+import {
+  rmdAgeForBirthYear,
+  TAX_LAW_YEARS,
+  type LawProvenance,
+} from "../../server/src/taxLaw";
 import {
   runWorkYearsCompare,
   type WorkYearJob,
@@ -1112,6 +1117,14 @@ type YearlyCompareRow = {
   settlementMismatchPretax: number;
   settlementMismatchAcaCredit: number;
   ceilingBreached: boolean;
+  // Law + state-tax provenance (Engine Review 3, P3-S1):
+  // the law row this year actually priced under, and how its
+  // state tax was priced — copied from the underlying year's
+  // detail, so a flat-rate stateTax in this table is never
+  // shown without its estimate label, and a projection year
+  // is never shown as published law for that year.
+  lawProvenance: LawProvenance;
+  stateTaxProvenance: StateTaxProvenance;
 };
 
 /**
@@ -1163,6 +1176,8 @@ function yearlyTable(
       y.settlementMismatchCents.acaCredit ?? 0,
     ),
     ceilingBreached: y.ceilingBreached,
+    lawProvenance: y.lawProvenance,
+    stateTaxProvenance: y.stateTaxProvenance,
   }));
   if (rows.length <= 60) return rows;
   const stride = Math.ceil(rows.length / 60);
@@ -1515,6 +1530,8 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
       y.settlementMismatchCents.acaCredit ?? 0,
     ),
     ceilingBreached: y.ceilingBreached,
+    lawProvenance: y.detail.lawProvenance,
+    stateTaxProvenance: y.detail.stateTaxProvenance,
   }));
   if (rows.length <= 60) return rows;
   const stride = Math.ceil(rows.length / 60);
@@ -1526,7 +1543,7 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
 }
 
 const YEARLY_TABLE_WARNING =
-  "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary.";
+  "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary. Each row also names the law row it priced under (lawProvenance) and how its state tax was priced (stateTaxProvenance): a flat-rate stateTax is an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return, and a year past the newest published law row prices on that row carried forward, a projection.";
 
 const WORK_YEARS_HORIZON_WARNING =
   "The work-years rows price each quit age as its own plan starting at that quit age with rolled balances, so their ending balances span different horizons and are not like-for-like across quit ages; use the all-in tax and the Roth-compare scenarios for the quit-age decision.";
@@ -1599,6 +1616,21 @@ function irmaaAcaCompareWarnings(
   }
   return out;
 }
+// Work-years state-tax note (Engine Review 3, P3-S1): the
+// work-years rows are per-quit-age aggregates over several
+// salary years, so no single law row / state-tax kind can
+// describe one — each salary year carries its own
+// lawYearUsed / lawStatus / stateTaxKind in the engine's
+// roll, and a quit-age row spans exact and carried-forward
+// years at once. The response-level note below is the label
+// instead: the state tax inside workTax / totalTax /
+// allInTax is the same flat-rate estimate as in the yearly
+// table, never an exact state return, and salary years past
+// the newest published law row price on that row carried
+// forward, a projection. The per-year provenance for the
+// same plan is in this response's yearly table.
+const WORK_YEARS_STATE_TAX_NOTE =
+  "Work-years tax totals (workTax, totalTax, allInTax) include flat-rate state tax: an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return. Salary years past the newest published law row price on that row carried forward, a projection; see the yearly table in this response for the per-year lawProvenance and stateTaxProvenance.";
 
 // ---------------------------------------------------------------------------
 // 1. Deterministic projection
@@ -2806,6 +2838,11 @@ export function compareRetirementAges(
             rothBasisUnknownYears: w.rothBasisUnknownYears,
           })),
         ),
+        // Only when the salary leg ran: with no salary there are
+        // no work-years rows for the note to describe.
+        ...(scenario.salaryAnnual != null
+          ? [WORK_YEARS_STATE_TAX_NOTE]
+          : []),
         ...workYearsWarnings,
       ],
       taxAwareAssumptions(scenario),
