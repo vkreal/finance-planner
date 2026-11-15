@@ -363,7 +363,7 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       minimum: 60,
       maximum: 70,
       description:
-        "The survivor's Social Security claiming age for the enhanced survivor benefit (60–70). The engine prices the SSA survivor rules from it — the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. Absent means the simplified max-of-two-benefits rule. Never inferred: no claiming age is assigned from anything else entered.",
+        "The survivor's Social Security claiming age for the enhanced survivor benefit (60–70). The engine prices the SSA survivor rules from it — the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. No claim-one-then-switch optimization: a survivor who claims the survivor benefit and later switches to their own benefit is priced as the larger of the two each year, not as the optimized switch. Absent means the simplified max-of-two-benefits rule. Never inferred: no claiming age is assigned from anything else entered.",
     },
     mcSeed: {
       type: "integer",

@@ -451,10 +451,10 @@ authority for any single call.
 | Single-year RMD (`pretaxPriorYearEndAnnual`, `pretaxSpousePriorYearEndAnnual`) | Omitted → `null`, no RMD from that balance. Explicit `0` → a $0 RMD. Each is that owner's pre-tax balance at Dec 31 of the year before the priced year — never today's balance. Spouse balance counts only on a joint (`mfj`) return. | assumption |
 | `rmdAlreadyReceivedAnnual` | Omitted → `$0` (the full computed RMD is added). The part of this year's RMD already received and already counted in the entered income, netted out of the RMD added (floored at $0). | assumption |
 | `primarySoleBeneficiaryOfSpouse` | Omitted → not established → the spouse's RMD prices on the Uniform Lifetime Table. `true` lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger. A separate fact from the spouse being the primary's sole beneficiary. | assumption |
-| First-RMD deferral (`firstRmdDeferralPrimary`, `firstRmdDeferralSpouse`) — Engine Review 5 | Omitted → no deferral (the first RMD is paid in its own year). `true` defers that owner's first RMD to April 1 of the following year; the following year pays both RMDs. An election entered past the first RMD year has no effect (the response names `$0` deferred). Priced by the plan tools (march + work-years roll) and the tax-year tool. | assumption |
+| First-RMD deferral (`firstRmdDeferralPrimary`, `firstRmdDeferralSpouse`) — Engine Review 5 | Omitted → no deferral (the first RMD is paid in its own year). `true` defers that owner's first RMD to April 1 of the following year; the following year pays both RMDs. An election entered past the first RMD year has no effect (the response names `$0` deferred). Priced by the plan tools (march + work-years roll) and the tax-year tool. RMD ages price by birth year only: 1949 prices at 72 (the statute splits 1949 at July 1), and the pre-1949 70½ age is first payable at 71. | assumption |
 | First-RMD carry (`firstRmdDeferredCarryPrimaryAnnual`, `firstRmdDeferredCarrySpouseAnnual`) — Engine Review 5 | Omitted → `$0`. The amount deferred from a prior year, priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only — the plan tools never take a carry-in (their carry is produced by the work-years roll). | assumption |
 | Survivor scenario (`survivorEnabled`, `survivorWho`, `survivorDeathYear`) — Engine Review 5 | Omitted → off (both spouses modeled through the plan horizon). `survivorEnabled: true` turns the scenario on; `survivorWho` defaults to `"primary"`; `survivorDeathYear` is REQUIRED when enabled (`missing_input` without it). Plan tools only — the single-year pricer carries no survivor scenario. | assumption |
-| `survivorClaimAge` — Engine Review 5 | Omitted → the simplified max-of-two-benefits rule (the survivor keeps the larger benefit, never both). Entered (60–70) → the enhanced SSA survivor rules: the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. Never inferred — no claiming age is assigned from anything else entered; a claiming age with no survivor scenario has no effect (warned). | assumption |
+| `survivorClaimAge` — Engine Review 5 | Omitted → the simplified max-of-two-benefits rule (the survivor keeps the larger benefit, never both). Entered (60–70) → the enhanced SSA survivor rules: the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. No claim-one-then-switch optimization: a survivor who claims the survivor benefit and later switches to their own benefit is priced as the larger of the two each year, not as the optimized switch. Never inferred — no claiming age is assigned from anything else entered; a claiming age with no survivor scenario has no effect (warned). | assumption |
 | `mcSeed` / `mcRuns` | `12345` / `1000` | engine_constant |
 | `compareAges` | `[retirementAge, retirementAge+2, retirementAge+5]` (no assumption entry when omitted) | — |
 | `comparisonScope` | `"limited"` — the fixed small comparison (3 withdrawal orders / 4 conversion fills). `"full"` prices the engine's whole candidate space for that tool; never silently downgraded. | assumption / user |
@@ -948,6 +948,17 @@ already being collected while still working belong to
 tax on it, and lands the cash surplus in Taxable. The simulation
 is tax-free and single-portfolio throughout: it prices no income
 tax, no IRMAA, and no separate account buckets.
+
+(xv) **Social Security claiming rules price by birth year only
+(Engine Review 5).** Delayed retirement credits price at the
+post-1943 rate of 8%/yr for every cohort; SSA's own schedule is
+lower for earlier births — 3% (1917–1924), rising ½ point every
+two birth years to 7.5% (1941–1942), 8.0% from 1943 — so a
+pre-1943 late claim prices slightly high. And SSA treats a
+birth on January 1 as born the prior year (20 CFR §404.102),
+so a January-1 birth prices the next year's cohort here — its
+full retirement age (retirement or survivor) reads up to two
+months high.
 
 ## Source layout
 

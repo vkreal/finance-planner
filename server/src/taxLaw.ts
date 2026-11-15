@@ -1640,7 +1640,11 @@ function r2law(n: number): number {
 
 // FRA by birth year (SSA): 1937 and earlier 65; 1938–1942 rise
 // two months per year to 66; 1943–1954 are 66; 1955–1959 rise
-// two months per year; 1960 or later are 67.
+// two months per year; 1960 or later are 67. Whole-year
+// approximation: SSA treats a birth on January 1 as born the
+// prior year (20 CFR §404.102), so a January-1 birth prices
+// the next year's cohort here — its FRA reads up to two
+// months high.
 
 // FRA in months from birth year.
 export function fullRetirementAgeMonths(birthYear: number): number {
@@ -1655,7 +1659,12 @@ export function fullRetirementAgeMonths(birthYear: number): number {
 // Claiming early reduces the benefit 5/9 of 1% per month for
 // the first 36 months early and 5/12 of 1% per month beyond
 // that; delaying past FRA adds 2/3 of 1% per month (8%/yr),
-// with no credit past age 70.
+// with no credit past age 70. The 8%/yr rate is the post-1943
+// SSA rate and is priced for every cohort: SSA's own schedule
+// is lower for earlier births — 3% (1917–1924), then +1/2 point
+// every two birth years to 7.5% (1941–1942), 8.0% from 1943 —
+// so a pre-1943 late claim prices slightly high here
+// (ssa.gov, "Delayed Retirement Credits").
 export function ssBenefitFactor(claimAge: number, birthYear: number): number {
   const fraMonths = fullRetirementAgeMonths(birthYear);
   const diff = Math.round(claimAge * 12) - fraMonths;
@@ -1693,15 +1702,16 @@ export function ssAnnualAtClaimAge(
 /* -------- Survivor (widow(er)) benefit law --------
    Engine Review 5. A survivor benefit runs on its OWN full
    retirement age table — NOT the retirement FRA table above
-   (20 CFR §404.409(b)): the survivor FRA is 65 for birth
-   years 1939 or earlier, rises two months per birth year from
-   1940 (65 and 2 months) to 1944 (65 and 10 months), is 66
-   for birth years 1945–1956, rises two months per birth year
-   from 1957 (66 and 2 months) to 1961 (66 and 10 months), and
-   is 67 for 1962 or later. (Equivalently: the retirement table with two
-   years added to each birth year — so a person born in 1960
-   reaches retirement FRA at 67 but survivor FRA at 66 and
-   8 months.) A survivor who claims before that FRA is reduced
+   (20 CFR §404.409(b)): the survivor FRA is 62 for births
+   before 1912, 65 for birth years 1912–1939, rises two months
+   per birth year from 1940 (65 and 2 months) to 1944 (65 and
+   10 months), is 66 for birth years 1945–1956, rises two
+   months per birth year from 1957 (66 and 2 months) to 1961
+   (66 and 10 months), and is 67 for 1962 or later.
+   (Equivalently: the retirement table with two years added to
+   each birth year — so a person born in 1960 reaches
+   retirement FRA at 67 but survivor FRA at 66 and 8 months.)
+   A survivor who claims before that FRA is reduced
    by at most 28.5% — 71.5% at age 60 — spread evenly over the
    months from 60 to the survivor FRA (20 CFR §404.410(c));
    there are no delayed retirement credits on a survivor
@@ -1715,7 +1725,11 @@ export function ssAnnualAtClaimAge(
    month of death when the deceased died before claiming.
    Whole-year approximation, as everywhere in the engines:
    ages are whole years, so a claim at "age 62" prices the
-   age-62 row exactly, and fractional months are not modeled. */
+   age-62 row exactly, and fractional months are not modeled.
+   The same January-1 rule as the retirement FRA applies —
+   SSA treats a January-1 birth as born the prior year
+   (20 CFR §404.102) — so a January-1 birth prices the next
+   year's survivor cohort here. */
 
 // Survivor FRA in months from birth year.
 export function survivorFraMonths(birthYear: number): number {
@@ -1723,7 +1737,8 @@ export function survivorFraMonths(birthYear: number): number {
   if (birthYear >= 1957) return 66 * 12 + (birthYear - 1956) * 2;
   if (birthYear >= 1945) return 66 * 12;
   if (birthYear >= 1940) return 65 * 12 + (birthYear - 1939) * 2;
-  return 65 * 12;
+  if (birthYear >= 1912) return 65 * 12;
+  return 62 * 12;
 }
 
 // The fraction of the deceased's base benefit payable when

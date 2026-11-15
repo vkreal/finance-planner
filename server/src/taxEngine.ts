@@ -5003,9 +5003,12 @@ export function simulateRothPlan(
     // mode touches it; a survivor year whose birth years are
     // missing falls back to the simplified max rather than
     // pricing the helper on an invented birth year.
+    // Clamped to the 60–70 claiming window here, matching the
+    // helper's own clamp — so the year detail echoes the age
+    // actually priced, not a raw out-of-range input.
     const survivorClaimAgeInput =
       inputs.survivorClaimAge != null
-        ? Math.round(inputs.survivorClaimAge)
+        ? Math.min(70, Math.max(60, Math.round(inputs.survivorClaimAge)))
         : null;
     const deceasedBirthYear =
       survWho === "primary"

@@ -1074,21 +1074,33 @@ export function priceOneWorkYear(
   // roll's would. No death is priced during the work years
   // (the roll models no survivor change), so every year's
   // deathYearForPerson is false; the roll carries no
-  // carry-in (it IS the first engine — the march receives
-  // the carry from the roll, below).
+  // carry-in through the supported surfaces (it IS the first
+  // engine — the march receives the carry from the roll,
+  // below) — but the plan type carries
+  // firstRmdDeferredCarry*, so a direct caller can pass
+  // one, and the seeding below pays it in the first priced
+  // year, exactly as the march pays its start-year carry-in.
   const dState: FirstRmdDeferralState =
     deferralState ?? {
       hadPrimary:
         plan.firstRmdAlreadyPricedPrimary === true ||
+        (plan.firstRmdDeferredCarryPrimary ?? 0) > 0 ||
         age > Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
       hadSpouse:
         plan.firstRmdAlreadyPricedSpouse === true ||
+        (plan.firstRmdDeferredCarrySpouse ?? 0) > 0 ||
         (ageSpouse != null &&
           plan.birthYearSpouse != null &&
           ageSpouse >
             Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse))),
-      pendingPrimary: 0,
-      pendingSpouse: 0,
+      pendingPrimary: Math.max(
+        0,
+        plan.firstRmdDeferredCarryPrimary ?? 0,
+      ),
+      pendingSpouse: Math.max(
+        0,
+        plan.firstRmdDeferredCarrySpouse ?? 0,
+      ),
     };
   const settledP = settleFirstRmdDeferral(dState, {
     who: "primary",
@@ -1759,7 +1771,13 @@ export function rollWorkYears(
   // first RMD twice. A roll whose first priced year is
   // already PAST a person's first RMD year (ceil of the RMD
   // age below the effective start age) seeds had true for
-  // them too — the first RMD year passed unpriced. Pending
+  // them too — the first RMD year passed unpriced. An
+  // entering deferred carry (firstRmdDeferredCarry*, which
+  // the plan type carries for a direct caller even though no
+  // supported surface passes one) seeds had true and pending
+  // with the carry, exactly as the march seeds its start-year
+  // carry-in — so the carry is paid in the first priced year,
+  // never dropped and never deferred a second time. Pending
   // at the roll's end is the amount the rolled march must pay
   // in its first year (the carry-in, below), and had at the
   // roll's end tells the march its first computed RMD is the
@@ -1767,15 +1785,23 @@ export function rollWorkYears(
   const deferralState: FirstRmdDeferralState = {
     hadPrimary:
       plan.firstRmdAlreadyPricedPrimary === true ||
+      (plan.firstRmdDeferredCarryPrimary ?? 0) > 0 ||
       effectiveStart >
         Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
     hadSpouse:
       plan.firstRmdAlreadyPricedSpouse === true ||
+      (plan.firstRmdDeferredCarrySpouse ?? 0) > 0 ||
       (plan.birthYearSpouse != null &&
         plan.birthYearPrimary + effectiveStart - plan.birthYearSpouse >
           Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse))),
-    pendingPrimary: 0,
-    pendingSpouse: 0,
+    pendingPrimary: Math.max(
+      0,
+      plan.firstRmdDeferredCarryPrimary ?? 0,
+    ),
+    pendingSpouse: Math.max(
+      0,
+      plan.firstRmdDeferredCarrySpouse ?? 0,
+    ),
   };
   for (let i = 0; i < count; i++) {
     const age = effectiveStart + i;

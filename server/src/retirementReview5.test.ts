@@ -202,6 +202,13 @@ describe("E5 §5 — full retirement age by birth year (SSA)", () => {
     expect(fullRetirementAgeMonths(1959)).toBe(66 * 12 + 10);
     expect(fullRetirementAgeMonths(1960)).toBe(67 * 12);
     expect(fullRetirementAgeMonths(1968)).toBe(67 * 12);
+    // The 1938–1942 steps: 65 plus two months per birth year.
+    expect(fullRetirementAgeMonths(1942)).toBe(65 * 12 + 10);
+    expect(fullRetirementAgeMonths(1941)).toBe(65 * 12 + 8);
+    expect(fullRetirementAgeMonths(1940)).toBe(65 * 12 + 6);
+    expect(fullRetirementAgeMonths(1939)).toBe(65 * 12 + 4);
+    expect(fullRetirementAgeMonths(1938)).toBe(65 * 12 + 2);
+    expect(fullRetirementAgeMonths(1937)).toBe(65 * 12);
   });
 });
 
@@ -254,10 +261,11 @@ describe("E5 §2 — survivor full retirement age (its own table)", () => {
   });
 
   test("survivor FRA before 1945: 65, then two months a year to 1944", () => {
-    // 20 CFR §404.409(b): 1939 or earlier is 65; 1940 is 65
-    // and 2 months, rising two months per birth year to 65 and
-    // 10 months for 1944; 1945–1956 are 66. The pre-1945 ramp
-    // was missing (every year below 1957 priced at 66), which
+    // 20 CFR §404.409(b): 1912–1939 is 65 (before 1912 is
+    // 62 — the NICE-5 row below); 1940 is 65 and 2 months,
+    // rising two months per birth year to 65 and 10 months
+    // for 1944; 1945–1956 are 66. The pre-1945 ramp was
+    // missing (every year below 1957 priced at 66), which
     // understated the benefit for a survivor in this cohort
     // claiming at 61–65.
     expect(survivorFraMonths(1945)).toBe(66 * 12);
@@ -268,6 +276,19 @@ describe("E5 §2 — survivor full retirement age (its own table)", () => {
     expect(survivorFraMonths(1940)).toBe(65 * 12 + 2);
     expect(survivorFraMonths(1939)).toBe(65 * 12);
     expect(survivorFraMonths(1930)).toBe(65 * 12);
+    // 20 CFR §404.409(b): before January 2, 1912 the
+    // survivor FRA is 62, not 65 — the table's old fallthrough
+    // priced every pre-1940 birth year at 65. 1912 prices at
+    // 65 by the whole-year approximation (the statute splits
+    // 1912 at January 2; a January-1-1912 birth is the
+    // disclosed NICE-C case). The reduction span for a 62 FRA
+    // is 24 months: at 61 the factor is
+    // 1 − 0.285 × 12/24 = 0.8575.
+    expect(survivorFraMonths(1912)).toBe(65 * 12);
+    expect(survivorFraMonths(1911)).toBe(62 * 12);
+    expect(survivorFraMonths(1900)).toBe(62 * 12);
+    expect(survivorReductionFactor(61, 1911)).toBeCloseTo(0.8575, 4);
+    expect(survivorReductionFactor(60, 1911)).toBeCloseTo(0.715, 10);
   });
 
   test("pre-1945 reduction: the shorter span prices a higher benefit", () => {
@@ -443,6 +464,102 @@ describe("E5 §2 — claiming-age table survivor column (enhanced mode)", () => 
     expect(yearOf(2044).ssBenefits).toBe(34320);
     expect(yearOf(2044).detail.survivorSsMode).toBe("enhanced");
     expect(yearOf(2045).ssBenefits).toBe(34320);
+  });
+  test("both at FRA: the survivor year prices 100% of the deceased's benefit", () => {
+    // The deceased claimed at FRA ($48,000@67) and the
+    // survivor claims at survivor FRA (67) — the enhanced
+    // benefit is 100% of the $48,000 base. The death year
+    // (2043) still pays both benefits in full.
+    const march = simulateRothPlan(
+      samplePlanInputs({
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: null,
+        ssPrimaryStartAge: 67,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2043,
+        survivorClaimAge: 67,
+      }),
+      ROTH_COMPARE_STRATEGIES[0]!,
+    );
+    const yearOf = (year: number) => {
+      const y = march.years.find((r) => r.year === year);
+      expect(y).toBeDefined();
+      return y!;
+    };
+    expect(yearOf(2043).ssBenefits).toBe(48000);
+    expect(yearOf(2044).ssBenefits).toBe(48000);
+    expect(yearOf(2044).detail.survivorSsMode).toBe("enhanced");
+    expect(yearOf(2045).ssBenefits).toBe(48000);
+  });
+  test("spouse-dies at the march level mirrors the table row", () => {
+    // Spouse (born 1968) dies 2043 at 75 with a $36,000@67
+    // anchor; the primary (born 1970) claims the survivor
+    // benefit at 60 → 71.5% × $36,000 = $25,740, above the
+    // primary's own $18,000. The death year (2043) pays both
+    // benefits in full ($18,000 + $36,000 = $54,000).
+    const march = simulateRothPlan(
+      samplePlanInputs({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1968,
+        ssPrimaryAnnual: 18000,
+        ssSpouseAnnual: 36000,
+        ssPrimaryStartAge: 67,
+        ssSpouseStartAge: 67,
+        survivorEnabled: true,
+        survivorWho: "spouse",
+        survivorDeathYear: 2043,
+        survivorClaimAge: 60,
+      }),
+      ROTH_COMPARE_STRATEGIES[0]!,
+    );
+    const yearOf = (year: number) => {
+      const y = march.years.find((r) => r.year === year);
+      expect(y).toBeDefined();
+      return y!;
+    };
+    expect(yearOf(2043).ssBenefits).toBe(54000);
+    expect(yearOf(2044).ssBenefits).toBe(25740);
+    expect(yearOf(2044).detail.survivorSsMode).toBe("enhanced");
+    expect(yearOf(2045).ssBenefits).toBe(25740);
+  });
+  test("an out-of-range claiming age clamps in the year detail", () => {
+    // Direct-engine input only — the adapter schema bounds
+    // 60–70. A 55 claims at the age-60 row ($34,320) and the
+    // detail echoes 60, not 55; a 75 claims at 70 (100% of
+    // the $48,000 base) and the detail echoes 70, not 75.
+    const march55 = simulateRothPlan(
+      samplePlanInputs({
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: null,
+        ssPrimaryStartAge: 67,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2043,
+        survivorClaimAge: 55,
+      }),
+      ROTH_COMPARE_STRATEGIES[0]!,
+    );
+    const y55 = march55.years.find((r) => r.year === 2044);
+    expect(y55).toBeDefined();
+    expect(y55!.ssBenefits).toBe(34320);
+    expect(y55!.detail.survivorClaimAge).toBe(60);
+    const march75 = simulateRothPlan(
+      samplePlanInputs({
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: null,
+        ssPrimaryStartAge: 67,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2043,
+        survivorClaimAge: 75,
+      }),
+      ROTH_COMPARE_STRATEGIES[0]!,
+    );
+    const y75 = march75.years.find((r) => r.year === 2044);
+    expect(y75).toBeDefined();
+    expect(y75!.ssBenefits).toBe(48000);
+    expect(y75!.detail.survivorClaimAge).toBe(70);
   });
 });
 
@@ -743,8 +860,10 @@ describe("E5 §3 — first-RMD deferral, single-year price", () => {
     // Born 1948 (RMD age 70.5). At 70 the computed RMD is $0
     // (70 < 70.5), so there is nothing to defer; at 71 the
     // first payable RMD prices — and an election defers it,
-    // exactly as the march does (the march's settle only counts
-    // a year with a positive computed RMD as the first). The
+    // exactly as the march does (the attainment year counts
+    // as the first even on a $0 balance — see
+    // settleFirstRmdDeferral's rmdAgeReached; a later
+    // positive year cannot defer). The
     // priced years are historical (2018/2019), so only the RMD
     // fields are asserted — the tax itself prices under the
     // oldest published law row, which is outside this test.
@@ -774,6 +893,45 @@ describe("E5 §3 — first-RMD deferral, single-year price", () => {
     );
     expect(deferred71.rmdPrimary).toBe(0);
     expect(deferred71.rmdDeferredPrimary).toBe(21897.81);
+  });
+  test("a carried-in deferral at the exact first RMD year is paid, not deferred twice", () => {
+    // Born 1948 (RMD age 70.5, first payable 71): a $10,000
+    // carry enters the single-year price with the election
+    // on. The carry means the first RMD year already passed,
+    // so the year pays its own $21,897.81 plus the carry and
+    // defers nothing — before the fix it paid only the carry
+    // and deferred its own RMD a second time.
+    // 600,000 / 27.4 = 21,897.8102… → $21,897.81.
+    const r = pricePlaygroundYear(
+      yearInputs({
+        taxYear: 2019,
+        agePrimary: 71,
+        ageSpouse: 69,
+        firstRmdDeferralPrimary: true,
+        firstRmdDeferredCarryPrimary: 10000,
+      }),
+    );
+    expect(r.rmdPrimary).toBe(31897.81);
+    expect(r.rmdDeferredPrimary).toBe(0);
+    expect(r.rmdDeferredPaidPrimary).toBe(10000);
+  });
+  test("a carried-in deferral past the first RMD year is paid on top", () => {
+    // Age 73 in 2021 (born 1948, past the first RMD year):
+    // the own RMD is 600,000 / 26.5 = $22,641.51, plus the
+    // $10,000 carry; the election is a no-op and nothing
+    // defers.
+    const r = pricePlaygroundYear(
+      yearInputs({
+        taxYear: 2021,
+        agePrimary: 73,
+        ageSpouse: 71,
+        firstRmdDeferralPrimary: true,
+        firstRmdDeferredCarryPrimary: 10000,
+      }),
+    );
+    expect(r.rmdPrimary).toBe(32641.51);
+    expect(r.rmdDeferredPrimary).toBe(0);
+    expect(r.rmdDeferredPaidPrimary).toBe(10000);
   });
 });
 
@@ -839,6 +997,89 @@ describe("E5 §3 — first-RMD deferral through the work-years roll", () => {
     expect(y74.rmdDeferredPrimary).toBe(0);
     expect(state.pendingPrimary).toBe(0);
     expect(state.hadPrimary).toBe(true);
+  });
+
+  test("an entering deferred carry is paid in the first priced year, not dropped", () => {
+    // A direct caller can pass a carry on the plan (the plan
+    // type carries firstRmdDeferredCarry*, even though no
+    // supported surface passes one to the roll — the adapter
+    // never does). The seeding pays it in the first priced
+    // year, exactly as the march pays its start-year carry-in.
+    const carryPlan = samplePlanInputs({
+      birthYearPrimary: 1955,
+      birthYearSpouse: 1955,
+      startYear: 2026,
+      pretaxStart: 600000,
+      firstRmdDeferralPrimary: true,
+      firstRmdDeferredCarryPrimary: 10000,
+    });
+    // Age 74, past the first RMD year: the own RMD is
+    // 694,575 / 25.5 = $27,238.24, plus the $10,000 carry.
+    const y74 = priceOneWorkYear(
+      carryPlan,
+      job,
+      74,
+      null,
+      null,
+      { priorPrimary: 694575, priorSpouse: 0 },
+      null,
+      null,
+    );
+    expect(y74.rmdPrimary).toBe(37238.24);
+    expect(y74.rmdDeferredPaidPrimary).toBe(10000);
+    expect(y74.rmdDeferredPrimary).toBe(0);
+  });
+
+  test("an entering carry at the exact first RMD year is paid, not deferred twice", () => {
+    // Age 73 is the first RMD year (born 1955 → 73), and the
+    // election is on — but the carry means the first RMD year
+    // already passed, so the year pays its own RMD plus the
+    // carry and defers nothing.
+    const carryPlan = samplePlanInputs({
+      birthYearPrimary: 1955,
+      birthYearSpouse: 1955,
+      startYear: 2026,
+      pretaxStart: 600000,
+      firstRmdDeferralPrimary: true,
+      firstRmdDeferredCarryPrimary: 10000,
+    });
+    // 661,500 / 26.5 = $24,962.26, plus the $10,000 carry.
+    const y73 = priceOneWorkYear(
+      carryPlan,
+      job,
+      73,
+      null,
+      null,
+      { priorPrimary: 661500, priorSpouse: 0 },
+      null,
+      null,
+    );
+    expect(y73.rmdPrimary).toBe(34962.26);
+    expect(y73.rmdDeferredPaidPrimary).toBe(10000);
+    expect(y73.rmdDeferredPrimary).toBe(0);
+  });
+
+  test("a roll entered with a carry pays it in its first year", () => {
+    // The roll starts at 71 (2026 − 1955), before the first
+    // RMD year — but the carry is owed in the first simulated
+    // year, exactly as the march pays its start-year carry-in,
+    // so the 71 line pays the $10,000 and the roll hands
+    // nothing on to the march.
+    const carryPlan = samplePlanInputs({
+      birthYearPrimary: 1955,
+      birthYearSpouse: 1955,
+      startYear: 2026,
+      pretaxStart: 600000,
+      firstRmdDeferralPrimary: true,
+      firstRmdDeferredCarryPrimary: 10000,
+    });
+    const roll = rollWorkYears(carryPlan, job, 72);
+    const line71 = roll.lines.find((l) => l.age === 71);
+    expect(line71).toBeDefined();
+    expect(line71!.rmdPrimary).toBe(10000);
+    expect(line71!.rmdDeferredPaidPrimary).toBe(10000);
+    expect(line71!.rmdDeferredPrimary).toBe(0);
+    expect(roll.rolledInputs.firstRmdDeferredCarryPrimary).toBe(0);
   });
 
   test("a roll ending in the deferral year hands the pending amount to the march", () => {

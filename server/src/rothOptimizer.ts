@@ -4858,17 +4858,21 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // is in their first RMD year when the priced age is the
   // first year a computed RMD is PAYABLE — ceil(rmdAge),
   // so a 70.5 RMD age is first payable in the year they
-  // turn 71 (at 70 the computed RMD is $0, and the march's
-  // settle only counts a year with a positive computed RMD
-  // as the first — see settleFirstRmdDeferral's isFirst).
+  // turn 71 (at 70 the computed RMD is $0, and the
+  // attainment year still counts as the first even on a $0
+  // balance — see settleFirstRmdDeferral's rmdAgeReached;
+  // a later positive year cannot defer).
   // Ceil is the identity on integer RMD ages, so no other
   // cohort changes, and it matches the optimizer's own
   // window stop (buildOptimizerCandidates uses ceil too).
   // The fresh state seeds had the same way the march's
   // threaded state would stand at this one year: false in
-  // the first RMD year (so an election defers), true in any
-  // later year (so an election entered past the first RMD
-  // year is a no-op and names $0 deferred). The attainment
+  // the first RMD year (so an election defers) — unless a
+  // carried-in deferral enters, which seeds had true, so
+  // the year pays its own RMD plus the carry and defers
+  // nothing — true in any later year (so an election
+  // entered past the first RMD year is a no-op and names $0
+  // deferred). The attainment
   // year itself counts even on a $0 balance (it defers $0),
   // so a later positive-balance year is past the first —
   // the march and the roll read it the same way through
@@ -4883,17 +4887,21 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // carry no survivor scenario), so deathYearForPerson is
   // always false.
   const dState: FirstRmdDeferralState = {
-    hadPrimary: !(
-      inp.pretaxBalance != null &&
-      Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary)) ===
-        inp.agePrimary
-    ),
-    hadSpouse: !(
-      hasSpouseBalance &&
-      ageSpouse != null &&
-      Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse)) ===
-        ageSpouse
-    ),
+    hadPrimary:
+      (inp.firstRmdDeferredCarryPrimary ?? 0) > 0 ||
+      !(
+        inp.pretaxBalance != null &&
+        Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary)) ===
+          inp.agePrimary
+      ),
+    hadSpouse:
+      (inp.firstRmdDeferredCarrySpouse ?? 0) > 0 ||
+      !(
+        hasSpouseBalance &&
+        ageSpouse != null &&
+        Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse)) ===
+          ageSpouse
+      ),
     pendingPrimary: 0,
     pendingSpouse: 0,
   };
@@ -4903,6 +4911,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     deferElected: inp.firstRmdDeferralPrimary === true,
     deathYearForPerson: false,
     carryIn: Math.max(0, inp.firstRmdDeferredCarryPrimary ?? 0),
+    rmdAgeReached:
+      inp.agePrimary >=
+      Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary)),
   });
   const settledS = settleFirstRmdDeferral(dState, {
     who: "spouse",
@@ -4910,6 +4921,10 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     deferElected: inp.firstRmdDeferralSpouse === true,
     deathYearForPerson: false,
     carryIn: Math.max(0, inp.firstRmdDeferredCarrySpouse ?? 0),
+    rmdAgeReached:
+      ageSpouse != null &&
+      ageSpouse >=
+        Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse)),
   });
   rmdPrimary = settledP.pay;
   rmdSpouse = settledS.pay;
