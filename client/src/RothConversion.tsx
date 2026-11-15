@@ -523,6 +523,25 @@ export function RothConversion({
   const ret: RetData | undefined = retq.data;
 
   const [init, setInit] = useState(false);
+  /* Narrow-screen tax-year labels: below the sm breakpoint the
+     years sit about 6px apart while a 4-digit year label is about
+     22px wide, so the first year crowds the first fifth-year tick
+     (2026 against 2030 read as one label). The tax chart's label
+     set (below) thins to five years apart on a narrow screen
+     instead of three. Keyed on the same 640px sm breakpoint as
+     the Year-mode chart's angled ticks, via matchMedia so it
+     only re-renders when the breakpoint is crossed. */
+  const [isNarrow, setIsNarrow] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 639px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const onChange = () => setIsNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   const [confirmResetBalances, setConfirmResetBalances] = useState(false);
   const [confirmResetPlan, setConfirmResetPlan] = useState(false);
   const [confirmBackToSaved, setConfirmBackToSaved] = useState(false);
@@ -13160,17 +13179,25 @@ export function RothConversion({
             <div className="mt-1 flex gap-[2px]" aria-hidden="true">
               {planYears.map((y) => {
                 const labelSelected = detailYear === y.year;
+                // The label sits in an inner inline-block sized
+                // to its own text. The flex-1 slot is narrower
+                // than a label — about 19px on desktop, about
+                // 6px on a phone, while "51" is about 11px — so
+                // text carried directly by the slot overflows its
+                // box and reads as clipped. The inner span paints
+                // at the same centre, and the neighbouring slots
+                // are empty, so nothing collides.
+                const showAge =
+                  labelSelected ||
+                  y.agePrimary % 5 === 0 ||
+                  y.agePrimary === planYears[0]?.agePrimary ||
+                  y.agePrimary === planYears[n - 1]?.agePrimary;
                 return (
                   <span
                     key={y.year}
                     className={`min-w-0 flex-1 text-center whitespace-nowrap ${labelSelected ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
                   >
-                    {labelSelected ||
-                    y.agePrimary % 5 === 0 ||
-                    y.agePrimary === planYears[0]?.agePrimary ||
-                    y.agePrimary === planYears[n - 1]?.agePrimary
-                      ? y.agePrimary
-                      : ""}
+                    {showAge ? <span className="inline-block">{y.agePrimary}</span> : null}
                   </span>
                 );
               })}
@@ -13304,6 +13331,13 @@ export function RothConversion({
               // X-axis year labels: the first year, the last
               // year, and every fifth year — thinned so no two
               // kept labels sit fewer than three years apart.
+              // On a narrow screen the floor is five years: the
+              // years sit about 6px apart there and a 4-digit
+              // label is about 22px wide, so a first year four
+              // years off the first fifth-year tick (2026
+              // against 2030) reads as one label. Desktop keeps
+              // the three-year floor — the labels sit about 96px
+              // apart there and never collide.
               // At the bar widths this chart renders, adjacent
               // labels collide (the 2065 tick against the final
               // 2066 in the user's screenshot); when the final year
@@ -13318,9 +13352,10 @@ export function RothConversion({
                 if (lastYr != null) wanted.add(lastYr);
                 const sorted = [...wanted].sort((a, b) => a - b);
                 const kept: number[] = [];
+                const minGap = isNarrow ? 5 : 3;
                 for (const yr of sorted) {
                   const prev = kept[kept.length - 1];
-                  if (prev != null && yr - prev < 3) {
+                  if (prev != null && yr - prev < minGap) {
                     if (yr === lastYr && prev !== firstYr)
                       kept[kept.length - 1] = yr;
                     continue;
@@ -13421,7 +13456,18 @@ export function RothConversion({
                               key={y.year}
                               className="min-w-0 flex-1 text-center text-[10px] whitespace-nowrap text-[var(--dim)]"
                             >
-                              {labelYearSet.has(y.year) ? y.year : ""}
+                              {/* Inner inline-block sized to its own
+                                  text, same reason as the income-stack
+                                  age labels above: the flex-1 slot is
+                                  about 18px on desktop and about 4px
+                                  on a phone, while "2026" is about
+                                  23px, so text carried directly by
+                                  the slot overflows its box and reads
+                                  as clipped. It paints at the same
+                                  centre, over empty neighbour slots. */}
+                              {labelYearSet.has(y.year) ? (
+                                <span className="inline-block">{y.year}</span>
+                              ) : null}
                             </span>
                           ))}
                         </div>
