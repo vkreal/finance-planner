@@ -2732,7 +2732,11 @@ export function RetirementCalc({
   // maximum of $0, or a 0% achieved rate counts as at risk — never
   // as healthy: only an unknown state (no settled snapshot yet, or
   // no valid target to solve against) falls back to the last known
-  // state.
+  // state. The solver's own target verdict counts too: a result
+  // whose achieved rate misses its requested target
+  // (solutionStatus infeasible_at_zero) is at risk even though its
+  // achieved rate can read high — the $0 there is not a
+  // sustainable spending, and the tooltip below says so.
   const solverEngineUsed = solverSnap?.engine ?? solverEngine;
   const solverAtRisk: boolean | null =
     solverSnap == null || parseNum(solverSnap.target) == null
@@ -2740,6 +2744,7 @@ export function RetirementCalc({
       : solver == null
         ? true
         : solver.maxSpendingCents <= 0 ||
+            !solver.targetAchieved ||
             successAtRisk(solver.successRate, solverEngineUsed);
   useEffect(() => {
     if (solverAtRisk != null) setLastMaxAtRisk(solverAtRisk);
@@ -2823,8 +2828,10 @@ export function RetirementCalc({
         : solver == null
           ? "At risk: no sustainable spending could be solved for these inputs."
           : solver.maxSpendingCents <= 0
-            ? "At risk: the highest sustainable spending solved for these inputs is $0."
-            : `At risk: the solved plan's money never ran out in ${solver.successRate.toFixed(1)}% of runs — below the ${solverEngineUsed === "historical" ? HIST_AT_RISK_BELOW : MC_AT_RISK_BELOW}% level financial planners generally target for that test.`,
+            ? solver.solutionStatus === "infeasible_at_zero"
+              ? `At risk: no spending level reaches the ${solver.targetSuccessRate}% target — even $0/yr falls short at ${solver.successRate.toFixed(1)}%.`
+              : "At risk: the highest sustainable spending solved for these inputs is $0."
+            : `At risk: the solved plan's money never ran out in ${solver.successRate.toFixed(1)}% of runs — below the ${solverEngineUsed === "historical" ? HIST_AT_RISK_BELOW : MC_AT_RISK_BELOW}% level financial planners generally target for that test.${solver.solutionStatus === "capped" ? " The solved figure is the search cap, not a proven maximum above it." : ""}`,
   };
 
   // While the Max spending tab is open the solver works from a
@@ -5349,6 +5356,12 @@ export function RetirementCalc({
                   )}
                   {solver.approximate && (
                     <p className="mt-1 text-xs text-[var(--dim)]">Approximate</p>
+                  )}
+                  {solver.solutionStatus === "capped" && (
+                    <p className="mt-1 text-xs text-[var(--dim)]">Search cap — the solver stops here, so a higher spending was not tested{solver.percent != null ? " (30% of the starting portfolio per year)" : ""}.</p>
+                  )}
+                  {solver.solutionStatus === "infeasible_at_zero" && (
+                    <p className="mt-1 text-xs text-[var(--dim)]">No spending level reaches the {solver.targetSuccessRate}% target — even $0/yr falls short at {solver.successRate.toFixed(1)}%.</p>
                   )}
                 </div>
                 <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">

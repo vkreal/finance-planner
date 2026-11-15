@@ -6,18 +6,22 @@
 // HISTORICAL and MONTE CARLO groups in this file are REGRESSION
 // SNAPSHOTS — expected values pinned from the verified
 // implementation (October 2026) under the maintenance rule
-// below. They are NOT independent accuracy evidence: no
-// independent reimplementation of the historical or Monte
-// Carlo engines exists to re-derive their success rates,
-// median endings, or percentile figures, and the seeded Monte
-// Carlo stream is not independently replayable outside this
-// implementation. Their job is drift detection — any figure
-// that moves fails loudly and is a finding until the
-// maintenance rule's independent recomputation is done. The
-// projection and solver groups share the same pinned-from-
-// implementation provenance unless a case's note shows its
-// own derivation; only the Trinity-style external benchmark
-// anchor is an externally sourced expectation.
+// below. They are NOT independent accuracy evidence on their own:
+// an independent reimplementation DOES now exist (Engine Review 2,
+// E2-V1, 2026-11-14 — server/src/retirementIndependentCheck.ts
+// plus its test file), covering the seeded Monte Carlo stream, the
+// historical runs, percentiles, spending stats, and the solver
+// search with maximality checks; the solver cases that carry a
+// solvedStatus / targetAchieved expectation, and the three
+// solver-status cases added with them, were verified against that
+// implementation rather than re-pinned from engine output. Their
+// job is still drift detection — any figure that moves fails
+// loudly and is a finding until the maintenance rule's
+// independent recomputation is done. The projection and solver
+// groups share the same pinned-from-implementation provenance
+// unless a case's note shows its own derivation; only the
+// Trinity-style external benchmark anchor is an externally
+// sourced expectation.
 //
 // MAINTENANCE RULE — read before touching the engines, the dataset,
 // or the defaults:
@@ -52,6 +56,7 @@ runMonteCarlo,
 simulate,
 simulateDetailed,
 solveMaxSpending,
+type SolverSolutionStatus,
 type SpendingStrategy,
 } from "./retirementEngines";
 
@@ -115,6 +120,13 @@ export type FixtureExpected = {
   spendingAdequacySuccessRate?: number | null;
   solvedSpendingCents?: number;
   solvedPercent?: number | null;
+  // Solver cases only (Engine Review 2, E2-S1): the feasibility
+  // status of the solved spending and whether it meets the
+  // requested target — pinned alongside the solved figure so a
+  // $0 that meets the target can never again read the same as a
+  // $0 that misses it.
+  solvedStatus?: SolverSolutionStatus;
+  targetAchieved?: boolean;
   // Display-delta cases only (kind "display-delta"): the sub-delta
   // computed from the displayed (rounded) figures, the same delta
   // computed from the raw float difference, and the rate delta in
@@ -395,7 +407,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Constant strategy, 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":8020000,"successRate":96.6,"medianEndingCents":676827580,"solvedPercent":null},
+    expected: {"solvedSpendingCents":8020000,"successRate":96.6,"medianEndingCents":676827580,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-hist-guardrails-95",
@@ -403,7 +415,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Guardrails (default knobs), 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":15020000,"successRate":96.6,"medianEndingCents":124645270,"solvedPercent":null},
+    expected: {"solvedSpendingCents":15020000,"successRate":96.6,"medianEndingCents":124645270,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-hist-percent-95",
@@ -411,7 +423,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Percent strategy, 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1692,"solvedPercent":30},
+    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1692,"solvedPercent":30,"solvedStatus":"capped","targetAchieved":true},
   },
   {
     id: "solver-mc-constant-85",
@@ -420,7 +432,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":6850000,"successRate":85,"medianEndingCents":495645951,"solvedPercent":null},
+    expected: {"solvedSpendingCents":6850000,"successRate":85,"medianEndingCents":495645951,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-mc-guardrails-85",
@@ -429,7 +441,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":14840000,"successRate":85.1,"medianEndingCents":64843519,"solvedPercent":null},
+    expected: {"solvedSpendingCents":14840000,"successRate":85.1,"medianEndingCents":64843519,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-mc-percent-85",
@@ -438,7 +450,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1161,"solvedPercent":30},
+    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1161,"solvedPercent":30,"solvedStatus":"capped","targetAchieved":true},
   },
   {
     id: "solver-hist-constant-100",
@@ -446,7 +458,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending at a 100% target — only spending that survived every start year solves.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 100,
-    expected: {"solvedSpendingCents":7760000,"successRate":100,"medianEndingCents":718990286,"solvedPercent":null},
+    expected: {"solvedSpendingCents":7760000,"successRate":100,"medianEndingCents":718990286,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-hist-guardrails-custom-90",
@@ -454,7 +466,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical, Guardrails with non-default knobs 150/60/15, 90% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 150, guardrailsRaisePct: 60, guardrailsAdjustmentPct: 15 },
     solverEngine: "historical", solverTargetPct: 90,
-    expected: {"solvedSpendingCents":18330000,"successRate":91.4,"medianEndingCents":26704672,"solvedPercent":null},
+    expected: {"solvedSpendingCents":18330000,"successRate":91.4,"medianEndingCents":26704672,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-mc-deplete-refill-95",
@@ -463,7 +475,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 40000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":290319892,"solvedPercent":null},
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":290319892,"solvedPercent":null,"solvedStatus":"feasible_at_zero","targetAchieved":true},
   },
   {
     id: "solver-hist-deplete-refill-95",
@@ -471,7 +483,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "The same deplete-then-refill case on the Historical engine: solves to $0 (the first $100 step scores 0.0% — no historical run funds even $100/yr across the ten years before the income starts). Under the old scoring it also claimed $50,500/yr at 100%.",
     input: { portfolioCents: 40000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":385153350,"solvedPercent":null},
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":385153350,"solvedPercent":null,"solvedStatus":"feasible_at_zero","targetAchieved":true},
   },
   {
     id: "solver-mc-refill-fundable-95",
@@ -480,7 +492,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 4000000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":300000,"successRate":95.9,"medianEndingCents":284686107,"solvedPercent":null},
+    expected: {"solvedSpendingCents":300000,"successRate":95.9,"medianEndingCents":284686107,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-hist-refill-fundable-95",
@@ -488,7 +500,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "The $40,000 refill plan on the Historical engine: $3,300/yr at 98.3% (the next $100 step scores 94.8% under the F6 inclusive horizon; it scored 94.9% before it). The old scoring solved it to $50,500/yr at 100%.",
     input: { portfolioCents: 4000000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":330000,"successRate":98.3,"medianEndingCents":375282561,"solvedPercent":null},
+    expected: {"solvedSpendingCents":330000,"successRate":98.3,"medianEndingCents":375282561,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-hist-guardrails-refill-95",
@@ -496,7 +508,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Guardrails scan on a refill plan: $30,000 portfolio, $9,000 base spending, $48,000/yr income from 67. Solves to $3,400 at 96.6% under the never-runs-out rule (next step 94.8% under the F6 inclusive horizon; 94.9% before it); the old ending-balance scan solved it to $15,700 at 98.3% on refill credit.",
     input: { portfolioCents: 3000000, spendingCents: 900000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":340000,"successRate":96.6,"medianEndingCents":342304289,"solvedPercent":null},
+    expected: {"solvedSpendingCents":340000,"successRate":96.6,"medianEndingCents":342304289,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-mc-guardrails-refill-95",
@@ -505,7 +517,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 3000000, spendingCents: 900000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":320000,"successRate":95.5,"medianEndingCents":246505761,"solvedPercent":null},
+    expected: {"solvedSpendingCents":320000,"successRate":95.5,"medianEndingCents":246505761,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-mc-unified-stream-95",
@@ -514,7 +526,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 306250000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":7520000,"successRate":95,"medianEndingCents":1094703042,"solvedPercent":null},
+    expected: {"solvedSpendingCents":7520000,"successRate":95,"medianEndingCents":1094703042,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "hist-deplete-refill-never-out",
@@ -604,7 +616,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Phased strategy (step-down from 75 at 1%/yr), 95% target: the solved figure is the maximum STARTING (pre-decline) annual spending, priced through the phased path — $81,500/yr at 96.6%, above Constant's $80,200 on the same plan because the later years spend less. Verified by a brute-force $100-step scan over the historical engine's never-runs-out rate (the next step, $81,600, scores 94.8%). Before the F6 inclusive horizon (build v99) it solved to $81,900 (next step 94.9%).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":8150000,"successRate":96.6,"medianEndingCents":678284587,"solvedPercent":null},
+    expected: {"solvedSpendingCents":8150000,"successRate":96.6,"medianEndingCents":678284587,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   // ---- Prompt 13 guardrails fixes (build v40): the two
   // equality rails, genuine crossings past the tolerance, and
@@ -649,7 +661,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 100000, spendingCents: 100000, currentAge: 60, retirementAge: 60, endAge: 61, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 100,
-    expected: {"solvedSpendingCents":50000,"successRate":100,"medianEndingCents":5000,"solvedPercent":null},
+    expected: {"solvedSpendingCents":50000,"successRate":100,"medianEndingCents":5000,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
   },
   {
     id: "solver-guardrails-income-only-five-year",
@@ -658,7 +670,32 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 0, spendingCents: 10000, currentAge: 60, retirementAge: 60, endAge: 65, stocksPct: 75, extraIncomeCents: 10000, extraIncomeStartAge: 60, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 100,
-    expected: {"solvedSpendingCents":10000,"successRate":100,"medianEndingCents":0,"solvedPercent":null},
+    expected: {"solvedSpendingCents":10000,"successRate":100,"medianEndingCents":0,"solvedPercent":null,"solvedStatus":"feasible","targetAchieved":true},
+  },
+  {
+    id: "solver-hist-constant-feasible-zero",
+    kind: "solver",
+    note: "Engine Review 2, E2-S1 feasible_at_zero: a $100 portfolio over a 40-year horizon (ages 55-95), Historical engine, 85% target. $0/yr meets the target (100% — a $0 withdrawal can never exceed the balance) but the first $100 step does not, so $0 is the highest sustainable spending — and it IS a sustainable spending, unlike the infeasible case below. Status and median ending verified against the independent reference implementation (E2-V1), not re-pinned from engine output.",
+    input: { portfolioCents: 10000, spendingCents: 10000, currentAge: 55, retirementAge: 55, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    solverEngine: "historical", solverTargetPct: 85,
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":93034,"solvedPercent":null,"solvedStatus":"feasible_at_zero","targetAchieved":true},
+  },
+  {
+    id: "solver-mc-constant-capped",
+    kind: "solver",
+    note: "Engine Review 2, E2-S1 capped: a $100,000 portfolio with $1,200,000/yr of extra income from 60, ages 60-61 (2 priced years), 0% return / 0% volatility, Monte Carlo engine (seed 12345), 85% target. The search cap is max(2 x $100,000, $1,000,000) = $1,000,000/yr, and the income funds it with room to spare, so the cap itself is the answer at 100% with a $500,000 median ending — a capped answer is the cap, not a proven maximum above it. Status verified against the independent reference implementation (E2-V1).",
+    input: { portfolioCents: 10000000, spendingCents: 10000000, currentAge: 60, retirementAge: 60, endAge: 61, stocksPct: 75, extraIncomeCents: 120000000, extraIncomeStartAge: 60, expectedReturnPct: 0, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    mcSeed: 12345,
+    solverEngine: "montecarlo", solverTargetPct: 85,
+    expected: {"solvedSpendingCents":100000000,"successRate":100,"medianEndingCents":50000000,"solvedPercent":null,"solvedStatus":"capped","targetAchieved":true},
+  },
+  {
+    id: "solver-hist-constant-infeasible",
+    kind: "solver",
+    note: "Engine Review 2, E2-S1 infeasible_at_zero: the standard $2,000,000 plan on the Historical engine with a direct-call target of 101%. A target above 100% is out of range — the UI clamps targets to 0-100 and the adapter hardcodes 85 — so no spending level can meet it: even $0/yr falls short at 100%, and the returned $0 is NOT a sustainable spending. The $0 rate is 100% on every validated input, so this branch is reachable only through such a direct call; the status exists so no consumer can mistake this $0 for the feasible-zero case above. Status and median ending verified against the independent reference implementation (E2-V1).",
+    input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    solverEngine: "historical", solverTargetPct: 101,
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":1860674508,"solvedPercent":null,"solvedStatus":"infeasible_at_zero","targetAchieved":false},
   },
   // ---- Engine Review 1 (2026-11-14): E1-S2 pre-retirement
   // income pins + E1-S1 spending-adequacy pins. All cases use
@@ -887,6 +924,12 @@ function runFixtureCase(c: FixtureCase): FixtureCaseResult {
         if (actualPct !== exp.solvedPercent) {
           failures.push(`solvedPercent: expected ${exp.solvedPercent}, got ${actualPct}`);
         }
+      }
+      if (exp.solvedStatus !== undefined && s.solutionStatus !== exp.solvedStatus) {
+        failures.push(`solvedStatus: expected ${exp.solvedStatus}, got ${s.solutionStatus}`);
+      }
+      if (exp.targetAchieved !== undefined && s.targetAchieved !== exp.targetAchieved) {
+        failures.push(`targetAchieved: expected ${exp.targetAchieved}, got ${s.targetAchieved}`);
       }
       if ((c.solverEngine ?? "historical") === "montecarlo") {
         // Unified-stream assertion: a plan-level Monte Carlo run —

@@ -13,7 +13,10 @@ import { FICTIONAL } from "./helpers";
 
 const CLI_PATH = join(import.meta.dir, "..", "src", "cli.ts");
 
-async function runCli(input: Record<string, unknown>): Promise<{
+async function runCli(
+  input: Record<string, unknown>,
+  tool = "retirement_calculate",
+): Promise<{
   stdout: string;
   stderr: string;
   code: number | null;
@@ -23,7 +26,7 @@ async function runCli(input: Record<string, unknown>): Promise<{
     const inputPath = join(dir, "input.json");
     await writeFile(inputPath, JSON.stringify(input));
     const proc = Bun.spawn(
-      [process.execPath, CLI_PATH, "retirement_calculate", inputPath],
+      [process.execPath, CLI_PATH, tool, inputPath],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [stdout, stderr, code] = await Promise.all([
@@ -59,4 +62,21 @@ describe("CLI stdout purity", () => {
     ).toBe("missing_input");
     expect(code).toBe(2);
   });
+
+  test("max_spending prints the feasibility fields in the CLI envelope (Engine Review 2, E2-S1)", async () => {
+    const { stdout, code } = await runCli(
+      { ...FICTIONAL },
+      "retirement_max_spending",
+    );
+    expect(code).toBe(0);
+    const envelope = JSON.parse(stdout) as Record<string, unknown>;
+    expect(envelope.ok).toBe(true);
+    const results = envelope.results as Record<string, unknown>;
+    expect(results.targetSuccessRate).toBe(0.85);
+    expect(results.achievedSuccessRate).toBe(results.successRate);
+    expect(results.targetAchieved).toBe(true);
+    expect(results.solutionStatus).toBe("feasible");
+    expect(results.historicalTargetAchieved).toBe(true);
+    expect(results.historicalSolutionStatus).toBe("feasible");
+  }, 60_000);
 });

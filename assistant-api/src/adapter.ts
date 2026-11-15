@@ -1159,6 +1159,31 @@ export function calculateMaxSpending(
   runs: number;
   historicalMaxMonthlySpending: number | null;
   historicalMaxAnnualSpending: number | null;
+  // Feasibility metadata (Engine Review 2, E2-S1): rates here are
+  // 0–1 fractions, like successRate above — targetSuccessRate is
+  // the 85% target (0.85), achievedSuccessRate mirrors
+  // successRate, targetAchieved says whether the returned
+  // spending actually meets the target, and solutionStatus names
+  // which case the answer is ("feasible" | "feasible_at_zero" |
+  // "infeasible_at_zero" | "capped"). A maxAnnualSpending of 0
+  // with solutionStatus "infeasible_at_zero" means NO spending
+  // level reaches the target — $0 is not a sustainable spending
+  // there; with "feasible_at_zero" $0 IS the highest sustainable
+  // spending; with "capped" the figure is the solver's search cap
+  // (the percent leg's 30% cap, or twice the portfolio floored at
+  // $1,000,000/yr), not a proven maximum above it. The historical
+  // cross-check leg carries its own status the same way.
+  targetSuccessRate: number;
+  achievedSuccessRate: number;
+  targetAchieved: boolean;
+  solutionStatus: "feasible" | "feasible_at_zero" | "infeasible_at_zero" | "capped";
+  historicalTargetAchieved: boolean | null;
+  historicalSolutionStatus:
+    | "feasible"
+    | "feasible_at_zero"
+    | "infeasible_at_zero"
+    | "capped"
+    | null;
 }> {
   return guard(() => {
     const { inputs, warnings } = toSimInputs(scenario);
@@ -1177,6 +1202,15 @@ export function calculateMaxSpending(
     if (solved === null) {
       return unsupported(
         "No sustainable spending could be solved for these ages (retirement at/after the plan end age, or no retired years)",
+      );
+    }
+    if (!solved.targetAchieved) {
+      // Unreachable at the hardcoded 85% target through validated
+      // inputs (at $0 every run succeeds), but the response must
+      // never let a $0 read as meeting the target if it ever
+      // arises: say so in words, not just in the status field.
+      warnings.push(
+        `No spending level reaches the 85% target — even $0/yr falls short at ${(Math.round(solved.successRate * 10) / 10).toFixed(1)}% success. The reported $0 maximum is not a sustainable spending level.`,
       );
     }
     const histSolved = solveMaxSpending(
@@ -1217,6 +1251,14 @@ export function calculateMaxSpending(
         historicalMaxMonthlySpending:
           histAnnual === null ? null : r2(histAnnual / 12),
         historicalMaxAnnualSpending: histAnnual,
+        targetSuccessRate: r2(85 / 100),
+        achievedSuccessRate: r2(solved.successRate / 100),
+        targetAchieved: solved.targetAchieved,
+        solutionStatus: solved.solutionStatus,
+        historicalTargetAchieved:
+          histSolved === null ? null : histSolved.targetAchieved,
+        historicalSolutionStatus:
+          histSolved === null ? null : histSolved.solutionStatus,
       },
       warnings,
       [

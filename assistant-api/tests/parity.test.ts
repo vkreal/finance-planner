@@ -473,7 +473,101 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
         ? null
         : centsToDollars(histSolved.maxSpendingCents),
     );
+    // Feasibility metadata (Engine Review 2, E2-S1): rates are
+    // 0–1 fractions here, like successRate; the target is 85%.
+    expect(res.targetSuccessRate).toBe(0.85);
+    expect(res.achievedSuccessRate).toBe(res.successRate);
+    expect(res.targetAchieved).toBe(true);
+    expect(res.solutionStatus).toBe("feasible");
+    expect(res.targetAchieved).toBe(solved.targetAchieved);
+    expect(res.solutionStatus).toBe(solved.solutionStatus);
+    expect(res.historicalTargetAchieved).toBe(
+      histSolved === null ? null : histSolved.targetAchieved,
+    );
+    expect(res.historicalSolutionStatus).toBe(
+      histSolved === null ? null : histSolved.solutionStatus,
+    );
   }, 30_000);
+
+  test("percent strategy reports capped: the 30% cap binds, and the adapter says so", () => {
+    // The percent leg's 30% cap always binds (a percent-of-balance
+    // withdrawal can never outrun the balance in one year), so the
+    // adapter must report solutionStatus "capped" — not "feasible".
+    const s = normalizedScenario({ strategy: "percent" });
+    const res = expectOk(calculateMaxSpending(s));
+    // The direct side, hand-built from the scenario the same way
+    // toSimInputs builds it (percent leg: 5% of the start-of-year
+    // balance; both SS streams summed into the one extra income,
+    // both starting at 67).
+    const inputs: SimInputs = {
+      startCents: s.portfolioCents,
+      spendingCents: s.annualSpendingCents,
+      currentAge: s.currentAge,
+      retirementAge: s.retirementAge,
+      endAge: s.endAge,
+      extraIncomeCents: (s.ssPrimaryAnnual + s.ssSpouseAnnual) * 100,
+      extraIncomeStartAge: 67,
+      strategy: "percent",
+      percentOfPortfolio: 5,
+      guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
+      guardrailsRaisePct: GUARDRAILS_RAISE_DEFAULT,
+      guardrailsAdjustmentPct: GUARDRAILS_ADJUSTMENT_DEFAULT,
+      phaseStartAge: PHASE_START_AGE_DEFAULT,
+      phaseDeclinePct: PHASE_DECLINE_PCT_DEFAULT,
+    };
+    const solved = solveMaxSpending(
+      inputs,
+      s.stocksPct,
+      s.expectedReturnPct / 100,
+      s.volatilityPct / 100,
+      "montecarlo",
+      85,
+      s.mcSeed,
+    );
+    expect(solved).not.toBeNull();
+    if (solved === null) throw new Error("solver returned null");
+    expect(solved.solutionStatus).toBe("capped");
+    expect(solved.percent).toBe(30);
+    expect(res.solutionStatus).toBe("capped");
+    expect(res.targetAchieved).toBe(true);
+    expect(res.targetSuccessRate).toBe(0.85);
+    expect(res.achievedSuccessRate).toBe(1);
+    expect(res.successRate).toBe(1);
+    expect(res.maxAnnualSpending).toBe(
+      centsToDollars(solved.maxSpendingCents),
+    );
+  }, 30_000);
+
+  test("feasible_at_zero reports $0 as the highest sustainable spending, target met", () => {
+    // A $100 portfolio over 40 years with no income: $0/yr meets
+    // the 85% target (100%) and the first $100 step does not, so
+    // the adapter's $0 maximum is a sustainable spending — the
+    // status must say feasible_at_zero, not read as a failure.
+    const s = normalizedScenario({
+      pretax: 100,
+      taxable: 0,
+      roth: 0,
+      hsa: 0,
+      monthlySpending: 9500,
+      currentAge: 55,
+      retirementAge: 55,
+      endAge: 95,
+      socialSecurityAnnual: 0,
+      socialSecurityStartAge: 67,
+      spouseSocialSecurityAnnual: 0,
+      spouseSocialSecurityStartAge: 67,
+    });
+    const res = expectOk(calculateMaxSpending(s));
+    expect(res.maxAnnualSpending).toBe(0);
+    expect(res.maxMonthlySpending).toBe(0);
+    expect(res.successRate).toBe(1);
+    expect(res.targetSuccessRate).toBe(0.85);
+    expect(res.achievedSuccessRate).toBe(1);
+    expect(res.targetAchieved).toBe(true);
+    expect(res.solutionStatus).toBe("feasible_at_zero");
+    expect(res.historicalTargetAchieved).toBe(true);
+    expect(res.historicalSolutionStatus).toBe("feasible_at_zero");
+  }, 60_000);
 
   test("mcRuns is inert: 10 vs 5000 give identical results; runs reports the fixed 1000 (pass-3 S1)", () => {
     // solveMaxSpending takes no run count — its Monte Carlo leg always

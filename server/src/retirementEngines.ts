@@ -960,14 +960,75 @@ export function runMonteCarlo(
    under this predicate (a smaller withdrawal leaves a weakly
    larger balance at every year of the same return sequence, so a
    run fundable at one spending is fundable at any lower one),
-   which is what the binary searches below rely on. */
+   which is what the binary searches below rely on.
+
+   Feasibility metadata (Engine Review 2, E2-S1): every SolverResult
+   also says whether the returned spending actually meets the
+   requested target — targetSuccessRate (the requested target, in
+   percent units), achievedSuccessRate (mirrors successRate),
+   targetAchieved (achieved >= target), and solutionStatus:
+   - "feasible": a positive spending meets the target.
+   - "feasible_at_zero": $0/yr meets the target but no positive
+     $100 step does — $0 IS the highest sustainable spending.
+   - "infeasible_at_zero": even $0/yr misses the target, so the
+     returned $0 is NOT a sustainable spending — no spending level
+     reaches the target. Unreachable through validated inputs
+     today (at $0 every run succeeds, so the $0 rate is 100%),
+     reachable only by a direct call with an out-of-range target
+     (>100); the distinction still belongs in the type so no
+     consumer can mistake a $0 for meeting the target.
+   - "capped": the returned spending is the search cap and the cap
+     itself meets the target — the percent leg's 30%-of-portfolio
+     cap, or the constant/phased/guardrails search cap (twice the
+     starting portfolio, floored at $1,000,000/yr). A capped
+     answer is the cap, not a proven maximum above it. */
+export type SolverSolutionStatus =
+  | "feasible"
+  | "feasible_at_zero"
+  | "infeasible_at_zero"
+  | "capped";
+
 export type SolverResult = {
   maxSpendingCents: number;
   successRate: number;
   medianEnding: number;
   percent: number | null; // set only for the percent strategy
   approximate: boolean;
+  // Feasibility metadata — see the solver note above. Percent
+  // units throughout (0–100), matching successRate and the
+  // requested targetPct; targetAchieved is achieved >= target.
+  targetSuccessRate: number;
+  achievedSuccessRate: number;
+  targetAchieved: boolean;
+  solutionStatus: SolverSolutionStatus;
 };
+
+// The one constructor for SolverResult, so every return site
+// carries the same feasibility metadata from the same derivation:
+// achieved mirrors successRate, targetAchieved is the comparison
+// against the requested target, and the status is the caller's
+// classification of which branch produced the answer.
+function solverResult(args: {
+  maxSpendingCents: number;
+  successRate: number;
+  medianEnding: number;
+  percent: number | null;
+  approximate: boolean;
+  targetPct: number;
+  solutionStatus: SolverSolutionStatus;
+}): SolverResult {
+  return {
+    maxSpendingCents: args.maxSpendingCents,
+    successRate: args.successRate,
+    medianEnding: args.medianEnding,
+    percent: args.percent,
+    approximate: args.approximate,
+    targetSuccessRate: args.targetPct,
+    achievedSuccessRate: args.successRate,
+    targetAchieved: args.successRate >= args.targetPct,
+    solutionStatus: args.solutionStatus,
+  };
+}
 
 function evaluatePlan(
   inputs: SimInputs,
@@ -1110,13 +1171,31 @@ function solveGuardrailsScan(
     mcSeed,
   );
   if (!winner) return null;
-  return {
+  // Status: the scan only runs after solveMaxSpending has checked
+  // the $0 rate meets the target, so a best of 0 is feasible_at_zero
+  // (the winner rate confirms it); the cap binds only when the scan
+  // was cut short by capSteps itself (scanSteps == capSteps) and the
+  // cap step is the winner — a scan that ran to its proven ceiling
+  // (scanSteps < capSteps) found the true maximum, cap or no cap.
+  // The winner-rate check is defensive: the scan's feasibility and
+  // evaluatePlan score by the same predicate, so they agree.
+  const solutionStatus: SolverSolutionStatus =
+    winner.successRate < targetPct
+      ? "infeasible_at_zero"
+      : best === scanSteps && scanSteps === capSteps
+        ? "capped"
+        : best === 0
+          ? "feasible_at_zero"
+          : "feasible";
+  return solverResult({
     maxSpendingCents: best * STEP,
     successRate: winner.successRate,
     medianEnding: winner.medianEnding,
     percent: null,
     approximate,
-  };
+    targetPct,
+    solutionStatus,
+  });
 }
 
 export function solveMaxSpending(
@@ -1158,11 +1237,11 @@ export function solveMaxSpending(
     const at0 = evalStep(0);
     if (!at0) return null;
     if (at0.successRate < targetPct) {
-      return { maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: 0, approximate };
+      return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: 0, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
     }
     const atMax = evalStep(maxSteps);
     if (atMax && atMax.successRate >= targetPct) {
-      return { maxSpendingCents: maxSteps * STEP, successRate: atMax.successRate, medianEnding: atMax.medianEnding, percent: pctFor(maxSteps), approximate };
+      return solverResult({ maxSpendingCents: maxSteps * STEP, successRate: atMax.successRate, medianEnding: atMax.medianEnding, percent: pctFor(maxSteps), approximate, targetPct, solutionStatus: "capped" });
     }
     let lo = 0;
     let hi = maxSteps;
@@ -1174,7 +1253,7 @@ export function solveMaxSpending(
     }
     const best = evalStep(lo);
     if (!best) return null;
-    return { maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: pctFor(lo), approximate };
+    return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: pctFor(lo), approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
   }
 
   // Constant, phased, and guardrails all solve for the (starting /
@@ -1192,7 +1271,7 @@ export function solveMaxSpending(
   const at0 = evalSpend(0);
   if (!at0) return null;
   if (at0.successRate < targetPct) {
-    return { maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: null, approximate };
+    return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: null, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
   }
   const capSteps = Math.max(1, Math.floor(Math.max(base.startCents * 2, 100_000_000) / STEP));
   if (base.strategy === "guardrails") {
@@ -1221,7 +1300,7 @@ export function solveMaxSpending(
   }
   if (eHi && eHi.successRate >= targetPct) {
     // Even the cap meets the target.
-    return { maxSpendingCents: hi * STEP, successRate: eHi.successRate, medianEnding: eHi.medianEnding, percent: null, approximate };
+    return solverResult({ maxSpendingCents: hi * STEP, successRate: eHi.successRate, medianEnding: eHi.medianEnding, percent: null, approximate, targetPct, solutionStatus: "capped" });
   }
   while (hi - lo > 1) {
     const mid = Math.floor((lo + hi) / 2);
@@ -1231,7 +1310,7 @@ export function solveMaxSpending(
   }
   const best = evalSpend(lo * STEP);
   if (!best) return null;
-  return { maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: null, approximate };
+  return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: null, approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
 }
 
 // Build simulation inputs from a stored input set (a saved scenario),

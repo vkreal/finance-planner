@@ -20,7 +20,7 @@
 
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
 - `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes.
-- `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success.
+- `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success, with the feasibility of that maximum (`targetAchieved`, `solutionStatus`).
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
 - `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
 - `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
@@ -228,7 +228,7 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | --- | --- | --- | --- |
 | `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`, `minimumAnnualSpending` ($/yr floor — adds `historicalSpendingAdequacyRate`, read beside `historicalNeverOutRate`, never instead of it). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding`, `historicalSpendingAdequacyRate` (null without a floor), `minimumAnnualSpending` |
 | `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `spendingAdequacyRate` (null without `minimumAnnualSpending`; read beside `successRate` — a high funding rate is not proof spending held the floor), `minimumAnnualSpending`, `chart` (dollars), `deterministicEndingBalance` |
-| `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending` |
+| `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending`, plus feasibility: `targetSuccessRate` (0.85), `achievedSuccessRate`, `targetAchieved`, `solutionStatus` (`feasible` / `feasible_at_zero` / `infeasible_at_zero` / `capped` — a $0 maximum with `infeasible_at_zero` means no spending level reaches the target) and the historical leg's `historicalTargetAchieved` / `historicalSolutionStatus` |
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
 | `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
@@ -639,7 +639,15 @@ Engine result (key figures): `maxMonthlySpending: $14,358.33`,
 `maxAnnualSpending: $172,300`, `successRate: 0.85`, `runs: 1000`,
 `medianEnding: $13,982,528.25`,
 `historicalMaxMonthlySpending: $18,616.67`
-(`historicalMaxAnnualSpending: $223,400`).
+(`historicalMaxAnnualSpending: $223,400`), and feasibility:
+`targetSuccessRate: 0.85`, `achievedSuccessRate: 0.85`,
+`targetAchieved: true`, `solutionStatus: "feasible"` — the $172,300
+is a positive spending meeting the target, not the search cap.
+A `$0` maximum would need the status read before any claim about
+it: `feasible_at_zero` means $0 is the highest sustainable
+spending, `infeasible_at_zero` means no spending level reaches
+the target, and `capped` means the figure is the solver's search
+cap (the percent strategy's 30% cap always binds).
 
 Plain-English answer: "About $14,358 a month — that's the highest
 spending that still succeeds in 85 out of 100 random paths. Your
