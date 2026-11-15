@@ -153,24 +153,28 @@ describe("drift: tool descriptions agree with the mapping", () => {
 });
 
 describe("drift: future fields stay out until their review lands", () => {
-  test("medicareAgePrimary (Review 5) is reserved, not exposed", () => {
+  test("medicareAgePrimary (Review 5 reservation) is exposed by Engine Review 7", () => {
+    // The Review 5 reservation retired when Engine Review 7
+    // exposed the field in the schema alongside hsaCoverage,
+    // hsaEligible, and priorYearWagesAnnual: it must now be a
+    // schema key, in FIELD_ORDER, priced only by
+    // retirement_work_years, and out of FUTURE_FIELDS — and a
+    // call carrying it must normalize instead of rejecting.
     const zodKeys = new Set(Object.keys(RetirementQuestionInputs.shape));
-    expect(zodKeys.has("medicareAgePrimary")).toBe(false);
-    expect(FIELD_ORDER).not.toContain("medicareAgePrimary");
+    expect(zodKeys.has("medicareAgePrimary")).toBe(true);
+    expect(FIELD_ORDER).toContain("medicareAgePrimary");
+    expect(PRICED_OPTIONAL["retirement_work_years"]).toContain(
+      "medicareAgePrimary",
+    );
     for (const tool of FINANCIAL_TOOLS) {
+      if (tool === "retirement_work_years") continue;
       expect(PRICED_OPTIONAL[tool]).not.toContain("medicareAgePrimary");
     }
-    expect(FUTURE_FIELDS["medicareAgePrimary"]?.pricedBy).toEqual([
-      "retirement_work_years",
-    ]);
-    // Sending it today is an unknown-field rejection, not a drop.
+    expect(FUTURE_FIELDS["medicareAgePrimary"]).toBeUndefined();
     const res = dispatchTool(
       "retirement_work_years",
       fictionalScenario({ medicareAgePrimary: 65 }),
     );
-    expect(res.ok).toBe(false);
-    if (res.ok) throw new Error("medicareAgePrimary should not normalize yet");
-    expect(res.error.code).toBe("invalid_input");
-    expect(res.error.message).toContain("medicareAgePrimary");
+    expect(res.ok).toBe(true);
   });
 });

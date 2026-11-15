@@ -2269,6 +2269,13 @@ export function compareRetirementAges(
     winnerStrategy: string;
     winnerClaimPrimaryAge: number | null;
     winnerClaimSpouseAge: number | null;
+    // Assumptions the roll relied on (Engine Review 7): the
+    // HSA coverage/eligibility fallbacks and the first-year
+    // prior-wage proxy, each named once when used. Empty when
+    // every work-year input was explicit. The same strings
+    // also ride the response warnings (below), so a caller
+    // that reads only warnings still sees them.
+    assumptions: string[];
   }>;
   workYearsWinnerByAllInTax: string | null;
   comparisonScope: ComparisonScopeInfo;
@@ -2341,6 +2348,7 @@ export function compareRetirementAges(
       winnerClaimSpouseAge: number | null;
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      assumptions: string[];
     }> = [];
     let workYearsWinnerByAllInTax: string | null = null;
     const workYearsWarnings: string[] = [];
@@ -2349,11 +2357,19 @@ export function compareRetirementAges(
         retirementAge: firstAge,
         windowStartAge: firstAge,
       });
+      // Engine Review 7: the explicit HSA inputs, the
+      // Medicare enrollment age, and the prior-year wages
+      // ride the job straight from the normalized scenario
+      // (null = omitted — the engine falls back as documented
+      // and records the fallback as an assumption on the row).
       const job: WorkYearJob = {
         salary: scenario.salaryAnnual,
         employer401k: scenario.employer401kAnnual,
         employerHsa: scenario.employerHsaAnnual,
-        medicareAgePrimary: null,
+        medicareAgePrimary: scenario.medicareAgePrimary,
+        hsaCoverage: scenario.hsaCoverage,
+        hsaEligible: scenario.hsaEligible,
+        priorYearWages: scenario.priorYearWagesAnnual,
       };
       const wyRows: WorkYearsCompareRow[] = runWorkYearsCompare(
         planInputs,
@@ -2382,8 +2398,17 @@ export function compareRetirementAges(
           // (see the row type in workYears.ts).
           irmaaLookbackMissingYears: row.irmaaLookbackMissingYears,
           acaBelow100FplYears: row.acaBelow100FplYears,
+          assumptions: row.assumptions,
         })),
       );
+      // The roll's assumptions ride the warnings too, once
+      // each (the first row's set — every row in one call
+      // prices the same job, so the distinct set is the
+      // same on each; the per-row field above carries the
+      // same strings for a caller that reads rows only).
+      for (const a of wyRows[0]?.assumptions ?? []) {
+        workYearsWarnings.push(`Work-years assumption: ${a}`);
+      }
       const wyWinner = pickWinner(
         workYears,
         (a, b) => a.allInTax < b.allInTax,

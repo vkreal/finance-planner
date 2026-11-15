@@ -47,18 +47,13 @@
 // applies those rules from the normalized scenario, so the
 // report is per-call, not just per-tool.
 //
-// Review 5 merge-order note: medicareAgePrimary is NOT in this
-// tree's input schema (Review 5 has not landed at 19ea743). The
-// engine already accepts it as a work-years job field
-// (server/src/workYears.ts) and the adapter already passes null
-// for it (adapter.ts, compareRetirementAges) — but no caller can
-// send it today: the strict schema rejects it as an unknown
-// field, which is the correct behavior until Review 5 exposes it.
-// FUTURE_FIELDS below reserves its slot (priced only by
-// retirement_work_years) so the mapping, the drift test, and the
-// Review 5 build all agree on where it lands; do not add it to
-// FIELD_ORDER, PRICED_OPTIONAL, or the schema until Review 5
-// exposes it.
+// Review 7 note: medicareAgePrimary was reserved here through
+// Review 5 (engine field, adapter passed null, schema rejected
+// it). Engine Review 7 exposes it in the schema alongside the
+// new hsaCoverage / hsaEligible / priorYearWagesAnnual inputs,
+// so the reservation is retired: the field now lives in
+// FIELD_ORDER, the schema, and PRICED_OPTIONAL (priced only by
+// retirement_work_years).
 
 import type { NormalizedScenario } from "./normalize";
 import type { IgnoredInputField } from "./types";
@@ -128,6 +123,10 @@ export const FIELD_ORDER: string[] = [
   "salaryAnnual",
   "employer401kAnnual",
   "employerHsaAnnual",
+  "hsaCoverage",
+  "hsaEligible",
+  "medicareAgePrimary",
+  "priorYearWagesAnnual",
   "taxYear",
   "interestAnnual",
   "ordinaryDividendsAnnual",
@@ -302,6 +301,14 @@ export const PRICED_OPTIONAL: Record<FinancialToolName, string[]> = {
     "salaryAnnual",
     "employer401kAnnual",
     "employerHsaAnnual",
+    // Engine Review 7: the explicit HSA inputs, the Medicare
+    // enrollment age (engine field since Review 5, exposed in
+    // the schema by Review 7), and the prior-year wage input
+    // for the first modeled work year.
+    "hsaCoverage",
+    "hsaEligible",
+    "medicareAgePrimary",
+    "priorYearWagesAnnual",
     "compareAges",
   ],
   retirement_tax_year: TAX_YEAR_OPTIONAL_INPUTS,
@@ -352,6 +359,11 @@ const FIELD_BLURBS: Record<string, string> = {
   salaryAnnual: "the annual salary while working",
   employer401kAnnual: "the annual employer 401(k) contribution",
   employerHsaAnnual: "the annual employer HSA contribution",
+  hsaCoverage: "the HDHP coverage type the HSA limit prices from",
+  hsaEligible: "whether the primary is an HSA-eligible individual",
+  medicareAgePrimary: "the primary's Medicare enrollment age",
+  priorYearWagesAnnual:
+    "the prior calendar year's Social Security wages from the plan sponsor",
   taxYear: "the tax law year to price under",
   interestAnnual: "taxable interest for one tax year",
   ordinaryDividendsAnnual: "total ordinary dividends for one tax year",
@@ -382,23 +394,22 @@ const FIELD_BLURBS: Record<string, string> = {
 
 /**
  * Fields the engine already supports but the input schema does not
- * yet expose (Review 5 in progress). A caller sending one today is
- * rejected as an unknown field by the strict schema — the correct
- * behavior until the schema exposes it. When Review 5 lands, the
- * field moves into FIELD_ORDER / the schema / PRICED_OPTIONAL
- * (priced only by the tools listed here) and out of this table;
- * the drift test fails if it is in the schema while still listed
- * here, or priced by a tool without being in the schema.
+ * yet expose. A caller sending one today is rejected as an unknown
+ * field by the strict schema — the correct behavior until the
+ * schema exposes it. When the review lands, the field moves into
+ * FIELD_ORDER / the schema / PRICED_OPTIONAL (priced only by the
+ * tools listed here) and out of this table; the drift test fails if
+ * it is in the schema while still listed here, or priced by a tool
+ * without being in the schema.
+ *
+ * Empty today: medicareAgePrimary (the last reservation) was
+ * exposed by Engine Review 7 alongside hsaCoverage, hsaEligible,
+ * and priorYearWagesAnnual.
  */
 export const FUTURE_FIELDS: Record<
   string,
   { pricedBy: FinancialToolName[]; note: string }
-> = {
-  medicareAgePrimary: {
-    pricedBy: ["retirement_work_years"],
-    note: "Review 5: the primary's Medicare age for the work-years earned-income leg (workYears.ts WorkYearJob.medicareAgePrimary; the adapter already passes null). Not yet in the input schema — sending it today is an unknown-field rejection, not a silent drop.",
-  },
-};
+> = {};
 
 /**
  * Conditional ignore: a field this tool normally prices that has no

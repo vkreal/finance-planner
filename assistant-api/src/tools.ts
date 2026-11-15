@@ -290,6 +290,29 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
       ...MONEY,
       description: "Employer HSA contribution per year in dollars.",
     },
+    hsaCoverage: {
+      type: "string",
+      enum: ["self-only", "family", "none"],
+      description:
+        "HDHP coverage type the HSA limit prices from: self-only or family coverage, or none (no qualifying HDHP — no HSA contribution of either source). Omit to fall back to filing status (family for joint filers, self-only otherwise), recorded as an assumption on the priced work years. Only priced by retirement_work_years.",
+    },
+    hsaEligible: {
+      type: "boolean",
+      description:
+        "Whether the primary is an HSA-eligible individual (qualifying HDHP, no disqualifying coverage, not Medicare-enrolled). False means explicitly ineligible — no HSA contribution of either source. Omit to assume eligibility unless Medicare enrollment ends it, recorded as an assumption on the priced work years. Only priced by retirement_work_years.",
+    },
+    medicareAgePrimary: {
+      type: "integer",
+      minimum: 0,
+      maximum: 120,
+      description:
+        "The primary's Medicare enrollment age in whole years. In work years at or after this age no HSA contribution of either source is made. Omit when not enrolled during the work years. Only priced by retirement_work_years.",
+    },
+    priorYearWagesAnnual: {
+      ...MONEY,
+      description:
+        "Prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor in dollars — the figure the mandatory Roth catch-up test reads for the first modeled work year. Omit to use that year's own Box-3 wages as a proxy, recorded as an assumption on the first priced work year. Only priced by retirement_work_years.",
+    },
     interestAnnual: {
       ...MONEY,
       description: "Taxable interest for the single-year tax calculation, in dollars.",
@@ -622,7 +645,7 @@ export const TOOLS: McpToolDef[] = [
       `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
       `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` +
-      `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. A work-years call can take a minute or more, and while it runs the server answers nothing else. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` +
+      `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. Optional hsaCoverage states the HDHP coverage the HSA limit prices from (self-only / family / none); hsaEligible states HSA eligibility explicitly; medicareAgePrimary states the Medicare enrollment age that ends HSA eligibility; priorYearWagesAnnual states the prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor for the mandatory Roth catch-up test in the first modeled work year. Omitting any of them keeps the previous behavior — filing-status HSA limit, assumed eligibility, and the first year's own Box-3 wages as the catch-up proxy — and each fallback is recorded as an assumption on the priced rows and in the warnings, never silently. Partial-year HSA eligibility is not modeled: a year prices the full annual limit when eligible and $0 when not. A work-years call can take a minute or more, and while it runs the server answers nothing else. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` +
       `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` +
       `Returns: a tax-aware comparison of retiring at each age in compareAges, with taxes and ending wealth for each age, plus — when a salary is given — the earned-income comparison (work years, payroll tax, all-in tax) for each age.`,
     inputSchema: BASE_INPUT_SCHEMA,

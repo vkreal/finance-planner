@@ -151,6 +151,20 @@
 // All money here is in DOLLARS (the tax engine's units); the
 // law-row work-years limits are stored in cents and converted
 // at this boundary, as are the saved job inputs (cents).
+//
+// ENGINE REVIEW 7 (E7-S1 / E7-S2): the HSA limit prices from
+// the HDHP coverage the caller states (self-only / family /
+// none), not from the filing status — the filing-status
+// fallback (family for joint, self-only otherwise) survives
+// only as a recorded assumption, and eligibility (qualifying
+// HDHP, no disqualifying coverage, not Medicare-enrolled) is
+// a separate explicit input. The §414(v)(7) Roth catch-up
+// test reads the job's explicit prior-year Box-3 wages for
+// the first modeled year (later years thread each year's own
+// Box-3 wages); without them the first year uses its own
+// Box-3 wages as a recorded proxy assumption. Both
+// fallbacks surface as `assumptions` on every line, roll,
+// and compare row — never silently.
 
 import {
   applyLossLedger,
@@ -194,6 +208,54 @@ export type WorkYearJob = {
   // null = not enrolled during the work years (the household
   // stays HSA-eligible at every work-year age).
   medicareAgePrimary?: number | null;
+  // HDHP coverage type (Engine Review 7, E7-S1):
+  // request-only, never persisted. "self-only" / "family" is
+  // the coverage the HSA limit prices from; "none" is no
+  // qualifying HDHP coverage (no HSA contribution of either
+  // source, applicable limit $0). Absent / null = the
+  // long-standing fallback — family for joint filers,
+  // self-only otherwise — recorded as an assumption on the
+  // stack, never silently inferred as a fact. Filing status
+  // alone does not establish coverage: a head of household
+  // with family coverage legally uses the family limit, and
+  // a joint filer on a self-only HDHP uses the self-only
+  // limit.
+  hsaCoverage?: HsaCoverage | null;
+  // Explicit HSA eligibility (E7-S1): true = the primary is
+  // an eligible individual (qualifying HDHP, no
+  // disqualifying coverage, not Medicare-enrolled, not a
+  // dependent); false = explicitly ineligible (no HSA
+  // contribution of either source, applicable limit $0).
+  // Absent / null = assumed eligible unless Medicare
+  // enrollment (medicareAgePrimary) ends it — recorded as
+  // an assumption on the stack. An explicit false, and
+  // Medicare enrollment, both beat an explicit true: an
+  // enrolled worker cannot contribute.
+  hsaEligible?: boolean | null;
+  // The PRIOR calendar year's §3121(a) wages (W-2 Box 3)
+  // from the plan sponsor, dollars (E7-S2): the figure the
+  // §414(v)(7) Roth catch-up test reads for the FIRST
+  // modeled work year. Later years thread each year's own
+  // Box-3 wages forward. Absent / null = the long-standing
+  // proxy — the first year's own Box-3 wages stand in —
+  // recorded as an assumption on the first year's line.
+  // Never inferred from account balances or salary
+  // forecasts: only this field, or the threaded prior
+  // year's wages, feeds the test.
+  priorYearWages?: number | null;
+};
+
+// The HDHP coverage types an HSA limit prices from (E7-S1).
+// "none" is no qualifying HDHP coverage at all.
+export type HsaCoverage = "self-only" | "family" | "none";
+
+// The explicit HSA inputs a caller may supply (E7-S1): the
+// HDHP coverage type and the worker's eligibility. Both
+// optional; anything absent falls back as WorkYearJob
+// documents, with an assumption recorded.
+export type HsaOptions = {
+  coverage?: HsaCoverage | null;
+  eligible?: boolean | null;
 };
 
 /* ---------------- One year's contribution stack ---------------- */
@@ -232,7 +294,33 @@ export type ContributionStack = {
   // What the HSA bucket receives: own + employer, capped at
   // the year's limit.
   hsaBucket: number;
+  // The applicable HSA limit for the year: the statutory
+  // limit for the resolved coverage (self-only / family,
+  // plus the $1,000 age-55 catch-up when eligible at 55+),
+  // or $0 when the worker has no qualifying HDHP coverage
+  // or is not HSA-eligible — IRS Publication 969: beginning
+  // with the first month enrolled in Medicare the
+  // contribution limit is zero, and without an HDHP there is
+  // no limit at all. A Medicare-enrolled year therefore
+  // reports $0 here (previously the statutory limit, with
+  // the bucket already $0 — no priced figure moves).
   hsaLimit: number;
+  // The HDHP coverage this stack priced from: the explicit
+  // coverage when given, else the filing-status fallback
+  // (family for joint filers, self-only otherwise).
+  hsaCoverage: HsaCoverage;
+  // Whether the primary is HSA-eligible this year: false
+  // with no qualifying HDHP coverage, with an explicit
+  // ineligible flag, or at/after the Medicare enrollment
+  // age; true otherwise.
+  hsaEligible: boolean;
+  // Assumptions this stack relied on (E7-S1): the
+  // filing-status coverage fallback and/or the assumed
+  // eligibility, each named when the caller supplied no
+  // explicit value. Empty when everything was explicit.
+  // Callers surface these (roll / compare / action /
+  // adapter) so a fallback is never silent.
+  assumptions: string[];
 };
 
 export function contributionStack(
@@ -266,6 +354,11 @@ export function contributionStack(
   // pricing under its own law row, and every direct fixture
   // call, deflates zero steps).
   defl?: number,
+  // The explicit HSA inputs (E7-S1): HDHP coverage type and
+  // eligibility. Omitted / null = the filing-status coverage
+  // fallback and assumed eligibility, each recorded as an
+  // assumption on the returned stack.
+  hsaOpts?: HsaOptions | null,
 ): ContributionStack {
   const empty: ContributionStack = {
     deferral: 0,
@@ -277,8 +370,87 @@ export function contributionStack(
     employerHsa: 0,
     hsaBucket: 0,
     hsaLimit: 0,
+    hsaCoverage: "self-only",
+    hsaEligible: false,
+    assumptions: [],
   };
-  if (salary <= 0) return empty;
+  // HSA COVERAGE AND ELIGIBILITY (Engine Review 7, E7-S1;
+  // IRC §223, IRS Publication 969; limits Rev. Proc. 2024-25
+  // for 2025 — $4,300 self-only / $8,550 family — and Rev.
+  // Proc. 2025-19 for 2026 — $4,400 / $8,750 — verified
+  // against the IRS publications; the $1,000 age-55 catch-up
+  // is statute-fixed at §223(b)(3), not indexed).
+  // The limit prices from the HDHP COVERAGE, not the filing
+  // status: an explicit coverage wins; absent one, the
+  // long-standing fallback (family for joint filers,
+  // self-only otherwise) is preserved AND recorded as an
+  // assumption — the fallback is a guess about the plan, not
+  // a fact about it. "none" is no qualifying HDHP coverage.
+  // ELIGIBILITY is separate from coverage: a worker needs a
+  // qualifying HDHP AND no disqualifying coverage AND no
+  // Medicare enrollment AND not to be another's dependent.
+  // An explicit ineligible flag, no HDHP coverage, or
+  // Medicare enrollment (at/after medicareAgePrimary) each
+  // end eligibility for the year; absent an explicit flag,
+  // eligibility is ASSUMED and recorded as an assumption.
+  // Medicare enrollment beats an explicit eligible=true:
+  // enrollment ends eligibility whatever the flag says.
+  // The spouse's catch-up is NEVER added here: §223(b)(3)
+  // catch-ups are per HSA owner, and this model's single
+  // HSA bucket is the primary's — a 55+ spouse's $1,000
+  // belongs in the spouse's own HSA, which this model does
+  // not carry. The base limit is the household's shared
+  // family limit when family coverage is in force (both
+  // spouses' contributions together cannot exceed it), and
+  // the catch-up below is the primary's own $1,000 only.
+  // PARTIAL-YEAR eligibility (last-month rule, mid-year
+  // enrollment) is NOT modeled: a year prices the full
+  // annual limit when eligible for the year and $0 when not
+  // — see the roll's assumption note when a Medicare age is
+  // entered. A mid-year change needs a prorated limit the
+  // model cannot express, so it is disclosed, not priced.
+  // Resolved here, before the zero-salary early return
+  // below, so a year with no salary still reports the same
+  // coverage, eligibility, and assumptions as a priced year
+  // — an explicit coverage / eligibility is reported rather
+  // than the empty defaults, and a fallback is named, never
+  // silent.
+  const assumptions: string[] = [];
+  const coverageExplicit = hsaOpts?.coverage ?? null;
+  const hsaCoverage: HsaCoverage =
+    coverageExplicit ?? (filingStatus === "mfj" ? "family" : "self-only");
+  if (coverageExplicit == null) {
+    assumptions.push(
+      "HSA coverage not stated: the family limit is assumed for joint filers and the self-only limit otherwise — filing status alone does not establish HDHP coverage. Enter the HDHP coverage (self-only / family / none) to price the actual limit.",
+    );
+  }
+  const medicareGated =
+    medicareAgePrimary != null && age >= medicareAgePrimary;
+  const hsaEligible =
+    hsaCoverage !== "none" &&
+    hsaOpts?.eligible !== false &&
+    !medicareGated;
+  // Recorded only when eligibility was actually assumed: with
+  // no qualifying HDHP coverage, or at/after the Medicare
+  // enrollment age, eligibility is denied by a stated fact —
+  // not assumed — so naming an "assumed eligible" fallback
+  // there would misstate the year's reasoning.
+  if (hsaOpts?.eligible == null && hsaEligible) {
+    assumptions.push(
+      "HSA eligibility not stated: assumed eligible (qualifying HDHP coverage with no disqualifying coverage). Medicare enrollment ends eligibility from the entered enrollment age; enter eligibility explicitly when it is known.",
+    );
+  }
+  if (salary <= 0)
+    return {
+      ...empty,
+      // No salary prices no stack, but the resolved coverage,
+      // eligibility, and assumptions are still the honest
+      // answer for the year (resolved above exactly as for a
+      // priced year).
+      hsaCoverage,
+      hsaEligible,
+      assumptions,
+    };
   const elective = law.elective401kLimit / 100;
   const deferral = Math.min(elective, salary);
   let catchUp = 0;
@@ -296,17 +468,19 @@ export function contributionStack(
   // from the row; the age-55 catch-up is statute-fixed at
   // $1,000 (§223(b)(3), not indexed), so it deflates into
   // today's dollars by the year's factor (build v61, F3).
-  const hsaLimit =
-    (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
+  // The applicable limit is $0 without qualifying coverage
+  // or without eligibility (Publication 969: the limit is
+  // zero from the first month enrolled in Medicare).
+  const statutoryHsaLimit =
+    (hsaCoverage === "family" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
     (age >= 55 ? (law.hsaCatchUp55 / 100) * (defl ?? 1) : 0);
+  const hsaLimit = hsaEligible ? statutoryHsaLimit : 0;
   // HSA eligibility (build v58, F6): Medicare enrollment
   // ends HSA eligibility, so a year at or after the primary's
   // Medicare enrollment age makes NO HSA contribution of
   // either source. (Eligibility turns on enrollment, not on
   // reaching 65 — a worker who lawfully delays Medicare stays
   // eligible; the input, not the age, is the switch.)
-  const hsaEligible =
-    !(medicareAgePrimary != null && age >= medicareAgePrimary);
   const employerHsaLanded = hsaEligible ? employerHsa : 0;
   const ownHsa = hsaEligible
     ? Math.max(
@@ -333,8 +507,16 @@ export function contributionStack(
   // which both overstated the wages (no HSA reduction) and
   // read the wrong year.)
   const wageBasis = priorYearWages != null ? priorYearWages : box3ThisYear;
+  // Gated on catchUp > 0 as well as the year and the wages
+  // (Engine Review 7, E7-S2): with no catch-up there is
+  // nothing to classify, so the flag reads false instead of
+  // reporting a Roth classification on $0 of contributions.
+  // No priced figure moves — a $0 catch-up routes $0 either
+  // way — but a consumer must never read "Roth" beside $0.
   const catchUpIsRoth =
-    law.year >= 2026 && wageBasis > law.rothCatchUpWageThreshold / 100;
+    catchUp > 0 &&
+    law.year >= 2026 &&
+    wageBasis > law.rothCatchUpWageThreshold / 100;
   // The typed employer 401(k) lands only up to the §415(c) room
   // left after the deferral — a larger typed figure cannot push
   // the year's additions past the overall cap. Catch-up
@@ -372,6 +554,9 @@ export function contributionStack(
     employerHsa: r2(employerHsaLanded),
     hsaBucket: r2(hsaBucket),
     hsaLimit: r2(hsaLimit),
+    hsaCoverage,
+    hsaEligible,
+    assumptions,
   };
 }
 
@@ -899,6 +1084,15 @@ export type WorkYearLine = {
   // priceOneWorkYear has no balance context and always returns
   // 0; rollWorkYears fills in the real figure.
   shortfall: number;
+  // Assumptions this year relied on (Engine Review 7): the
+  // stack's HSA coverage/eligibility fallbacks, plus — when
+  // this year is the first modeled year and no explicit
+  // prior-year wages were supplied — the §414(v)(7) proxy
+  // (this year's own Box-3 wages standing in for the prior
+  // year's). Later roll years thread the prior year's own
+  // wages and carry no proxy assumption. Empty when every
+  // input was explicit.
+  assumptions: string[];
 };
 
 // The roll's per-year taxable context (build v58, F1/F3):
@@ -998,6 +1192,13 @@ export function priceOneWorkYear(
   // amount (wage base, base HSA limits, deferral limits) is
   // read from the row unchanged.
   const defl = deflationFactor(calendarYear, law.year, plan.inflationPct);
+  // The prior-year wages for the §414(v)(7) test (E7-S2):
+  // the roll's threaded figure when it passes one (the
+  // previous priced year's own Box-3 wages), else the job's
+  // explicit prior-year wages, else null — the disclosed
+  // first-year proxy (this year's own Box-3 wages).
+  const effectivePriorYearWages =
+    priorYearWages ?? job.priorYearWages ?? null;
   const stack = contributionStack(
     age,
     job.salary,
@@ -1005,9 +1206,14 @@ export function priceOneWorkYear(
     job.employerHsa,
     plan.filingStatus,
     law,
-    priorYearWages,
+    effectivePriorYearWages,
     job.medicareAgePrimary ?? null,
     defl,
+    // The explicit HSA inputs (E7-S1): coverage and
+    // eligibility ride the job; absent either, the stack
+    // falls back as documented there and records the
+    // assumption on the stack.
+    { coverage: job.hsaCoverage ?? null, eligible: job.hsaEligible ?? null },
   );
   const catchUpPreTax = stack.catchUpIsRoth ? 0 : stack.catchUp;
   const taxableWages = r2(
@@ -1312,13 +1518,16 @@ export function priceOneWorkYear(
     // Social Security taxation (26 U.S.C. §86(b)(1)-(2):
     // modified AGI is AGI increased by tax-exempt interest,
     // plus one-half of benefits) and in MAGI. CASH PARITY
-    // (verified in the march, taxEngine.ts): the march's
-    // cash-in is rmd + ssBenefits + otherOrdinaryAnnual
-    // ONLY — the tax-exempt dollars are priced for §86 /
-    // MAGI purposes and are NEVER banked as household cash
-    // there — so the work year mirrors that exactly: the
-    // amount prices here and is NOT added to the surplus
-    // below. A plan with $0 entered prices bit-identically
+    // (Engine Review 7, P2 MUST-1): the march's cash-in
+    // counts it (taxEngine.ts: cashIn is rmd + ssBenefits
+    // + otherOrdinaryAnnual + taxExemptInterestAnnual —
+    // "leaving it out oversold Taxable by the tax-exempt
+    // amount"), so the work year banks it in the surplus
+    // below on the same footing. The v102 comment formerly
+    // claimed the march never banked it; contract v135
+    // changed the march without a matching work-years
+    // change, and the claim was stale from then until this
+    // fix. A plan with $0 entered prices bit-identically
     // to before this fix.
     taxExemptInterest: plan.taxExemptInterestAnnual,
     // The NETTED capital result (build v100): the gross
@@ -1403,7 +1612,18 @@ export function priceOneWorkYear(
         // into Taxable; here it is one term of the same net
         // surplus figure, so it funds this year's deficit
         // settlement exactly as the march's cash does.
-        rmdTotal,
+        rmdTotal +
+        // The year's tax-exempt interest (Engine Review 7,
+        // P2 MUST-1): cash the household receives
+        // (municipal-bond interest), just not taxable — the
+        // retirement march counts it in cashIn (taxEngine.ts:
+        // "leaving it out oversold Taxable by the tax-exempt
+        // amount"), so the work year banks it here on the
+        // same footing. Previously the surplus dropped it
+        // while the march banked it (contract v135 changed
+        // the march without a matching work-years change);
+        // a plan with $0 entered prices bit-identically.
+        plan.taxExemptInterestAnnual,
     );
   // DEFICIT-FUNDING SALE SETTLEMENT (build v58, F1): price
   // the year first with no sale (ltcg $0). When the roll
@@ -1491,6 +1711,27 @@ export function priceOneWorkYear(
           { st: lossCarryInWaSt, lt: lossCarryInWaLt },
         )
       : null;
+  // FIRST-YEAR WAGE PROXY (Engine Review 7, E7-S2): when no
+  // explicit prior-year wages were supplied, the stack priced
+  // the §414(v)(7) test from this year's own Box-3 wages
+  // (ficaWages above: salary minus the payroll HSA). The
+  // proxy matters only when it can change the classification
+  // — a catch-up exists and the mandate's first year (2026)
+  // has arrived — so the assumption is recorded only then;
+  // a year with no catch-up, or a pre-2026 year the mandate
+  // never reaches, classifies the same either way. The
+  // amount named is the proxy figure itself, so a reader can
+  // see what stood in for the sponsor's prior-year wages.
+  const assumptions: string[] = [...stack.assumptions];
+  if (
+    effectivePriorYearWages == null &&
+    stack.catchUp > 0 &&
+    law.year >= 2026
+  ) {
+    assumptions.push(
+      `First modeled year: the §414(v)(7) Roth catch-up test used this year's Box-3 wages ($${ficaWages.toLocaleString("en-US")}) as a proxy for the prior calendar year's wages from the plan sponsor. Enter prior-year wages to price the actual classification.`,
+    );
+  }
   return {
     age,
     calendarYear,
@@ -1548,6 +1789,7 @@ export function priceOneWorkYear(
     // No balance context in a standalone price — the roll
     // computes the year's real shortfall (see WorkYearLine).
     shortfall: 0,
+    assumptions,
   };
 }
 
@@ -1597,6 +1839,15 @@ export type WorkYearTotals = {
 export type WorkYearRoll = {
   lines: WorkYearLine[];
   totals: WorkYearTotals;
+  // Assumptions the roll relied on (Engine Review 7): the
+  // distinct assumption strings across the roll's lines, in
+  // first-seen order — the HSA coverage/eligibility
+  // fallbacks and the first-year prior-wage proxy, each named
+  // once. Empty when every work-year input was explicit. The
+  // compare row and the action/adapter surfaces carry these
+  // through, so a fallback is disclosed wherever the figures
+  // are shown.
+  assumptions: string[];
   // Balances at the quit age, after the last work year's
   // growth + year-end contributions, plus any horizon-end
   // education refund deposit (build v96).
@@ -1652,6 +1903,7 @@ export function rollWorkYears(
   if (count === 0) {
     return {
       lines: [],
+      assumptions: [],
       totals: {
         years: 0,
         grossSalary: 0,
@@ -1726,9 +1978,10 @@ export function rollWorkYears(
   // §414(v)(7) test reads the PREVIOUS year's §3121(a) wages —
   // the previous line's own FICA wages (salary − payroll HSA),
   // which is exactly the Box-3 figure this model computes.
-  // The first priced year has no in-model predecessor and
+  // The first priced year reads the job's explicit
+  // prior-year wages when supplied (E7-S2); without them it
   // prices on the disclosed proxy (its own Box 3).
-  let priorYearWages: number | null = null;
+  let priorYearWages: number | null = job.priorYearWages ?? null;
   // The taxable basis ledger (F2), carried in dollars beside
   // the balance through every rolled year.
   const ledger = initTaxableLedger(plan);
@@ -2115,7 +2368,35 @@ export function rollWorkYears(
     hsaStart: Math.max(0, balances.hsa),
     convertedAlreadyThisYear: 0,
   };
-  return { lines, totals, balances, rolledInputs };
+  // ASSUMPTIONS (E7-S1/E7-S2): the distinct assumption
+  // strings across the roll's lines, in first-seen order.
+  // PARTIAL-YEAR disclosure: when a priced year reaches the
+  // entered Medicare enrollment age, eligibility flips by
+  // whole year (eligible until the enrollment age, $0 limit
+  // from it) — a mid-year enrollment's prorated limit, and
+  // the last-month rule's testing period, are NOT modeled, so
+  // that limit is named here rather than priced as if the
+  // whole year counted.
+  const assumptions: string[] = [];
+  for (const line of lines) {
+    for (const a of line.assumptions) {
+      if (!assumptions.includes(a)) assumptions.push(a);
+    }
+  }
+  // The note fires only when a priced year actually reaches
+  // the enrollment age: with an enrollment age past the
+  // priced window every year banks the full limit and there
+  // is no flip to disclose.
+  const medicareAge = job.medicareAgePrimary;
+  if (
+    medicareAge != null &&
+    lines.some((l) => l.age >= medicareAge)
+  ) {
+    const partialYearNote =
+      "Medicare enrollment is priced by whole year (HSA-eligible until the enrollment age, $0 limit from it); a mid-year enrollment's prorated limit and the last-month rule are not modeled.";
+    if (!assumptions.includes(partialYearNote)) assumptions.push(partialYearNote);
+  }
+  return { lines, totals, assumptions, balances, rolledInputs };
 }
 
 /* ---------------- The compare (roll + joint optimizer) ---------------- */
@@ -2150,6 +2431,11 @@ export type WorkYearsCompareRow = {
   shortfall: number;
   // Optimizer winner net cost + workTax.
   allInTax: number;
+  // Assumptions the roll relied on (Engine Review 7): the
+  // HSA coverage/eligibility fallbacks and the first-year
+  // prior-wage proxy, each named once when used. Empty when
+  // every work-year input was explicit.
+  assumptions: string[];
   // The claim-67 row's best net cost + workTax, when the joint
   // search priced claim 67; null when it did not.
   claim67AllInTax: number | null;
@@ -2213,6 +2499,7 @@ export function runWorkYearsCompare(
       totalTax: r2(opt.winner.cost.tax + workTax),
       shortfall: roll.totals.shortfall,
       allInTax: r2(opt.winner.cost.netCost + workTax),
+      assumptions: roll.assumptions,
       claim67AllInTax:
         claim67 == null ? null : r2(claim67.best.cost.netCost + workTax),
       endingNominal,

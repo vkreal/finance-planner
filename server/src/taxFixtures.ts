@@ -25336,7 +25336,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v102-workyears-tax-exempt-interest-zero-identity",
     kind: "tax",
-    note: "BUILD v102 (round-14 fix F1) — THE $0 TAX-EXEMPT-INTEREST IDENTITY CASE: the acceptance example's exact shape (MFJ, primary born 1962, age 64 in 2026, salary $80,000, Social Security $10,000 from 64, no employer contributions, $0 spending, 0% return and 0% inflation) with NO tax-exempt interest entered. A plan with $0 / absent tax-exempt interest must price bit-identically to before the fix, and it does — these are the pre-fix figures themselves: provisional income $37,750 + $0 + $5,000 = $42,750, taxable Social Security min(0.5 × $10,000, 0.5 × ($42,750 − $32,000)) = min($5,000, $5,375) = $5,000 (read off the line as MAGI − $0 − taxable wages), AGI and MAGI both $42,750, taxable income $10,550, federal tax 10% × $10,550 = $1,055.00, FICA $5,374.13 as in the acceptance fixture. The cross-leg pins the cash-parity rule from the other side: the with-interest surplus ($3,220.87, acceptance fixture) minus this case's surplus ($3,570.87) is exactly −$350.00 — the tax difference alone — so the $6,000 of tax-exempt interest is priced for §86 / MAGI and banked NOWHERE, exactly as the plan march treats it (its cash-in is RMDs + benefits + other ordinary income only).",
+    note: "BUILD v102 (round-14 fix F1) — THE $0 TAX-EXEMPT-INTEREST IDENTITY CASE: the acceptance example's exact shape (MFJ, primary born 1962, age 64 in 2026, salary $80,000, Social Security $10,000 from 64, no employer contributions, $0 spending, 0% return and 0% inflation) with NO tax-exempt interest entered. A plan with $0 / absent tax-exempt interest must price bit-identically to before the fix, and it does — these are the pre-fix figures themselves: provisional income $37,750 + $0 + $5,000 = $42,750, taxable Social Security min(0.5 × $10,000, 0.5 × ($42,750 − $32,000)) = min($5,000, $5,375) = $5,000 (read off the line as MAGI − $0 − taxable wages), AGI and MAGI both $42,750, taxable income $10,550, federal tax 10% × $10,550 = $1,055.00, FICA $5,374.13 as in the acceptance fixture. The cross-leg pins the cash-parity rule from the other side: the with-interest surplus ($9,220.87) minus this case's surplus ($3,570.87) is exactly +$5,650.00 — the $6,000 banked as household cash less the $350 of extra tax — exactly as the plan march treats it (its cash-in is RMDs + benefits + other ordinary income + tax-exempt interest; Engine Review 7, P2 MUST-1, corrected the work-years side to match — the v102 note formerly claimed the interest was banked nowhere, which contract v135 had made false).",
     expected: {
       zeroFederal: 1055,
       zeroMagi: 42750,
@@ -25346,7 +25346,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       zeroSurplus: 3570.87,
       zeroRollFederal: 1055,
       zeroRollTaxableAtQuit: 3570.87,
-      surplusDiffWithMinusZero: -350,
+      surplusDiffWithMinusZero: 5650,
     },
     actual: () => {
       const shape = {

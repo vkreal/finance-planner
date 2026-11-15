@@ -216,6 +216,36 @@ export const RetirementQuestionInputs = z.strictObject({
   employer401kAnnual: dollars.optional(),
   /** Annual employer HSA contribution, $/yr. Default: 0. */
   employerHsaAnnual: dollars.optional(),
+  /** HDHP coverage type the HSA limit prices from (Engine
+   *  Review 7, E7-S1): "self-only" / "family" / "none" (no
+   *  qualifying HDHP). Default (in normalize): null — the
+   *  engine falls back to the filing status (family for
+   *  joint filers, self-only otherwise) and records the
+   *  fallback as an assumption. Only priced by
+   *  retirement_work_years. */
+  hsaCoverage: z.enum(["self-only", "family", "none"]).optional(),
+  /** Whether the primary is an HSA-eligible individual
+   *  (qualifying HDHP, no disqualifying coverage, not
+   *  Medicare-enrolled). Default (in normalize): null —
+   *  eligibility is assumed unless Medicare enrollment ends
+   *  it, recorded as an assumption. Only priced by
+   *  retirement_work_years. */
+  hsaEligible: z.boolean().optional(),
+  /** The primary's Medicare enrollment age, whole years
+   *  (Engine Review 7; engine field since Review 5, exposed
+   *  here now): in work years at or after this age no HSA
+   *  contribution of either source is made. Default (in
+   *  normalize): null — not enrolled during the work years.
+   *  Only priced by retirement_work_years. */
+  medicareAgePrimary: z.number().int().finite().min(0).max(120).optional(),
+  /** Prior calendar year's §3121(a) wages (W-2 Box 3) from
+   *  the plan sponsor, $/yr (Engine Review 7, E7-S2): the
+   *  figure the §414(v)(7) Roth catch-up test reads for the
+   *  FIRST modeled work year. Default (in normalize): null —
+   *  the first year's own Box-3 wages stand in as the proxy,
+   *  recorded as an assumption. Only priced by
+   *  retirement_work_years. */
+  priorYearWagesAnnual: dollars.optional(),
 
   // --- Tax year. ---
   /** Law year to price with. Must be one of the published law years

@@ -880,6 +880,18 @@ export function RothConversion({
   // (prefilled once from the plan's window-start age, +4, +6)
   // and the last compare run. Nothing here is persisted.
   const [wyQuitAges, setWyQuitAges] = useState<string[]>(["", "", ""]);
+  // Work years tab — scratch HSA / prior-wage inputs
+  // (Engine Review 7, E7-S1/E7-S2): request-only, never
+  // saved — like the quit ages above. Blank = not stated:
+  // the engine falls back (filing-status HSA limit, assumed
+  // eligibility, first-year Box-3 proxy) and records each
+  // fallback as an assumption on the run, shown under the
+  // results. Coverage "" = not stated; eligibility "" = not
+  // stated.
+  const [wyHsaCoverage, setWyHsaCoverage] = useState("");
+  const [wyHsaEligible, setWyHsaEligible] = useState("");
+  const [wyMedicareAge, setWyMedicareAge] = useState("");
+  const [wyPriorYearWages, setWyPriorYearWages] = useState("");
   const wyPrefilledRef = useRef(false);
   type WyData = ApiResponse<typeof api, "runWorkYearsCompare">;
   const [wyResult, setWyResult] = useState<WyData | null>(null);
@@ -4149,6 +4161,17 @@ export function RothConversion({
       ...buildSavePayload(),
       quitAges: ages,
       fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
+      // Request-only HSA / prior-wage inputs (E7-S1/E7-S2):
+      // blank = not stated (null), so the engine falls back
+      // and records the assumption on the run.
+      hsaCoverage:
+        wyHsaCoverage === ""
+          ? null
+          : (wyHsaCoverage as "self-only" | "family" | "none"),
+      hsaEligible:
+        wyHsaEligible === "" ? null : wyHsaEligible === "yes",
+      medicareAgePrimary: parseIntField(wyMedicareAge) ?? null,
+      priorYearWagesCents: parseMoney(wyPriorYearWages) ?? null,
     });
   };
   // The optimizer run's staleness (build v109, round-16 F1):
@@ -4180,6 +4203,13 @@ export function RothConversion({
     ...buildSavePayload(),
     quitAges: wyAgesNow,
     fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
+    hsaCoverage:
+      wyHsaCoverage === ""
+        ? null
+        : (wyHsaCoverage as "self-only" | "family" | "none"),
+    hsaEligible: wyHsaEligible === "" ? null : wyHsaEligible === "yes",
+    medicareAgePrimary: parseIntField(wyMedicareAge) ?? null,
+    priorYearWagesCents: parseMoney(wyPriorYearWages) ?? null,
   });
   const wyStale =
     wyResult != null && wyFingerprint !== "" && wyFingerprintNow !== wyFingerprint;
@@ -11148,6 +11178,67 @@ export function RothConversion({
             the tab opens with them filled in. The quit ages and runs below are
             scratch and never save.
           </p>
+
+          <h3 className="mt-5 border-b border-[var(--border)] pb-2 text-base font-semibold">
+            HSA and catch-up details (optional)
+          </h3>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <label className={labelCls} htmlFor="roth-wy-hsa-coverage">
+                HDHP coverage
+              </label>
+              <select
+                id="roth-wy-hsa-coverage"
+                aria-label="HDHP coverage"
+                className={inputCls}
+                value={wyHsaCoverage}
+                onChange={(e) => setWyHsaCoverage(e.target.value)}
+              >
+                <option value="">Not stated</option>
+                <option value="self-only">Self-only</option>
+                <option value="family">Family</option>
+                <option value="none">No qualifying HDHP</option>
+              </select>
+              <p className={hintCls}>
+                The coverage the HSA limit prices from. Blank assumes the
+                family limit for joint filers, self-only otherwise.
+              </p>
+            </div>
+            <div>
+              <label className={labelCls} htmlFor="roth-wy-hsa-eligible">
+                HSA-eligible
+              </label>
+              <select
+                id="roth-wy-hsa-eligible"
+                aria-label="HSA-eligible"
+                className={inputCls}
+                value={wyHsaEligible}
+                onChange={(e) => setWyHsaEligible(e.target.value)}
+              >
+                <option value="">Not stated</option>
+                <option value="yes">Yes — eligible</option>
+                <option value="no">No — not eligible</option>
+              </select>
+              <p className={hintCls}>
+                Whether you can contribute to an HSA at all. Blank assumes
+                you can, unless Medicare enrollment ends it.
+              </p>
+            </div>
+            {numField("Medicare enrollment age", wyMedicareAge, setWyMedicareAge, {
+              hint: "The age you enroll in Medicare. From that age no HSA contribution of either kind is made. Blank means not enrolled while working.",
+              idLabel: "Work years — Medicare enrollment age",
+            })}
+            {moneyField("Prior-year Social Security wages", wyPriorYearWages, setWyPriorYearWages, {
+              hint: "Last year's W-2 Box 3 wages from this employer — the figure that decides whether the first modeled year's catch-up must be Roth. Blank uses this year's wages as a stand-in.",
+              idLabel: "Work years — prior-year Social Security wages",
+            })}
+          </div>
+          <p className="mt-2 text-xs text-[var(--dim)]">
+            These four fields are scratch, like the quit ages — they are sent
+            with the run only, never saved. Anything left blank is priced on
+            the stated fallback, and the run names each fallback as an
+            assumption under the results.
+          </p>
           {wySalaryBlank && (
             <p className="mt-3 text-sm" role="note">
               Add a salary in Your job to price work years.
@@ -11332,6 +11423,27 @@ export function RothConversion({
                     </p>
                   ))}
               </div>
+              {(() => {
+                const seen: string[] = [];
+                for (const row of wyResult.rows) {
+                  for (const a of row.assumptions ?? []) {
+                    if (!seen.includes(a)) seen.push(a);
+                  }
+                }
+                if (seen.length === 0) return null;
+                return (
+                  <div className="mt-3 space-y-1" role="note">
+                    <p className="text-sm font-medium">
+                      Assumptions in this run
+                    </p>
+                    {seen.map((a) => (
+                      <p key={a} className="text-xs text-[var(--dim)]">
+                        {a}
+                      </p>
+                    ))}
+                  </div>
+                );
+              })()}
             </>
           )}
           {wyResult && !wyResult.ok && !wyError && (
@@ -11351,13 +11463,21 @@ export function RothConversion({
             >
 <p>
                 Work years assume employer health coverage, so no ACA premium
-                credit is priced for those years, and an HSA-eligible plan, so
-                the HSA limit applies — the family limit for joint filers,
-                the self-only limit for single and head-of-household
-                filers. That is a simplification: a head of household with
-                family coverage can legally use the family limit. Salary
-                covers the plan&rsquo;s annual spending in work years; the
-                portfolio is not drawn.
+                credit is priced for those years. The HSA limit prices from
+                the HDHP coverage you state above — self-only, family, or
+                none — and from whether you state you are HSA-eligible;
+                leaving either blank falls back to the old rule (the family
+                limit for joint filers, the self-only limit otherwise, and
+                eligibility assumed unless Medicare enrollment ends it) and
+                the run names the fallback as an assumption. A spouse&rsquo;s
+                $1,000 age-55 catch-up is never added to your HSA: each
+                spouse&rsquo;s catch-up belongs in their own HSA. The
+                mandatory Roth catch-up test reads the prior-year wages you
+                state above for the first modeled year (later years read
+                each prior year&rsquo;s own wages); leaving it blank uses
+                the first year&rsquo;s own wages as a stand-in, likewise
+                named as an assumption. Salary covers the plan&rsquo;s
+                annual spending in work years; the portfolio is not drawn.
               </p>
               <p>
                 Contributions stack to the legal caps each year: the 401(k)

@@ -147,6 +147,15 @@ export interface NormalizedScenario {
   salaryAnnual: number | null;
   employer401kAnnual: number;
   employerHsaAnnual: number;
+  // Engine Review 7 (E7-S1/E7-S2): the explicit work-years
+  // HSA inputs and the prior-year wage input. Null = omitted
+  // — the engine falls back as documented on each field and
+  // records the fallback as an assumption. medicareAgePrimary
+  // null = not enrolled during the work years.
+  hsaCoverage: "self-only" | "family" | "none" | null;
+  hsaEligible: boolean | null;
+  medicareAgePrimary: number | null;
+  priorYearWagesAnnual: number | null;
   inflationPct: number; // 0 — all figures in today's dollars (assumption, documented)
   singleYear: {
     interest: number;
@@ -1253,6 +1262,66 @@ export function normalizeInputs(
     );
   }
 
+  // --- Explicit HSA inputs (Engine Review 7, E7-S1) and the
+  // prior-year wage input (E7-S2). Each stays null when
+  // omitted so the engine can tell "not entered" from an
+  // explicit value and record its fallback as an assumption
+  // on the priced rows — never silently.
+  const hsaCoverage = input.hsaCoverage ?? null;
+  if (input.hsaCoverage === undefined) {
+    record(
+      "hsaCoverage",
+      null,
+      "assumption",
+      "Not provided — the HSA limit falls back to filing status (family for joint filers, self-only otherwise), recorded as an assumption on the priced work years.",
+    );
+  } else {
+    record("hsaCoverage", hsaCoverage, "user", "Provided by caller.");
+  }
+  const hsaEligible = input.hsaEligible ?? null;
+  if (input.hsaEligible === undefined) {
+    record(
+      "hsaEligible",
+      null,
+      "assumption",
+      "Not provided — HSA eligibility is assumed unless Medicare enrollment ends it, recorded as an assumption on the priced work years.",
+    );
+  } else {
+    record("hsaEligible", hsaEligible, "user", "Provided by caller.");
+  }
+  const medicareAgePrimary = input.medicareAgePrimary ?? null;
+  if (input.medicareAgePrimary === undefined) {
+    record(
+      "medicareAgePrimary",
+      null,
+      "assumption",
+      "Not provided — the primary is assumed not enrolled in Medicare during the work years.",
+    );
+  } else {
+    record(
+      "medicareAgePrimary",
+      medicareAgePrimary,
+      "user",
+      "Provided by caller.",
+    );
+  }
+  const priorYearWagesAnnual = input.priorYearWagesAnnual ?? null;
+  if (input.priorYearWagesAnnual === undefined) {
+    record(
+      "priorYearWagesAnnual",
+      null,
+      "assumption",
+      "Not provided — the first modeled work year's §414(v)(7) test uses that year's own Box-3 wages as a proxy for the prior year's, recorded as an assumption on the first priced work year.",
+    );
+  } else {
+    record(
+      "priorYearWagesAnnual",
+      priorYearWagesAnnual,
+      "user",
+      "Provided by caller.",
+    );
+  }
+
   // --- Inflation: always 0 (today's dollars). ---
   record(
     "inflationPct",
@@ -1564,6 +1633,10 @@ export function normalizeInputs(
     salaryAnnual,
     employer401kAnnual,
     employerHsaAnnual,
+    hsaCoverage,
+    hsaEligible,
+    medicareAgePrimary,
+    priorYearWagesAnnual,
     inflationPct: 0,
     singleYear,
     mcSeed,
@@ -1652,6 +1725,10 @@ export function publicEffectiveInputs(
     salaryAnnual: scenario.salaryAnnual,
     employer401kAnnual: scenario.employer401kAnnual,
     employerHsaAnnual: scenario.employerHsaAnnual,
+    hsaCoverage: scenario.hsaCoverage,
+    hsaEligible: scenario.hsaEligible,
+    medicareAgePrimary: scenario.medicareAgePrimary,
+    priorYearWagesAnnual: scenario.priorYearWagesAnnual,
     inflationPct: scenario.inflationPct,
     singleYear: { ...scenario.singleYear },
     mcSeed: scenario.mcSeed,
