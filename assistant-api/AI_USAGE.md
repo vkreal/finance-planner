@@ -38,10 +38,13 @@ from any directory. It starts no server.
    carries its full scenario — balances, spending, ages — because
    nothing is saved between calls. The six essential inputs are
    `pretax`, `taxable`, `roth`, `hsa`, `monthlySpending`, and
-   `currentAge` (dollars, whole years). Omitting one returns
-   `ok: false` with `error.code: "missing_input"` and exit code 2 —
-   ask the user for the missing figure; do not guess it. An explicit
-   zero is a real value, not a missing one.
+   `currentAge` (dollars, whole years), plus `spouseAge` for married
+   households (married filing jointly, the default, requires it).
+   Omitting one returns `ok: false` with `error.code:
+   "missing_input"` and exit code 2 — ask the user for the missing
+   figure; do not guess it. An explicit zero is a real value, not a
+   missing one, for the four balances; `monthlySpending` must be
+   over $0.
 2. **Don't invent results.** Use this bundle as the calculation
    source. Do not hand-compute retirement, Monte Carlo, or tax
    figures. If you cannot execute the bundle (your environment does
@@ -111,25 +114,25 @@ where `retire-54.json` is:
 ```
 
 Engine result (measured from the bundle under Node 20):
-`neverRunsOut: true`, ending balance $37,459,082.11 at age 95,
+`neverRunsOut: true`, ending balance $16,594,936.46 at age 95,
 historical never-out rate 100%, historical median ending
-$34,871,176.88.
+$34,450,724.84.
 
 Plain-English answer: "Yes — on these figures, the money lasts to
-95. The flat projection ends with about $37.5M, and in every
+95. The flat projection ends with about $16.6M, and in every
 historical market path since the 1920s it also lasts, with a typical
-ending around $34.9M."
+ending around $34.5M."
 
 The user follows up: "What if I retire at 60 instead?" Change
 **one** input (`retirementAge`: 54 → 60), keep everything else
 identical, and run again:
 
 Engine result: `neverRunsOut: true`, ending balance
-$46,543,272.27 at age 95, historical never-out rate 100%,
-historical median ending $42,452,194.77.
+$21,310,569.24 at age 95, historical never-out rate 100%,
+historical median ending $42,143,819.62.
 
 Plain-English answer: "Retiring at 60 instead of 54 ends about
-$9.08M higher — $46,543,272.27 vs $37,459,082.11 — because the
+$4.72M higher — $21,310,569.24 vs $16,594,936.46 — because the
 portfolio grows for six more years before spending starts. Both
 plans last to 95 in every historical path."
 

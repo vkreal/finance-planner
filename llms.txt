@@ -93,13 +93,15 @@ Tool call:
 ```
 
 Result (key figures): `neverRunsOut: true`, ending balance
-$43,901,094.30 at age 95, historical never-out rate 100%.
+$19,889,344.44 at age 95, historical never-out rate 100%.
 
 Six inputs are always required: `pretax`, `taxable`, `roth`, `hsa`,
-`monthlySpending`, `currentAge` (explicit 0 counts). Everything else
-has a documented default; missing essentials return a structured
-`missing_input` error with a plain-language question per field — ask
-the user those questions, don't guess.
+`monthlySpending`, `currentAge` (explicit 0 counts for the four
+balances; `monthlySpending` must be over $0), plus `spouseAge` for
+married households (married filing jointly, the default, requires
+it). Everything else has a documented default; missing essentials
+return a structured `missing_input` error with a plain-language
+question per field — ask the user those questions, don't guess.
 
 ## What it cannot do
 

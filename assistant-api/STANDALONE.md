@@ -110,13 +110,15 @@ Every financial call carries its **complete scenario** — nothing is
 saved between calls, and nothing is filled in from sample or saved
 household data. The six essential inputs (omitting any one is a
 `missing_input` error, exit 2): `pretax`, `taxable`, `roth`, `hsa`,
-`monthlySpending`, `currentAge` (all dollars, whole years). An
-explicitly entered zero is valid. Unknown fields are rejected with
-`invalid_input` naming the key (the validator is a strict schema —
-double-check spelling).
+`monthlySpending`, `currentAge` (all dollars, whole years), plus
+`spouseAge` for married households — married filing jointly (the
+default) requires it; single filers do not need it. An explicitly
+entered zero is valid for the four balances; `monthlySpending` must
+be over $0. Unknown fields are rejected with `invalid_input` naming
+the key (the validator is a strict schema — double-check spelling).
 
-Optional inputs include `spouseAge`, `retirementAge` (defaults to
-your current age — retire now), `endAge` (defaults to 95),
+Optional inputs include `retirementAge` (defaults to your current
+age — retire now), `endAge` (defaults to 95),
 `socialSecurityAnnual` + `socialSecurityStartAge`,
 `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`,
 `taxableBasisPct`, `taxYear`, and per-tool options (`mcRuns`,
