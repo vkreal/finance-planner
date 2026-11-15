@@ -104,6 +104,7 @@ describe("advertised schema == accepting schema", () => {
       "expectedRealReturnPct",
       "volatilityPct",
       "strategy",
+      "minimumAnnualSpending",
       "socialSecurityAnnual",
       "socialSecurityStartAge",
       "spouseSocialSecurityAnnual",
@@ -111,7 +112,10 @@ describe("advertised schema == accepting schema", () => {
     ];
     const compare = [
       ...sim.filter(
-        (f) => f !== "volatilityPct" && f !== "strategy",
+        (f) =>
+          f !== "volatilityPct" &&
+          f !== "strategy" &&
+          f !== "minimumAnnualSpending",
       ),
       "filingStatus",
       "householdSize",
@@ -167,7 +171,10 @@ describe("advertised schema == accepting schema", () => {
     const expected: Record<string, string[]> = {
       retirement_calculate: sim.filter((f) => f !== "volatilityPct"),
       retirement_monte_carlo: [...sim, "mcRuns", "mcSeed"],
-      retirement_max_spending: [...sim, "mcSeed"],
+      retirement_max_spending: [
+        ...sim.filter((f) => f !== "minimumAnnualSpending"),
+        "mcSeed",
+      ],
       retirement_compare_strategies: compare,
       retirement_roth_conversion: compare,
       retirement_work_years: [

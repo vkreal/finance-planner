@@ -187,6 +187,7 @@ ROTH_BALANCE_KEYS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
+SPENDING_ADEQUACY_SEMANTICS,
 STATE_SEMANTICS,
 TAX_RETURN_SEMANTICS,
 TIER_SEMANTICS,
@@ -5700,6 +5701,31 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       return {
         phrasesFound: phrases.filter((p) => GUARDRAILS_SEMANTICS.includes(p))
           .length,
+      };
+    },
+  },
+  {
+    id: "api-spending-adequacy-semantics",
+    kind: "apicontract",
+    note: "Spending-adequacy semantics (Engine Review 1): describeApi publishes SPENDING_ADEQUACY_SEMANTICS verbatim (the handler returns this exact constant), and it must state the shipped behaviour — the gross-spending definition ('EVERY retired year's GROSS spending met or beat the floor', 'gross, before the extra-income offset, not what was received or the net withdrawal'), the funding-vs-adequacy distinction (the percent case '100% funding beside 6.6% adequacy at a $150,000/yr floor', the constant case '100% adequacy beside 42.6% funding', 'a high funding-success rate is NOT proof the household can maintain its desired spending'), the no-pricing-change rule ('The floor changes no priced figure — it only adds the rate'), and the pre-retirement-income limitation ('is NOT accumulated into the portfolio in the pre-retirement years', 'banking the gross benefit would fabricate savings'). The behaviour itself is pinned by the retirement suite's Engine Review 1 fixtures and the adapter's adequacy tests; this fixture pins only that the published text cannot silently lose the gross definition, the two-rate distinction, or the pre-retirement-income limitation.",
+    expected: { phrasesFound: 10 },
+    actual: () => {
+      const phrases = [
+        "EVERY retired year's GROSS spending met or beat the floor",
+        "gross, before the extra-income offset, not what was received or the net withdrawal",
+        "a percent-of-portfolio plan can fund every year at 100% while its spending collapses far below the floor",
+        "100% funding beside 6.6% adequacy at a $150,000/yr floor",
+        "a constant-strategy plan reads adequacy 100% whenever the floor is at or below its spending input",
+        "100% adequacy beside 42.6% funding",
+        "a high funding-success rate is NOT proof the household can maintain its desired spending",
+        "The floor changes no priced figure — it only adds the rate",
+        "is NOT accumulated into the portfolio in the pre-retirement years",
+        "banking the gross benefit would fabricate savings",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) =>
+          SPENDING_ADEQUACY_SEMANTICS.includes(p),
+        ).length,
       };
     },
   },

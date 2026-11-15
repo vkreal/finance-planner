@@ -173,6 +173,7 @@ PRETAX_DRAW_SPLIT_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
+SPENDING_ADEQUACY_SEMANTICS,
 SCORE_IDENTITIES,
 STATE_SEMANTICS,
 TAX_RETURN_SEMANTICS,
@@ -2020,6 +2021,15 @@ const retirementInputFields = {
   // end age is valid and simply keeps the plan flat.
   phaseStartAge: z.number().int().min(0).max(130).nullable(),
   phaseDeclinePct: z.number().min(0).max(100).nullable(),
+  // Minimum annual spending (Engine Review 1, E1-S1), in cents
+  // per year. Null = no floor (the adequacy rate is null with
+  // it). Unsigned money like extra income (build v66, F11):
+  // int≥0 at the writer, so saved = priced with no undisclosed
+  // substitution. Records stored before this field existed
+  // carry no such field at all; the readers below resolve that
+  // absence to null — stored records are never rewritten to
+  // add it.
+  minimumAnnualSpendingCents: z.number().int().min(0).nullable(),
 };
 /* Cross-field save refusal (build v66, boundary audit F6):
    when both ages are entered, the retirement age must be
@@ -2171,6 +2181,7 @@ function parseRetirementScenarios(blob: RetirementBlob | null): RetirementScenar
       guardrailsAdjustmentPct: num(r.guardrailsAdjustmentPct),
       phaseStartAge: num(r.phaseStartAge),
       phaseDeclinePct: num(r.phaseDeclinePct),
+      minimumAnnualSpendingCents: num(r.minimumAnnualSpendingCents),
     });
     if (out.length >= 3) break;
   }
@@ -2223,6 +2234,7 @@ function retirementInputsFromRecord(
     guardrailsAdjustmentPct: num(r.guardrailsAdjustmentPct),
     phaseStartAge: num(r.phaseStartAge),
     phaseDeclinePct: num(r.phaseDeclinePct),
+    minimumAnnualSpendingCents: num(r.minimumAnnualSpendingCents),
   };
 }
 
@@ -6582,6 +6594,7 @@ const describeApiResponse = z.object({
   taxReturnSemantics: z.string(),
   yearCaptureSemantics: z.string(),
   guardrailsSemantics: z.string(),
+  spendingAdequacySemantics: z.string(),
   examples: z.array(
     z.object({
       action: z.string(),
@@ -7420,6 +7433,7 @@ export const Actions = {
         taxReturnSemantics: TAX_RETURN_SEMANTICS,
         yearCaptureSemantics: YEAR_CAPTURE_SEMANTICS,
         guardrailsSemantics: GUARDRAILS_SEMANTICS,
+        spendingAdequacySemantics: SPENDING_ADEQUACY_SEMANTICS,
         examples: [ROTH_COMPARE_EXAMPLE],
         actions: visible.map(([name, def]) => ({
           name,
@@ -11842,6 +11856,7 @@ export const Actions = {
           guardrailsAdjustmentPct: z.number().nullable(),
           phaseStartAge: z.number().nullable(),
           phaseDeclinePct: z.number().nullable(),
+          minimumAnnualSpendingCents: z.number().nullable(),
         })
         .nullable(),
       scenarios: z.array(retirementScenario),

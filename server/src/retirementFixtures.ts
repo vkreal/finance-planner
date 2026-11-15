@@ -80,6 +80,11 @@ export type FixtureInput = {
   // record does); phased cases set them explicitly.
   phaseStartAge?: number | null;
   phaseDeclinePct?: number | null;
+  // Minimum-annual-spending floor (Engine Review 1, E1-S1),
+  // OPTIONAL: absent / null = no floor, and the adequacy rate
+  // is null with it. Cases that set it use the sample
+  // household's figures.
+  minimumAnnualSpendingCents?: number | null;
 };
 
 export type FixtureExpected = {
@@ -101,6 +106,13 @@ export type FixtureExpected = {
   p90Cents?: number;
   lowestSpendingCents?: number;
   averageSpendingCents?: number;
+  // Spending-adequacy rate (Engine Review 1, E1-S1): the share
+  // of runs in which EVERY retired year's GROSS spending met or
+  // beat the minimum-annual-spending floor, to one decimal —
+  // null when the case sets no floor. Pinned beside
+  // neverOutSuccessRate so the funding-vs-adequacy divergence
+  // can never silently close from either side.
+  spendingAdequacySuccessRate?: number | null;
   solvedSpendingCents?: number;
   solvedPercent?: number | null;
   // Display-delta cases only (kind "display-delta"): the sub-delta
@@ -648,6 +660,81 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     solverEngine: "montecarlo", solverTargetPct: 100,
     expected: {"solvedSpendingCents":10000,"successRate":100,"medianEndingCents":0,"solvedPercent":null},
   },
+  // ---- Engine Review 1 (2026-11-14): E1-S2 pre-retirement
+  // income pins + E1-S1 spending-adequacy pins. All cases use
+  // the sample household (sampleHousehold.ts): the primary is
+  // 58, spending is $180,000/yr, the Social Security anchor is
+  // $48,000/yr at 67, and the $2,000,000 portfolio is the
+  // sample taxable balance. The E1-S2 endings are hand-derived
+  // at 0% returns (see each note); the adequacy rates are the
+  // engine's figures for the stated floor, independently
+  // re-derived from the per-run gross withdrawals in
+  // server/src/retirementReview1.test.ts — never re-pin them
+  // from a moved engine print alone. ----
+  {
+    id: "proj-preretire-income-not-accumulated",
+    kind: "projection",
+    note: "E1-S2 pin (hand-derived): the sample household, $2,000,000 portfolio, $180,000/yr spending, retire at 62, end at 65, 0% returns, $48,000/yr extra income starting at 60 — BEFORE retirement. Pre-retirement income is NOT accumulated: ages 58–61 withdraw nothing and bank nothing, so the balance at 62 is still $2,000,000. The four retired years (62–65) each withdraw $180,000 − $48,000 = $132,000, so the ending is $2,000,000 − 4 × $132,000 = $1,472,000. Had the two pre-retirement years' income been banked, the ending would be $1,568,000 — that figure is the fabricated-savings answer this pin refuses.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 65, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 60, expectedReturnPct: 0, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":147200000},
+  },
+  {
+    id: "proj-preretire-income-at-retirement-same",
+    kind: "projection",
+    note: "E1-S2 pin (hand-derived): the same plan with the $48,000/yr income starting AT retirement (62) instead of before it. The income is active in exactly the same retired years, so the ending is identical: $2,000,000 − 4 × $132,000 = $1,472,000. A start age before retirement prices exactly like the same stream starting at retirement — the pre-retirement years add nothing either way.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 65, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 62, expectedReturnPct: 0, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":147200000},
+  },
+  {
+    id: "proj-preretire-income-after-end-none",
+    kind: "projection",
+    note: "E1-S2 pin (hand-derived): the same plan with the $48,000/yr income starting at 67 — after the end age (65), at the sample claiming age. The stream never pays within the plan, so the four retired years each withdraw the full $180,000: $2,000,000 − 4 × $180,000 = $1,280,000, identical to no income at all.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 65, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 0, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":128000000},
+  },
+  {
+    id: "proj-preretire-income-zero-same",
+    kind: "projection",
+    note: "E1-S2 pin (hand-derived): the same plan with no extra income at all. The four retired years each withdraw the full $180,000: $2,000,000 − 4 × $180,000 = $1,280,000 — the same ending as the after-end-age income case, pinning that an income that never starts within the horizon is exactly no income.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 65, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":128000000},
+  },
+  {
+    id: "hist-percent-adequacy-sample",
+    kind: "historical",
+    note: "E1-S1 pin: the sample household on the percent strategy (5% of the start-of-year balance), $2,000,000 portfolio, $180,000/yr spending, retire at 62, end at 95, 75/25 mix — with a $150,000/yr minimum-spending floor. Funding success reads 100% (never runs out in any of the 61 start years, median ending $2,823,007.83) while spending adequacy is 6.6%: in only 4 of 61 runs did EVERY retired year's gross spending stay at or above $150,000/yr (lowest gross in any run $45,270.52). The 100% funding rate is not proof the household can maintain its spending — that is the gap this metric closes.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, minimumAnnualSpendingCents: 15000000 },
+    expected: {"successRate":100,"neverOutSuccessRate":100,"spendingAdequacySuccessRate":6.6,"medianEndingCents":282300783,"worstEndingCents":140988026,"worstStartYear":1937,"runCount":61,"lowestSpendingCents":4527052},
+  },
+  {
+    id: "hist-constant-adequacy-sample",
+    kind: "historical",
+    note: "E1-S1 pin (the constant-strategy caveat, stated in the engine comment): the same sample plan on Constant with the floor at the spending input itself ($180,000/yr). Adequacy reads 100% — constant gross never varies, so every retired year's gross always meets the floor — while funding success is only 42.6% (26 of 61 runs, median ending $0). Adequacy on gross spending alone cannot see unfunded withdrawals; the two rates must be read together, and this case pins both sides so the caveat can never silently close.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, minimumAnnualSpendingCents: 18000000 },
+    expected: {"successRate":42.6,"neverOutSuccessRate":42.6,"spendingAdequacySuccessRate":100,"medianEndingCents":0,"worstEndingCents":0,"worstStartYear":1928,"runCount":61},
+  },
+  {
+    id: "hist-phased-adequacy-sample",
+    kind: "historical",
+    note: "E1-S1 pin: the same sample plan on Phased (step-down from 75 at 1%/yr) with a $150,000/yr floor. The decline is deterministic — by the end age (95) gross is $180,000 × 0.99^20 = $147,236.37, below the floor — so adequacy is 0% in every run even though funding success is 42.6%, the same as Constant's (the step-down never saves a run Constant loses here). A floor above the late-plan phased level fails adequacy by construction, in every return sequence.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1, minimumAnnualSpendingCents: 15000000 },
+    expected: {"successRate":42.6,"neverOutSuccessRate":42.6,"spendingAdequacySuccessRate":0,"medianEndingCents":0,"worstEndingCents":0,"worstStartYear":1928,"runCount":61},
+  },
+  {
+    id: "hist-guardrails-adequacy-sample",
+    kind: "historical",
+    note: "E1-S1 pin: the same sample plan on Guardrails (default knobs 120/80/10) with a $150,000/yr floor. Funding success is 93.4% (57 of 61 runs) while adequacy is 14.8% (9 of 61): the guardrail cuts that keep the portfolio alive are exactly what push yearly spending below the floor, so a high funding rate again overstates how often the household actually lived on $150,000/yr.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, minimumAnnualSpendingCents: 15000000 },
+    expected: {"successRate":93.4,"neverOutSuccessRate":93.4,"spendingAdequacySuccessRate":14.8,"medianEndingCents":90439359,"worstEndingCents":0,"worstStartYear":1928,"runCount":61},
+  },
+  {
+    id: "mc-percent-adequacy-sample",
+    kind: "montecarlo",
+    note: "E1-S1 pin: the same sample plan on the percent strategy (5%) on the Monte Carlo engine (tab seed 12345, 1,000 runs) with a $150,000/yr floor. Funding success reads 100% (median ending $1,964,673.94) while spending adequacy is 4.9% (49 of 1,000 runs kept every retired year's gross at or above $150,000/yr; lowest gross in any run $5,928.24). The Monte Carlo tab headlines funding success; the adequacy rate is the companion figure that says whether the spending level itself held.",
+    input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, minimumAnnualSpendingCents: 15000000 },
+    mcSeed: 12345,
+    expected: {"successRate":100,"neverOutSuccessRate":100,"spendingAdequacySuccessRate":4.9,"p10Cents":63002693,"p50Cents":196467394,"p90Cents":587861300,"lowestSpendingCents":592824},
+  },
 ];
 
 export type FixtureCaseResult = {
@@ -743,6 +830,12 @@ function runFixtureCase(c: FixtureCase): FixtureCaseResult {
       if (exp.runCount !== undefined && h.count !== exp.runCount) {
         failures.push(`runCount: expected ${exp.runCount}, got ${h.count}`);
       }
+      if (exp.spendingAdequacySuccessRate !== undefined) {
+        const actual = h.spendingAdequacySuccessRate == null ? null : round1(h.spendingAdequacySuccessRate);
+        if (actual !== exp.spendingAdequacySuccessRate) {
+          failures.push(`spendingAdequacySuccessRate: expected ${exp.spendingAdequacySuccessRate}, got ${actual}`);
+        }
+      }
       checkCents(failures, "lowestSpendingCents", h.lowestSpending, exp.lowestSpendingCents);
       checkCents(failures, "averageSpendingCents", h.averageSpending, exp.averageSpendingCents);
     }
@@ -756,6 +849,12 @@ function runFixtureCase(c: FixtureCase): FixtureCaseResult {
       }
       if (exp.neverOutSuccessRate !== undefined && round1(mc.neverOutSuccessRate) !== exp.neverOutSuccessRate) {
         failures.push(`neverOutSuccessRate: expected ${exp.neverOutSuccessRate}, got ${round1(mc.neverOutSuccessRate)}`);
+      }
+      if (exp.spendingAdequacySuccessRate !== undefined) {
+        const actual = mc.spendingAdequacySuccessRate == null ? null : round1(mc.spendingAdequacySuccessRate);
+        if (actual !== exp.spendingAdequacySuccessRate) {
+          failures.push(`spendingAdequacySuccessRate: expected ${exp.spendingAdequacySuccessRate}, got ${actual}`);
+        }
       }
       checkCents(failures, "p10Cents", mc.p10, exp.p10Cents);
       checkCents(failures, "p50Cents", mc.p50, exp.p50Cents);

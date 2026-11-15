@@ -70,6 +70,9 @@ import {
 export interface NormalizedScenario {
   portfolioCents: number; // pretax+taxable+roth+hsa, cents (simulation pool)
   annualSpendingCents: number; // Math.round(monthlySpending*12*100)
+  // Optional minimum-annual-spending floor, cents/yr (E1-S1).
+  // Null = no floor (omitted), and the adequacy rate is null.
+  minimumAnnualSpendingCents: number | null;
   currentAge: number;
   retirementAge: number;
   endAge: number;
@@ -497,6 +500,39 @@ export function normalizeInputs(
   const monthlySpending = input.monthlySpending;
   record("monthlySpending", monthlySpending, "user", "Provided by caller.");
   const annualSpendingCents = Math.round(monthlySpending * 12 * 100);
+
+  // --- Minimum annual spending floor (Engine Review 1, E1-S1). ---
+  // Optional dollars/yr; omitted (or $0) = no floor, and the
+  // adequacy rate is null with it. The floor is evaluated on
+  // GROSS spending — the strategy's spending level before the
+  // extra-income offset — so for the constant strategy, whose
+  // gross never varies, a floor at or below the spending input
+  // reads adequacy 100% even in runs where withdrawals went
+  // unfunded: the adapter reports the rate beside the funding
+  // rate, never instead of it.
+  const minimumAnnualSpendingCents =
+    input.minimumAnnualSpending == null ||
+    input.minimumAnnualSpending === 0
+      ? null
+      : Math.round(input.minimumAnnualSpending * 100);
+  if (
+    input.minimumAnnualSpending === undefined ||
+    input.minimumAnnualSpending === 0
+  ) {
+    record(
+      "minimumAnnualSpending",
+      null,
+      "assumption",
+      "No minimum yearly spending given — no spending-adequacy rate is reported.",
+    );
+  } else {
+    record(
+      "minimumAnnualSpending",
+      input.minimumAnnualSpending,
+      "user",
+      "Provided by caller — the adequacy rate counts runs where every retired year's gross spending stayed at or above this floor.",
+    );
+  }
 
   // --- Ages. ---
   record("currentAge", currentAge, "user", "Provided by caller.");
@@ -1287,6 +1323,7 @@ export function normalizeInputs(
   const scenario: NormalizedScenario = {
     portfolioCents,
     annualSpendingCents,
+    minimumAnnualSpendingCents,
     currentAge,
     retirementAge,
     endAge,
@@ -1365,6 +1402,10 @@ export function publicEffectiveInputs(
       scenario.hsaDollars,
     monthlySpending,
     annualSpending: scenario.annualSpendingCents / 100,
+    minimumAnnualSpending:
+      scenario.minimumAnnualSpendingCents == null
+        ? null
+        : scenario.minimumAnnualSpendingCents / 100,
     currentAge: scenario.currentAge,
     spouseAge:
       scenario.birthYearSpouse === null

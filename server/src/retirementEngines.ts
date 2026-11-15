@@ -282,6 +282,26 @@ export type IncomeStream = {
 // them read income only through here, so the deterministic,
 // historical, Monte Carlo, success-only, and solver paths can
 // never disagree about what a year pays.
+//
+// INTENTIONAL LIMITATION (Engine Review 1, E1-S2 — retained
+// behavior, not a defect): income is only ever read inside a
+// RETIRED year (age >= retirementAge, see simulateDetailed and
+// runNeverRunsOut). A stream that starts BEFORE retirement —
+// Social Security claimed while still working, say — is NOT
+// accumulated into the portfolio in the pre-retirement years:
+// this simulation has no pre-retirement spending model, no
+// salary, and no taxes, so banking the gross benefit before
+// retirement would fabricate savings by assuming the whole
+// benefit was saved while the pre-retirement years' own
+// spending was funded from nowhere. The same start age read
+// AT retirement prices identically (the stream simply becomes
+// active in the first retired year), and a stream starting
+// after the end age never pays within the plan. The accurate
+// path for benefits already being collected in work years is
+// the Roth view's Work-years tab (server/src/workYears.ts),
+// which deposits the benefit, prices §86 tax on it, and lands
+// the cash surplus in Taxable at year end — use that surface
+// for pre-retirement income, not this sim.
 export function incomeCentsAt(inputs: SimInputs, age: number): number {
   const sched = inputs.incomeSchedule;
   if (sched && sched.length > 0) {
@@ -350,6 +370,21 @@ export type SimInputs = {
   // through phaseStartAge, then declines phaseDeclinePct % a year.
   phaseStartAge: number;
   phaseDeclinePct: number;
+  // Optional minimum-annual-spending floor, in cents per year
+  // (Engine Review 1, E1-S1). Null / absent = no floor, and the
+  // adequacy rate below is null with it. When set, the
+  // spending-adequacy rate is the share of runs in which EVERY
+  // retired year's GROSS spending met or beat the floor (see
+  // spendingAdequacyRate). The floor is evaluated on GROSS
+  // spending — the strategy's spending level before the
+  // extra-income offset — not on what was actually received or
+  // on the net withdrawal. That distinction matters for the
+  // constant strategy, whose gross never varies: with the floor
+  // at or below the spending input its adequacy reads 100%
+  // even in runs where withdrawals went unfunded, so adequacy
+  // must always be read BESIDE the never-runs-out rate, never
+  // instead of it.
+  minimumAnnualSpendingCents?: number | null;
 };
 
 // One simulation path, with per-year detail. Each year from
@@ -605,6 +640,43 @@ function spendingStats(
   };
 }
 
+// Spending-adequacy rate (Engine Review 1, E1-S1): the share of
+// runs in which EVERY retired year's GROSS spending met or beat
+// the minimum-annual-spending floor. Null when no floor is set
+// (or the floor is 0 / negative) or when no run has a retired
+// year — a plan with no retired years has no spending to judge.
+// Computed from the per-run gross withdrawals the engines
+// already record, so the historical and Monte Carlo runners
+// share this one implementation and can never disagree about
+// what "adequate" means. Read it beside neverOutSuccessRate,
+// never instead of it: adequacy asks whether the strategy's
+// spending LEVEL held the floor, funding asks whether each
+// year's withdrawal was actually funded. A percent-strategy
+// run can fund every year at 100% while its spending collapses
+// far below the floor (adequacy near 0); a constant-strategy
+// run can read adequacy 100% — its gross never varies — while
+// its withdrawals went unfunded (neverOut below 100%). Either
+// rate alone overstates the plan; the pair states it.
+export function spendingAdequacyRate(
+  inputs: SimInputs,
+  runsGross: number[][],
+): number | null {
+  const floor = inputs.minimumAnnualSpendingCents;
+  if (floor == null || floor <= 0) return null;
+  let adequate = 0;
+  let counted = 0;
+  for (const gross of runsGross) {
+    const retired = gross.filter(
+      (_, i) => inputs.currentAge + i >= inputs.retirementAge,
+    );
+    if (retired.length === 0) continue;
+    counted++;
+    if (retired.every((g) => g >= floor)) adequate++;
+  }
+  if (counted === 0) return null;
+  return (adequate / counted) * 100;
+}
+
 export type HistRun = {
   startYear: number;
   path: number[];
@@ -637,6 +709,19 @@ export type HistResult = {
   // year's gross spending, and of its first retired year's.
   medianFinalYearSpending: number | null;
   medianFirstRetiredYearSpending: number | null;
+  // Spending-adequacy rate (Engine Review 1, E1-S1): the share
+  // of runs in which EVERY retired year's GROSS spending met or
+  // beat the minimum-annual-spending floor — null when no floor
+  // is set. Funding success (neverOutSuccessRate) and adequacy
+  // are different questions: a percent-strategy plan can fund
+  // every year while its spending collapses below the floor,
+  // and a constant-strategy plan can read adequacy 100% while
+  // its withdrawals went unfunded. Read the two rates together.
+  spendingAdequacySuccessRate: number | null;
+  // The floor that rate is measured against, echoed so a reader
+  // never has to guess which floor a rate belongs to; null
+  // means no floor was set.
+  minimumAnnualSpendingCents: number | null;
 };
 
 export function runHistorical(inputs: SimInputs, stocksPct: number): HistResult | null {
@@ -693,6 +778,12 @@ export function runHistorical(inputs: SimInputs, stocksPct: number): HistResult 
     averageSpending: stats.averageSpending,
     medianFinalYearSpending: stats.medianFinalYearSpending,
     medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
+    spendingAdequacySuccessRate: spendingAdequacyRate(
+      inputs,
+      runs.map((r) => r.grossWithdrawals),
+    ),
+    minimumAnnualSpendingCents:
+      inputs.minimumAnnualSpendingCents ?? null,
   };
 }
 
@@ -723,6 +814,11 @@ export type McResult = {
   // otherwise) — see HistResult's fields of the same names.
   medianFinalYearSpending: number | null;
   medianFirstRetiredYearSpending: number | null;
+  // Spending-adequacy rate (Engine Review 1, E1-S1) — see
+  // HistResult.spendingAdequacySuccessRate; null when no floor
+  // is set. The floor it is measured against, echoed beside it.
+  spendingAdequacySuccessRate: number | null;
+  minimumAnnualSpendingCents: number | null;
 };
 
 export const MONTE_CARLO_TAB_SEED_DEFAULT = 12345;
@@ -786,6 +882,9 @@ export function runMonteCarlo(
     averageSpending: stats.averageSpending,
     medianFinalYearSpending: stats.medianFinalYearSpending,
     medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
+    spendingAdequacySuccessRate: spendingAdequacyRate(inputs, runsGross),
+    minimumAnnualSpendingCents:
+      inputs.minimumAnnualSpendingCents ?? null,
   };
 }
 
@@ -1166,6 +1265,13 @@ export function buildSimInputs(
     guardrailsAdjustmentPct: number | null;
     phaseStartAge?: number | null;
     phaseDeclinePct?: number | null;
+    // Optional minimum-annual-spending floor (Engine Review 1,
+    // E1-S1), in cents per year. Absent / null = no floor, and
+    // the adequacy rate is null with it. A negative floor is
+    // not a saveable value (the writer refuses int≥0, like
+    // extra income) — a negative arriving here degrades to no
+    // floor rather than pricing a nonsense bound.
+    minimumAnnualSpendingCents?: number | null;
   },
   defaults: {
     portfolioCents: number;
@@ -1220,6 +1326,13 @@ export function buildSimInputs(
       // defaults (75 / 1) and are clamped exactly as the live
       // inputs.
       ...effectivePhased(raw.phaseStartAge, raw.phaseDeclinePct),
+      // Absent / null floor = no floor (null); a set floor is
+      // carried in whole cents, never below $0.
+      minimumAnnualSpendingCents:
+        raw.minimumAnnualSpendingCents != null &&
+        raw.minimumAnnualSpendingCents > 0
+          ? Math.round(raw.minimumAnnualSpendingCents)
+          : null,
     },
     stocks,
     expected: (raw.expectedReturnPct ?? blendedExpected(stocks)) / 100,

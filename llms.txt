@@ -23,7 +23,7 @@ Pricing uses the 2026 tax-law tables unless `taxYear` says 2025.
 ## The 8 tools (one line each)
 
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
-- `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes.
+- `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes. Optional `minimumAnnualSpending` adds the spending-adequacy rate — funding success alone is not proof spending held up.
 - `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success.
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware.
 - `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1.
@@ -85,6 +85,16 @@ the user those questions, don't guess.
 - No saved data: it never reads the app database, saved records, or
   the fictional sample household. The app's own saved plans are
   answered through the app, not this server.
+- Funding success is not spending adequacy: a high Monte Carlo or
+  historical success rate does not prove spending held up — under
+  percent, guardrails, or phased strategies yearly spending can
+  shrink far below the desired level while every year still funds.
+  Pass `minimumAnnualSpending` ($/yr) for the spending-adequacy
+  rate, measured on gross spending, and read the two rates together.
+- Pre-retirement income is not accumulated: a benefit starting
+  before retirement counts only once retired; benefits already being
+  collected belong to `retirement_work_years`, which prices them
+  with tax. The simulation itself is tax-free and single-portfolio.
 - Tax years 2025/2026 only (the published law years); no public endpoint live yet; the
   work-years leg with a spouse Social Security benefit needs more
   than 6 GB (run it without the spouse benefit, or wait for a bigger

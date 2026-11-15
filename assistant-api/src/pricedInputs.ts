@@ -108,6 +108,7 @@ export const FIELD_ORDER: string[] = [
   "volatilityPct",
   "stocksPct",
   "strategy",
+  "minimumAnnualSpending",
   "socialSecurityAnnual",
   "spouseSocialSecurityAnnual",
   "socialSecurityStartAge",
@@ -156,7 +157,11 @@ export const FIELD_ORDER: string[] = [
  *     or mcSeed; monte_carlo prices all three (its MC leg reads
  *     expected/vol/seed/runs); max_spending prices volatilityPct
  *     and mcSeed (its solver reads them) but NOT mcRuns — the
- *     solver always runs the engine's fixed 1,000 simulations.
+ *     solver always runs the engine's fixed 1,000 simulations —
+ *     and NOT minimumAnnualSpending: the solver scores funding
+ *     success only and reports no adequacy rate (Engine Review 1,
+ *     E1-S1), so the floor is inert there even though it is a
+ *     sim input everywhere else.
  *   - Compare tools (strategies / roth / work_years): the
  *     tax-aware Roth compare reads no strategy or volatility
  *     (RothSavedLike carries neither) and no single-year or
@@ -177,6 +182,7 @@ const SIM_OPTIONAL_INPUTS: string[] = [
   "expectedRealReturnPct",
   "volatilityPct",
   "strategy",
+  "minimumAnnualSpending",
   "socialSecurityAnnual",
   "socialSecurityStartAge",
   "spouseSocialSecurityAnnual",
@@ -253,7 +259,12 @@ export const PRICED_OPTIONAL: Record<FinancialToolName, string[]> = {
     (f) => f !== "volatilityPct",
   ),
   retirement_monte_carlo: [...SIM_OPTIONAL_INPUTS, "mcRuns", "mcSeed"],
-  retirement_max_spending: [...SIM_OPTIONAL_INPUTS, "mcSeed"],
+  // max_spending prices volatilityPct and mcSeed but NOT
+  // minimumAnnualSpending (solver scores funding only, E1-S1).
+  retirement_max_spending: [
+    ...SIM_OPTIONAL_INPUTS.filter((f) => f !== "minimumAnnualSpending"),
+    "mcSeed",
+  ],
   retirement_compare_strategies: COMPARE_OPTIONAL_INPUTS,
   retirement_roth_conversion: COMPARE_OPTIONAL_INPUTS,
   retirement_work_years: [
@@ -291,6 +302,7 @@ const FIELD_BLURBS: Record<string, string> = {
   volatilityPct: "the annual portfolio volatility",
   stocksPct: "the portfolio's stock allocation",
   strategy: "the spending strategy",
+  minimumAnnualSpending: "the minimum annual spending floor for the spending-adequacy rate",
   socialSecurityAnnual: "the primary's annual Social Security benefit",
   spouseSocialSecurityAnnual: "the spouse's annual Social Security benefit",
   socialSecurityStartAge: "the primary's Social Security claiming age",

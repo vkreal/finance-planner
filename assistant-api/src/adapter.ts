@@ -408,6 +408,9 @@ export function toSimInputs(
     extraIncomeStartAge: income.extraIncomeStartAge,
     incomeSchedule:
       income.schedule.length > 0 ? income.schedule : undefined,
+    // Optional spending floor (Engine Review 1, E1-S1): null =
+    // no floor, and the adequacy rate is null with it.
+    minimumAnnualSpendingCents: scenario.minimumAnnualSpendingCents,
     strategy,
     percentOfPortfolio: strategy === "percent" ? 5 : 0,
     guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
@@ -416,6 +419,24 @@ export function toSimInputs(
     phaseStartAge: PHASE_START_AGE_DEFAULT,
     phaseDeclinePct: PHASE_DECLINE_PCT_DEFAULT,
   };
+  // E1-S2 (intentional limitation, retained): income starting
+  // before retirement is NOT accumulated in the pre-retirement
+  // years — this simulation has no pre-retirement spending model,
+  // so banking the gross benefit would fabricate savings. Warn
+  // whenever a priced stream starts before the retirement age, so
+  // the limitation is disclosed on the answer itself, not only in
+  // the capability guide. Benefits already being collected in work
+  // years belong to retirement_work_years, which prices them with
+  // tax and lands the surplus in Taxable.
+  const retirementAge = overrides?.retirementAge ?? scenario.retirementAge;
+  const earlyStarts = income.schedule
+    .map((s) => s.startAge ?? retirementAge)
+    .filter((start) => start < retirementAge);
+  if (earlyStarts.length > 0) {
+    warnings.push(
+      "Social Security (or other fixed income) starting before retirement is not accumulated in this simulation: the benefit counts only once retired, so pre-retirement years bank nothing from it. If the benefit is already being collected while still working, use retirement_work_years, which prices those years with tax instead.",
+    );
+  }
   return { inputs, warnings };
 }
 
@@ -918,6 +939,15 @@ export function calculateRetirement(
   strategy: string;
   historicalNeverOutRate: number | null;
   historicalMedianEnding: number | null;
+  // Spending adequacy (E1-S1): the share of historical runs in
+  // which every retired year's GROSS spending met or beat the
+  // minimum-annual-spending floor — null when no floor was set.
+  // Read beside historicalNeverOutRate, never instead of it: a
+  // high funding rate is not proof spending held the floor.
+  historicalSpendingAdequacyRate: number | null;
+  // The floor the adequacy rate is measured against, $/yr — null
+  // when no floor was set.
+  minimumAnnualSpending: number | null;
 }> {
   return guard(() => {
     const { inputs, warnings } = toSimInputs(scenario);
@@ -929,6 +959,14 @@ export function calculateRetirement(
     if (hist === null) {
       warnings.push(
         "Historical paths are unavailable for this mix or horizon, so no historical never-out rate is reported.",
+      );
+    }
+    if (
+      scenario.minimumAnnualSpendingCents != null &&
+      scenario.strategy === "constant"
+    ) {
+      warnings.push(
+        "Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.",
       );
     }
     return respond(
@@ -954,6 +992,19 @@ export function calculateRetirement(
           hist === null ? null : r2(hist.neverOutSuccessRate / 100),
         historicalMedianEnding:
           hist === null ? null : centsToDollars(hist.medianEnding),
+        historicalSpendingAdequacyRate:
+          hist === null || hist.spendingAdequacySuccessRate === null
+            ? null
+            : // Exact, not rounded to two decimals: r2 would collapse
+              // 99.5–99.9% to 1.0 and erase the funding-vs-adequacy
+              // distinction the rate exists to preserve (Engine
+              // Review 1, pass 2 SHOULD-1). The engine returns the
+              // exact share (adequate / counted × 100).
+              hist.spendingAdequacySuccessRate / 100,
+        minimumAnnualSpending:
+          scenario.minimumAnnualSpendingCents == null
+            ? null
+            : centsToDollars(scenario.minimumAnnualSpendingCents),
       },
       warnings,
       [],
@@ -978,6 +1029,15 @@ export function runRetirementMonteCarlo(
   averageSpending: number | null;
   medianFinalYearSpending: number | null;
   medianFirstRetiredYearSpending: number | null;
+  // Spending adequacy (E1-S1): the share of runs in which every
+  // retired year's GROSS spending met or beat the
+  // minimum-annual-spending floor — null when no floor was set.
+  // Read beside successRate, never instead of it: a high
+  // funding-success rate is not proof spending held the floor.
+  spendingAdequacyRate: number | null;
+  // The floor the adequacy rate is measured against, $/yr — null
+  // when no floor was set.
+  minimumAnnualSpending: number | null;
   runs: number;
   seed: number;
   chart: Array<{ age: number; median: number; p10: number; p90: number }>;
@@ -1003,6 +1063,14 @@ export function runRetirementMonteCarlo(
     const successRate = r2(mc.neverOutSuccessRate / 100);
     const detRunsOut = detEnding === 0;
     const mcMostlySucceeds = successRate >= 0.5;
+    if (
+      scenario.minimumAnnualSpendingCents != null &&
+      scenario.strategy === "constant"
+    ) {
+      warnings.push(
+        "Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.",
+      );
+    }
     if (detRunsOut && mcMostlySucceeds) {
       warnings.push(
         "Cross-check: the flat-return projection runs out, but at least half of the Monte Carlo paths do not — the flat path is one draw, not the typical outcome.",
@@ -1050,6 +1118,19 @@ export function runRetirementMonteCarlo(
           mc.medianFirstRetiredYearSpending == null
             ? null
             : centsToDollars(mc.medianFirstRetiredYearSpending),
+        spendingAdequacyRate:
+          mc.spendingAdequacySuccessRate === null
+            ? null
+            : // Exact, not rounded to two decimals: r2 would collapse
+              // 99.5–99.9% to 1.0 and erase the funding-vs-adequacy
+              // distinction the rate exists to preserve (Engine
+              // Review 1, pass 2 SHOULD-1). The engine returns the
+              // exact share (adequate / counted × 100).
+              mc.spendingAdequacySuccessRate / 100,
+        minimumAnnualSpending:
+          scenario.minimumAnnualSpendingCents == null
+            ? null
+            : centsToDollars(scenario.minimumAnnualSpendingCents),
         runs: scenario.mcRuns,
         seed: scenario.mcSeed,
         chart,

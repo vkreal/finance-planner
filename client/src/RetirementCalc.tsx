@@ -350,6 +350,15 @@ function parseMoney(s: string): number | null {
   if (!Number.isFinite(n)) return null;
   return Math.round(n * 100);
 }
+// A typed floor of $0 (or negative) is no floor: the engine and the
+// adapter both treat an explicit 0 as no floor (buildSimInputs maps
+// <= 0 to null; adapter normalize does the same), so the view must
+// too — otherwise a $0 tile would claim a floor no surface prices
+// (Engine Review 1, pass 3 SHOULD-2).
+function floorCentsOrNull(s: string): number | null {
+  const v = parseMoney(s);
+  return v == null || v <= 0 ? null : v;
+}
 function parseNum(s: string): number | null {
   const cleaned = s.replace(/[%\s]/g, "");
   if (cleaned === "") return null;
@@ -725,6 +734,11 @@ export function RetirementCalc({
   const [guardrailsAdjustmentPct, setGuardrailsAdjustmentPct] = useState(String(GUARDRAILS_ADJUSTMENT_DEFAULT));
   const [phaseStartAge, setPhaseStartAge] = useState(String(PHASE_START_AGE_DEFAULT));
   const [phaseDeclinePct, setPhaseDeclinePct] = useState(String(PHASE_DECLINE_PCT_DEFAULT));
+  // Minimum annual spending floor (Engine Review 1, E1-S1), in
+  // dollars per year as typed. Blank = no floor, and the
+  // adequacy rate is null with it. Saved as cents, like the
+  // other money fields.
+  const [minimumAnnualSpending, setMinimumAnnualSpending] = useState("");
   const prevBlend = useRef<{ exp: string; vol: string }>({
     exp: String(Math.round(blendedExpected(STOCKS_PCT_DEFAULT) * 100) / 100),
     vol: String(Math.round(blendedVol(STOCKS_PCT_DEFAULT) * 100) / 100),
@@ -839,6 +853,14 @@ export function RetirementCalc({
     // exactly what the engines run for such a record.
     setPhaseStartAge(String(s?.phaseStartAge ?? PHASE_START_AGE_DEFAULT));
     setPhaseDeclinePct(String(s?.phaseDeclinePct ?? PHASE_DECLINE_PCT_DEFAULT));
+    // A record saved before the spending floor existed carries
+    // no floor field: the field opens blank (no floor), exactly
+    // what the engines run for such a record.
+    setMinimumAnnualSpending(
+      s?.minimumAnnualSpendingCents != null
+        ? String(s.minimumAnnualSpendingCents / 100)
+        : "",
+    );
     prevBlend.current = {
       exp: String(Math.round(blendedExpected(stocks) * 100) / 100),
       vol: String(Math.round(blendedVol(stocks) * 100) / 100),
@@ -1512,6 +1534,9 @@ export function RetirementCalc({
         phaseDeclineN != null
           ? Math.min(100, Math.max(0, phaseDeclineN))
           : null,
+      // Blank floor saves as null (no floor); a typed floor
+      // saves as its cents, exactly what the engines price.
+      minimumAnnualSpendingCents: floorCentsOrNull(minimumAnnualSpending),
     };
   };
   const buildSavePayloadRef = useRef(buildSavePayload);
@@ -1626,7 +1651,7 @@ export function RetirementCalc({
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [init, portfolio, portfolioFollowing, spending, currentAge, retirementAge, endAge, stocksPct, extraIncome, extraStartAge, expectedPct, volPct, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct]);
+  }, [init, portfolio, portfolioFollowing, spending, currentAge, retirementAge, endAge, stocksPct, extraIncome, extraStartAge, expectedPct, volPct, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct, minimumAnnualSpending]);
 
   /* ---------------- Tax Plan write-through (build v140) ----------------
      One source, multiple edit locations: the five plan fields
@@ -2341,6 +2366,7 @@ export function RetirementCalc({
     setGuardrailsAdjustmentPct(String(GUARDRAILS_ADJUSTMENT_DEFAULT));
     setPhaseStartAge(String(PHASE_START_AGE_DEFAULT));
     setPhaseDeclinePct(String(PHASE_DECLINE_PCT_DEFAULT));
+    setMinimumAnnualSpending("");
     prevBlend.current = { exp: expStr, vol: volStr };
     setConfirmReset(false);
     const payload: Parameters<typeof api.saveRetirementCalc>[0] = {
@@ -2366,6 +2392,8 @@ export function RetirementCalc({
       guardrailsAdjustmentPct: GUARDRAILS_ADJUSTMENT_DEFAULT,
       phaseStartAge: PHASE_START_AGE_DEFAULT,
       phaseDeclinePct: PHASE_DECLINE_PCT_DEFAULT,
+      // Reset clears the spending floor (no floor is the default).
+      minimumAnnualSpendingCents: null,
     };
     submitSave(payload, (res) => {
       if (!res.ok) return;
@@ -2395,6 +2423,7 @@ export function RetirementCalc({
                   guardrailsAdjustmentPct: payload.guardrailsAdjustmentPct,
                   phaseStartAge: payload.phaseStartAge,
                   phaseDeclinePct: payload.phaseDeclinePct,
+                  minimumAnnualSpendingCents: payload.minimumAnnualSpendingCents,
                 },
               }
             : old,
@@ -2475,8 +2504,11 @@ export function RetirementCalc({
       // Blank phased knobs run on their defaults (75 / 1) here
       // too, for the same reason.
       ...effectivePhased(parseNum(phaseStartAge), parseNum(phaseDeclinePct)),
+      // Blank or $0 floor = no floor (null); a typed floor runs in
+      // whole cents, exactly what a save + reload produces.
+      minimumAnnualSpendingCents: floorCentsOrNull(minimumAnnualSpending),
     };
-  }, [portfolio, spending, currentAge, retirementAge, endAge, extraIncome, extraStartAge, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct, data]);
+  }, [portfolio, spending, currentAge, retirementAge, endAge, extraIncome, extraStartAge, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct, minimumAnnualSpending, data]);
 
   const stocks = Math.min(100, Math.max(0, parseNum(stocksPct) ?? STOCKS_PCT_DEFAULT));
   // A blank expected-return / volatility field means the blended
@@ -2556,12 +2588,25 @@ export function RetirementCalc({
     let finalYearSpending: number | null = null;
     let firstRetiredYearSpending: number | null = null;
     let finalYearAge: number | null = null;
+    // Spending-floor check for this one steady-return path
+    // (Engine Review 1, E1-S1): the lowest gross spending in
+    // any retired year, and whether every retired year's gross
+    // stayed at or above the floor — null when no floor is set
+    // or the plan has no retired year. A single path, so this
+    // is a yes/no note, not a rate; the rates live on the
+    // Historical and Monte Carlo tabs.
+    let lowestRetiredGross: number | null = null;
+    let floorMet: boolean | null = null;
     for (let i = 0; i < det.grossWithdrawals.length; i++) {
       if (inputs.currentAge + i < inputs.retirementAge) continue;
       const g = det.grossWithdrawals[i] ?? 0;
       if (firstRetiredYearSpending == null) firstRetiredYearSpending = g;
+      if (lowestRetiredGross == null || g < lowestRetiredGross) lowestRetiredGross = g;
       finalYearSpending = g;
       finalYearAge = inputs.currentAge + i;
+    }
+    if (inputs.minimumAnnualSpendingCents != null && lowestRetiredGross != null) {
+      floorMet = lowestRetiredGross >= inputs.minimumAnnualSpendingCents;
     }
     return {
       path,
@@ -2572,6 +2617,8 @@ export function RetirementCalc({
       finalYearSpending,
       firstRetiredYearSpending,
       finalYearAge,
+      lowestRetiredGross,
+      floorMet,
       chart: path.map((bal, i) => ({ age: inputs.currentAge + i, balance: bal / 100 })),
     };
   }, [inputs, expected, planYears]);
@@ -3102,6 +3149,13 @@ export function RetirementCalc({
     // phased fields: its knobs load as the defaults (75 / 1).
     setPhaseStartAge(String(sc.phaseStartAge ?? PHASE_START_AGE_DEFAULT));
     setPhaseDeclinePct(String(sc.phaseDeclinePct ?? PHASE_DECLINE_PCT_DEFAULT));
+    // A scenario saved before the spending floor existed has no
+    // floor field: it loads blank (no floor).
+    setMinimumAnnualSpending(
+      sc.minimumAnnualSpendingCents != null
+        ? String(sc.minimumAnnualSpendingCents / 100)
+        : "",
+    );
     prevBlend.current = {
       exp: String(Math.round(sourced.expectedReturnPct * 100) / 100),
       vol: String(Math.round(blendedVol(scStocks) * 100) / 100),
@@ -3132,6 +3186,7 @@ export function RetirementCalc({
       guardrailsAdjustmentPct: sc.guardrailsAdjustmentPct,
       phaseStartAge: sc.phaseStartAge,
       phaseDeclinePct: sc.phaseDeclinePct,
+      minimumAnnualSpendingCents: sc.minimumAnnualSpendingCents,
     };
     submitSave(payload, (res) => {
       if (!res.ok) return;
@@ -3491,6 +3546,8 @@ export function RetirementCalc({
         defaultDiffLabels.push(`Phased step-down ${inputs.phaseDeclinePct}%/yr`);
     }
     if (stocks !== STOCKS_PCT_DEFAULT) defaultDiffLabels.push("Stocks %");
+    if (inputs.minimumAnnualSpendingCents != null)
+      defaultDiffLabels.push(`Minimum yearly spending ${fmt(inputs.minimumAnnualSpendingCents)}`);
     if (inputs.extraIncomeCents !== EXTRA_INCOME_DEFAULT_CENTS)
       defaultDiffLabels.push("Extra income");
     if (
@@ -3731,6 +3788,14 @@ export function RetirementCalc({
       if (a.phaseDeclinePct !== PHASE_DECLINE_PCT_DEFAULT)
         diffs.push(`Steps down ${a.phaseDeclinePct}%/yr`);
     }
+    // The spending floor is part of the snapshot too: a floor
+    // on one side and none (or a different floor) on the other
+    // earns a chip, naming both.
+    if ((a.minimumAnnualSpendingCents ?? null) !== (b.minimumAnnualSpendingCents ?? null)) {
+      const floorLabel = (f: number | null | undefined) =>
+        f == null ? "no floor" : `${fmt(f)}/yr`;
+      diffs.push(`Minimum yearly spending ${floorLabel(a.minimumAnnualSpendingCents)} (Current ${floorLabel(b.minimumAnnualSpendingCents)})`);
+    }
     if (a.retirementAge !== b.retirementAge)
       diffs.push(`Retires at ${a.retirementAge} (Current ${b.retirementAge})`);
     if (a.currentAge !== b.currentAge)
@@ -3815,7 +3880,7 @@ export function RetirementCalc({
             today&rsquo;s dollars. Each year, once retired, the plan withdraws
             spending minus extra income (any income above spending is added to
             the portfolio), then that year&rsquo;s real return applies.
-            A plan succeeds if every year&rsquo;s spending is fully funded through the end age — the money never comes up short in any year. A run that lands at exactly $0 still counts as succeeding when that year&rsquo;s spending was fully funded by the money on hand: the portfolio is empty, but no year&rsquo;s spending went unfunded. A run counts as not succeeding when a year&rsquo;s spending exceeds the money on hand to fund it — even if the portfolio then sits at $0 and later income refills it, that year&rsquo;s spending was not fully funded, so the money did run out in the sense that matters here.
+            A plan succeeds if every year&rsquo;s spending is fully funded through the end age — the money never comes up short in any year. A run that lands at exactly $0 still counts as succeeding when that year&rsquo;s spending was fully funded by the money on hand: the portfolio is empty, but no year&rsquo;s spending went unfunded. A run counts as not succeeding when a year&rsquo;s spending exceeds the money on hand to fund it — even if the portfolio then sits at $0 and later income refills it, that year&rsquo;s spending was not fully funded, so the money did run out in the sense that matters here. Funding success is not the same as spending holding up: with Percent of portfolio (and Guardrails cuts, or a Phased step-down) yearly spending can shrink far below what the household wants while every year still funds — set a Minimum yearly spending floor and read the spending-adequacy rate beside the success rate on the Historical and Monte Carlo tabs. And income starting before retirement is not saved up first: extra income counts only once retired, so a benefit already being collected while still working is not banked here — the Roth view&rsquo;s Work-years tab prices that path, with tax.
           </p>
         </ExplainerInfoTip>
       </h2>
@@ -4598,12 +4663,17 @@ export function RetirementCalc({
             <div>
               <label htmlFor="rc-extra-income" className={labelCls}>Extra income ($/yr, optional)</label>
               <input id="rc-extra-income" type="text" inputMode="decimal" className={inputCls} value={focusField === "extra-income" ? extraIncome : formatMoneyDisplay(extraIncome)} onFocus={() => setFocusField("extra-income")} onBlur={() => setFocusField(null)} onChange={(e) => setExtraIncome(e.target.value)} placeholder="Blank = none" />
-              <p className="mt-1 text-xs text-[var(--dim)]">Social Security or a pension, in today&rsquo;s dollars. Blank = none.</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">Social Security or a pension, in today&rsquo;s dollars. Blank = none. Income starting before retirement is not saved up in the years before retirement — it counts from the first retired year. Benefits already being collected while still working belong on the Roth view&rsquo;s Work-years tab, which prices them with tax.</p>
             </div>
             <div>
               <label htmlFor="rc-extra-start" className={labelCls}>Extra income starts at age</label>
               <input id="rc-extra-start" type="text" inputMode="numeric" className={inputCls} value={extraStartAge} onChange={(e) => setExtraStartAge(e.target.value)} placeholder="e.g. 67" />
               <p className="mt-1 text-xs text-[var(--dim)]">Defaults to 67 (Social Security). Blank = starts at your retirement age.</p>
+            </div>
+            <div>
+              <label htmlFor="rc-min-spending" className={labelCls}>Minimum yearly spending ($/yr, optional)</label>
+              <input id="rc-min-spending" type="text" inputMode="decimal" className={inputCls} value={focusField === "min-spending" ? minimumAnnualSpending : formatMoneyDisplay(minimumAnnualSpending)} onFocus={() => setFocusField("min-spending")} onBlur={() => setFocusField(null)} onChange={(e) => setMinimumAnnualSpending(e.target.value)} placeholder="Blank = no floor" />
+              <p className="mt-1 text-xs text-[var(--dim)]">The yearly spending floor the Historical and Monte Carlo tabs check: the share of runs where every retired year&rsquo;s gross spending stayed at or above this level. Blank = no check. A high funding-success rate alone does not prove spending held this level — read the two rates together.</p>
             </div>
           </div>
         </div>
@@ -4792,6 +4862,15 @@ export function RetirementCalc({
                 <p className="tnum display text-base font-semibold">{fmt(projection.finalYearSpending)}</p>
               </div>
             )}
+            {inputs.minimumAnnualSpendingCents != null && projection.lowestRetiredGross != null && (
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Spending floor ({fmt(inputs.minimumAnnualSpendingCents)}/yr)</p>
+                <p className="tnum display text-base font-semibold">
+                  {projection.floorMet ? "Met every year" : `Not met — lowest ${fmt(projection.lowestRetiredGross)}/yr`}
+                </p>
+                <p className="text-xs text-[var(--dim)]">On this one steady-return path only — the share of runs that met it is on the Historical and Monte Carlo tabs.</p>
+              </div>
+            )}
           </div>
           {inputs.strategy === "percent" && (
             <PercentTailWarning
@@ -4854,6 +4933,13 @@ export function RetirementCalc({
                 <p className="mt-1 text-xs font-medium text-[var(--dim)]">{histSuccessDeltaText}</p>
               )}
             </div>
+            {historical.spendingAdequacySuccessRate != null && (
+              <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+                <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Spending adequacy</p>
+                <p className="tnum display mt-1.5 text-xl font-semibold">{historical.spendingAdequacySuccessRate.toFixed(1)}%</p>
+                <p className="mt-1 text-xs text-[var(--dim)]">Share of runs where every retired year&rsquo;s gross spending stayed at or above {fmt(historical.minimumAnnualSpendingCents ?? 0)}/yr — funding success is not the same question; read the two rates together.</p>
+              </div>
+            )}
             <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Median ending balance</p>
               <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(historical.medianEnding)}</p>
@@ -4918,6 +5004,9 @@ export function RetirementCalc({
           </Explainer>
           <ul className="sr-only">
             <li>{`Historical: success ${historical.neverOutSuccessRate.toFixed(1)} percent over ${historical.count} start years, median ending ${fmt(historical.medianEnding)}, worst ending ${fmt(historical.worstEnding)} starting ${historical.worstStartYear}`}</li>
+            {historical.spendingAdequacySuccessRate != null && (
+              <li>{`Historical: spending adequacy ${historical.spendingAdequacySuccessRate.toFixed(1)} percent at a ${fmt(historical.minimumAnnualSpendingCents ?? 0)} per year floor`}</li>
+            )}
             {inputs.strategy === "percent" && historical.medianFinalYearSpending != null && (
               <li>{`Historical: median final-year spending ${fmt(historical.medianFinalYearSpending)}`}</li>
             )}
@@ -5058,6 +5147,13 @@ export function RetirementCalc({
                   <p className="mt-1 text-xs font-medium text-[var(--dim)]">{mcSuccessDeltaText}</p>
                 )}
               </div>
+              {monteCarlo.spendingAdequacySuccessRate != null && (
+                <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+                  <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Spending adequacy</p>
+                  <p className="tnum display mt-1.5 text-xl font-semibold">{monteCarlo.spendingAdequacySuccessRate.toFixed(1)}%</p>
+                  <p className="mt-1 text-xs text-[var(--dim)]">Share of runs where every retired year&rsquo;s gross spending stayed at or above {fmt(monteCarlo.minimumAnnualSpendingCents ?? 0)}/yr — funding success is not the same question; read the two rates together.</p>
+                </div>
+              )}
               <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
                 <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">10th percentile ending</p>
                 <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(monteCarlo.p10)}</p>
@@ -5130,6 +5226,9 @@ export function RetirementCalc({
           </Explainer>
           <ul className="sr-only">
             <li>{`Monte Carlo: success ${monteCarlo.neverOutSuccessRate.toFixed(1)} percent, ending percentiles 10th ${fmt(monteCarlo.p10)}, median ${fmt(monteCarlo.p50)}, 90th ${fmt(monteCarlo.p90)}`}</li>
+            {monteCarlo.spendingAdequacySuccessRate != null && (
+              <li>{`Monte Carlo: spending adequacy ${monteCarlo.spendingAdequacySuccessRate.toFixed(1)} percent at a ${fmt(monteCarlo.minimumAnnualSpendingCents ?? 0)} per year floor`}</li>
+            )}
             {inputs.strategy === "percent" && monteCarlo.medianFinalYearSpending != null && (
               <li>{`Monte Carlo: median final-year spending ${fmt(monteCarlo.medianFinalYearSpending)}`}</li>
             )}
@@ -5265,6 +5364,11 @@ export function RetirementCalc({
                   <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(solver.medianEnding)}</p>
                 </div>
               </div>
+              {inputs.minimumAnnualSpendingCents != null && (
+                <p className="mt-3 text-xs text-[var(--dim)]">
+                  The spending floor does not change this answer — the solver scores funding success only and reports no adequacy rate, so this maximum may still spend below the floor in some years.
+                </p>
+              )}
               <ul className="sr-only">
                 <li>{`Max Spending: ${fmt(solver.maxSpendingCents)} per year at ${solver.successRate.toFixed(1)} percent success, median ending ${fmt(solver.medianEnding)}`}</li>
               </ul>

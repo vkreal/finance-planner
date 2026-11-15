@@ -226,8 +226,8 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 
 | Tool | Required extra | Optional that matters most | Returns |
 | --- | --- | --- | --- |
-| `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding` |
-| `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `chart` (dollars), `deterministicEndingBalance` |
+| `retirement_calculate` | — (the six) | `retirementAge`, `endAge`, `spouseAge`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `stocksPct`, `expectedRealReturnPct`, `strategy`, `minimumAnnualSpending` ($/yr floor — adds `historicalSpendingAdequacyRate`, read beside `historicalNeverOutRate`, never instead of it). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and `taxYear` do not change this simulation — it prices no tax. `mcRuns`, `mcSeed` and `volatilityPct` do not change it either — there is no Monte Carlo leg. | `neverRunsOut`, `endingBalance`, year-by-year balances/withdrawals, `historicalNeverOutRate`, `historicalMedianEnding`, `historicalSpendingAdequacyRate` (null without a floor), `minimumAnnualSpending` |
+| `retirement_monte_carlo` | — | Same as calculate, plus `volatilityPct`, `mcRuns` (10–5000, default 1000), `mcSeed` (default 12345; set it to reproduce a run exactly) | `successRate` (0–1), `endingP10`/`endingP50`/`endingP90`, spending stats, `spendingAdequacyRate` (null without `minimumAnnualSpending`; read beside `successRate` — a high funding rate is not proof spending held the floor), `minimumAnnualSpending`, `chart` (dollars), `deterministicEndingBalance` |
 | `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending` |
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
@@ -773,6 +773,38 @@ null saved return — a pre-existing app inconsistency, out of
 scope for this branch. (The `RetirementCalc.tsx:2488` comment's
 claim that a save + reload produces the blend is stale: the
 reload path substitutes 5 via the view's sourced memo.)
+
+(xiii) **Funding success is not spending adequacy (Engine Review
+1, E1-S1).** The Monte Carlo and calculate success rates count
+runs where every year's withdrawal was funded. Under the percent,
+guardrails, or phased strategies yearly spending can shrink far
+below the household's desired level while every year still funds
+— on the sample household, a percent plan reads 100% funding
+success beside 6.6% spending adequacy at a $150,000/yr floor
+(historical) and 4.9% (Monte Carlo). Pass
+`minimumAnnualSpending` (dollars per year) to also get the
+adequacy rate (`historicalSpendingAdequacyRate` on
+`retirement_calculate`, `spendingAdequacyRate` on
+`retirement_monte_carlo`) — the share of runs where every retired
+year's GROSS spending stayed at or above that floor — and read
+the two rates together; a high funding-success rate is not proof
+the household can maintain its desired spending. Adequacy is
+measured on gross spending, so for the constant strategy, whose
+gross never varies, a floor at or below yearly spending reads
+adequacy 100% even in runs where withdrawals went unfunded.
+
+(xiv) **Pre-retirement income is not accumulated (Engine Review
+1, E1-S2 — intentional limitation, retained).** The simulation
+prices no pre-retirement spending, salary, or tax, so a Social
+Security benefit (or other fixed income) starting before
+retirement is not banked in the pre-retirement years — it counts
+only once retired, and a stream starting at retirement prices
+identically to the same stream starting before it. Benefits
+already being collected while still working belong to
+`retirement_work_years`, which deposits the benefit, prices §86
+tax on it, and lands the cash surplus in Taxable. The simulation
+is tax-free and single-portfolio throughout: it prices no income
+tax, no IRMAA, and no separate account buckets.
 
 ## Source layout
 

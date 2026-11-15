@@ -98,6 +98,18 @@ export const RetirementQuestionInputs = z.strictObject({
   stocksPct: percent(0, 100).optional(),
   /** Spending strategy. Default (in normalize): "constant". */
   strategy: z.enum(["constant", "guardrails", "phased", "percent"]).optional(),
+  /** Minimum annual spending floor for the spending-adequacy
+   *  rate, $/yr (Engine Review 1, E1-S1). Optional: omitted →
+   *  no floor, and the adequacy rate is null. When set, the
+   *  Monte Carlo and calculate results report the adequacy rate
+   *  (`spendingAdequacyRate` on monte_carlo,
+   *  `historicalSpendingAdequacyRate` on calculate) — the share
+   *  of runs in which EVERY retired year's GROSS spending met or
+   *  beat the floor — beside the funding-success rate. The two
+   *  rates answer different questions (see the adequacy text in
+   *  apiContractCore.ts); a high funding rate is not proof
+   *  spending held the floor. */
+  minimumAnnualSpending: dollars.optional(),
 
   // --- Social Security. ---
   /** Primary annual Social Security benefit at claiming, dollars.
