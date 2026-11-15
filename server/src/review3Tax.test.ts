@@ -29,6 +29,10 @@ import {
   pricePlaygroundYear,
   type PlaygroundYearInputs,
 } from "./rothOptimizer";
+import {
+  computeDecemberProjection,
+  defaultDecemberState,
+} from "./decemberCore";
 import { priceOneWorkYear } from "./workYears";
 import { samplePlanInputs } from "./sampleHousehold";
 
@@ -712,6 +716,46 @@ describe("review3 tax identity and cross-engine parity (§5)", () => {
   });
 });
 
+describe("review3 December cases carry provenance (SHOULD-1 fix)", () => {
+  test("December 2027 likely case prices on the 2026 row carried forward", () => {
+    // The December console's headline year is 2027: no 2027
+    // law row is adopted (the CMS half is unpublished), so
+    // the case prices on the 2026 row carried forward — and
+    // the case record names that substitution beside its
+    // figures, like every other priced year. The state is the
+    // December fixtures' base shape (MFJ, household of 2,
+    // $20,000 benchmark, $12,000 APTC taken, $50,000 of
+    // other ordinary income already posted).
+    const state = {
+      ...defaultDecemberState(2027),
+      agePrimary: 60,
+      ageSpouse: 58,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 20000,
+      aptcTaken: 12000,
+      ytdOtherOrdinary: 50000,
+    };
+    const proj = computeDecemberProjection(state);
+    expect(proj.priced).toBe(true);
+    const likely = proj.cases[1]!;
+    expect(likely.lawProvenance.lawYear).toBe(2026);
+    expect(likely.lawProvenance.status).toBe("carried-forward");
+    expect(likely.lawProvenance.published).toBe(false);
+    expect(likely.lawProvenance.isProjection).toBe(true);
+    expect(likely.lawProvenance.note).toContain("2026 row carried forward");
+    // No residence and no rate entered: the flat-rate path
+    // at 0%, labeled an estimate like every priced year.
+    expect(likely.stateTaxProvenance.kind).toBe("flat-rate-estimate");
+    expect(likely.stateTaxProvenance.ratePct).toBe(0);
+    // The other two cases price the same year, so they
+    // carry the same row.
+    for (const c of proj.cases) {
+      expect(c.lawProvenance.lawYear).toBe(2026);
+      expect(c.lawProvenance.status).toBe("carried-forward");
+    }
+  });
+});
+
 describe("review3 inflation is not applied twice (§E3-S1.6)", () => {
   test("NIIT threshold deflates once in a 2030 projection", () => {
     // 2030 at 2.5% inflation, MFJ, AGI $300,000
@@ -720,7 +764,7 @@ describe("review3 inflation is not applied twice (§E3-S1.6)", () => {
     // prices at $226,487.66 and the NIIT is 3.8% ×
     // min($100,000, $300,000 − $226,487.66) = 3.8% ×
     // $73,512.34 = $2,793.47. Deflating TWICE would price
-    // the threshold at $205,187.65 and the NIIT at $3,602.87
+    // the threshold at $205,186.64 and the NIIT at $3,602.91
     // — the pinned figure rules that out.
     const p = priceYear(base({
       calendarYear: 2030,
@@ -738,7 +782,7 @@ describe("review3 inflation is not applied twice (§E3-S1.6)", () => {
     // the second: taxable = min(85% × $30,000, 50% ×
     // $8,153.56 + 85% × $4,197.68) = min($25,500, $4,076.78
     // + $3,568.03) = $7,644.80. Twice-deflated thresholds
-    // would price $9,723.77; undeflated, $5,350.
+    // would price $9,723.78; undeflated, $5,350.
     const p = priceYear(base({
       calendarYear: 2030,
       filingStatus: "single",

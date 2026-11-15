@@ -4,7 +4,12 @@ import {
   solvePlaygroundAcaCliffFill,
   type PlaygroundYearInputs,
 } from "./rothOptimizer";
-import type { EducationStudent, FilingStatus } from "./taxEngine";
+import type {
+  EducationStudent,
+  FilingStatus,
+  StateTaxProvenance,
+} from "./taxEngine";
+import type { LawProvenance } from "./taxLaw";
 import {
   decideRothBlobWrite,
   parseRothBlobRevision,
@@ -2667,6 +2672,18 @@ export type DecemberCaseResult = {
   totalIncomeAtHeadline: number;
   taxableIncomeAtHeadline: number;
   stateTaxAtHeadline: number;
+  // Law + state-tax provenance (Engine Review 3 fix,
+  // pass-1 SHOULD-1): the law row this case's headline
+  // year actually priced under, and how its state tax was
+  // priced — copied from the priced year itself
+  // (pricePlaygroundYear's lawProvenance /
+  // stateTaxProvenance), so a December case names its row
+  // and its state-tax basis beside its figures, like every
+  // other priced year. A 2027 case prices on the 2026 row
+  // carried forward and says so. Pure metadata: no priced
+  // figure moves.
+  lawProvenance: LawProvenance;
+  stateTaxProvenance: StateTaxProvenance;
   // The filing settlement at the headline draw, in core so
   // no client ever does this arithmetic: total tax, less
   // the part of the final credit not already advanced
@@ -3207,6 +3224,12 @@ export function computeDecemberProjection(
       totalIncomeAtHeadline: atHeadline.agi,
       taxableIncomeAtHeadline: atHeadline.taxableIncome,
       stateTaxAtHeadline: atHeadline.stateTax,
+      // Law + state-tax provenance (Review 3 fix,
+      // SHOULD-1): the case's own headline year, as the
+      // pricer priced it — carried forward when the year
+      // has no published row (2027 on the 2026 row).
+      lawProvenance: atHeadline.lawProvenance,
+      stateTaxProvenance: atHeadline.stateTaxProvenance,
       netSettleAtHeadline,
       netSettleNote,
       cashLeftAtHeadline,

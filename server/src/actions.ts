@@ -5295,6 +5295,13 @@ const decemberCaseOut = z.object({
   totalIncomeAtHeadline: z.number(),
   taxableIncomeAtHeadline: z.number(),
   stateTaxAtHeadline: z.number(),
+  // Law + state-tax provenance (Engine Review 3 fix,
+  // pass-1 SHOULD-1): the case's own headline year, as
+  // the pricer priced it — the shared lawProvenanceOut /
+  // stateTaxProvenanceOut shapes, additive (contract
+  // stays 163, same logic as the other additive fields).
+  lawProvenance: lawProvenanceOut,
+  stateTaxProvenance: stateTaxProvenanceOut,
   netSettleAtHeadline: z.number().nullable(),
   netSettleNote: z.string().nullable(),
   // Cash left after tax at the headline draw (contract
