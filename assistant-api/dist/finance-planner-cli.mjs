@@ -15313,6 +15313,8 @@ function valueAtPath(raw, path) {
   for (const seg of path) {
     if (cur === null || typeof cur !== "object")
       return;
+    if (typeof seg === "symbol")
+      return;
     cur = cur[seg];
   }
   return cur;
@@ -17538,7 +17540,7 @@ var ASSUMPTIONS_SUMMARY = [
 var QUICK_START = {
   local: "Local (zero-config): run `bun src/server.ts` from the assistant-api directory — it listens on http://127.0.0.1:8080 with no token needed on localhost. Then POST a JSON-RPC request to http://127.0.0.1:8080/mcp, or call retirement_describe_capabilities first to see all tools.",
   remote: "Remote: from the repo root run `assistant-api/deploy.sh` with ASSISTANT_API_TOKEN set — it builds the Docker image and runs it on 0.0.0.0:8080. Then POST to https://<host>/mcp with header `Authorization: Bearer <token>`.",
-  standalone: "Standalone (no server, no install): run `node finance-planner-cli.mjs <tool> input.json` with Node.js 20+ — a single self-contained file, no MCP connection or hosting needed. Get it from the GitHub Releases page or build it with `bun run build:standalone`; see assistant-api/STANDALONE.md and assistant-api/AI_USAGE.md."
+  standalone: "Standalone (no server, no install): run `node finance-planner-cli.mjs <tool> input.json` with Node.js 20+ — a single self-contained file, no MCP connection or hosting needed. No release has been published yet — until the first release, use the committed copy at `assistant-api/dist/finance-planner-cli.mjs` (with its `.sha256` checksum) or build it with `cd assistant-api && bun run build:standalone`; see assistant-api/STANDALONE.md and assistant-api/AI_USAGE.md."
 };
 function describeCapabilities() {
   const envelope = {

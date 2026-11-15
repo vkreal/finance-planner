@@ -370,10 +370,13 @@ function receivedName(value: unknown): string {
 }
 
 /** Read the caller's value at a zod issue path. */
-function valueAtPath(raw: unknown, path: (string | number)[]): unknown {
+function valueAtPath(raw: unknown, path: readonly PropertyKey[]): unknown {
   let cur: unknown = raw;
   for (const seg of path) {
     if (cur === null || typeof cur !== "object") return undefined;
+    // Symbol segments cannot occur in this schema's paths (only
+    // strings/numbers); a symbol means "not found", not a crash.
+    if (typeof seg === "symbol") return undefined;
     cur = (cur as Record<string | number, unknown>)[seg];
   }
   return cur;
@@ -396,7 +399,7 @@ function detailMessage(
   issue: {
     code: string;
     message: string;
-    path: (string | number)[];
+    path: readonly PropertyKey[];
     expected?: unknown;
     origin?: unknown;
     minimum?: unknown;

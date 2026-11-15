@@ -28,12 +28,12 @@ A single-file Node.js calculator — the same 8 tools, the same
 engines, no server, no install, no Bun at runtime, no network.
 Needs only Node.js 20+.
 
-- Get it: the GitHub Releases page (`finance-planner-cli.mjs` +
-  `finance-planner-cli.mjs.sha256` artifacts), or the committed copy
-  at `assistant-api/dist/finance-planner-cli.mjs`, or build it with
-  `cd assistant-api && bun run build:standalone`.
-- Verify it: `sha256sum -c finance-planner-cli.mjs.sha256`.
-- First command: `node finance-planner-cli.mjs retirement_describe_capabilities`
+- Get it: the committed copy at `assistant-api/dist/finance-planner-cli.mjs`
+  (with `finance-planner-cli.mjs.sha256` next to it), or build it with
+  `cd assistant-api && bun run build:standalone`. No release has been
+  published yet.
+- Verify it: `cd assistant-api/dist && sha256sum -c finance-planner-cli.mjs.sha256`.
+- First command: `cd assistant-api/dist && node finance-planner-cli.mjs retirement_describe_capabilities`
   (no input needed — it returns the guide to all 8 tools).
 - Then: `node finance-planner-cli.mjs retirement_calculate input.json`.
 - AI guide: `assistant-api/AI_USAGE.md` (read this first — the

@@ -919,7 +919,7 @@ const QUICK_START: { local: string; remote: string; standalone: string } = {
   remote:
     "Remote: from the repo root run `assistant-api/deploy.sh` with ASSISTANT_API_TOKEN set — it builds the Docker image and runs it on 0.0.0.0:8080. Then POST to https://<host>/mcp with header `Authorization: Bearer <token>`.",
   standalone:
-    "Standalone (no server, no install): run `node finance-planner-cli.mjs <tool> input.json` with Node.js 20+ — a single self-contained file, no MCP connection or hosting needed. Get it from the GitHub Releases page or build it with `bun run build:standalone`; see assistant-api/STANDALONE.md and assistant-api/AI_USAGE.md.",
+    "Standalone (no server, no install): run `node finance-planner-cli.mjs <tool> input.json` with Node.js 20+ — a single self-contained file, no MCP connection or hosting needed. No release has been published yet — until the first release, use the committed copy at `assistant-api/dist/finance-planner-cli.mjs` (with its `.sha256` checksum) or build it with `cd assistant-api && bun run build:standalone`; see assistant-api/STANDALONE.md and assistant-api/AI_USAGE.md.",
 };
 
 function describeCapabilities(): AdapterResult<unknown> {
