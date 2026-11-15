@@ -142,6 +142,11 @@ import {
   type Provenance,
 } from "./types";
 import { publicEffectiveInputs, type NormalizedScenario } from "./normalize";
+import {
+  ignoredInputsForTool,
+  ignoredInputWarning,
+  type FinancialToolName,
+} from "./pricedInputs";
 
 // ---------------------------------------------------------------------------
 // Money + envelope helpers
@@ -208,6 +213,13 @@ function guard<T>(fn: () => AdapterResult<T>): AdapterResult<T> {
 /**
  * Shared envelope builder. Never mutates the scenario: assumptions and
  * warnings are copied with adapter additions appended.
+ *
+ * Review 8 S1: `tool` names the tool answering, so the envelope can
+ * report the caller-supplied fields this tool did not price
+ * (ignoredInputFields, computed from pricedInputs.ts). Each ignored
+ * entry also appears as a warnings[] entry naming the field, the
+ * tool, and the tool that does price it. Required essentials are
+ * never reported as ignored.
  */
 function respond<T>(
   scenario: NormalizedScenario,
@@ -217,7 +229,9 @@ function respond<T>(
   // D10: the first plan year priced; only the single-year tool
   // passes the year it actually priced (scenario.taxYear).
   taxLawYear: number | null = null,
+  tool: FinancialToolName,
 ): AdapterResult<T> {
+  const ignored = ignoredInputsForTool(tool, scenario);
   const response: AdapterResponse<T> = {
     ok: true,
     source: "finance-planner-engine",
@@ -226,7 +240,12 @@ function respond<T>(
     taxLawYear: taxLawYear ?? scenario.startYear,
     effectiveInputs: publicEffectiveInputs(scenario),
     assumptions: [...scenario.assumptions, ...extraAssumptions],
-    warnings: [...scenario.warnings, ...warnings],
+    warnings: [
+      ...scenario.warnings,
+      ...warnings,
+      ...ignored.map(ignoredInputWarning),
+    ],
+    ignoredInputFields: ignored,
     results,
   };
   return response;
@@ -868,6 +887,9 @@ export function calculateRetirement(
           hist === null ? null : centsToDollars(hist.medianEnding),
       },
       warnings,
+      [],
+      null,
+      "retirement_calculate",
     );
   });
 }
@@ -965,6 +987,9 @@ export function runRetirementMonteCarlo(
         deterministicEndingBalance: detEnding,
       },
       warnings,
+      [],
+      null,
+      "retirement_monte_carlo",
     );
   });
 }
@@ -1052,6 +1077,8 @@ export function calculateMaxSpending(
           "The max-spending solver always runs the engine's fixed 1,000 Monte Carlo simulations; a supplied mcRuns is not used for this tool.",
         ),
       ],
+      null,
+      "retirement_max_spending",
     );
   });
 }
@@ -1103,6 +1130,8 @@ export function compareWithdrawalStrategies(
       },
       [HEALTH_PREMIUM_WARNING, YEARLY_TABLE_WARNING],
       taxAwareAssumptions(scenario),
+      null,
+      "retirement_compare_strategies",
     );
   });
 }
@@ -1164,6 +1193,8 @@ export function compareRothConversions(
       },
       [HEALTH_PREMIUM_WARNING, YEARLY_TABLE_WARNING],
       taxAwareAssumptions(scenario),
+      null,
+      "retirement_roth_conversion",
     );
   });
 }
@@ -1330,6 +1361,8 @@ export function compareRetirementAges(
         ...workYearsWarnings,
       ],
       taxAwareAssumptions(scenario),
+      null,
+      "retirement_work_years",
     );
   });
 }
@@ -1637,6 +1670,7 @@ export function calculateSingleYearTax(
       warnings,
       extraAssumptions,
       scenario.taxYear,
+      "retirement_tax_year",
     );
   });
 }

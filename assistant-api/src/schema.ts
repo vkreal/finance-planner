@@ -159,11 +159,24 @@ export const RetirementQuestionInputs = z.strictObject({
     .optional(),
 
   // --- Single-year tax inputs (dollars, default 0 each). ---
+  // ordinaryDividendsAnnual is the TOTAL ordinary dividends
+  // (1099-DIV Box 1a), including the qualified portion;
+  // qualifiedDividendsAnnual is the qualified portion (Box 1b).
+  // Review 8 S2: qualified must not exceed ordinary — normalize.ts
+  // rejects qualified > ordinary as invalid_input naming both
+  // fields (a breaking validation change; adapter contract 164),
+  // instead of the engine's silent clamp. Both $0 valid; omitted
+  // qualified with ordinary present valid; omitted both valid;
+  // omitted ordinary counts as $0, so qualified > $0 with ordinary
+  // omitted is rejected.
   /** Taxable interest for the single-year tax calculation. */
   interestAnnual: dollars.optional(),
-  /** Ordinary (non-qualified) dividends for the single-year tax calc. */
+  /** Total ordinary dividends for the single-year tax calculation
+   *  (1099-DIV Box 1a), including the qualified portion. */
   ordinaryDividendsAnnual: dollars.optional(),
-  /** Qualified dividends for the single-year tax calculation. */
+  /** Qualified dividends for the single-year tax calculation
+   *  (1099-DIV Box 1b) — the qualified portion of
+   *  ordinaryDividendsAnnual. Must not exceed it. */
   qualifiedDividendsAnnual: dollars.optional(),
   /** Roth conversion amount for the single-year tax calculation. */
   conversionAnnual: dollars.optional(),

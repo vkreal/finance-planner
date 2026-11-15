@@ -43,6 +43,7 @@
 //   100% basis (blank-basis path — no gains on draws).
 
 import { RetirementQuestionInputs } from "./schema.js";
+import { FIELD_ORDER } from "./pricedInputs.js";
 import {
   EXPECTED_RETURN_DEFAULT,
   GUARDRAILS_ADJUSTMENT_DEFAULT,
@@ -130,6 +131,14 @@ export interface NormalizedScenario {
   mcSeed: number;
   mcRuns: number;
   compareAges: number[];
+  /** Caller-supplied input keys, in FIELD_ORDER (Review 8 S1).
+   *  Zod omits absent optional keys from parsed.data, so this is
+   *  exactly "caller supplied it" — not "omitted, defaulted".
+   *  The adapter reads it to tell a supplied-but-unpriced field
+   *  (reported in ignoredInputFields) from an omitted one (never
+   *  reported). Required essentials are in here too; the adapter
+   *  never reports those as ignored. */
+  suppliedFields: string[];
   assumptions: Assumption[];
   warnings: string[];
 }
@@ -396,6 +405,38 @@ export function normalizeInputs(
         ),
       };
     }
+  }
+  // R8-S2: qualified dividends are the qualified PORTION (1099-DIV
+  // Box 1b) of total ordinary dividends (Box 1a), so qualified can
+  // never exceed ordinary. Reject instead of silently clamping
+  // (the engine's old behaviour): a clamp would price a different
+  // income stack than the caller stated, with no signal. This is a
+  // breaking validation change — the adapter contract version moved
+  // 163 → 164 for it (see types.ts). Zero/omitted semantics:
+  // both $0 valid; omitted qualified with ordinary present valid;
+  // omitted both valid; omitted ordinary counts as $0 ordinary,
+  // so a qualified amount > $0 with ordinary omitted is
+  // inconsistent and rejected (the caller stated qualified income
+  // with no ordinary total for it to be part of).
+  const ordinaryDividendsAnnual = input.ordinaryDividendsAnnual ?? 0;
+  const qualifiedDividendsAnnual = input.qualifiedDividendsAnnual ?? 0;
+  if (qualifiedDividendsAnnual > ordinaryDividendsAnnual) {
+    return {
+      ok: false,
+      error: invalidInputError(
+        "qualifiedDividendsAnnual must not exceed ordinaryDividendsAnnual: qualified dividends are the qualified portion (1099-DIV Box 1b) of total ordinary dividends (Box 1a).",
+        [
+          {
+            field: "qualifiedDividendsAnnual",
+            message: `must not exceed ordinaryDividendsAnnual (${ordinaryDividendsAnnual})`,
+          },
+          {
+            field: "ordinaryDividendsAnnual",
+            message: `is the total ordinary dividends (Box 1a) and must be at least qualifiedDividendsAnnual (${qualifiedDividendsAnnual})`,
+          },
+        ],
+      ),
+    };
   }
 
   // ---- Step 4: resolve defaults and build the scenario. ----
@@ -1122,6 +1163,9 @@ export function normalizeInputs(
     record("compareAges", compareAges, "user", "Provided by caller.");
   }
 
+  // Caller-supplied keys, in FIELD_ORDER (see the interface note).
+  const suppliedFields = FIELD_ORDER.filter((f) => f in input);
+
   const scenario: NormalizedScenario = {
     portfolioCents,
     annualSpendingCents,
@@ -1166,6 +1210,7 @@ export function normalizeInputs(
     mcSeed,
     mcRuns,
     compareAges,
+    suppliedFields,
     assumptions,
     warnings,
   };

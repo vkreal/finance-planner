@@ -232,7 +232,7 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — all three orders are always compared. | `scenarios` (taxable-first / pre-tax-first / roth-first) with lifetime tax, ACA credit, IRMAA, ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1) with federal/state tax, ACA credit, IRMAA, conversions total, terminal tax, ending wealth; winners + deltas; `yearly` table |
 | `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
-| `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual`, `qualifiedDividendsAnnual`, `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`. `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, cash left vs spending, sale gain/loss, RMD |
+| `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`. `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, cash left vs spending, sale gain/loss, RMD |
 | `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (8 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
 
 ## Example calls + responses
@@ -253,7 +253,7 @@ example above, retiring now at 54:
       "ok": true,
       "source": "finance-planner-engine",
       "adapterVersion": "assistant-api 0.1.0",
-      "apiContractVersion": 163,
+      "apiContractVersion": 164,
       "taxLawYear": 2026,
       "effectiveInputs": {
         "pretax": 1250000, "taxable": 2100000, "roth": 375000, "hsa": 62000,
@@ -297,10 +297,10 @@ example above, retiring now at 54:
 
 Every successful response has the same envelope: `ok`, `source`
 (`"finance-planner-engine"`), `adapterVersion`
-(`"assistant-api 0.1.0"`), `apiContractVersion` (`163`),
+(`"assistant-api 0.1.0"`), `apiContractVersion` (`164` — moved from 163 in Review 8: qualified dividends above ordinary dividends are now an `invalid_input` rejection instead of a silent engine clamp),
 `taxLawYear`, `effectiveInputs` (the resolved inputs, dollars),
 `assumptions` (one entry per field, with provenance), `results`,
-`warnings`. `taxLawYear` is the first plan year priced — the
+`warnings`, `ignoredInputFields` (user-supplied fields this tool did not price — each entry names the field, this tool, the tools that do price it, and why; empty when nothing was ignored; each entry also appears as a `warnings[]` entry). `taxLawYear` is the first plan year priced — the
 single-year tool reports the year it priced instead, and the
 compare tools price each march year under that year's tables
 starting from this year (a caller-supplied `taxYear` does not move
@@ -373,7 +373,7 @@ Missing essentials return a structured error, never a guess:
 
 ```json
 { "ok": false, "source": "finance-planner-engine",
-  "adapterVersion": "assistant-api 0.1.0", "apiContractVersion": 163,
+  "adapterVersion": "assistant-api 0.1.0", "apiContractVersion": 164,
   "error": { "code": "missing_input",
     "message": "Missing required input: spouseAge.",
     "missing": ["spouseAge"],

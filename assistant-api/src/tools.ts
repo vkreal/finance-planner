@@ -41,6 +41,7 @@ import {
   type AdapterResult,
   type Assumption,
 } from "./types";
+import { PRICED_OPTIONAL } from "./pricedInputs";
 
 // Keep the inferred input type referenced so the tool surface stays tied to
 // the zod schema even though validation happens inside normalizeInputs.
@@ -240,11 +241,13 @@ export const BASE_INPUT_SCHEMA: Record<string, unknown> = {
     },
     ordinaryDividendsAnnual: {
       ...MONEY,
-      description: "Ordinary (non-qualified) dividends for the single-year tax calculation, in dollars.",
+      description:
+        "Total ordinary dividends for the single-year tax calculation, in dollars — the 1099-DIV Box 1a total, including the qualified portion.",
     },
     qualifiedDividendsAnnual: {
       ...MONEY,
-      description: "Qualified dividends for the single-year tax calculation, in dollars.",
+      description:
+        "Qualified dividends for the single-year tax calculation, in dollars — the qualified portion (1099-DIV Box 1b) of total ordinary dividends. Must not exceed ordinaryDividendsAnnual; a call with qualified above ordinary is rejected as invalid input naming both fields.",
     },
     conversionAnnual: {
       ...MONEY,
@@ -354,95 +357,37 @@ const REQUIRED_INPUTS_GLOBAL: string[] = [
   "currentAge",
 ];
 
-// Optional fields each tool actually prices. The shared schema accepts
-// every field for every tool, but a field only changes the answer when
-// the tool's engine reads it: the simulation engines read no tax
-// inputs (SimInputs carries no filing status, basis, yield, ACA, or
-// state field), the tax-aware compare reads no strategy/volatility
+// Optional fields each tool actually prices. Review 8 S1: these are
+// NOT hardcoded here anymore — they are read from PRICED_OPTIONAL in
+// pricedInputs.ts, the single authoritative mapping (verified against
+// what each tool's engine reads). The shared schema accepts every
+// field for every tool, but a field only changes the answer when the
+// tool's engine reads it: the simulation engines read no tax inputs
+// (SimInputs carries no filing status, basis, yield, ACA, or state
+// field), the tax-aware compare reads no strategy/volatility
 // (RothSavedLike carries neither), and the single-year pricer reads
 // neither portfolio assumptions nor retirementAge/endAge
 // (PlaygroundYearInputs carries none of those). The guide lists the
 // priced subset per tool so an AI never sends a value expecting an
 // effect it cannot have; the tool descriptions say the same in prose.
+// A field outside a tool's priced list is still accepted, but the
+// response reports it in ignoredInputFields (and warnings) instead
+// of silently dropping it. The drift test
+// (tests/review8-drift.test.ts) fails if this guide, the JSON Schema,
+// or the mapping disagree about what a tool prices.
 // (Pass-3 S1: one shared list for every tool advertised inert inputs
 // as if they mattered — mcRuns on max-spending, tax inputs on the
 // sim-only tools, strategy/volatility on the compare/tax-year tools.)
-const SIM_OPTIONAL_INPUTS: string[] = [
-  "retirementAge",
-  "endAge",
-  "spouseAge",
-  "stocksPct",
-  "expectedRealReturnPct",
-  "volatilityPct",
-  "strategy",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge",
-];
-
-// Pass-5 S1: calculate has no Monte Carlo leg — simulateDetailed +
+// (Pass-5 S1: calculate has no Monte Carlo leg — simulateDetailed +
 // runHistorical + runNeverRunsOut never read volatility — so the
 // calculate guide lists SIM minus volatilityPct. MC and max-spending
-// keep the full SIM list (their Monte Carlo legs price it).
-const CALCULATE_OPTIONAL_INPUTS: string[] = SIM_OPTIONAL_INPUTS.filter(
-  (f) => f !== "volatilityPct",
-);
-
-const COMPARE_OPTIONAL_INPUTS: string[] = [
-  "retirementAge",
-  "endAge",
-  "spouseAge",
-  "filingStatus",
-  "householdSize",
-  "stocksPct",
-  "expectedRealReturnPct",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge",
-  "taxableBasisPct",
-  "taxableDividendYieldPct",
-  "taxableInterestYieldPct",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "stateRatePct",
-  "state",
-];
-
-const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
-  "spouseAge",
-  "filingStatus",
-  "householdSize",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "stateRatePct",
-  "state",
-  "taxYear",
-  "interestAnnual",
-  "ordinaryDividendsAnnual",
-  "qualifiedDividendsAnnual",
-  "conversionAnnual",
-  "spendingDrawAnnual",
-  "cashDrawAnnual",
-  "rothDrawAnnual",
-  "stockSoldAnnual",
-  "stockBasisAnnual",
-  "pretaxPriorYearEndAnnual",
-  "pretaxSpousePriorYearEndAnnual",
-  "rmdAlreadyReceivedAnnual",
-  "primarySoleBeneficiaryOfSpouse",
-];
+// keep the full SIM list (their Monte Carlo legs price it).)
+// NOTE: the per-tool sets below are the PRICED_OPTIONAL entries
+// verbatim (spread into fresh arrays so the guide never mutates the
+// mapping): calculate is the SIM list minus volatilityPct, monte
+// carlo is SIM plus mcRuns/mcSeed, max-spending is SIM plus mcSeed
+// (mcRuns is inert there — the solver always runs the engine's fixed
+// 1,000 simulations).
 
 const EXAMPLE_BASE: Record<string, unknown> = {
   pretax: 1250000,
@@ -578,7 +523,7 @@ export const TOOLS: McpToolDef[] = [
     description:
       `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` +
       `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
-      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
+      `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price, and the four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` +
       `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` +
       `Returns: the single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
@@ -645,7 +590,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks whether they can retire now, or when they can afford to retire.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: [...CALCULATE_OPTIONAL_INPUTS],
+    optional: [...PRICED_OPTIONAL.retirement_calculate],
     exampleCall: EXAMPLE_CALCULATE,
     resultSummary:
       "Whether the money lasts (neverRunsOut), the ending balance, and a year-by-year balance table, plus the historical cross-check of the same plan.",
@@ -655,7 +600,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: [...SIM_OPTIONAL_INPUTS, "mcRuns", "mcSeed"],
+    optional: [...PRICED_OPTIONAL.retirement_monte_carlo],
     exampleCall: EXAMPLE_MONTE_CARLO,
     resultSummary:
       "The success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations.",
@@ -665,7 +610,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: [...SIM_OPTIONAL_INPUTS, "mcSeed"],
+    optional: [...PRICED_OPTIONAL.retirement_max_spending],
     exampleCall: EXAMPLE_MAX_SPENDING,
     resultSummary:
       "The maximum sustainable monthly spending in dollars at 85% Monte Carlo success, with a historical cross-check of that spending level. (monthlySpending is still required as the starting point.) The solver always runs the engine's fixed 1,000 simulations — mcRuns is not used for this tool; results report runs: 1000.",
@@ -675,7 +620,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks which account to spend from first, or how the withdrawal order changes their taxes and outcome.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: COMPARE_OPTIONAL_INPUTS,
+    optional: [...PRICED_OPTIONAL.retirement_compare_strategies],
     exampleCall: EXAMPLE_COMPARE_STRATEGIES,
     resultSummary:
       "A tax-aware comparison of the three withdrawal orders (taxable-first, pretax-first, roth-first), with taxes, ACA credit and ending wealth for each. There is no strategy input — all three are always compared.",
@@ -685,7 +630,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks whether to convert pre-tax money to Roth, how much to convert, or whether conversions are worth the tax.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: COMPARE_OPTIONAL_INPUTS,
+    optional: [...PRICED_OPTIONAL.retirement_roth_conversion],
     exampleCall: EXAMPLE_ROTH,
     resultSummary:
       "A tax-aware comparison of four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — with federal tax, ACA credit, IRMAA and ending wealth for each.",
@@ -695,13 +640,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks whether working a few more years is worth it, or what changes if they retire later.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: [
-      ...COMPARE_OPTIONAL_INPUTS,
-      "salaryAnnual",
-      "employer401kAnnual",
-      "employerHsaAnnual",
-      "compareAges",
-    ],
+    optional: [...PRICED_OPTIONAL.retirement_work_years],
     exampleCall: EXAMPLE_WORK_YEARS,
     resultSummary:
       "A tax-aware comparison of retiring at each age in compareAges, with taxes and ending wealth for each age; when salaryAnnual is given, each age also prices the earned-income leg (work years, payroll tax, all-in tax, best strategy and claim ages).",
@@ -711,7 +650,7 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     whenToUse:
       "Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year.",
     required: REQUIRED_INPUTS_GLOBAL,
-    optional: TAX_YEAR_OPTIONAL_INPUTS,
+    optional: [...PRICED_OPTIONAL.retirement_tax_year],
     exampleCall: EXAMPLE_TAX_YEAR,
     resultSummary:
       "The single-year federal and state tax, ACA premium credit and IRMAA price for that one tax year, including any priced share sale (gain/loss, proceeds as cash in) and any priced RMD (from the prior-Dec-31 balances).",
@@ -732,7 +671,8 @@ const ASSUMPTIONS_SUMMARY: string[] = [
   "All money is dollars, ages are whole years, percents are numbers (5 = 5%).",
   "Every financial call carries its complete scenario; nothing is saved between calls.",
   "Missing optional fields fall back to documented defaults inside normalize: retirementAge defaults to your current age (retire now), endAge defaults to 95, Social Security defaults to none.",
-  "Each tool prices only the inputs its engine reads — the guide lists the priced optionals per tool, and a field outside that list is accepted but has no effect on that tool's answer (notably mcRuns for max-spending, which always solves at the engine's fixed 1,000 runs).",
+  "Each tool prices only the inputs its engine reads — the guide lists the priced optionals per tool, and a field outside that list is accepted but has no effect on that tool's answer (notably mcRuns for max-spending, which always solves at the engine's fixed 1,000 runs). Such a field is reported in the response's ignoredInputFields (and as a warnings[] entry naming the field, the tool, and the tool that does price it) instead of being silently dropped.",
+  "qualifiedDividendsAnnual is the qualified portion (1099-DIV Box 1b) of total ordinaryDividendsAnnual (Box 1a) and must not exceed it — a call with qualified above ordinary is rejected as invalid_input naming both fields (contract version 164).",
   "Pricing uses the latest published tax-law tables (the engine block names the year); earlier law years are available via taxYear.",
 ];
 
@@ -769,6 +709,9 @@ function describeCapabilities(): AdapterResult<unknown> {
       },
     },
     warnings: [],
+    // describe takes no financial inputs, so there is nothing a
+    // caller could have supplied that went unpriced.
+    ignoredInputFields: [],
   };
   return envelope;
 }
