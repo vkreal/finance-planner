@@ -9,6 +9,10 @@
 // Spot figures are pinned from the engine's own output on the
 // fictional household (see helpers.ts); they are checks that the
 // parity still reads as a check, never a second source of truth.
+// One test is the deliberate exception (NICE-5, at the end): a
+// hand-built expected-values test whose literals are derived by
+// hand from the published law table, with no direct-engine call
+// — so the suite does not depend solely on the mapping restatement.
 //
 // Fictional household throughout (never real figures): pretax
 // $1,250,000; taxable $2,100,000; Roth $375,000; HSA $62,000;
@@ -533,7 +537,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     );
   });
 
-  test("explicit primarySoleBeneficiaryOfSpouse: false is established as NOT the sole beneficiary, not 'not established'", () => {
+  test("primarySoleBeneficiaryOfSpouse assumption entry appears only when the fact is given (NICE-3)", () => {
     const base = {
       currentAge: 60,
       spouseAge: 75,
@@ -541,7 +545,8 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
       pretaxSpousePriorYearEndAnnual: 400000,
     };
     // Explicit false: a known fact, so the Uniform table applies
-    // as a known fact — never "not established".
+    // as a known fact — never "not established" — and the
+    // assumption entry carries it with user provenance.
     const wFalse = warningsFor({
       ...base,
       primarySoleBeneficiaryOfSpouse: false,
@@ -564,8 +569,30 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
       "The primary is not the spouse's sole beneficiary",
     );
     expect(extraFalse[0]?.note).not.toContain("not established");
-    // Absent (null): still "not established", with assumption
-    // provenance — only the explicit false is established.
+    // Explicit true: the same shape, the sole-beneficiary note.
+    const envTrue = envelopeWithParity({
+      ...base,
+      primarySoleBeneficiaryOfSpouse: true,
+    });
+    const extraTrue = envTrue.assumptions.filter(
+      (a) => a.field === "primarySoleBeneficiaryOfSpouse",
+    );
+    expect(extraTrue).toHaveLength(1);
+    expect(extraTrue[0]?.value).toBe(true);
+    expect(extraTrue[0]?.provenance).toBe("user");
+    expect(extraTrue[0]?.note).toContain(
+      "The primary is the spouse's sole beneficiary",
+    );
+    expect(extraTrue[0]?.note).not.toContain("not established");
+    expect(envTrue.warnings.join(" ")).toContain(
+      "The primary is the spouse's sole beneficiary",
+    );
+    // Absent (null): the WARNING still says "not established" —
+    // the caller is told why the spouse's RMD prices Uniform —
+    // but there is NO assumption entry at all: nothing was
+    // assumed, so nothing is recorded as an assumption. (The
+    // pre-NICE-3 "not established" assumption entry is gone by
+    // design, not a regression.)
     const envAbsent = envelopeWithParity(base);
     expect(envAbsent.warnings.join(" ")).toContain(
       "Whether the primary is the spouse's sole beneficiary was not established",
@@ -573,10 +600,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     const extraAbsent = envAbsent.assumptions.filter(
       (a) => a.field === "primarySoleBeneficiaryOfSpouse",
     );
-    expect(extraAbsent).toHaveLength(1);
-    expect(extraAbsent[0]?.value).toBeNull();
-    expect(extraAbsent[0]?.provenance).toBe("assumption");
-    expect(extraAbsent[0]?.note).toContain("not established");
+    expect(extraAbsent).toHaveLength(0);
   });
 
   test("RMD + Roth conversion: both priced as ordinary income, overlap warning fires", () => {
@@ -772,6 +796,225 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(env.warnings.join(" ")).toContain(
       "non-joint return — the engine ignores it",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §3b — 2025 law year (NICE-2): the new fields price under 2025 law.
+// ---------------------------------------------------------------------------
+
+describe("R6 2025 law year (NICE-2)", () => {
+  /** Adapter envelope for taxYear 2025 (expectEnvelope pins
+   *  taxLawYear 2026, so the 2025 call asserts ok:true directly
+   *  instead — the same pattern as parity.test.ts). Parity
+   *  against a direct pricePlaygroundYear call on the same
+   *  2025 inputs is asserted to the cent. */
+  function envelope2025(overrides: Record<string, unknown> = {}) {
+    const s = normalizedScenario({ taxYear: 2025, ...overrides });
+    const env = calculateSingleYearTax(s);
+    if (!env.ok) throw new Error(JSON.stringify(env.error));
+    expect(env.source).toBe("finance-planner-engine");
+    expect(env.taxLawYear).toBe(2025);
+    expect(env.results).toEqual(roundDeep(pricePlaygroundYear(directInputs(s))));
+    return env;
+  }
+
+  test("2025 stock sale: parity on the 2025 law table, envelope reports taxLawYear 2025", () => {
+    const env = envelope2025({
+      stockSoldAnnual: 50000,
+      stockBasisAnnual: 30000,
+      spendingDrawAnnual: 114000,
+    });
+    const res = env.results;
+    expect(res.stockGain).toBe(20000);
+    expect(res.ltcgNet).toBe(20000);
+    expect(res.saleAfterTax?.proceeds).toBe(50000);
+    expect(res.agi).toBe(134000);
+    // The same inputs price differently under 2026 law (different
+    // standard deduction and brackets), so the 2025 figures are the
+    // 2025 table's, not a relabeled 2026 price.
+    const y26 = pricedWithParity({
+      stockSoldAnnual: 50000,
+      stockBasisAnnual: 30000,
+      spendingDrawAnnual: 114000,
+    });
+    expect(res.federalTax).not.toBe(y26.federalTax);
+  });
+
+  test("2025 RMD: parity on the 2025 law table, divisor-derived figures", () => {
+    // In tax year 2025 the priced ages are one less than
+    // currentAge (agePrimary = currentAge + (taxYear − startYear),
+    // startYear 2026), so age 75 in 2025 needs currentAge 76.
+    const env = envelope2025({
+      currentAge: 76,
+      spouseAge: 74,
+      retirementAge: 76,
+      pretaxPriorYearEndAnnual: 600000,
+      pretaxSpousePriorYearEndAnnual: 400000,
+    });
+    const res = env.results;
+    // Divisors are the engine's Uniform table at the priced ages
+    // (75 → 24.6, 73 → 26.5); the law year moves the tax, not the
+    // RMD.
+    expect(res.rmdPrimary).toBe(24390.24);
+    expect(res.rmdSpouse).toBe(15094.34);
+    expect(res.rmdGross).toBe(39484.58);
+    expect(res.rmdDivisor).toBe(24.6);
+    expect(res.rmdTable).toBe("uniform");
+    expect(res.rmd).toBe(39484.58);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §3c — $100M bound (NICE-4): schema.ts DOLLAR_MAX pins per field.
+// ---------------------------------------------------------------------------
+
+describe("R6 $100M bound (NICE-4)", () => {
+  const DOLLAR_FIELDS = [
+    "stockSoldAnnual",
+    "stockBasisAnnual",
+    "pretaxPriorYearEndAnnual",
+    "pretaxSpousePriorYearEndAnnual",
+    "rmdAlreadyReceivedAnnual",
+  ] as const;
+
+  test("each new dollar field accepts $100,000,000 and rejects $100,000,001 naming the field", () => {
+    for (const field of DOLLAR_FIELDS) {
+      const over = normalizeInputs(
+        fictionalScenario({ [field]: 100_000_001 }),
+      );
+      expect(over.ok).toBe(false);
+      if (over.ok) throw new Error(`${field} over the cap should not normalize`);
+      expect(over.error.error.code).toBe("invalid_input");
+      expect(over.error.error.message).toContain(field);
+      // $100,000,000 itself is the cap and is accepted.
+      expect(
+        normalizeInputs(fictionalScenario({ [field]: 100_000_000 })).ok,
+      ).toBe(true);
+    }
+  });
+
+  test("the cap holds at the MCP dispatch layer (stockSoldAnnual)", () => {
+    const over = dispatchTool(
+      "retirement_tax_year",
+      fictionalScenario({
+        stockSoldAnnual: 100_000_001,
+        stockBasisAnnual: 0,
+      }),
+    );
+    expect(over.ok).toBe(false);
+    if (over.ok) throw new Error("over-cap sale should not dispatch");
+    expect(over.error.code).toBe("invalid_input");
+    expect(over.error.message).toContain("stockSoldAnnual");
+    const at = dispatchTool(
+      "retirement_tax_year",
+      fictionalScenario({
+        stockSoldAnnual: 100_000_000,
+        stockBasisAnnual: 0,
+      }),
+    );
+    expect(at.ok).toBe(true);
+    if (!at.ok) throw new Error(JSON.stringify(at.error));
+    expect((at.results as PlaygroundYearResult).stockGain).toBe(100_000_000);
+  });
+
+  test("primarySoleBeneficiaryOfSpouse is boolean, not dollar-capped", () => {
+    // true/false normalize; a dollar figure — even exactly at the
+    // $100M cap — is not a boolean and is rejected.
+    expect(
+      normalizeInputs(
+        fictionalScenario({ primarySoleBeneficiaryOfSpouse: true }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      normalizeInputs(
+        fictionalScenario({ primarySoleBeneficiaryOfSpouse: false }),
+      ).ok,
+    ).toBe(true);
+    const n = normalizeInputs(
+      fictionalScenario({ primarySoleBeneficiaryOfSpouse: 100_000_000 }),
+    );
+    expect(n.ok).toBe(false);
+    if (n.ok) throw new Error("a number is not a boolean");
+    expect(n.error.error.code).toBe("invalid_input");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §3d — Hand-built expected values (NICE-5): the parity oracle is not
+// the suite's only check — this test asserts literals derived BY HAND.
+// ---------------------------------------------------------------------------
+
+describe("R6 hand-built expected values (NICE-5 oracle independence)", () => {
+  test("spending draw only: exact figures derived by hand from the 2026 law table", () => {
+    // HAND DERIVATION — no pricePlaygroundYear, no directInputs
+    // anywhere in this test. The expected values below are
+    // literals computed here, step by step, from the published
+    // 2026 law table (server/src/taxLaw.ts, TAX_LAW_2026) and
+    // the engine's documented stacking — a reviewer can check
+    // them without running code. Cross-check on the method:
+    // the same bracket math reproduces the pinned
+    // backward-compat case (AGI $140,000, $3,000 qualified
+    // dividends → federalTax $12,930) exactly.
+    //
+    // Case: MFJ, ages 54/52 in 2026, only a $114,000 pre-tax
+    // spending draw. No interest, dividends, conversion, sale,
+    // RMD, or Social Security (SS starts at 67); no ACA
+    // benchmark, no state.
+    //
+    // 1. AGI: the draw is ordinary income and the only income,
+    //    so AGI = $114,000. MAGI = AGI (no tax-exempt interest).
+    // 2. Deductions: MFJ standard deduction $32,200 (2026); no
+    //    age-65 add-on (both under 65); nothing itemized.
+    // 3. Taxable income: 114,000 − 32,200 = $81,800, all
+    //    ordinary — no preferential income, so ltcgTax $0 and
+    //    no gains in any band.
+    // 4. Ordinary tax, 2026 MFJ brackets (10% to $24,800, then
+    //    12% to $100,800): 10% × 24,800 = $2,480, plus
+    //    12% × (81,800 − 24,800 = 57,000) = $6,840, for
+    //    ordinaryTax = $9,320.
+    // 5. NIIT $0 (MAGI $114,000 < $250,000 MFJ threshold);
+    //    stateTax $0 (no state). federalTax = $9,320,
+    //    totalTax = $9,320, netTaxBill = $9,320 (no refundable
+    //    education credit).
+    // 6. Cash: cashIn = $114,000 (the draw, the only cash in);
+    //    cashLeftAfterTax = 114,000 − 9,320 = $104,680; annual
+    //    spending is $9,500 × 12 = $114,000, so
+    //    cashLeftVsSpending = 104,680 − 114,000 = −$9,320.
+    // 7. Zeros: SS benefits $0 and taxable $0; no sale, so
+    //    stockGain $0 and saleAfterTax null; no balance entered,
+    //    so rmd $0, rmdGross $0, rmdPriced false.
+    const res = expectOk(
+      calculateSingleYearTax(
+        normalizedScenario({ spendingDrawAnnual: 114000 }),
+      ),
+    );
+    expect(res.agi).toBe(114000);
+    expect(res.magi).toBe(114000);
+    expect(res.deductions).toBe(32200);
+    expect(res.taxableIncome).toBe(81800);
+    expect(res.ordinaryTaxableIncome).toBe(81800);
+    expect(res.gainsInTaxableIncome).toBe(0);
+    expect(res.ordinaryTax).toBe(9320);
+    expect(res.ltcgTax).toBe(0);
+    expect(res.gainsAt0).toBe(0);
+    expect(res.gainsAt15).toBe(0);
+    expect(res.gainsAt20).toBe(0);
+    expect(res.niit).toBe(0);
+    expect(res.federalTax).toBe(9320);
+    expect(res.stateTax).toBe(0);
+    expect(res.totalTax).toBe(9320);
+    expect(res.netTaxBill).toBe(9320);
+    expect(res.cashIn).toBe(114000);
+    expect(res.cashLeftAfterTax).toBe(104680);
+    expect(res.cashLeftVsSpending).toBe(-9320);
+    expect(res.ssBenefits).toBe(0);
+    expect(res.ssTaxable).toBe(0);
+    expect(res.stockGain).toBe(0);
+    expect(res.saleAfterTax).toBeNull();
+    expect(res.rmd).toBe(0);
+    expect(res.rmdGross).toBe(0);
+    expect(res.rmdPriced).toBe(false);
   });
 });
 

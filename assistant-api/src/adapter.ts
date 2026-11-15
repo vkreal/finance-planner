@@ -1749,11 +1749,24 @@ export function calculateSingleYearTax(
         `The RMD (${fmtMoney(priced.rmd)}) is priced as income in addition to the typed ${parts.join(" and ")} — if that draw already includes part of the RMD, pass the included amount as rmdAlreadyReceivedAnnual so it is not counted twice.`,
       );
     }
-    if (rmdAlreadyReceived > priced.rmdGross && priced.rmdGross >= 0) {
+    // rmdGross is never negative (the engine's rmdForYear
+    // returns 0 below RMD age or on a non-positive balance, and
+    // balance / divisor otherwise; rmdGross is the sum of two
+    // such non-negative RMDs), so no `>= 0` guard is needed here
+    // — received > gross alone names the excess.
+    if (rmdAlreadyReceived > priced.rmdGross) {
       warnings.push(
         `rmdAlreadyReceivedAnnual (${fmtMoney(rmdAlreadyReceived)}) exceeds the computed RMD (${fmtMoney(priced.rmdGross)}) — only ${fmtMoney(priced.rmdGross)} is netted; the excess has no effect.`,
       );
     }
+    // The primarySoleBeneficiaryOfSpouse entry is emitted ONLY
+    // when the caller actually gave the fact (true/false, user
+    // provenance). When it is absent (null) there is no entry at
+    // all — not even a "not established" assumption: an
+    // assumption entry asserts something was assumed, and here
+    // nothing was. The "not established" wording lives on in the
+    // warning branch above, which still needs it (the spouse's
+    // RMD prices Uniform either way, and the caller is told why).
     const extraAssumptions: Assumption[] = joint
       ? [
           assumption(
@@ -1762,18 +1775,18 @@ export function calculateSingleYearTax(
             "assumption",
             "The spouse is modeled as the primary's sole beneficiary, so the primary's RMD prices on the Joint and Last Survivor Table.",
           ),
-          assumption(
-            "primarySoleBeneficiaryOfSpouse",
-            sy.primarySoleBeneficiaryOfSpouse,
-            sy.primarySoleBeneficiaryOfSpouse == null
-              ? "assumption"
-              : "user",
-            sy.primarySoleBeneficiaryOfSpouse === true
-              ? "The primary is the spouse's sole beneficiary, so the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table."
-              : sy.primarySoleBeneficiaryOfSpouse === false
-                ? "The primary is not the spouse's sole beneficiary, so the spouse's RMD prices on the Uniform Lifetime Table."
-                : "Whether the primary is the spouse's sole beneficiary was not established — the spouse's RMD prices on the Uniform Lifetime Table.",
-          ),
+          ...(sy.primarySoleBeneficiaryOfSpouse == null
+            ? []
+            : [
+                assumption(
+                  "primarySoleBeneficiaryOfSpouse",
+                  sy.primarySoleBeneficiaryOfSpouse,
+                  "user",
+                  sy.primarySoleBeneficiaryOfSpouse === true
+                    ? "The primary is the spouse's sole beneficiary, so the spouse's RMD uses the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table."
+                    : "The primary is not the spouse's sole beneficiary, so the spouse's RMD prices on the Uniform Lifetime Table.",
+                ),
+              ]),
         ]
       : [];
     // Echo the engine's own result verbatim (dollars, 2dp). D6:
