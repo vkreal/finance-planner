@@ -995,7 +995,7 @@ const OMITTED_COSTS = [
 const LIMITED_TIE_BREAK =
   "Exact ties on the deciding figure keep the earliest scenario in the evaluated list order (the engine's canonical draw-order list for withdrawals; the fixed list order for the limited Roth comparison).";
 const WORK_YEARS_TIE_BREAK =
-  "Exact ties on the deciding figure keep the earliest quit age in the evaluated list order (the compareAges order).";
+  "Exact ties on the deciding figure keep the earliest quit age in the evaluated list order (the sorted compareAges order).";
 const OPTIMIZER_TIE_BREAK =
   "Exact ties follow the engine's own winner ordering (compareScoredCandidates): lowest net cost, then highest ending after-tax wealth, then Do Nothing, then the plan's own draw order, then candidate key.";
 

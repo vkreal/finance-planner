@@ -324,7 +324,7 @@ order (the engine's canonical draw-order list for withdrawals;
 the fixed list order for the limited Roth comparison). For
 `retirement_work_years` the candidates are quit ages, not orders
 or fills: an exact tie keeps the earliest quit age in the
-`compareAges` order. The full
+sorted `compareAges` order. The full
 optimizer follows the engine's own tie ordering (lowest net
 cost, then highest ending wealth, then Do Nothing, then the
 plan's own draw order, then candidate key).
