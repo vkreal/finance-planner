@@ -12,10 +12,17 @@
 // staying at 8 (no new tool was added — full mode is a scope, not
 // a tool).
 //
-// (15) MCP vs standalone bundle agreement is NOT covered here:
-// no standalone bundle exists in this clone (a separate
-// coordinator owns the bundle; it must be rebuilt after this
-// lands), so there is nothing to agree with.
+// (15) MCP vs standalone bundle agreement: COVERED (Review 4 NICEs
+// fix, 2026-11-14) — the aa65684 bundle
+// (dist/finance-planner-cli.mjs, sha256
+// b189627bdd8c54818bec2cec976a99310b2da580ffe8034b2309c9e3301b3fa6,
+// rebuilt twice from aa65684, byte-identical) and the MCP endpoint
+// agree exactly on the same four comparison inputs:
+// retirement_compare_strategies and retirement_roth_conversion,
+// limited and full (4/4 MATCH on the full envelopes, including the
+// ~65-77s full-optimizer leg). Re-run after any bundle rebuild;
+// the determinism check makes a rebuild byte-identical, so this
+// result carries over to it.
 //
 // All figures are the fictional household (see helpers.ts). The
 // full-optimizer parity test prices the search twice (adapter +

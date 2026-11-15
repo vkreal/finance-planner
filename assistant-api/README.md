@@ -285,18 +285,19 @@ wealth.** Two different objectives, two different winners.
 Lifetime net cost is the engine's own objective (`planNetCost`):
 lifetime federal + state tax + pre-59½ penalties + IRMAA +
 terminal tax on ending pre-tax, minus ACA premium credit kept
-and refundable education credit (plus net health premium where
+and refundable education credit (plus gross health premium where
 a premium is entered; the adapter enters none, so $0). Ending
 after-tax wealth is ending pre-tax + taxable + Roth + HSA,
 minus terminal tax. The full optimizer's winner on the
-fictional household is "Fill to a $250,000 MAGI cap,
-convert ages 58–65, draw order Pre-tax → Roth → Taxable"
+fictional household is "Fill to a $250,000 MAGI cap · Convert
+ages 58–65 (stop at 65) · draw order Pre-tax → Roth → Taxable"
 (net cost $310,888.95, ending wealth $40,893,597.39,
 $765,700 converted 2030–2037) by net cost — but the highest
 ending wealth ($41,558,216.65) belongs to a different
 candidate ("Fill to the top of the 12% bracket, capped at
-IRMAA Tier 0, gain harvesting into the 0% bracket,
-guardrail, convert ages 58–95, draw order Pre-tax → Roth →
+IRMAA Tier 0 · gain harvesting into the 0% bracket ·
+marginal-rate guardrail · Convert ages 58–95 (keep topping up
+through the RMD years) · draw order Pre-tax → Roth →
 Taxable"). Never report one winner without naming its
 objective, and never describe a four-strategy winner as
 globally optimal.
@@ -320,7 +321,10 @@ names the intentionally excluded families on every response.
 
 Exact ties keep the earliest candidate in the evaluated list
 order (the engine's canonical draw-order list for withdrawals;
-the fixed list order for the limited Roth comparison). The full
+the fixed list order for the limited Roth comparison). For
+`retirement_work_years` the candidates are quit ages, not orders
+or fills: an exact tie keeps the earliest quit age in the
+`compareAges` order. The full
 optimizer follows the engine's own tie ordering (lowest net
 cost, then highest ending wealth, then Do Nothing, then the
 plan's own draw order, then candidate key).
@@ -623,19 +627,32 @@ Notes:
   run by the suite**: it needs substantially more than this VM's
   6 GB (verified OOM, twice). The suite's work-years test uses
   spouse SS $0 only. See "Known limitations" (i).
-- Suite timing on this VM: 136 tests pass, 4 skipped (SDK missing),
-  0 failures; 1 parity leg unrun — re-run it on a quiet box. Per
-  quiet run ~5–7 min (the work-years leg ~95s and the optimizer
-  parity leg ~80s are most of it). Per file (test counts, not
-  passes): input 41, isolation 23, parity 24,
-  schema-consistency 14, security 16, mcp-interop 5, cli 2,
-  strategy-comparison 16. NOTE: the parity work-years
-  with-salary leg (1 of parity's 24) died silently 5× on this
-  shared VM (process gone, no output — sibling review workers
-  running the same leg died identically; free RAM 200–600MB under
-  7–19 concurrent bun suites) and is NOT counted in the 136 passes;
-  re-run it on a quiet box. Nothing in this change touches that
-  leg's code path (runWorkYearsCompare → runJointOptimizer).
+- Suite timing, verified on this VM in the SDK-missing
+  configuration (the official MCP SDK is not installed, so
+  mcp-interop's 4 functional tests skip and 1 passes): 143 tests
+  pass, 4 skipped, 0 failures, 0 unrun. Per quiet run ~5–7 min
+  (the parity file ~194s, mostly its work-years with-salary leg,
+  and the optimizer parity leg ~80s are most of it). Per file
+  (test counts, not passes): input 43, isolation 23, parity 26,
+  schema-consistency 15, security 16, mcp-interop 5, cli 3,
+  strategy-comparison 16 — 147 tests total, agreeing with
+  143 pass + 4 skip (142 without strategy-comparison test 9, the
+  full-optimizer parity leg, + test 9 = 143). NOTE: the parity
+  work-years with-salary leg (1 of parity's 26) died silently 5×
+  on this shared VM before this run (process gone, no output —
+  sibling review workers running the same leg died identically;
+  free RAM 200–600MB under 7–19 concurrent bun suites); on this
+  run it completed in ~194s and passed, so it IS counted in the
+  143 — re-run it on a quiet box if it flakes. Nothing in this
+  change touches that leg's code path (runWorkYearsCompare →
+  runJointOptimizer).
+- MCP vs standalone bundle agreement (§6 (15)): covered after
+  landing, against the aa65684 bundle (sha256 `b189627b…3fa6`,
+  rebuilt twice, byte-identical) — the MCP endpoint and the bundle
+  agree exactly on the same inputs for
+  `retirement_compare_strategies` and `retirement_roth_conversion`,
+  limited and full (4/4 MATCH on the full envelopes, including the
+  full-optimizer leg).
 
 ## Worked conversation transcripts
 
@@ -873,7 +890,10 @@ check issued mid-call under load). A worker thread or timeout is
 future work; for now, don't rely on the server answering anything
 else during a work-years or full-optimizer call. The full search
 is never cut short to meet a deadline: an optimizer failure
-returns `engine_error`, not a quiet limited comparison.
+returns `engine_error`, not a quiet limited comparison. That is
+the design, not a gap: there is deliberately no timeout or
+resource limit on the full optimizer search in v1, and a failure
+never yields a fabricated or partial winner.
 
 (xii) **The app still prices a blank expected return at the
 stock-mix blend in a few places.** The adapter's omitted-return

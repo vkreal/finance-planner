@@ -983,7 +983,7 @@ export type ComparisonScopeInfo = {
 };
 
 const NET_COST_OBJECTIVE =
-  "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus net health premium where a premium is entered; the adapter enters none, so $0).";
+  "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus gross health premium where a premium is entered; the adapter enters none, so $0).";
 const WEALTH_OBJECTIVE =
   "Highest ending after-tax wealth: ending pre-tax + taxable + Roth + HSA balances, minus terminal tax on ending pre-tax.";
 const OMITTED_COSTS = [
@@ -994,6 +994,8 @@ const OMITTED_COSTS = [
 
 const LIMITED_TIE_BREAK =
   "Exact ties on the deciding figure keep the earliest scenario in the evaluated list order (the engine's canonical draw-order list for withdrawals; the fixed list order for the limited Roth comparison).";
+const WORK_YEARS_TIE_BREAK =
+  "Exact ties on the deciding figure keep the earliest quit age in the evaluated list order (the compareAges order).";
 const OPTIMIZER_TIE_BREAK =
   "Exact ties follow the engine's own winner ordering (compareScoredCandidates): lowest net cost, then highest ending after-tax wealth, then Do Nothing, then the plan's own draw order, then candidate key.";
 
@@ -2032,7 +2034,7 @@ export function compareRetirementAges(
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
-      tieBreakPolicy: LIMITED_TIE_BREAK,
+      tieBreakPolicy: WORK_YEARS_TIE_BREAK,
       excludedCandidateFamilies: [
         "Conversion strategies beyond the entered-plan Do-Nothing fill per quit age.",
         "Joint claiming-age search in the quit-age comparison leg (the work-years leg's per-age winnerStrategy is the engine joint optimizer's pick for that quit age alone).",
