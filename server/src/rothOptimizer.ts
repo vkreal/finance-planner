@@ -341,6 +341,351 @@ export function planNetCost(
   });
 }
 
+/* ---------------- Candidate integrity (Engine Review 4, E4-S1) ----
+   The optimizer sorts candidates by lifetime net cost, but a
+   candidate whose own pricing did not settle is not a reliable
+   winner however cheap it scores. The tax engine exposes three
+   per-year diagnostics (RothYear): settlementConverged /
+   settlementMismatchCents (whether the year's settlement
+   iteration reached an exact fixed point, and the kept round's
+   residual mismatch per component in integer cents), ceiling
+   Breached (a switched-on ceiling still breached at conversion
+   $0 — the draws alone breach), unpaidTax (assessed tax no
+   balance could pay), and spendShortfall (spending need the
+   year's draws could not fund). This section assesses a priced
+   candidate against them, with one documented tolerance.
+
+   SETTLEMENT TOLERANCE (derived, not guessed): 1 cent per
+   component per year. REPRODUCED (review probe, Oct 25
+   single-filer case and its equivalents): the single-filer
+   shape of the fictional sample household prices non-converged
+   years 2047/2049 (compare/simulate shapes) and the MFJ
+   household prices 2038/2049/2056 on Fill 22% — every one a
+   1-cent GAINS mismatch, pre-tax $0, and across the full
+   3,025-candidate optimizer search in BOTH filing statuses
+   (≈9,800 non-converged year-instances) the worst mismatch is
+   1 cent, never more. That is a benign rounding residual, not a
+   settlement defect: the iteration compares r2-rounded feedback
+   gains, and a 1-cent gains difference moves the year's tax by
+   at most ~$0.004 (1¢ × the top 37% ordinary / 23.8% gains
+   rate), which rounds to $0.00 at the cent the engine prices
+   in, and its balance knock-on stays under ~7¢ over a 40-year
+   horizon at 5%. A residual above the tolerance is NOT assumed
+   benign: it is independently material, and the candidate is
+   invalid until its settlement is reproduced and understood.
+
+   CEILING BREACH is deliberately NOT an invalidity by itself:
+   a breached year at conversion $0 means the year's mandatory
+   income alone exceeds the ceiling — no fill can fix it, and
+   the engine already reduced the conversion to $0 and flagged
+   it honestly (round-7 R7-4). The ONE breach that IS an
+   invalidity is a breach with conversion above $0: the final
+   clamp bisects the conversion to compliance or $0, so a
+   breached year still converting contradicts the clamp and is a
+   real defect, not a disclosure. */
+
+export const SETTLEMENT_TOLERANCE_CENTS = 1;
+
+export type CandidateIntegrityStatus =
+  | "valid"
+  | "valid-with-benign-residual"
+  | "invalid";
+
+export type CandidateIntegrity = {
+  status: CandidateIntegrityStatus;
+  // Non-converged years (count + calendar years, for the note).
+  nonConvergedYears: number;
+  nonConvergedYearList: number[];
+  // Worst residual per component over the march, integer cents.
+  maxMismatchGainsCents: number;
+  maxMismatchPretaxCents: number;
+  // Ceiling-breach counts: all breached years, and the subset
+  // breached at conversion $0 (draws alone — not a defect).
+  ceilingBreachedYears: number;
+  ceilingBreachedAtZeroConversionYears: number;
+  // Lifetime assessed tax no balance could pay, and lifetime
+  // spending need the draws could not fund (dollars).
+  unpaidTaxTotal: number;
+  spendShortfallTotal: number;
+  // Human-readable reasons; empty unless invalid.
+  reasons: string[];
+};
+
+export function assessCandidateIntegrity(
+  result: RothPlanResult,
+): CandidateIntegrity {
+  const nonConvergedYearList: number[] = [];
+  let maxMismatchGainsCents = 0;
+  let maxMismatchPretaxCents = 0;
+  let ceilingBreachedYears = 0;
+  let ceilingBreachedAtZeroConversionYears = 0;
+  let spendShortfallTotal = 0;
+  const convertingBreachedYears: number[] = [];
+  for (const y of result.years) {
+    // Defensive reads (?? 0 / ?? false): the engine always sets
+    // these fields, but a caller assessing a mapped row (e.g. a
+    // compare-path readout) must never NaN-poison the totals.
+    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0 };
+    const conversion = y.conversion ?? 0;
+    if (!y.settlementConverged) nonConvergedYearList.push(y.year);
+    maxMismatchGainsCents = Math.max(maxMismatchGainsCents, mismatch.gains ?? 0);
+    maxMismatchPretaxCents = Math.max(maxMismatchPretaxCents, mismatch.pretax ?? 0);
+    if (y.ceilingBreached) {
+      ceilingBreachedYears++;
+      if (conversion <= 0) ceilingBreachedAtZeroConversionYears++;
+      else convertingBreachedYears.push(y.year);
+    }
+    spendShortfallTotal += y.spendShortfall ?? 0;
+  }
+  const reasons: string[] = [];
+  if (
+    maxMismatchGainsCents > SETTLEMENT_TOLERANCE_CENTS ||
+    maxMismatchPretaxCents > SETTLEMENT_TOLERANCE_CENTS
+  ) {
+    reasons.push(
+      `unresolved settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
+        `(gains ${maxMismatchGainsCents}¢, pre-tax ${maxMismatchPretaxCents}¢)`,
+    );
+  }
+  if (convertingBreachedYears.length > 0) {
+    reasons.push(
+      `ceiling still breached with conversion above $0 in ${convertingBreachedYears.join(", ")} ` +
+        `(the final clamp should have reduced the conversion to $0 or compliance)`,
+    );
+  }
+  const unpaidTaxTotal = r2(result.lifetimeUnpaidTax ?? 0);
+  if (unpaidTaxTotal > 0) {
+    reasons.push(
+      `unpaid tax of ${fmtDollars(unpaidTaxTotal)}: assessed tax the balances could not pay`,
+    );
+  }
+  spendShortfallTotal = r2(spendShortfallTotal);
+  if (spendShortfallTotal > 0) {
+    reasons.push(
+      `unfunded spending of ${fmtDollars(spendShortfallTotal)}: the plan cannot fund its own spending need`,
+    );
+  }
+  const status: CandidateIntegrityStatus =
+    reasons.length > 0
+      ? "invalid"
+      : nonConvergedYearList.length > 0
+        ? "valid-with-benign-residual"
+        : "valid";
+  return {
+    status,
+    nonConvergedYears: nonConvergedYearList.length,
+    nonConvergedYearList,
+    maxMismatchGainsCents,
+    maxMismatchPretaxCents,
+    ceilingBreachedYears,
+    ceilingBreachedAtZeroConversionYears,
+    unpaidTaxTotal,
+    spendShortfallTotal,
+    reasons,
+  };
+}
+
+/* ---------------- Distinct optimization objectives (E4-S2) ----
+   The comparator has always prioritized lifetime net cost and
+   used ending after-tax wealth only as a tie-breaker. That
+   objective is PRESERVED — and now each run names both winners
+   separately, so a reader can see when the two objectives
+   disagree instead of learning it from the tie-break:
+
+   · winnerByNetCost — lowest lifetime net cost among the VALID
+     tested candidates (the integrity assessment above: a
+     candidate with a material unresolved discrepancy, unpaid
+     tax, or unfunded spending is not eligible to win on cost).
+   · winnerByEndingWealth — highest ending after-tax wealth
+     among the VALID tested candidates (the engine's own
+     endingAfterTaxWealth: ending pre-tax net of its terminal
+     tax at the heir / reserve exit rates, plus Roth, taxable,
+     and HSA — never gross balances).
+   · selectedWinner — the cost-first recommended candidate: the
+     winnerByNetCost. When the raw cost-first candidate over ALL
+     tested candidates is invalid, it is NOT silently crowned:
+     the result names it as excludedInvalidWinner with its
+     integrity reasons, and the selected winner is the best
+     valid candidate. When no candidate is valid at all the raw
+     winner is still crowned (there is nothing else to
+     recommend) and winnerQualified is false, so the
+     recommendation carries its disqualification in the open.
+
+   Neither winner is a mathematical global optimum, and the
+   result never calls one that: the search prices the candidate
+   families its scope names, not every conceivable strategy. */
+
+// The cost-first objective, in the words the UI and the
+// adapter print beside the winner.
+export const OPTIMIZER_OBJECTIVE =
+  "Lowest lifetime net cost first: lifetime federal + state tax + pre-59½ penalties + IRMAA surcharges + gross health premiums − ACA premium credit kept − refundable education credit + terminal tax on the ending pre-tax balance. Exact net-cost ties break toward the highest ending after-tax wealth. Best among the candidates actually tested — not a mathematical global optimum.";
+
+export type OptimizerSearchScope = {
+  // One plain-language paragraph naming what was priced and
+  // what was held fixed, so a reader can tell at a glance
+  // whether claiming ages, draw orders, or windows were
+  // searched or frozen.
+  description: string;
+  // Conversion windows priced (stop ages actually searched).
+  windowStopAges: number[];
+  // Ceiling families priced.
+  ceilingFamilies: string[];
+  // Draw orders: searched (all six) or held at the plan order.
+  drawOrdersSearched: boolean;
+  drawOrderLabels: string[];
+  // Claiming ages: searched jointly, or held at the entered ages.
+  claimingAgesSearched: boolean;
+  claimingAgeCombinations: number;
+  // Search variants priced.
+  variants: string[];
+  // Everything the run held fixed, in plain words.
+  heldFixed: string[];
+};
+
+function describeOptimizerSearchScope(
+  inputs: RothPlanInputs,
+  opts: { searchOrders: boolean; claimingAgesSearched: boolean; combosTested: number },
+): OptimizerSearchScope {
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary));
+  const stops = [...new Set([65, rmdAge - 1, inputs.endAgePrimary])].filter(
+    (s) => s >= inputs.windowStartAge,
+  );
+  const ceilingFamilies = [
+    "every federal bracket top",
+    "every IRMAA tier ceiling, and bracket × IRMAA combinations",
+    "ACA-cliff caps (alone and with the 12% / 22% brackets)",
+    "MAGI-cap steps ($150,000–$500,000)",
+  ];
+  const variants = [
+    "marginal-rate guardrail variants (bracket ceilings)",
+    "ACA bunching variants (non-cliff ceilings)",
+    ...(harvestGatePasses(inputs)
+      ? ["gain-harvest twins of every conversion candidate"]
+      : []),
+    "Do Nothing as the benchmark",
+  ];
+  const heldFixed: string[] = [];
+  if (!opts.searchOrders) heldFixed.push(`draw order (held at the plan order, ${drawOrderLabel(inputs.drawOrder)})`);
+  if (!opts.claimingAgesSearched) {
+    const parts: string[] = [];
+    if (inputs.ssPrimaryStartAge != null) parts.push(`primary claims at ${inputs.ssPrimaryStartAge}`);
+    if (inputs.ssSpouseStartAge != null) parts.push(`spouse claims at ${inputs.ssSpouseStartAge}`);
+    heldFixed.push(
+      parts.length > 0
+        ? `claiming ages (held at the entered ages: ${parts.join(", ")})`
+        : "claiming ages (no benefit entered, so none searched)",
+    );
+  }
+  const description =
+    `Conversion ceilings: ${ceilingFamilies.join("; ")}. ` +
+    `Conversion windows: stop at ${stops.join(", ")} (stop at 65 / stop the year before RMDs begin / keep topping up through the RMD years). ` +
+    (opts.searchOrders
+      ? "Draw orders: all six permutations searched. "
+      : `Draw orders: held at the plan order (${drawOrderLabel(inputs.drawOrder)}). `) +
+    (opts.claimingAgesSearched
+      ? `Claiming ages: searched jointly with the conversion strategies (${opts.combosTested} combinations). `
+      : "Claiming ages: held at the entered ages. ") +
+    `Variants: ${variants.join("; ")}.`;
+  return {
+    description,
+    windowStopAges: stops,
+    ceilingFamilies,
+    drawOrdersSearched: opts.searchOrders,
+    drawOrderLabels: opts.searchOrders
+      ? ALL_DRAW_ORDERS.map((o) => drawOrderLabel(o))
+      : [drawOrderLabel(inputs.drawOrder)],
+    claimingAgesSearched: opts.claimingAgesSearched,
+    claimingAgeCombinations: opts.claimingAgesSearched ? opts.combosTested : 1,
+    variants,
+    heldFixed,
+  };
+}
+
+// Pick the two objective winners out of a cost-first-sorted
+// VALID list. The net-cost winner is the list head; the wealth
+// winner is the max ending after-tax wealth, with exact wealth
+// ties broken by the same cost-first order (lowest net cost,
+// then the list order) so the pick is deterministic.
+export function pickNetCostWinner(
+  validSorted: ScoredCandidate[],
+): ScoredCandidate | null {
+  return validSorted[0] ?? null;
+}
+
+export function pickEndingWealthWinner(
+  validSorted: ScoredCandidate[],
+): ScoredCandidate | null {
+  let best: ScoredCandidate | null = null;
+  for (const s of validSorted) {
+    if (
+      best == null ||
+      s.result.endingAfterTaxWealth > best.result.endingAfterTaxWealth
+    ) {
+      best = s;
+    }
+  }
+  return best;
+}
+
+// Crown the objective winners for one sorted scored list.
+// Returns the qualified winners plus, when the raw cost-first
+// candidate over ALL tested candidates is invalid, that
+// candidate with its integrity — so the exclusion is disclosed,
+// never silent. When the valid set is empty the raw winner is
+// crowned anyway and qualified is false.
+export function crownOptimizerWinners(
+  sortedAll: ScoredCandidate[],
+): {
+  winnerByNetCost: ScoredCandidate;
+  winnerByEndingWealth: ScoredCandidate;
+  selectedWinner: ScoredCandidate;
+  validCandidatesTested: number;
+  invalidCandidatesTested: number;
+  excludedInvalidWinner: {
+    candidate: ScoredCandidate;
+    integrity: CandidateIntegrity;
+  } | null;
+  winnerQualified: boolean;
+  winnersDiffer: boolean;
+} {
+  const valid = sortedAll.filter((s) => s.integrity.status !== "invalid");
+  const invalid = sortedAll.length - valid.length;
+  const rawFirst = sortedAll[0]!;
+  const excludedInvalidWinner =
+    rawFirst.integrity.status === "invalid"
+      ? { candidate: rawFirst, integrity: rawFirst.integrity }
+      : null;
+  const netCostWinner = pickNetCostWinner(valid);
+  const wealthWinner = pickEndingWealthWinner(valid);
+  if (netCostWinner == null || wealthWinner == null) {
+    // No valid candidate at all: crown the raw winner and say
+    // so — the recommendation is unqualified, in the open.
+    return {
+      winnerByNetCost: rawFirst,
+      winnerByEndingWealth:
+        pickEndingWealthWinner(sortedAll) ?? rawFirst,
+      selectedWinner: rawFirst,
+      validCandidatesTested: 0,
+      invalidCandidatesTested: invalid,
+      excludedInvalidWinner,
+      winnerQualified: false,
+      winnersDiffer:
+        (pickEndingWealthWinner(sortedAll)?.spec.key ?? rawFirst.spec.key) !==
+        rawFirst.spec.key,
+    };
+  }
+  return {
+    winnerByNetCost: netCostWinner,
+    winnerByEndingWealth: wealthWinner,
+    selectedWinner: netCostWinner,
+    validCandidatesTested: valid.length,
+    invalidCandidatesTested: invalid,
+    excludedInvalidWinner,
+    winnerQualified: true,
+    winnersDiffer: wealthWinner.spec.key !== netCostWinner.spec.key,
+  };
+}
+
 /* ---------------- Candidates ---------------- */
 
 export type OptimizerWindowKind = "stop65" | "stopRmd" | "throughRmd";
@@ -393,6 +738,11 @@ export type ScoredCandidate = {
   spec: OptimizerCandidateSpec;
   result: RothPlanResult;
   cost: NetCostBreakdown;
+  // Candidate-integrity assessment (E4-S1): the settlement /
+  // funding diagnostics of this candidate's own priced march.
+  // Attached at scoring time, so every consumer reads the same
+  // assessment the crowning used.
+  integrity: CandidateIntegrity;
   // The claiming ages this candidate was priced at (the entered
   // ages for a fixed-age run; the combination's ages for a joint
   // run). A saved joint winner reproduces exactly by re-running
@@ -713,6 +1063,7 @@ export function scoreAllCandidates(
     },
     result: dnResult,
     cost: planNetCost(dnResult, inputs),
+    integrity: assessCandidateIntegrity(dnResult),
     claimAges,
   });
   for (const spec of buildOptimizerCandidates(inputs, orders)) {
@@ -728,6 +1079,7 @@ export function scoreAllCandidates(
       spec,
       result,
       cost: planNetCost(result, inputs),
+      integrity: assessCandidateIntegrity(result),
       claimAges,
     });
   }
@@ -737,8 +1089,43 @@ export function scoreAllCandidates(
 
 export type OptimizerResult = {
   candidatesTested: number;
+  // Candidates whose priced march is valid to recommend
+  // (E4-S1): every tested candidate minus the invalid ones.
+  validCandidatesTested: number;
+  invalidCandidatesTested: number;
   doNothing: ScoredCandidate;
   winner: ScoredCandidate;
+  // The cost-first recommended candidate (E4-S2): identical to
+  // `winner` — the lowest-net-cost VALID candidate. Kept as its
+  // own field so the recommendation names its objective.
+  selectedWinner: ScoredCandidate;
+  // Lowest lifetime net cost among the valid tested candidates.
+  winnerByNetCost: ScoredCandidate;
+  // Highest ending after-tax wealth among the valid tested
+  // candidates. Routinely a different candidate from the
+  // net-cost winner: the two objectives disagree, and the
+  // result says so instead of hiding it behind the tie-break.
+  winnerByEndingWealth: ScoredCandidate;
+  // True when the two objective winners are different
+  // candidates.
+  winnersDiffer: boolean;
+  // True when the crowned winner is a valid candidate. False
+  // only when no candidate was valid at all and the raw winner
+  // was crowned anyway (see crownOptimizerWinners).
+  winnerQualified: boolean;
+  // The raw cost-first candidate over ALL tested candidates,
+  // when it was excluded as invalid — so a material unresolved
+  // discrepancy can never silently produce an unqualified
+  // winner recommendation. Null on every plan whose cheapest
+  // candidate is valid (the ordinary case).
+  excludedInvalidWinner: {
+    candidate: ScoredCandidate;
+    integrity: CandidateIntegrity;
+  } | null;
+  // The cost-first objective, in plain words.
+  objective: string;
+  // What the search priced and what it held fixed.
+  searchScope: OptimizerSearchScope;
   // The next-best distinct candidates after the winner (up to 3).
   runnersUp: ScoredCandidate[];
   scored: ScoredCandidate[];
@@ -773,6 +1160,10 @@ export function optimizerImprovements(
   for (const list of scoredLists) {
     for (const s of list) {
       if (s.spec.key === DO_NOTHING_SPEC.key) continue;
+      // E4-S1: a lever whose own pricing did not settle, left
+      // tax unpaid, or left spending unfunded is not a
+      // recommendation, however cheap it scores.
+      if (s.integrity.status === "invalid") continue;
       const gain = Math.round((savedPlanNetCost - s.cost.netCost) * 100) / 100;
       if (gain < 0.01) continue;
       const leverKey = [
@@ -805,12 +1196,37 @@ export function runOptimizer(
 ): OptimizerResult {
   const scored = scoreAllCandidates(inputs, enteredClaimInfo(inputs), opts);
   const doNothing = scored.find((s) => s.spec.key === DO_NOTHING_SPEC.key) ?? scored[0]!;
-  const winner = scored[0]!;
+  // Crowning (E4-S1/E4-S2): the winner is the best VALID
+  // candidate by the cost-first ordering — the scoring order
+  // itself is unchanged, so every plan whose cheapest candidate
+  // is valid (the ordinary case, including both regression
+  // anchors) crowns bit-identically to before.
+  const crowned = crownOptimizerWinners(scored);
+  const winner = crowned.selectedWinner;
+  const runnersUp = scored
+    .filter(
+      (s) => s.integrity.status !== "invalid" && s !== winner,
+    )
+    .slice(0, 3);
   return {
     candidatesTested: scored.length,
+    validCandidatesTested: crowned.validCandidatesTested,
+    invalidCandidatesTested: crowned.invalidCandidatesTested,
     doNothing,
     winner,
-    runnersUp: scored.slice(1, 4),
+    selectedWinner: crowned.selectedWinner,
+    winnerByNetCost: crowned.winnerByNetCost,
+    winnerByEndingWealth: crowned.winnerByEndingWealth,
+    winnersDiffer: crowned.winnersDiffer,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    objective: OPTIMIZER_OBJECTIVE,
+    searchScope: describeOptimizerSearchScope(inputs, {
+      searchOrders: opts?.searchOrders !== false,
+      claimingAgesSearched: false,
+      combosTested: 1,
+    }),
+    runnersUp,
     scored,
   };
 }
@@ -1241,14 +1657,32 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   // it (a candidate with no primary claiming age — no benefit
   // entered — is never excluded by the floor); if somehow no
   // candidate qualifies, the plain best is crowned rather than
-  // none.
+  // none. E4-S1/E4-S2: crowning runs over the eligible VALID
+  // candidates — a materially unsettled candidate cannot win
+  // the joint search either — and both objective winners are
+  // named, with any excluded raw winner disclosed.
   const eligible =
     floor == null
       ? scoredAll
       : scoredAll.filter(
           (s) => s.claimAges.primaryAge == null || s.claimAges.primaryAge >= floor,
         );
-  const winner = (eligible[0] ?? scoredAll[0])!;
+  // The no-eligible-candidate fallback (documented on the
+  // runRothOptimizer action): a locked primary claim below the
+  // floor can leave `eligible` empty — crown over the plain
+  // best instead of crowning nothing (crownOptimizerWinners
+  // requires a non-empty list). claimAgeFloorMet then reports
+  // false and the note states the conflict.
+  const crowned = crownOptimizerWinners(
+    eligible.length > 0 ? eligible : scoredAll,
+  );
+  const winner = crowned.selectedWinner;
+  const winnerByNetCost = crowned.winnerByNetCost;
+  const winnerByEndingWealth = crowned.winnerByEndingWealth;
+  // Re-derive the wealth winner over the eligible set when the
+  // crowning above had to fall back to the raw winner (no valid
+  // candidate): crownOptimizerWinners already did that over the
+  // same eligible list, so no second pass is needed here.
   // Do Nothing for the joint result is the best Do Nothing found
   // — evaluated at its own best claiming ages (it is one of the
   // combinations by construction), not at the entered ages. The
@@ -1260,6 +1694,7 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const runnersUp: ScoredCandidate[] = [];
   for (const s of eligible) {
     if (runnersUp.length >= 3) break;
+    if (s.integrity.status === "invalid") continue;
     if (
       s.spec.key === winner.spec.key &&
       s.claimAges.primaryAge === winner.claimAges.primaryAge &&
@@ -1303,8 +1738,22 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   info.claimAgeTableEmpty = claimAgeTable.length === 0;
   return {
     candidatesTested: scoredAll.length,
+    validCandidatesTested: crowned.validCandidatesTested,
+    invalidCandidatesTested: crowned.invalidCandidatesTested,
     doNothing,
     winner,
+    selectedWinner: crowned.selectedWinner,
+    winnerByNetCost,
+    winnerByEndingWealth,
+    winnersDiffer: crowned.winnersDiffer,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    objective: OPTIMIZER_OBJECTIVE,
+    searchScope: describeOptimizerSearchScope(inputs, {
+      searchOrders: false,
+      claimingAgesSearched: true,
+      combosTested: combos.length,
+    }),
     runnersUp,
     scored: scoredAll,
     jointSearch: info,

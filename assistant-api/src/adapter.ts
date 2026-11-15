@@ -1625,6 +1625,32 @@ export type RothConversionResults = {
     doNothing: { netCost: number; endingWealth: number };
     candidateFamiliesEvaluated: string[];
     excludedCandidateFamilies: string[];
+    // Engine Review 4 (E4-S1/E4-S2): the objective the winner
+    // was crowned under, the valid / invalid split of the
+    // tested candidates, whether the two objective winners
+    // differ, and the ending-wealth winner when it is not the
+    // cost winner. winnerQualified is false only when no
+    // candidate was valid at all; excludedInvalidWinner names
+    // the raw cheapest candidate when it was excluded as
+    // invalid, with its integrity reasons — null in the
+    // ordinary case. All sourced from the engine's own
+    // runOptimizer result, never re-derived here.
+    objective: string;
+    validCandidatesTested: number;
+    invalidCandidatesTested: number;
+    winnersDiffer: boolean;
+    winnerQualified: boolean;
+    wealthWinner: {
+      name: string;
+      candidateKey: string;
+      netCost: number;
+      endingWealth: number;
+    } | null;
+    excludedInvalidWinner: {
+      name: string;
+      candidateKey: string;
+      reasons: string[];
+    } | null;
   };
 };
 
@@ -1723,14 +1749,15 @@ function compareRothConversionsFull(
     const result = runOptimizer(planInputs);
     const winner = result.winner;
     const doNothing = result.doNothing;
-    // The engine's scored list arrives best-first by its own
-    // winner ordering; the wealth winner is the max-wealth
-    // candidate over the whole searched set (routinely not the
-    // net-cost winner — the two objectives differ).
-    const wealthWinner = pickWinner(
-      result.scored,
-      (a, b) => a.result.endingAfterTaxWealth > b.result.endingAfterTaxWealth,
-    );
+    // Both objective winners come from the ENGINE (E4-S2):
+    // winnerByNetCost is the lowest-net-cost VALID candidate and
+    // winnerByEndingWealth the highest-ending-wealth VALID one —
+    // the adapter no longer re-derives the wealth winner over
+    // the raw scored list (an invalid candidate could win that
+    // re-derivation and disagree with the engine). On every plan
+    // whose cheapest candidate is valid these are the same
+    // candidates the adapter used to pick.
+    const wealthWinner = result.winnerByEndingWealth;
     // Returned scenarios: the benchmark, the engine winner, its
     // runners-up, and the wealth winner when it is none of those
     // — so both winner fields always name a returned scenario.
@@ -1791,7 +1818,7 @@ function compareRothConversionsFull(
       searchKind: "optimizer-search",
       evaluatedCandidates: result.candidatesTested,
       candidateNames: mapped.map((m) => m.name),
-      candidateSetDescription: `The engine's full optimizer search at the entered claiming ages: ${result.candidatesTested} candidates priced (bracket / IRMAA / ACA / MAGI ceilings × conversion windows × all six draw orders × guardrail / bunching variants${harvestGate ? " × gain-harvest twins" : ""}), plus the Do Nothing benchmark. The response returns the benchmark, the winner, its runners-up, and the ending-wealth winner when it is none of those; candidatesTested is the full searched count. Still not a global optimum: claiming ages are fixed (see excluded families).`,
+      candidateSetDescription: `The engine's full optimizer search at the entered claiming ages: ${result.candidatesTested} candidates priced. ${result.searchScope.description} The response returns the benchmark, the winner, its runners-up, and the ending-wealth winner when it is none of those; candidatesTested is the full searched count. Still not a global optimum: claiming ages are fixed (see excluded families).`,
       baselineName: baseline.name,
       winnerByNetCost: winnerName,
       winnerByEndingWealth: wealthWinnerName,
@@ -1851,12 +1878,46 @@ function compareRothConversionsFull(
           },
           candidateFamiliesEvaluated,
           excludedCandidateFamilies,
+          objective: result.objective,
+          validCandidatesTested: result.validCandidatesTested,
+          invalidCandidatesTested: result.invalidCandidatesTested,
+          winnersDiffer: result.winnersDiffer,
+          winnerQualified: result.winnerQualified,
+          wealthWinner:
+            wealthWinner == null || wealthWinner.spec.key === winner.spec.key
+              ? null
+              : {
+                  name: optimizerCandidateDisplayName(wealthWinner.spec),
+                  candidateKey: wealthWinner.spec.key,
+                  netCost: r2(wealthWinner.cost.netCost),
+                  endingWealth: r2(wealthWinner.result.endingAfterTaxWealth),
+                },
+          excludedInvalidWinner:
+            result.excludedInvalidWinner == null
+              ? null
+              : {
+                  name: optimizerCandidateDisplayName(
+                    result.excludedInvalidWinner.candidate.spec,
+                  ),
+                  candidateKey: result.excludedInvalidWinner.candidate.spec.key,
+                  reasons: result.excludedInvalidWinner.integrity.reasons,
+                },
         },
       },
       [
         HEALTH_PREMIUM_WARNING,
         YEARLY_TABLE_WARNING,
         "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+        ...(result.excludedInvalidWinner == null
+          ? []
+          : [
+              `The cheapest candidate the search priced (${optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec)}) was excluded as invalid: ${result.excludedInvalidWinner.integrity.reasons.join("; ")}. The crowned winner is the cheapest valid candidate.`,
+            ]),
+        ...(!result.winnerQualified
+          ? [
+              "No tested candidate was valid — the crowned winner carries a material unresolved discrepancy, unpaid tax, or unfunded spending. Treat its figures as unqualified.",
+            ]
+          : []),
       ],
       taxAwareAssumptions(scenario),
       null,

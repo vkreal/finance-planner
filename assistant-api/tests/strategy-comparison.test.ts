@@ -371,6 +371,43 @@ describe("Roth conversion — full optimizer mode (R4-S2)", () => {
       expect(adapterResults.winnerByEndingWealth).toBe(
         optimizerCandidateDisplayName(wealthBest.spec),
       );
+      // E4-S2: both objective winners come from the ENGINE's
+      // own fields — the adapter no longer re-derives the
+      // wealth winner over the raw scored list. The
+      // engine-sourced wealth winner agrees with the
+      // max-wealth sort here (no candidate is invalid on this
+      // household), and the block names the objective, the
+      // valid/invalid split, and the qualification.
+      expect(adapterResults.winnerByEndingWealth).toBe(
+        optimizerCandidateDisplayName(direct.winnerByEndingWealth.spec),
+      );
+      expect(o.winnersDiffer).toBe(
+        direct.winnerByEndingWealth.spec.key !== direct.winner.spec.key,
+      );
+      if (direct.winnersDiffer) {
+        expect(o.wealthWinner).not.toBeNull();
+        expect(o.wealthWinner!.name).toBe(
+          optimizerCandidateDisplayName(direct.winnerByEndingWealth.spec),
+        );
+        expect(o.wealthWinner!.candidateKey).toBe(
+          direct.winnerByEndingWealth.spec.key,
+        );
+        expect(o.wealthWinner!.netCost).toBe(
+          round2(direct.winnerByEndingWealth.cost.netCost),
+        );
+        expect(o.wealthWinner!.endingWealth).toBe(
+          round2(direct.winnerByEndingWealth.result.endingAfterTaxWealth),
+        );
+      } else {
+        expect(o.wealthWinner).toBeNull();
+      }
+      expect(o.objective).toBe(direct.objective);
+      expect(o.objective).toMatch(/Lowest lifetime net cost first/);
+      expect(o.validCandidatesTested).toBe(direct.validCandidatesTested);
+      expect(o.invalidCandidatesTested).toBe(direct.invalidCandidatesTested);
+      expect(o.winnerQualified).toBe(direct.winnerQualified);
+      expect(o.winnerQualified).toBe(true);
+      expect(o.excludedInvalidWinner).toBeNull();
       expect(
         adapterResults.scenarios.map((x) => x.name),
       ).toContain(adapterResults.winnerByEndingWealth as string);

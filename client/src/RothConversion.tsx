@@ -5800,7 +5800,23 @@ export function RothConversion({
           ? `terminal tax ${fmtDollars(winner.terminal)} on the pre-tax left over (${fmtDollars(winner.preservedPretax)} of it preserved at the ${reserveExitPct}% exit rate, the rest at the ${heir}% heir rate)`
           : `terminal tax ${fmtDollars(winner.terminal)} at the ${heir}% heir rate on the pre-tax left over`;
       }
-      return `Best of ${optResult.candidatesTested} tested: ${winner.name} (${winner.windowLabel})${claimClause} — lifetime net cost ${fmtDollars(winner.netCost)}, lifetime Social Security collected ${fmtDollars(winner.ssCollected)}, ${savingClause(winner.netCost, dnNet)} → ${endingClause}.`;
+      // E4-S2: when the ending-wealth winner differs from the
+      // lowest-tax winner, name it — the two objectives
+      // disagree, and the takeaway says so instead of hiding
+      // it behind the tie-break. E4-S1: when the cheapest
+      // candidate priced was excluded as invalid, name it and
+      // why, so the recommendation is never silently
+      // unqualified.
+      const wealthClause =
+        optResult.winnersDiffer && optResult.winnerByEndingWealth
+          ? ` Most left at the end: ${optResult.winnerByEndingWealth.name} (${optResult.winnerByEndingWealth.windowLabel}) — ${fmtDollars(optResult.winnerByEndingWealth.endingWealth)} left, vs ${fmtDollars(winner.endingWealth)} for the lowest-tax winner.`
+          : "";
+      const excludedClause = optResult.excludedInvalidWinner
+        ? ` The cheapest candidate priced (${optResult.excludedInvalidWinner.candidate.name}) was excluded: ${optResult.excludedInvalidWinner.reasons.join("; ")}.`
+        : !optResult.winnerQualified
+          ? " No tested candidate was fully valid — treat the winner as unqualified."
+          : "";
+      return `Best of ${optResult.candidatesTested} tested: ${winner.name} (${winner.windowLabel})${claimClause} — lifetime net cost ${fmtDollars(winner.netCost)}, lifetime Social Security collected ${fmtDollars(winner.ssCollected)}, ${savingClause(winner.netCost, dnNet)} → ${endingClause}.${wealthClause}${excludedClause}`;
     }
     if (effMode === "proof") {
       if (!planInputs || !proofInputs || !proofStats) return null;

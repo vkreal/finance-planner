@@ -224,6 +224,7 @@ DO_NOTHING_SPEC,
 ROTH_MC_CHECK_PATHS,
 ROTH_SCENARIO_LIMIT,
 ROTH_MC_CHECK_SEED,
+assessCandidateIntegrity,
 buildRothFunding,
 claimAgeLabel,
 consumeExecutionInputs,
@@ -4286,6 +4287,11 @@ const optScoreOut = z.object({
   terminalExcess: z.number(),
   excessPretax: z.number(),
   netCost: z.number(),
+  // Ending after-tax wealth (dollars): ending pre-tax net of
+  // its terminal tax at the heir / reserve exit rates, plus
+  // Roth, taxable, and HSA — the wealth objective's measure
+  // (Engine Review 4, E4-S2). Never gross balances.
+  endingWealth: z.number(),
   // Lifetime Social Security collected under this candidate
   // (dollars) — display only; not part of the score.
   ssCollected: z.number(),
@@ -4304,6 +4310,38 @@ const optScoreOut = z.object({
   // score so the schedule reproduces exactly.
   drawOrder: z.string(),
   drawOrderLabel: z.string(),
+  // Candidate-integrity assessment (Engine Review 4, E4-S1):
+  // the settlement / funding diagnostics of this candidate's
+  // own priced march. "valid" = every year converged exactly
+  // (or within the 1¢ benign-residual tolerance — see
+  // "valid-with-benign-residual"), no unpaid tax, no unfunded
+  // spending; "invalid" = a material unresolved discrepancy,
+  // unpaid tax, unfunded spending, or a ceiling breached with
+  // conversion above $0, with the reasons named. A
+  // ceilingBreached count is NOT an invalidity by itself:
+  // breached years at conversion $0 mean the draws alone
+  // breach, which no fill can fix.
+  integrity: z.object({
+    status: z.enum(["valid", "valid-with-benign-residual", "invalid"]),
+    nonConvergedYears: z.number(),
+    maxMismatchGainsCents: z.number(),
+    maxMismatchPretaxCents: z.number(),
+    ceilingBreachedYears: z.number(),
+    ceilingBreachedAtZeroConversionYears: z.number(),
+    unpaidTax: z.number(),
+    spendShortfall: z.number(),
+    reasons: z.array(z.string()),
+  }),
+});
+
+// What the optimizer search priced and what it held fixed
+// (Engine Review 4, E4-S2), in plain words.
+const optimizerSearchScopeOut = z.object({
+  description: z.string(),
+  drawOrdersSearched: z.boolean(),
+  claimingAgesSearched: z.boolean(),
+  claimingAgeCombinations: z.number(),
+  heldFixed: z.array(z.string()),
 });
 
 function toOptScore(
@@ -4344,6 +4382,7 @@ function toOptScore(
     terminalExcess: s.cost.terminalExcess,
     excessPretax: s.cost.excessPretax,
     netCost: s.cost.netCost,
+    endingWealth: s.result.endingAfterTaxWealth,
     ssCollected: s.cost.ssCollected,
     savingVsDoNothing:
       Math.round((doNothingNetCost - s.cost.netCost) * 100) / 100,
@@ -4354,6 +4393,18 @@ function toOptScore(
     claimLabel: claimAgeLabel(s.claimAges),
     drawOrder: drawOrderKey(s.spec.drawOrder),
     drawOrderLabel: drawOrderLabel(s.spec.drawOrder),
+    integrity: {
+      status: s.integrity.status,
+      nonConvergedYears: s.integrity.nonConvergedYears,
+      maxMismatchGainsCents: s.integrity.maxMismatchGainsCents,
+      maxMismatchPretaxCents: s.integrity.maxMismatchPretaxCents,
+      ceilingBreachedYears: s.integrity.ceilingBreachedYears,
+      ceilingBreachedAtZeroConversionYears:
+        s.integrity.ceilingBreachedAtZeroConversionYears,
+      unpaidTax: s.integrity.unpaidTaxTotal,
+      spendShortfall: s.integrity.spendShortfallTotal,
+      reasons: s.integrity.reasons,
+    },
   };
 }
 
@@ -13365,8 +13416,35 @@ export const Actions = {
       provenance: provenanceOut,
       effectiveInputs: rothEffectiveInputsOut.nullable(),
       candidatesTested: z.number(),
+      // Valid / invalid split of the tested candidates (E4-S1).
+      validCandidatesTested: z.number(),
+      invalidCandidatesTested: z.number(),
       doNothing: optScoreOut.nullable(),
       winner: optScoreOut.nullable(),
+      // Distinct optimization objectives (E4-S2): the
+      // cost-first recommended candidate (identical to winner),
+      // the lowest-net-cost valid candidate, and the highest
+      // ending-after-tax-wealth valid candidate. The two winners
+      // routinely differ — the result names both instead of
+      // hiding the disagreement behind the tie-break.
+      selectedWinner: optScoreOut.nullable(),
+      winnerByNetCost: optScoreOut.nullable(),
+      winnerByEndingWealth: optScoreOut.nullable(),
+      winnersDiffer: z.boolean(),
+      winnerQualified: z.boolean(),
+      // The raw cost-first candidate over ALL tested candidates,
+      // when it was excluded as invalid (E4-S1) — null on every
+      // plan whose cheapest candidate is valid.
+      excludedInvalidWinner: z
+        .object({
+          candidate: optScoreOut,
+          reasons: z.array(z.string()),
+        })
+        .nullable(),
+      // The cost-first objective, in plain words, and what the
+      // search priced vs held fixed.
+      objective: z.string(),
+      searchScope: optimizerSearchScopeOut,
       runnersUp: z.array(optScoreOut),
       // Priced levers (build v69): the entered plan priced as
       // its own fixed strategy (its saved ceilings / window /
@@ -13390,6 +13468,12 @@ export const Actions = {
       orderRunnersUp: z.array(optScoreOut),
       orderWinnerIsCurrent: z.boolean(),
       orderWinnerIsDoNothing: z.boolean(),
+      // The fixed-age run's own ending-wealth winner (E4-S2):
+      // the highest ending-after-tax-wealth valid candidate at
+      // the entered claiming ages, under the searched draw
+      // orders. Null when it is the order winner itself.
+      orderWinnerByEndingWealth: optScoreOut.nullable(),
+      orderWinnersDiffer: z.boolean(),
       sensitivity: z.array(
         z.object({
           returnPct: z.number(),
@@ -13406,6 +13490,12 @@ export const Actions = {
           // card. The engine accumulates it on every plan result.
           ssCollected: z.number(),
           changed: z.boolean(),
+          // What the sensitivity strip held fixed (E4-S2): the
+          // return strip re-runs the whole search at a shifted
+          // expected return, but the plan's draw order and the
+          // entered claiming ages stay frozen — a winner that
+          // moves here moves on the return alone.
+          heldFixed: z.array(z.string()),
         }),
       ),
       heirRateSensitivity: z.array(
@@ -13421,6 +13511,11 @@ export const Actions = {
           ssCollected: z.number(),
           savingVsDoNothing: z.number(),
           isCurrentRate: z.boolean(),
+          // What the heir-rate strip held fixed (E4-S2): same
+          // candidate set, same draw order, same entered
+          // claiming ages — only the heir rate (and therefore
+          // the terminal tax) moves.
+          heldFixed: z.array(z.string()),
         }),
       ),
       claimCombosTested: z.number(),
@@ -13469,8 +13564,24 @@ export const Actions = {
       const capturedYear = new Date().getUTCFullYear();
       const empty = {
         candidatesTested: 0,
+        validCandidatesTested: 0,
+        invalidCandidatesTested: 0,
         doNothing: null,
         winner: null,
+        selectedWinner: null,
+        winnerByNetCost: null,
+        winnerByEndingWealth: null,
+        winnersDiffer: false,
+        winnerQualified: false,
+        excludedInvalidWinner: null,
+        objective: "",
+        searchScope: {
+          description: "",
+          drawOrdersSearched: false,
+          claimingAgesSearched: false,
+          claimingAgeCombinations: 0,
+          heldFixed: [] as string[],
+        },
         runnersUp: [],
         savedPlan: null,
         improvements: [],
@@ -13481,6 +13592,8 @@ export const Actions = {
         orderRunnersUp: [],
         orderWinnerIsCurrent: false,
         orderWinnerIsDoNothing: false,
+        orderWinnerByEndingWealth: null,
+        orderWinnersDiffer: false,
         sensitivity: [],
         heirRateSensitivity: [],
         claimCombosTested: 0,
@@ -13549,6 +13662,7 @@ export const Actions = {
         },
         result: savedResult,
         cost: savedCost,
+        integrity: assessCandidateIntegrity(savedResult),
         claimAges: enteredClaimInfo(inputs),
       };
       // Draw-order search at the entered claiming ages: the
@@ -13574,6 +13688,12 @@ export const Actions = {
           netCost: s.winner.cost.netCost,
           ssCollected: s.winner.cost.ssCollected,
           changed: s.winner.spec.key !== winnerKey,
+          // E4-S2: the strip holds the draw order and the
+          // claiming ages fixed — only the return moves.
+          heldFixed: [
+            `draw order (${drawOrderLabel(inputs.drawOrder)})`,
+            "claiming ages (entered ages)",
+          ],
         };
       });
       const heirRateSensitivity = [0, 22, 32].map((rate) => {
@@ -13591,6 +13711,12 @@ export const Actions = {
           savingVsDoNothing:
             Math.round((s.doNothing.cost.netCost - s.winner.cost.netCost) * 100) / 100,
           isCurrentRate: rate === inputs.heirRatePct,
+          // E4-S2: same candidate set, same draw order, same
+          // entered claiming ages — only the heir rate moves.
+          heldFixed: [
+            `draw order (${drawOrderLabel(inputs.drawOrder)})`,
+            "claiming ages (entered ages)",
+          ],
         };
       });
       return {
@@ -13602,8 +13728,30 @@ export const Actions = {
         provenance: apiProvenance(),
         effectiveInputs,
         candidatesTested: res.candidatesTested,
+        validCandidatesTested: res.validCandidatesTested,
+        invalidCandidatesTested: res.invalidCandidatesTested,
         doNothing: toOptScore(res.doNothing, dnCost),
         winner: toOptScore(res.winner, dnCost),
+        selectedWinner: toOptScore(res.selectedWinner, dnCost),
+        winnerByNetCost: toOptScore(res.winnerByNetCost, dnCost),
+        winnerByEndingWealth: toOptScore(res.winnerByEndingWealth, dnCost),
+        winnersDiffer: res.winnersDiffer,
+        winnerQualified: res.winnerQualified,
+        excludedInvalidWinner:
+          res.excludedInvalidWinner == null
+            ? null
+            : {
+                candidate: toOptScore(res.excludedInvalidWinner.candidate, dnCost),
+                reasons: res.excludedInvalidWinner.integrity.reasons,
+              },
+        objective: res.objective,
+        searchScope: {
+          description: res.searchScope.description,
+          drawOrdersSearched: res.searchScope.drawOrdersSearched,
+          claimingAgesSearched: res.searchScope.claimingAgesSearched,
+          claimingAgeCombinations: res.searchScope.claimingAgeCombinations,
+          heldFixed: res.searchScope.heldFixed,
+        },
         runnersUp: res.runnersUp.map((s) => toOptScore(s, dnCost)),
         savedPlan: toOptScore(savedPlanScore, dnCost),
         improvements: optimizerImprovements(
@@ -13620,6 +13768,10 @@ export const Actions = {
         orderRunnersUp: fixedAge.runnersUp.map((s) => toOptScore(s, fixedDnCost)),
         orderWinnerIsCurrent,
         orderWinnerIsDoNothing,
+        orderWinnerByEndingWealth: fixedAge.winnersDiffer
+          ? toOptScore(fixedAge.winnerByEndingWealth, fixedDnCost)
+          : null,
+        orderWinnersDiffer: fixedAge.winnersDiffer,
         sensitivity,
         heirRateSensitivity,
         claimCombosTested: res.jointSearch.combosTested,
