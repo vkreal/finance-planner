@@ -959,7 +959,11 @@ prices slightly high. And SSA treats a
 birth on January 1 as born the prior year (20 CFR §404.102),
 so a January-1 birth prices the next year's cohort here — its
 full retirement age (retirement or survivor) reads up to two
-months high.
+months high. POMS RS 00615.003 §B.1 states the 62-year
+survivor-FRA cut at "Before 1/2/1911" — the CFR controls
+(20 CFR §404.409(b): "Before 1/2/1912"), so the engine follows
+the CFR; the one-year difference is a POMS wording gap, not a
+defect.
 
 ## Source layout
 
