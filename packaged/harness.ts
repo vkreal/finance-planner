@@ -1032,6 +1032,7 @@ eq(
     guardrailsAdjustmentPct: null,
     phaseStartAge: null,
     phaseDeclinePct: null,
+    minimumAnnualSpendingCents: null,
   };
   const [s1, s2] = await Promise.all([
     rtL.dispatch("saveRetirementCalc", {
@@ -1451,6 +1452,7 @@ eq(
     strategy: "constant", percentOfPortfolio: null, guardrailsCutPct: null,
     guardrailsRaisePct: null, guardrailsAdjustmentPct: null,
     phaseStartAge: null, phaseDeclinePct: null,
+    minimumAnnualSpendingCents: null,
   };
   const retSave = await rtM.call<any>("saveRetirementCalc", {
     ...retFields, baseRevision: 0,
@@ -1525,6 +1527,7 @@ eq(
     strategy: "constant", percentOfPortfolio: null, guardrailsCutPct: null,
     guardrailsRaisePct: null, guardrailsAdjustmentPct: null,
     phaseStartAge: null, phaseDeclinePct: null,
+    minimumAnnualSpendingCents: null,
   };
   const retSaveN = await rtN.call<any>("saveRetirementCalc", { ...retFieldsN, baseRevision: 0 });
   eq("N5 normal Retirement save ok", retSaveN.ok, true);
