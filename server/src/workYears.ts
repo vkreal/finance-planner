@@ -1080,6 +1080,16 @@ export function priceOneWorkYear(
   // firstRmdDeferredCarry*, so a direct caller can pass
   // one, and the seeding below pays it in the first priced
   // year, exactly as the march pays its start-year carry-in.
+  // NOTE (follow-up NICE 4N-4): an explicit deferralState SKIPS
+  // this seeding — the caller owns the state, so a plan carry
+  // it did not seed would be silently dropped. The only
+  // explicit-state caller in production code is rollWorkYears
+  // below, which seeds from these same plan fields before its
+  // first year, so no carry can drop through this path. (Two
+  // test callers in retirementReview5.test.ts pass an explicit
+  // hand-built state for carry-free plans; a future caller
+  // copying that pattern with a carry plan must seed the carry
+  // itself.)
   const dState: FirstRmdDeferralState =
     deferralState ?? {
       hadPrimary:

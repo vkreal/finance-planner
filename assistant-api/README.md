@@ -952,9 +952,10 @@ tax, no IRMAA, and no separate account buckets.
 (xv) **Social Security claiming rules price by birth year only
 (Engine Review 5).** Delayed retirement credits price at the
 post-1943 rate of 8%/yr for every cohort; SSA's own schedule is
-lower for earlier births — 3% (1917–1924), rising ½ point every
-two birth years to 7.5% (1941–1942), 8.0% from 1943 — so a
-pre-1943 late claim prices slightly high. And SSA treats a
+lower for earlier births — 1% (before 1917), 3% (1917–1924),
+rising ½ point every two birth years to 7.5% (1941–1942), 8.0%
+from 1943 (20 CFR §404.313(b)(2)) — so a pre-1943 late claim
+prices slightly high. And SSA treats a
 birth on January 1 as born the prior year (20 CFR §404.102),
 so a January-1 birth prices the next year's cohort here — its
 full retirement age (retirement or survivor) reads up to two

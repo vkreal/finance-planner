@@ -1661,9 +1661,11 @@ export function fullRetirementAgeMonths(birthYear: number): number {
 // that; delaying past FRA adds 2/3 of 1% per month (8%/yr),
 // with no credit past age 70. The 8%/yr rate is the post-1943
 // SSA rate and is priced for every cohort: SSA's own schedule
-// is lower for earlier births — 3% (1917–1924), then +1/2 point
-// every two birth years to 7.5% (1941–1942), 8.0% from 1943 —
-// so a pre-1943 late claim prices slightly high here
+// is lower for earlier births — 1% (before 1917), 3%
+// (1917–1924), then +1/2 point every two birth years to 7.5%
+// (1941–1942), 8.0% from 1943 (20 CFR §404.313(b)(2): 1/12 of
+// 1% per month before 1/2/1917, 1/4 of 1% per month 1917–1924)
+// — so a pre-1943 late claim prices slightly high here
 // (ssa.gov, "Delayed Retirement Credits").
 export function ssBenefitFactor(claimAge: number, birthYear: number): number {
   const fraMonths = fullRetirementAgeMonths(birthYear);
@@ -1707,7 +1709,11 @@ export function ssAnnualAtClaimAge(
    per birth year from 1940 (65 and 2 months) to 1944 (65 and
    10 months), is 66 for birth years 1945–1956, rises two
    months per birth year from 1957 (66 and 2 months) to 1961
-   (66 and 10 months), and is 67 for 1962 or later.
+   (66 and 10 months), and is 67 for 1962 or later. POMS
+   RS 00615.003 §B.1 states the same 62-year cut at "Before
+   1/2/1911" — the CFR controls (20 CFR §404.409(b): "Before
+   1/2/1912"), so the engine follows the CFR; the one-year
+   difference is a POMS wording gap, not a defect.
    (Equivalently: the retirement table with two years added to
    each birth year — so a person born in 1960 reaches
    retirement FRA at 67 but survivor FRA at 66 and 8 months.)

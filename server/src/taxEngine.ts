@@ -3504,7 +3504,10 @@ export type RothYearDetail = {
   // amount deferred from a prior year — or carried in from the
   // work-years roll — PAID this year (part of rmdPrimary /
   // rmdSpouse above, named here so the two-RMD year is
-  // readable). All four are $0 on a plan with no deferral.
+  // readable — except in a combined survivor year, where a
+  // deceased's deferred-paid is part of the SURVIVOR's side
+  // RMD, the combined balance sitting there; see the march's
+  // combined branch). All four are $0 on a plan with no deferral.
   rmdDeferredPrimary: number;
   rmdDeferredSpouse: number;
   rmdDeferredPaidPrimary: number;
@@ -4898,6 +4901,37 @@ export function simulateRothPlan(
         rmdDeferredPaidP = settled.deferredPaid;
         divisorP = u.divisor;
         tableP = u.divisor != null ? "uniform" : null;
+      }
+      // The DECEASED's carry-in (follow-up NICE 4N-2): the
+      // branch above settles only the survivor's side, so a
+      // carry belonging to the deceased entering at startYear
+      // — degenerate input, death before plan start; the roll
+      // never produces it — was dropped, never paid. Settle it
+      // through the same helper: computed $0 (the combined RMD
+      // above is the survivor's, on the combined balance) and
+      // the election off (a deceased's election cannot defer a
+      // distribution the survivor takes), so the carry is paid,
+      // never re-deferred. The payment joins the SURVIVOR's
+      // side RMD — the combined balance sits there, so the
+      // deceased's side variable would clamp it away — while
+      // the deferred-paid detail stays the deceased's own.
+      const deceasedCarry = survWho === "primary" ? carryP : carryS;
+      if (deceasedCarry > 0) {
+        const settledD = settleFirstRmdDeferral(deferralState, {
+          who: survWho === "primary" ? "primary" : "spouse",
+          computed: 0,
+          deferElected: false,
+          deathYearForPerson: false,
+          carryIn: deceasedCarry,
+          rmdAgeReached: false,
+        });
+        if (survWho === "primary") {
+          rmdS = r2(rmdS + settledD.pay);
+          rmdDeferredPaidP = settledD.deferredPaid;
+        } else {
+          rmdP = r2(rmdP + settledD.pay);
+          rmdDeferredPaidS = settledD.deferredPaid;
+        }
       }
     } else {
       const rp = rmdForYear({

@@ -1316,3 +1316,88 @@ describe("E5 §3 — roll starting at the RMD age on a $0 balance", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// §3 — a deceased's carry-in is PAID in a combined survivor year
+// (follow-up NICE 4N-2; pre-existing march edge, fixed here)
+// ---------------------------------------------------------------------------
+
+describe("E5 §3 — march combined-survivor year pays a deceased's carry-in", () => {
+  // Sample household, except the death year is 2025 — the year
+  // BEFORE the march's 2026 start year — so 2026 is already a
+  // combined survivor year: the survivor holds the combined
+  // $1,500,000 pre-tax balance and the deceased holds $0. A
+  // $10,000 first-RMD carry belonging to the DECEASED enters at
+  // startYear (degenerate input — death before plan start; the
+  // roll never produces it, since the roll models no death).
+  // The combined branch used to settle only the survivor's
+  // side, so the deceased's carry was dropped: 2026 paid $0
+  // and named $0 deferred-paid. The fix settles the
+  // deceased's carry through the same helper and pays it out
+  // of the combined balance in 2026.
+  function marchWithDeceasedCarry(
+    overrides: Record<string, unknown>,
+  ) {
+    const march = simulateRothPlan(
+      samplePlanInputs({ ...overrides }),
+      ROTH_COMPARE_STRATEGIES[0]!,
+    );
+    const yearOf = (year: number) => {
+      const row = march.years.find((y) => y.year === year);
+      expect(row).toBeDefined();
+      return row!;
+    };
+    return { march, yearOf };
+  }
+
+  test("primary dies before plan start: his $10,000 carry is paid in 2026", () => {
+    const { yearOf } = marchWithDeceasedCarry({
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2025,
+      firstRmdDeferredCarryPrimary: 10000,
+    });
+    const y2026 = yearOf(2026);
+    expect(y2026.detail.isSurvivorYear).toBe(true);
+    // The combine put the whole balance on the survivor's side.
+    expect(y2026.detail.priorPretaxPrimary).toBe(0);
+    expect(y2026.detail.priorPretaxSpouse).toBe(1500000);
+    // The deceased's carry is paid — and named as his.
+    expect(y2026.detail.rmdDeferredPaidPrimary).toBe(10000);
+    expect(y2026.detail.rmdDeferredPaidSpouse).toBe(0);
+    // The survivor (born 1970, age 56) has no RMD of her own
+    // yet, so the year's whole RMD is the deceased's carry,
+    // paid out of the combined balance on her side.
+    expect(y2026.detail.rmdSpouse).toBe(10000);
+    expect(y2026.detail.rmdPrimary).toBe(0);
+    // Paid exactly once: nothing deferred-paid in 2027, and
+    // no RMD at all there (the survivor is still 57).
+    const y2027 = yearOf(2027);
+    expect(y2027.detail.rmdDeferredPaidPrimary).toBe(0);
+    expect(y2027.detail.rmdSpouse).toBe(0);
+    expect(y2027.detail.rmdPrimary).toBe(0);
+  });
+
+  test("spouse dies before plan start: her $10,000 carry is paid in 2026", () => {
+    const { yearOf } = marchWithDeceasedCarry({
+      survivorEnabled: true,
+      survivorWho: "spouse",
+      survivorDeathYear: 2025,
+      firstRmdDeferredCarrySpouse: 10000,
+    });
+    const y2026 = yearOf(2026);
+    expect(y2026.detail.isSurvivorYear).toBe(true);
+    expect(y2026.detail.priorPretaxPrimary).toBe(1500000);
+    expect(y2026.detail.priorPretaxSpouse).toBe(0);
+    expect(y2026.detail.rmdDeferredPaidSpouse).toBe(10000);
+    expect(y2026.detail.rmdDeferredPaidPrimary).toBe(0);
+    // The survivor (born 1968, age 58) has no RMD of his own
+    // yet, so the year's whole RMD is the deceased's carry.
+    expect(y2026.detail.rmdPrimary).toBe(10000);
+    expect(y2026.detail.rmdSpouse).toBe(0);
+    const y2027 = yearOf(2027);
+    expect(y2027.detail.rmdDeferredPaidSpouse).toBe(0);
+    expect(y2027.detail.rmdPrimary).toBe(0);
+    expect(y2027.detail.rmdSpouse).toBe(0);
+  });
+});
