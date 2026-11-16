@@ -4249,7 +4249,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-stats-zero-vol-equals-compare",
     kind: "tax",
-    note: "Monte Carlo stats at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path prices the deterministic plan bit for bit and every percentile (p10 = p50 = p90) of every scenario must equal its runRothCompare figure TO THE CENT — 27 exact comparisons across Do Nothing, Fill 12%, and an Overspend scenario on the small mcStatsBase plan (born 1961/1972, $720,000 across the buckets, $30,000 spending, 3% return, retire 65, plan to 85). (Engine Review C9, Build 3: the Overspend scenario's pinned ending wealth is net of its $17,551.06 unpaid tax — ending wealth now subtracts lifetime unpaid tax as stated, so the pre-fix pin overstated it by exactly that amount.) The funded scenarios pin neverShortfallRatePct 100 with zero total shortfall; the Overspend scenario ($400,000/yr against the same balances) shorts deterministically, so at N = 8 its rate is 0, all 8 paths count as shortfall paths, and its per-path total shortfall is the one deterministic figure $7,294,458.10 at p50 and p90 alike. The deterministic compare figures are pinned alongside, from the same compare run the identity checks against. EXTENDED (v55, F1): at volatility 0 every path is the deterministic path, so for EACH scenario the stats row's totalUnpaidTaxP50Cents and totalUnpaidTaxP90Cents must equal the compare row's unpaidTaxCents, pathsWithUnpaidTax must equal (unpaidTaxCents > 0 ? pathsRun : 0), and fullyFundedRatePct must equal 100 exactly when pathsWithShortfall == 0 AND unpaidTaxCents == 0, else 0 — 12 further in-case comparisons (39 total), with the resulting per-scenario constants pinned alongside.",
+    note: "Monte Carlo stats at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path prices the deterministic plan bit for bit and every percentile (p10 = p50 = p90) of every scenario must equal its runRothCompare figure TO THE CENT — 27 exact comparisons across Do Nothing, Fill 12%, and an Overspend scenario on the small mcStatsBase plan (born 1961/1972, $720,000 across the buckets, $30,000 spending, 3% return, retire 65, plan to 85). (Engine Review C9, Build 3: the Overspend scenario's pinned ending wealth is net of its $17,551.06 unpaid tax — ending wealth now subtracts lifetime unpaid tax as stated, so the pre-fix pin overstated it by exactly that amount. Build 4 — W2-D1: the HSA tax-payment leg pays the bill, so the unpaid tax falls to $771.57 and the ending wealth to −$771.57; the full reconciliation is in the re-pin comment at overDetWealth.) The funded scenarios pin neverShortfallRatePct 100 with zero total shortfall; the Overspend scenario ($400,000/yr against the same balances) shorts deterministically, so at N = 8 its rate is 0, all 8 paths count as shortfall paths, and its per-path total shortfall is the one deterministic figure $7,294,458.10 at p50 and p90 alike. The deterministic compare figures are pinned alongside, from the same compare run the identity checks against. EXTENDED (v55, F1): at volatility 0 every path is the deterministic path, so for EACH scenario the stats row's totalUnpaidTaxP50Cents and totalUnpaidTaxP90Cents must equal the compare row's unpaidTaxCents, pathsWithUnpaidTax must equal (unpaidTaxCents > 0 ? pathsRun : 0), and fullyFundedRatePct must equal 100 exactly when pathsWithShortfall == 0 AND unpaidTaxCents == 0, else 0 — 12 further in-case comparisons (39 total), with the resulting per-scenario constants pinned alongside.",
     expected: {
       mismatches: 0,
       comparedFields: 39,
@@ -4269,10 +4269,21 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       // its $17,551.06 unpaid tax: 3,720,589 − 1,755,106 =
       // 1,965,483. The MC percentiles still equal the compare
       // row to the cent (both sides price the same march).
-      overDetWealth: 1965483,
+      // (Engine Review C9, Build 4 — W2-D1): the HSA leg in
+      // debitUnpaid pays the Overspend scenario's tax bill, so
+      // the pins move again: 2027 HSA draws $16,863.66 (bill
+      // $12,931.06 + its own income tax $3,932.60), unpaid $0;
+      // $20,600 − $16,863.66 = $3,736.34 × 1.03 = $3,848.43
+      // HSA left; 2028 draws the remaining $3,848.43, unpaid
+      // $4,620.00 − $3,848.43 = $771.57; lifetime federal rises
+      // by exactly $3,932.60, ending balances $0, ending wealth
+      // $0 − $771.57 = −$771.57. Do Nothing bit-identical.
+      // The MC percentiles still equal the compare row to the
+      // cent (both sides price the same march).
+      overDetWealth: -77157,
       dnUnpaid: 0,
       fillUnpaid: 0,
-      overUnpaid: 1755106,
+      overUnpaid: 77157,
       dnFully: 100,
       fillFully: 100,
       overFully: 0,
