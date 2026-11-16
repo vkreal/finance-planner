@@ -296,9 +296,11 @@ describe("C9 Build 1 — Rule-of-55 eligibility + §72(t) penalty", () => {
     // The audit's positive control, default draw order: the
     // opening withholding already penalized before the fix
     // ($2,055.78 in 2026). After the fix the delta's share joins
-    // it, so the penalty is again the final federal tax ÷ 9:
-    // 2026 $29,842 ÷ 9 = $3,315.78; 2027 $29,661.90 ÷ 9 =
-    // $3,295.76; lifetime $6,611.54.
+    // it, so the penalty is again the final federal tax ÷ 9 to
+    // within a cent of rounding: 2026 $29,842 ÷ 9 = $3,315.78;
+    // 2027 $29,661.90 ÷ 9 = $3,295.77, while the engine prices
+    // $3,295.76 — the opening and top-up gross-ups rounded
+    // separately; lifetime $6,611.54.
     const res = simulateRothPlan(
       samplePlanInputs({
         retirementAge: 55,

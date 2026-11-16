@@ -79,6 +79,9 @@ function r2(n: number): number {
 // With E = 0 this is exactly the pre-fix gross-up (penalty W/9),
 // so unanswered eligibility prices bit-identically. `tax` +
 // `penalty` is the distribution to within a cent of rounding.
+// The opening and top-up gross-ups each round separately, so
+// their sum can sit a cent off the final federal tax ÷ 9,
+// either way (the 2027 W1-B2 control prices a cent below it).
 function grossUpWithheld(
   taxToPay: number,
   shelter: number,
@@ -6604,6 +6607,13 @@ export function simulateRothPlan(
           // against the pre-debit ledger — the shelter is the
           // eligible balance the draw ARRIVES with, not what
           // is left after it.
+          // The draw share measured here is net of any pre-draw
+          // tax-channel debit: the opening-tax overflow debit
+          // runs before this loop, so when Taxable cannot cover
+          // the opening bill it shrinks the primary-first draw
+          // share — and therefore the penalty — before the loop
+          // prices it (measured $9,579.46 vs $10,000 when
+          // Taxable is $0).
           if (fromP > 0 && age < 59.5) {
             if (eligBalP == null) {
               spendEligUnknown = true;

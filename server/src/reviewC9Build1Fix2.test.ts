@@ -7,7 +7,12 @@
 // federal + state only while the same result's netTaxBill carried the
 // §72(t) penalty, so in a penalized year its leftover overstated the
 // penalty-inclusive cash by exactly the penalty. Fix 2 nets the penalty
-// into the line, so its leftover agrees with cashLeftAfterTax.
+// into the line, so in a year with no refundable education credit and
+// no APTC settlement adjustment its leftover agrees with
+// cashLeftAfterTax. With either (Fix 3), the line still nets the total
+// bill while netTaxBill is the net bill, so the leftover differs from
+// proceeds − netTaxBill by exactly −educationRefundable −
+// creditStillDue + excessAptcRepayment.
 import { describe, test, expect } from "bun:test";
 import {
   pricePlaygroundYear,
