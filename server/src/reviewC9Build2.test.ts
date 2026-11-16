@@ -44,6 +44,7 @@ import {
   mergeRothLedgersForRollover,
   simulateRothPlan,
   type DrawOrder,
+  type RothAccountLedger,
   type RothPlanInputs,
 } from "./taxEngine";
 import {
@@ -388,9 +389,12 @@ describe("C9 Build 2 — Roth ledgers + distribution ordering", () => {
     // which is itself penalized (tax-debit legs price income,
     // never penalty — the Build 2 scope decision, same as Build
     // 1's pre-tax legs). Lifetime: $5,000 + $15,000 + $15,000 +
-    // $15,000.01 = $50,000.01 (2029's cent is settlement rounding
-    // on the shortfall year, when the balance could not cover
-    // spending + penalty and part of the penalty went unpaid).
+    // $15,000.01 = $50,000.01 (2029's cent is per-component r2
+    // round-up in the spending-draw penalty legs: 10% ×
+    // $113,203.75 = $11,320.375 → $11,320.38 on the lot
+    // portion, plus 10% × $36,796.25 = $3,679.625 → $3,679.63
+    // on the earnings portion — $15,000.01 against the exact
+    // 10% × $150,000 = $15,000.00).
     const res = simulateRothPlan(
       fixture({
         taxableStart: 50_000,
@@ -440,6 +444,83 @@ describe("C9 Build 2 — Roth ledgers + distribution ordering", () => {
     const merged2 = mergeRothLedgersForRollover(noIraClock, employer, 2026);
     expect(merged2.firstYear).toBe(2026);
     expect(merged2.balance).toBe(150_000);
+  });
+
+  test("rollover merge: a $0 side contributes nothing (NICE-3 guard)", () => {
+    // The rollover helper had the survivor merge's pre-Fix-2
+    // hole: no balance check, so a $0 UNKNOWN employer's
+    // phantom lot rode into the merged ledger and flipped it
+    // unknown (Pass 4 §6.5). The §6.5 shape — IRA $44,835
+    // (2027 taxable lot $42,700 + $2,135 earnings, firstYear
+    // 2027, known) + employer $0 (2020 nontaxable lot
+    // $50,000, firstYear 2020, unknown) — now merges known,
+    // with the phantom lot dropped and the merged clock 2027.
+    // (A $0 employer ledger with known false cannot come from
+    // initRothAccountLedger — a $0 balance reads known — so
+    // the employer side is built literally, as the march's
+    // unknown-branch over-draw leaves it.)
+    const ira: RothAccountLedger = {
+      balance: 44_835,
+      contributions: 0,
+      lots: [{ year: 2027, taxable: 42_700, nontaxable: 0 }],
+      firstYear: 2027,
+      known: true,
+    };
+    const employer: RothAccountLedger = {
+      balance: 0,
+      contributions: 0,
+      lots: [{ year: 2020, taxable: 0, nontaxable: 50_000 }],
+      firstYear: 2020,
+      known: false,
+    };
+    const merged = mergeRothLedgersForRollover(ira, employer, 2027);
+    expect(merged.balance).toBe(44_835);
+    expect(merged.contributions).toBe(0);
+    expect(merged.lots).toEqual([
+      { year: 2027, taxable: 42_700, nontaxable: 0 },
+    ]);
+    expect(merged.firstYear).toBe(2027);
+    expect(merged.known).toBe(true);
+    // Happy path (§6.4): both sides non-zero, the guard does
+    // not fire — an unknown employer still poisons the merge
+    // and its lots still ride in, exactly as before.
+    const unknownEmployer: RothAccountLedger = {
+      balance: 50_000,
+      contributions: 0,
+      lots: [{ year: 2020, taxable: 0, nontaxable: 50_000 }],
+      firstYear: 2020,
+      known: false,
+    };
+    const merged2 = mergeRothLedgersForRollover(ira, unknownEmployer, 2027);
+    expect(merged2.balance).toBe(94_835);
+    expect(merged2.lots).toEqual([
+      { year: 2020, taxable: 0, nontaxable: 50_000 },
+      { year: 2027, taxable: 42_700, nontaxable: 0 },
+    ]);
+    expect(merged2.firstYear).toBe(2027);
+    expect(merged2.known).toBe(false);
+    // Mirror side: a $0 IRA's first year must not pull the
+    // merged clock earlier than the rollover year, and its
+    // lots are dropped — the employer's dollars are the only
+    // ones merged.
+    const emptyIra: RothAccountLedger = {
+      balance: 0,
+      contributions: 0,
+      lots: [{ year: 2020, taxable: 10_000, nontaxable: 0 }],
+      firstYear: 2020,
+      known: true,
+    };
+    const merged3 = mergeRothLedgersForRollover(
+      emptyIra,
+      unknownEmployer,
+      2027,
+    );
+    expect(merged3.balance).toBe(50_000);
+    expect(merged3.lots).toEqual([
+      { year: 2020, taxable: 0, nontaxable: 50_000 },
+    ]);
+    expect(merged3.firstYear).toBe(2027);
+    expect(merged3.known).toBe(false);
   });
 
   test("work-years roll: basis carries forward with the contributions added", () => {

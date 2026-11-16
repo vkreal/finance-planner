@@ -51,6 +51,14 @@
 // the conversion lands below the pre-fix figure — and the
 // penalty is still exact hand arithmetic on the pinned
 // amount, decomposed leg by leg in each case's comment.
+// The taxable side of the same repricing (Pass 4 §3.2):
+// the taxable pool drawn for spending rises exactly
+// $15,085.07, whose gains are $7,938.68
+// (spending-substitution), and the taxable pool drawn for
+// the tax bill rises $9,522.65 — the $10,429.15 penalty
+// less the $906.50 federal-tax saving — whose gains are
+// $5,011.40 (tax-funding). $7,938.68 + $5,011.40 =
+// $12,950.08, the whole rise in the taxable draw's gains.
 
 import { describe, expect, test } from "bun:test";
 import {

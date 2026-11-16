@@ -2718,6 +2718,10 @@ function debitRothAccountLedger(
   ctx: { year: number; age: number },
 ): RothDebitOutcome {
   const take = Math.min(Math.max(0, amount), Math.max(0, led.balance));
+  // No backstop call on this early return: it debits nothing,
+  // so it cannot create a $0 balance with standing composition
+  // — every path that CAN reduce a balance to $0 has its own
+  // backstop (see mergeRothOwnerLedgers).
   if (take <= 0) return { drawn: 0, income: 0, penalty: 0, unknown: false };
   led.balance = Math.max(0, led.balance - take);
   let remaining = take;
@@ -3130,8 +3134,21 @@ export function mergeRothLedgersForRollover(
   employer: RothAccountLedger,
   rolloverYear: number,
 ): RothAccountLedger {
-  const firstYear =
-    ira.firstYear == null
+  // A $0 side contributes nothing (C9 Build 2 NICEs fix —
+  // the Fix 2 survivor-merge guard shape, applied to the
+  // rollover helper, which had the same hole: no balance
+  // check): it cannot poison `known`, its lots are dropped
+  // (an unknown side can hold phantom lots against a $0
+  // balance — the Fix 1 phantom), and its first year is
+  // ignored. The employer's first year never carries over
+  // anyway (the rollover clock rule below), so the ignore
+  // bites on the IRA side: a $0 IRA's first year must not
+  // pull the merged clock earlier than the rollover year.
+  const iraEmpty = ira.balance <= 0;
+  const employerEmpty = employer.balance <= 0;
+  const firstYear = iraEmpty
+    ? rolloverYear
+    : ira.firstYear == null
       ? rolloverYear
       : Math.min(ira.firstYear, rolloverYear);
   // Balance at full precision (see mergeRothOwnerLedgers
@@ -3140,11 +3157,14 @@ export function mergeRothLedgersForRollover(
   return {
     balance: ira.balance + employer.balance,
     contributions: r2(ira.contributions + employer.contributions),
-    lots: [...ira.lots, ...employer.lots]
+    lots: [
+      ...(iraEmpty ? [] : ira.lots),
+      ...(employerEmpty ? [] : employer.lots),
+    ]
       .map((l) => ({ ...l }))
       .sort((m, n) => m.year - n.year),
     firstYear,
-    known: ira.known && employer.known,
+    known: (ira.known || iraEmpty) && (employer.known || employerEmpty),
   };
 }
 

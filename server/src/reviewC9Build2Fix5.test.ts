@@ -354,11 +354,16 @@ describe("phantom alignment pinned at march level (Pass 6 scouts 4/5)", () => {
 
   // Re-pinned under Fix 8: the old pins embedded the r2-draw dust
   // (short -0.01, fundSpendRoth 1c high) that Fix 6 removed. The
-  // fixed march matches the 58bb12e base bit-for-bit on every
-  // quantity pinned here (probe logs-fix7/b1-base.log vs
+  // fixed march matches the 58bb12e base bit-for-bit on the six
+  // re-pinned quantities (probe logs-fix7/b1-base.log vs
   // b1-repo.log — identical B1, topUp, fundSpendRoth, rothDraw,
   // taxSale, pretaxDraw), so the pins now read the base-consistent
   // values: B1 $3,832.76 (not .75), short 0, fundTaxRoth $0.01.
+  // The y27 pen/unpaid/clock/earnInc/unknown fields pinned below
+  // are Build 2-core values, NOT base values (base reads pen
+  // 1235.21 / unpaid 1204.19 / clock 2032, with no earnInc or
+  // unknown fields) — identical on 351c5b2 and the fixed tree,
+  // which is why the re-pin leaves them untouched.
   test("tracking S=659k: B1 $3,832.76, top-up $3,832.75 — a cent apart at the cap, not a coincidence", () => {
     const wOpen = measureOpeningWithholding();
     const res = simulateRothPlan(
