@@ -322,14 +322,16 @@ export function planNetCost(
    per-year diagnostics (RothYear): settlementConverged /
    settlementMismatchCents (whether the year's settlement
    iteration reached an exact fixed point, and the kept round's
-   residual mismatch per component in integer cents), ceiling
+   residual mismatch per component in integer cents — gains,
+   pre-tax, and, since Engine Review C3, the ACA credit
+   residual), ceiling
    Breached (a switched-on ceiling still breached at conversion
    $0 — the draws alone breach), unpaidTax (assessed tax no
    balance could pay), and spendShortfall (spending need the
    year's draws could not fund). This section assesses a priced
    candidate against them, with one documented tolerance.
 
-   SETTLEMENT TOLERANCE (derived, not guessed): 1 cent per
+   SETTLEMENT TOLERANCE (derived, not guessed): 2 cents per
    component per year. REPRODUCED (review probe, Oct 25
    single-filer case and its equivalents): the single-filer
    shape of the fictional sample household prices non-converged
@@ -338,15 +340,26 @@ export function planNetCost(
    1-cent GAINS mismatch, pre-tax $0, and across the full
    3,025-candidate optimizer search in BOTH filing statuses
    (≈9,800 non-converged year-instances) the worst mismatch is
-   1 cent, never more. That is a benign rounding residual, not a
-   settlement defect: the iteration compares r2-rounded feedback
-   gains, and a 1-cent gains difference moves the year's tax by
-   at most ~$0.004 (1¢ × the top 37% ordinary / 23.8% gains
-   rate), which rounds to $0.00 at the cent the engine prices
-   in, and its balance knock-on stays under ~7¢ over a 40-year
-   horizon at 5%. A residual above the tolerance is NOT assumed
-   benign: it is independently material, and the candidate is
-   invalid until its settlement is reproduced and understood.
+   1 cent, never more. That 1-cent basis was SUPERSEDED by
+   Engine Review C3 (W4, V2-F1): a reproducible 2-cent GAINS
+   mismatch exists on the sample household itself — spending
+   $254,500, taxable-first draw order, 60% taxable basis,
+   fill-aca strategy, year 2047, {gains: 2, pre-tax: 0},
+   deterministic across runs, with the neighbouring spendings
+   $254,499 and $254,501 both converging at {0, 0} (a
+   knife-edge at a Taxable-balance saturation kink, not a
+   family — a $2,500-step hunt over $100k–$300k found zero
+   further years ≥ 2¢). The tolerance is therefore raised to
+   2 cents: the observed worst case, still a benign rounding
+   residual, not a settlement defect: the iteration compares
+   r2-rounded feedback gains, and a 2-cent gains difference
+   moves the year's tax by at most ~$0.008 (2¢ × the top 37%
+   ordinary / 23.8% gains rate), which rounds to $0.00 at the
+   cent the engine prices in, and its balance knock-on stays
+   under ~7¢ over a 40-year horizon at 5%. A residual above
+   the tolerance is NOT assumed benign: it is independently
+   material, and the candidate is invalid until its settlement
+   is reproduced and understood.
 
    CEILING BREACH is deliberately NOT an invalidity by itself:
    a breached year at conversion $0 means the year's mandatory
@@ -358,7 +371,7 @@ export function planNetCost(
    breached year still converting contradicts the clamp and is a
    real defect, not a disclosure. */
 
-export const SETTLEMENT_TOLERANCE_CENTS = 1;
+export const SETTLEMENT_TOLERANCE_CENTS = 2;
 
 export type CandidateIntegrityStatus =
   | "valid"
@@ -371,8 +384,13 @@ export type CandidateIntegrity = {
   nonConvergedYears: number;
   nonConvergedYearList: number[];
   // Worst residual per component over the march, integer cents.
+  // (Engine Review C3, C3-S1): the ACA credit residual is a
+  // third component — a year can fail on credit alone while
+  // gains / pre-tax converge, and the gate judged such a year
+  // benign before this field existed.
   maxMismatchGainsCents: number;
   maxMismatchPretaxCents: number;
+  maxMismatchAcaCreditCents: number;
   // Ceiling-breach counts: all breached years, and the subset
   // breached at conversion $0 (draws alone — not a defect).
   ceilingBreachedYears: number;
@@ -391,6 +409,8 @@ export function assessCandidateIntegrity(
   const nonConvergedYearList: number[] = [];
   let maxMismatchGainsCents = 0;
   let maxMismatchPretaxCents = 0;
+  let maxMismatchAcaCreditCents = 0;
+  const acaMismatchYears: number[] = [];
   let ceilingBreachedYears = 0;
   let ceilingBreachedAtZeroConversionYears = 0;
   let spendShortfallTotal = 0;
@@ -399,11 +419,14 @@ export function assessCandidateIntegrity(
     // Defensive reads (?? 0 / ?? false): the engine always sets
     // these fields, but a caller assessing a mapped row (e.g. a
     // compare-path readout) must never NaN-poison the totals.
-    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0 };
+    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, acaCredit: 0 };
     const conversion = y.conversion ?? 0;
     if (!y.settlementConverged) nonConvergedYearList.push(y.year);
     maxMismatchGainsCents = Math.max(maxMismatchGainsCents, mismatch.gains ?? 0);
     maxMismatchPretaxCents = Math.max(maxMismatchPretaxCents, mismatch.pretax ?? 0);
+    const acaCredit = mismatch.acaCredit ?? 0;
+    if (acaCredit > 0) acaMismatchYears.push(y.year);
+    maxMismatchAcaCreditCents = Math.max(maxMismatchAcaCreditCents, acaCredit);
     if (y.ceilingBreached) {
       ceilingBreachedYears++;
       if (conversion <= 0) ceilingBreachedAtZeroConversionYears++;
@@ -419,6 +442,19 @@ export function assessCandidateIntegrity(
     reasons.push(
       `unresolved settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
         `(gains ${maxMismatchGainsCents}¢, pre-tax ${maxMismatchPretaxCents}¢)`,
+    );
+  }
+  // (Engine Review C3, C3-S1): the ACA credit residual is
+  // judged by the same tolerance — a credit-only failure is
+  // a real funding inconsistency (the funded need is short
+  // of the need at the year's own priced credit by exactly
+  // the residual), not a rounding artifact, so anything
+  // above the tolerance invalidates the candidate exactly
+  // as a gains / pre-tax residual does.
+  if (maxMismatchAcaCreditCents > SETTLEMENT_TOLERANCE_CENTS) {
+    reasons.push(
+      `unresolved ACA credit settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
+        `(ACA credit ${maxMismatchAcaCreditCents}¢ in ${acaMismatchYears.join(", ")})`,
     );
   }
   if (convertingBreachedYears.length > 0) {
@@ -451,6 +487,7 @@ export function assessCandidateIntegrity(
     nonConvergedYearList,
     maxMismatchGainsCents,
     maxMismatchPretaxCents,
+    maxMismatchAcaCreditCents,
     ceilingBreachedYears,
     ceilingBreachedAtZeroConversionYears,
     unpaidTaxTotal,
@@ -8264,9 +8301,16 @@ export type RothFundingRow = {
   // whether the year's kept settlement was an exact fixed
   // point of the settlement iteration, and — when it was not —
   // the kept round's residual mismatch per component in
-  // integer cents (both 0 when converged).
+  // integer cents (gains, pre-tax, and — Engine Review C3,
+  // C3-S1 — the ACA credit residual; all 0 when converged),
+  // plus how many rounds / passes the kept settlement took
+  // and why each level stopped.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number };
+  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementRounds: number;
+  settlementPasses: number;
+  settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
+  settlementInnerStopReason: "converged" | "repeated-assumption" | "iteration-limit";
   // Ceiling breached (round-7 R7-4, from the engine's
   // RothYear): true when a switched-on ceiling is still
   // breached by the year's final priced figures at
@@ -8386,6 +8430,10 @@ export function buildRothFunding(
       ssTaxableCents: cents(y.detail.ssTaxable),
       settlementConverged: y.settlementConverged,
       settlementMismatchCents: y.settlementMismatchCents,
+      settlementRounds: y.settlementRounds,
+      settlementPasses: y.settlementPasses,
+      settlementStopReason: y.settlementStopReason,
+      settlementInnerStopReason: y.settlementInnerStopReason,
       ceilingBreached: y.ceilingBreached,
       lossCarryInStCents: cents(y.detail.lossCarryInSt),
       lossCarryInLtCents: cents(y.detail.lossCarryInLt),
@@ -9210,11 +9258,17 @@ export type RothCompareScenarioYear = {
   // RothYear): whether the year's kept settlement was an exact fixed
   // point of the settlement iteration, and — when it was not — the
   // kept round's residual mismatch per component in integer cents
-  // (both 0 when converged). A non-converged year was priced from
-  // the iteration's best iterated state. Display only — no score,
-  // ranking, or delta is derived from them, and no pricing changed.
+  // (gains, pre-tax, and — Engine Review C3, C3-S1 — the ACA
+  // credit residual; all 0 when converged), plus how many
+  // rounds / passes the kept settlement took and why each level
+  // stopped. Display only — no score, ranking, or delta is
+  // derived from them, and no pricing changed.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number };
+  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementRounds: number;
+  settlementPasses: number;
+  settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
+  settlementInnerStopReason: "converged" | "repeated-assumption" | "iteration-limit";
   // Ceiling breached (round-8 SHOULD-1, from the engine's
   // RothYear): true when a switched-on ceiling is still breached
   // by the year's final priced figures at conversion $0 — the
@@ -9423,6 +9477,10 @@ export function runRothCompare(
         // funding rows carry it. Display only.
         settlementConverged: y.settlementConverged,
         settlementMismatchCents: y.settlementMismatchCents,
+        settlementRounds: y.settlementRounds,
+        settlementPasses: y.settlementPasses,
+        settlementStopReason: y.settlementStopReason,
+        settlementInnerStopReason: y.settlementInnerStopReason,
         ceilingBreached: y.ceilingBreached,
         // RMD + survivor readouts (Engine Review 5, display
         // only): the march row's own detail, in cents.

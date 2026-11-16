@@ -978,6 +978,7 @@ type YearlyCompareRow = {
   settlementConverged: boolean;
   settlementMismatchGains: number;
   settlementMismatchPretax: number;
+  settlementMismatchAcaCredit: number;
   ceilingBreached: boolean;
 };
 
@@ -1023,6 +1024,9 @@ function yearlyTable(
     ),
     settlementMismatchPretax: centsToDollars(
       y.settlementMismatchCents.pretax,
+    ),
+    settlementMismatchAcaCredit: centsToDollars(
+      y.settlementMismatchCents.acaCredit ?? 0,
     ),
     ceilingBreached: y.ceilingBreached,
   }));
@@ -1314,6 +1318,9 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
     settlementMismatchPretax: centsToDollars(
       y.settlementMismatchCents.pretax,
+    ),
+    settlementMismatchAcaCredit: centsToDollars(
+      y.settlementMismatchCents.acaCredit ?? 0,
     ),
     ceilingBreached: y.ceilingBreached,
   }));

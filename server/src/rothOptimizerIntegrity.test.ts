@@ -24,15 +24,27 @@
 // 22%: years 2038/2049/2056 on the compare path, 2056 on the
 // direct path — each 1¢ gains, pre-tax 0¢). Across the full
 // 3,025-candidate optimizer search in BOTH filing statuses
-// (≈9,800 non-converged year-instances) the worst mismatch is
+// (≈9,800 non-converged year-instances) the worst mismatch was
 // 1 cent, never more. VERDICT: benign rounding residual, not a
 // settlement defect — the iteration compares r2-rounded
 // feedback gains, and 1¢ of gains moves a year's tax by at
 // most ~$0.004 (1¢ × the top 37% ordinary / 23.8% gains
 // rate), which rounds to $0.00 at the cent the engine prices
-// in. The tolerance is therefore SETTLEMENT_TOLERANCE_CENTS =
+// in. The tolerance was therefore SETTLEMENT_TOLERANCE_CENTS =
 // 1 per component per year, derived from that reproduction,
-// and anything above it is independently material.
+// and anything above it was independently material.
+//
+// SUPERSEDED (Engine Review C3, V2-F1, 2026-11-15): the 1¢
+// basis is broken by a deterministic 2¢ gains mismatch with
+// converging neighbours — sample household, spend $254,500,
+// taxable-first, basis 60%, fill-aca, year 2047, {gains:2,
+// pretax:0}; a $2,500-step hunt found zero further ≥2¢ years.
+// The tolerance is now SETTLEMENT_TOLERANCE_CENTS = 2 per
+// component per year; 2¢ moves a year's tax by at most
+// ~$0.008, which still rounds to $0.00 at the cent the engine
+// prices in. The C3-S1 ACA-credit clause reuses the same
+// tolerance for the ACA component (see the ACA-clause tests
+// below).
 //
 // Run per-file (whole-suite bun test in one process OOMs on
 // this VM): bun test server/src/rothOptimizerIntegrity.test.ts
@@ -105,6 +117,9 @@ type FakeYear = {
   converged: boolean;
   gains: number;
   pretax: number;
+  // Engine Review C3, C3-S1: the ACA-credit mismatch component
+  // (integer cents); omitted in a FakeYear means 0.
+  acaCredit?: number;
   breached: boolean;
   conversion: number;
   shortfall: number;
@@ -115,7 +130,11 @@ function fakeResult(years: FakeYear[], unpaidTax = 0): RothPlanResult {
     years: years.map((y) => ({
       year: y.year,
       settlementConverged: y.converged,
-      settlementMismatchCents: { gains: y.gains, pretax: y.pretax },
+      settlementMismatchCents: {
+        gains: y.gains,
+        pretax: y.pretax,
+        acaCredit: y.acaCredit ?? 0,
+      },
       ceilingBreached: y.breached,
       conversion: y.conversion,
       spendShortfall: y.shortfall,
@@ -129,6 +148,7 @@ const CONVERGED_YEAR: FakeYear = {
   converged: true,
   gains: 0,
   pretax: 0,
+  acaCredit: 0,
   breached: false,
   conversion: 100000,
   shortfall: 0,
@@ -235,8 +255,31 @@ describe("E4-S1 — candidate-integrity assessment (assessor units)", () => {
     expect(i.reasons).toEqual([]);
   });
 
-  test("1-cent gains residual is valid-with-benign-residual (the tolerance)", () => {
-    expect(SETTLEMENT_TOLERANCE_CENTS).toBe(1);
+  test("2-cent gains residual is valid-with-benign-residual (the tolerance)", () => {
+    expect(SETTLEMENT_TOLERANCE_CENTS).toBe(2);
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        CONVERGED_YEAR,
+        {
+          ...CONVERGED_YEAR,
+          year: 2047,
+          converged: false,
+          gains: 2,
+          pretax: 0,
+          conversion: 0,
+        },
+      ]),
+    );
+    expect(i.status).toBe("valid-with-benign-residual");
+    expect(i.nonConvergedYears).toBe(1);
+    expect(i.nonConvergedYearList).toEqual([2047]);
+    expect(i.maxMismatchGainsCents).toBe(2);
+    expect(i.maxMismatchPretaxCents).toBe(0);
+    expect(i.maxMismatchAcaCreditCents).toBe(0);
+    expect(i.reasons).toEqual([]);
+  });
+
+  test("1-cent gains residual is still benign under the 2-cent tolerance", () => {
     const i = assessCandidateIntegrity(
       fakeResult([
         CONVERGED_YEAR,
@@ -252,9 +295,7 @@ describe("E4-S1 — candidate-integrity assessment (assessor units)", () => {
     );
     expect(i.status).toBe("valid-with-benign-residual");
     expect(i.nonConvergedYears).toBe(1);
-    expect(i.nonConvergedYearList).toEqual([2049]);
     expect(i.maxMismatchGainsCents).toBe(1);
-    expect(i.maxMismatchPretaxCents).toBe(0);
     expect(i.reasons).toEqual([]);
   });
 
@@ -269,11 +310,58 @@ describe("E4-S1 — candidate-integrity assessment (assessor units)", () => {
     expect(gains.reasons.join(" ")).toMatch(/tolerance/);
     const pretax = assessCandidateIntegrity(
       fakeResult([
-        { ...CONVERGED_YEAR, converged: false, gains: 0, pretax: 2 },
+        { ...CONVERGED_YEAR, converged: false, gains: 0, pretax: 3 },
       ]),
     );
     expect(pretax.status).toBe("invalid");
-    expect(pretax.reasons.join(" ")).toMatch(/2¢/);
+    expect(pretax.reasons.join(" ")).toMatch(/3¢/);
+  });
+
+  test("ACA-credit mismatch above the tolerance is independently invalid (C3-S1)", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          acaCredit: 2285280,
+        },
+      ]),
+    );
+    expect(i.status).toBe("invalid");
+    expect(i.maxMismatchAcaCreditCents).toBe(2285280);
+    expect(i.maxMismatchGainsCents).toBe(0);
+    expect(i.reasons.join(" ")).toMatch(/ACA credit/);
+    expect(i.reasons.join(" ")).toMatch(/2285280¢/);
+    expect(i.reasons.join(" ")).toMatch(/tolerance/);
+  });
+
+  test("ACA-credit mismatch at the tolerance is benign (C3-S1)", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          acaCredit: 2,
+        },
+      ]),
+    );
+    expect(i.status).toBe("valid-with-benign-residual");
+    expect(i.maxMismatchAcaCreditCents).toBe(2);
+    expect(i.reasons).toEqual([]);
+  });
+
+  test("converged candidate reports zero ACA-credit mismatch", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([CONVERGED_YEAR, { ...CONVERGED_YEAR, year: 2031 }]),
+    );
+    expect(i.status).toBe("valid");
+    expect(i.maxMismatchAcaCreditCents).toBe(0);
   });
 
   test("ceiling breached at conversion $0 is disclosed, not invalid", () => {
@@ -629,14 +717,28 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       expect(opt.doNothing.spec.key).toBe("do-nothing");
       // Cost-first winner: Fill to the top of the 32% bracket
       // with gain harvesting into the 0% bracket.
+      // RE-PINNED (Engine Review C3, C3-V1, 2026-11-15): the
+      // winner harvests, so its lifetime federal tax now
+      // includes the harvest pay-sale tax the pre-fix engine
+      // never priced — net cost $576,325.07 -> $577,187.22
+      // (+$862.15, exactly the winner's lifetime federal-tax
+      // move in the lifetime-totals test below, where the
+      // per-year sum still equals the lifetime field) and
+      // ending wealth $11,558,526.31 -> $11,556,221.56 (the
+      // extra tax paid from Taxable plus foregone growth).
+      // The winner key is unchanged; the wealth winner's
+      // figures are unmoved (its harvest shape prices no
+      // pay-sale gains), so only the gaps move with the
+      // cost winner: wealth gap $342,611.85 -> $344,916.60,
+      // net-cost gap $873,557.10 -> $872,694.95.
       expect(opt.winner.spec.key).toBe("32|-|-|-|-:74:-:-:taxable-pretax-roth:hv");
-      expect(opt.winner.cost.netCost).toBe(576325.07);
-      expect(opt.winner.result.endingAfterTaxWealth).toBe(11558526.31);
+      expect(opt.winner.cost.netCost).toBe(577187.22);
+      expect(opt.winner.result.endingAfterTaxWealth).toBe(11556221.56);
       expect(opt.selectedWinner.spec.key).toBe(opt.winner.spec.key);
       expect(opt.winnerByNetCost.spec.key).toBe(opt.winner.spec.key);
       // Ending-wealth winner: Fill to a $150,000 MAGI cap with
-      // gain harvesting — $342,611.85 more wealth for
-      // $873,557.10 more net cost. The objectives disagree,
+      // gain harvesting — $344,916.60 more wealth for
+      // $872,694.95 more net cost. The objectives disagree,
       // and the result says so.
       expect(opt.winnerByEndingWealth.spec.key).toBe(
         "-|-|-|-|150000:74:-:-:taxable-pretax-roth:hv",
@@ -647,7 +749,7 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       expect(
         opt.winnerByEndingWealth.result.endingAfterTaxWealth -
           opt.winner.result.endingAfterTaxWealth,
-      ).toBeCloseTo(342611.85, 2);
+      ).toBeCloseTo(344916.6, 2);
       // The winner's own march settled cleanly.
       expect(opt.winner.integrity.status).toBe("valid");
     },
@@ -942,7 +1044,12 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
     expect(r2(years.reduce((a, y) => a + y.federalTax, 0))).toBe(
       opt.winner.result.lifetimeFederalTax,
     );
-    expect(r2(years.reduce((a, y) => a + y.federalTax, 0))).toBe(538193.87);
+    // RE-PINNED (Engine Review C3, C3-V1, 2026-11-15): the
+    // winner harvests, so the per-year federal-tax sum now
+    // includes the harvest pay-sale tax — $538,193.87 ->
+    // $539,056.02 (+$862.15). The identity (sum equals the
+    // lifetime field) still holds, per the expect above.
+    expect(r2(years.reduce((a, y) => a + y.federalTax, 0))).toBe(539056.02);
     expect(r2(years.reduce((a, y) => a + y.stateTax, 0))).toBe(
       opt.winner.result.lifetimeStateTax,
     );

@@ -13419,13 +13419,17 @@ export function RothConversion({
                         <span className="block text-xs font-medium whitespace-normal text-[var(--bad)]">
                           Did not settle
                           {y.settlementMismatchCents.gains !== 0 ||
-                          y.settlementMismatchCents.pretax !== 0
+                          y.settlementMismatchCents.pretax !== 0 ||
+                          y.settlementMismatchCents.acaCredit !== 0
                             ? ` — off by ${[
                                 y.settlementMismatchCents.gains !== 0
                                   ? `${fmtCents(y.settlementMismatchCents.gains)} gains`
                                   : "",
                                 y.settlementMismatchCents.pretax !== 0
                                   ? `${fmtCents(y.settlementMismatchCents.pretax)} pre-tax`
+                                  : "",
+                                y.settlementMismatchCents.acaCredit !== 0
+                                  ? `${fmtCents(y.settlementMismatchCents.acaCredit)} ACA credit`
                                   : "",
                               ]
                                 .filter(Boolean)

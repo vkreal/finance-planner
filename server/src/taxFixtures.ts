@@ -65,6 +65,8 @@ import {
 DO_NOTHING_SPEC,
 MC_STREAM_STRIDE_YEARS,
 ROTH_MC_CHECK_SEED,
+SETTLEMENT_TOLERANCE_CENTS,
+assessCandidateIntegrity,
 claimAgeCombos,
 claimAgeLabel,
 compareJointCandidates,
@@ -27266,7 +27268,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-compare-settlement-flags-round8-should1",
     kind: "tax",
-    note: "Settlement flags on the compare year readouts (internal review round-8 SHOULD-1, settled STAND; same defect as ChatGPT NICE-1, built once here). DEFECT (pre-fix, reproduced by probe on the shared fictional sample household, server/src/sampleHousehold.ts, in its resolved compare shape): runRothCompare's year mapping dropped the settlement flags the march and the funding rows both carry — settlementConverged, settlementMismatchCents, ceilingBreached — so all 38 compare years of every scenario carried none of the three keys (0 years with any flag key) while the funding rows for the same plan showed 27 ceiling-breached Fill 12% years (2037–2063) and a non-converged Fill 22% year (2056, 1c gains mismatch), all invisible in the Tax Plan. FIX: the mapping carries the three flags through from the same priced march row (the mismatch is already integer cents on the march row, so it passes through unscaled, exactly as the funding rows carry it), the runRothCompare response schema carries them, and the Tax Plan year rows mark a non-converged year and a ceiling-breached year. ENGINE-DERIVED REGRESSION PIN: on the sample household's full plan the compare path now carries all three flags on every year of every scenario (38/38 each) — Fill 12% 27 breached years, first 2037 last 2063, 0 non-converged, 2037 converged with a $0 mismatch and a $0 conversion (the draws alone breach: a breached year is NOT a defect and NOT a fill failure, it means no room at $0 conversion); Fill 22% 0 breached, 3 non-converged years — 2038, 2049, 2056 — each a 1c gains mismatch with pre-tax $0, 2056 with a $0 conversion, priced from the iteration's best state; Do Nothing 0 breached, 0 non-converged. (The reviewer's probe counted 1 non-converged Fill 22% year — 2056 — on the DIRECT samplePlanInputs funding shape; the compare path's own buildCompareScenario shape prices 3 — 2038, 2049, 2056 — because the two input constructions differ in normalization/defaults enough to move the settlement in those edge years by a cent. The fixture pins the compare path's own counts, and its cross-check is same-construction: every compare year's three flags equal the funding row's flags for the same year built from the same compare scenario — 0 differing years on all three scenarios.)",
+    note: "Settlement flags on the compare year readouts (internal review round-8 SHOULD-1, settled STAND; same defect as ChatGPT NICE-1, built once here). DEFECT (pre-fix, reproduced by probe on the shared fictional sample household, server/src/sampleHousehold.ts, in its resolved compare shape): runRothCompare's year mapping dropped the settlement flags the march and the funding rows both carry — settlementConverged, settlementMismatchCents, ceilingBreached — so all 38 compare years of every scenario carried none of the three keys (0 years with any flag key) while the funding rows for the same plan showed 27 ceiling-breached Fill 12% years (2037–2063) and a non-converged Fill 22% year (2056, 1c gains mismatch), all invisible in the Tax Plan. FIX: the mapping carries the three flags through from the same priced march row (the mismatch is already integer cents on the march row, so it passes through unscaled, exactly as the funding rows carry it), the runRothCompare response schema carries them, and the Tax Plan year rows mark a non-converged year and a ceiling-breached year. ENGINE-DERIVED REGRESSION PIN: on the sample household's full plan the compare path now carries all three flags on every year of every scenario (38/38 each) — Fill 12% 27 breached years, first 2037 last 2063, 0 non-converged, 2037 converged with a $0 mismatch and a $0 conversion (the draws alone breach: a breached year is NOT a defect and NOT a fill failure, it means no room at $0 conversion); Fill 22% 0 breached, 3 non-converged years — 2038, 2049, 2056 — each a 1c gains mismatch with pre-tax $0, 2056 with a $0 conversion, priced from the iteration's best state; Do Nothing 0 breached, 0 non-converged. (The reviewer's probe counted 1 non-converged Fill 22% year — 2056 — on the DIRECT samplePlanInputs funding shape; the compare path's own buildCompareScenario shape prices 3 — 2038, 2049, 2056 — because the two input constructions differ in normalization/defaults enough to move the settlement in those edge years by a cent. The fixture pins the compare path's own counts, and its cross-check is same-construction: every compare year's three flags equal the funding row's flags for the same year built from the same compare scenario — 0 differing years on all three scenarios.) EXTENDED (Engine Review C3, 2026-11-15): the same-construction cross-check now also compares the ACA-credit mismatch component and the four settlement-stop fields (settlementRounds / settlementPasses / settlementStopReason / settlementInnerStopReason) on every compare year against its funding row — 0 differing years on all three scenarios — and pins the Fill 22% non-converged years' stop fields: 2038 (7 rounds), 2049 (5 rounds), 2056 (4 rounds), each 1 pass, stop and inner stop both \"repeated-assumption\", ACA-credit mismatch 0 in all three. (Pre-fix the new fields are absent, so the extended comparison counts every year as differing.)",
     expected: {
       dnYears: 38,
       dnYearsWithFlags: 38,
@@ -27319,9 +27321,24 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       f22Y2038Converged: 0,
       f22Y2038MismatchGains: 1,
       f22Y2038MismatchPretax: 0,
+      f22Y2038MismatchAcaCredit: 0,
+      f22Y2038Rounds: 7,
+      f22Y2038Passes: 1,
+      f22Y2038Stop: "repeated-assumption",
+      f22Y2038InnerStop: "repeated-assumption",
       f22Y2049Converged: 0,
       f22Y2049MismatchGains: 1,
       f22Y2049MismatchPretax: 0,
+      f22Y2049MismatchAcaCredit: 0,
+      f22Y2049Rounds: 5,
+      f22Y2049Passes: 1,
+      f22Y2049Stop: "repeated-assumption",
+      f22Y2049InnerStop: "repeated-assumption",
+      f22Y2056MismatchAcaCredit: 0,
+      f22Y2056Rounds: 4,
+      f22Y2056Passes: 1,
+      f22Y2056Stop: "repeated-assumption",
+      f22Y2056InnerStop: "repeated-assumption",
       f22Y2056Converged: 0,
       f22Y2056MismatchGains: 1,
       f22Y2056MismatchPretax: 0,
@@ -27444,7 +27461,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
             f.settlementConverged !== y.settlementConverged ||
             f.ceilingBreached !== y.ceilingBreached ||
             f.settlementMismatchCents.gains !== y.settlementMismatchCents.gains ||
-            f.settlementMismatchCents.pretax !== y.settlementMismatchCents.pretax
+            f.settlementMismatchCents.pretax !== y.settlementMismatchCents.pretax ||
+            f.settlementMismatchCents.acaCredit !== y.settlementMismatchCents.acaCredit ||
+            f.settlementRounds !== y.settlementRounds ||
+            f.settlementPasses !== y.settlementPasses ||
+            f.settlementStopReason !== y.settlementStopReason ||
+            f.settlementInnerStopReason !== y.settlementInnerStopReason
           )
             diffs++;
         }
@@ -27522,15 +27544,414 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         f22Y2038Converged: y2038?.settlementConverged ? 1 : 0,
         f22Y2038MismatchGains: y2038?.settlementMismatchCents.gains ?? null,
         f22Y2038MismatchPretax: y2038?.settlementMismatchCents.pretax ?? null,
+        f22Y2038MismatchAcaCredit: y2038?.settlementMismatchCents.acaCredit ?? null,
+        f22Y2038Rounds: y2038?.settlementRounds ?? null,
+        f22Y2038Passes: y2038?.settlementPasses ?? null,
+        f22Y2038Stop: y2038?.settlementStopReason ?? null,
+        f22Y2038InnerStop: y2038?.settlementInnerStopReason ?? null,
         f22Y2049Converged: y2049?.settlementConverged ? 1 : 0,
         f22Y2049MismatchGains: y2049?.settlementMismatchCents.gains ?? null,
         f22Y2049MismatchPretax: y2049?.settlementMismatchCents.pretax ?? null,
+        f22Y2049MismatchAcaCredit: y2049?.settlementMismatchCents.acaCredit ?? null,
+        f22Y2049Rounds: y2049?.settlementRounds ?? null,
+        f22Y2049Passes: y2049?.settlementPasses ?? null,
+        f22Y2049Stop: y2049?.settlementStopReason ?? null,
+        f22Y2049InnerStop: y2049?.settlementInnerStopReason ?? null,
+        f22Y2056MismatchAcaCredit: f22.y(2056)?.settlementMismatchCents.acaCredit ?? null,
+        f22Y2056Rounds: f22.y(2056)?.settlementRounds ?? null,
+        f22Y2056Passes: f22.y(2056)?.settlementPasses ?? null,
+        f22Y2056Stop: f22.y(2056)?.settlementStopReason ?? null,
+        f22Y2056InnerStop: f22.y(2056)?.settlementInnerStopReason ?? null,
         f22Y2056Converged: f22.y(2056)?.settlementConverged ? 1 : 0,
         f22Y2056MismatchGains: f22.y(2056)?.settlementMismatchCents.gains ?? null,
         f22Y2056MismatchPretax: f22.y(2056)?.settlementMismatchCents.pretax ?? null,
         f22Y2056Breached: f22.y(2056)?.ceilingBreached ? 1 : 0,
         f22Y2056Conversion: f22.y(2056)?.conversionCents ?? null,
         f22FlagDiffs: flagDiffs("Fill 22%", fill22),
+      };
+    },
+  },
+  {
+    id: "c3-s1-aca-settlement-diagnostics",
+    kind: "tax",
+    note: "Engine Review C3, C3-S1 (W2 repro): a non-converged year whose gains and pre-tax mismatches are BOTH $0 can still carry a real ACA-credit residual — the §36B 100%-FPL discontinuity opens a genuine 2-cycle the iteration stops on by repeated assumption, and pre-fix the readout reported a $0 mismatch with no way to see it. FIX: settlementMismatchCents carries the ACA-credit residual (integer cents) and the settlement carries its rounds / passes / stop reasons, attached at selection from the kept settlement itself, and the integrity gate invalidates a non-converged year on the ACA component exactly as on gains / pre-tax. PINNED on the shared fictional sample household (server/src/sampleHousehold.ts), Do Nothing, $150,000/yr spending, roth-first draw order, embedded net premium $13,147.20: year 2032 is non-converged with gains 0¢, pre-tax 0¢, ACA credit 2,285,280¢ (the missing $22,852.80 credit), 1 round, 3 passes, stop repeated-assumption, inner stop converged; year 2039 is non-converged with a 1¢ gains mismatch, ACA credit 0¢, 7 rounds, 1 pass, stop and inner stop both repeated-assumption; the integrity gate reads invalid with maxMismatchAcaCreditCents 2,285,280 and 2 non-converged years (2032, 2039). (Pre-fix the ACA component and the stop fields are absent, so every pin here fails.)",
+    expected: {
+      y2032Converged: 0,
+      y2032MismatchGains: 0,
+      y2032MismatchPretax: 0,
+      y2032MismatchAcaCredit: 2285280,
+      y2032Rounds: 1,
+      y2032Passes: 3,
+      y2032Stop: "repeated-assumption",
+      y2032InnerStop: "converged",
+      y2032AcaCreditKept: 0,
+      y2039Converged: 0,
+      y2039MismatchGains: 1,
+      y2039MismatchPretax: 0,
+      y2039MismatchAcaCredit: 0,
+      y2039Rounds: 7,
+      y2039Passes: 1,
+      y2039Stop: "repeated-assumption",
+      y2039InnerStop: "repeated-assumption",
+      integrityStatus: "invalid",
+      integrityMaxAcaCredit: 2285280,
+      integrityNonConverged: 2,
+      integrityNonConvergedYears: "2032,2039",
+      integrityReasons: 1,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        annualSpending: 150000,
+        drawOrder: ["roth", "taxable", "pretax"],
+        acaEmbeddedNetPremium: 13147.2,
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: false });
+      const y = (yr: number) => plan.years.find((v) => v.year === yr)!;
+      const integrity = assessCandidateIntegrity(plan);
+      return {
+        y2032Converged: y(2032).settlementConverged ? 1 : 0,
+        y2032MismatchGains: y(2032).settlementMismatchCents.gains,
+        y2032MismatchPretax: y(2032).settlementMismatchCents.pretax,
+        y2032MismatchAcaCredit: y(2032).settlementMismatchCents.acaCredit,
+        y2032Rounds: y(2032).settlementRounds,
+        y2032Passes: y(2032).settlementPasses,
+        y2032Stop: y(2032).settlementStopReason,
+        y2032InnerStop: y(2032).settlementInnerStopReason,
+        y2032AcaCreditKept: Math.round(y(2032).acaCreditKept * 100),
+        y2039Converged: y(2039).settlementConverged ? 1 : 0,
+        y2039MismatchGains: y(2039).settlementMismatchCents.gains,
+        y2039MismatchPretax: y(2039).settlementMismatchCents.pretax,
+        y2039MismatchAcaCredit: y(2039).settlementMismatchCents.acaCredit,
+        y2039Rounds: y(2039).settlementRounds,
+        y2039Passes: y(2039).settlementPasses,
+        y2039Stop: y(2039).settlementStopReason,
+        y2039InnerStop: y(2039).settlementInnerStopReason,
+        integrityStatus: integrity.status,
+        integrityMaxAcaCredit: integrity.maxMismatchAcaCreditCents,
+        integrityNonConverged: integrity.nonConvergedYears,
+        integrityNonConvergedYears: integrity.nonConvergedYearList.join(","),
+        integrityReasons: integrity.reasons.length,
+      };
+    },
+  },
+  {
+    id: "c3-v2f1-settlement-tolerance-2c",
+    kind: "tax",
+    note: "Engine Review C3, V2-F1 (W4 §4, option (a)): the 1¢ settlement tolerance's empirical basis — worst observed mismatch 1¢ — is broken by a deterministic 2¢ gains mismatch with converging neighbours. FIX: SETTLEMENT_TOLERANCE_CENTS is raised from 1 to 2 with the observed worst case documented at the constant (sample household, spend $254,500, taxable-first, basis 60%, fill-aca, year 2047, {gains:2, pretax:0}, deterministic, neighbours converge; a $2,500-step hunt found zero further ≥2¢ years). PINNED on that shape, fill-aca ceilings: year 2047 is non-converged with gains 2¢, pre-tax 0¢, ACA credit 0¢, 10 rounds, 1 pass, stop and inner stop both repeated-assumption; year 2045 carries the same shape at 1¢ (6 rounds); the integrity gate reads valid-with-benign-residual with maxMismatchGainsCents 2 and maxMismatchAcaCreditCents 0 — the 2¢ residual is benign, not invalid. (Pre-fix the tolerance is 1, so the 2047 year reads invalid.)",
+    expected: {
+      toleranceCents: 2,
+      y2047Converged: 0,
+      y2047MismatchGains: 2,
+      y2047MismatchPretax: 0,
+      y2047MismatchAcaCredit: 0,
+      y2047Rounds: 10,
+      y2047Passes: 1,
+      y2047Stop: "repeated-assumption",
+      y2047InnerStop: "repeated-assumption",
+      y2045Converged: 0,
+      y2045MismatchGains: 1,
+      y2045MismatchPretax: 0,
+      y2045MismatchAcaCredit: 0,
+      y2045Rounds: 6,
+      y2045Passes: 1,
+      integrityStatus: "valid-with-benign-residual",
+      integrityMaxGains: 2,
+      integrityMaxPretax: 0,
+      integrityMaxAcaCredit: 0,
+      integrityNonConverged: 2,
+      integrityNonConvergedYears: "2045,2047",
+      integrityReasons: 0,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        annualSpending: 254500,
+        drawOrder: ["taxable", "pretax", "roth"],
+        taxableBasisPct: 60,
+        acaEmbeddedNetPremium: 13147.2,
+      });
+      const fillAca: RothStrategy = {
+        id: "fill-aca",
+        name: "Fill ACA",
+        ceilings: {
+          bracketTopPct: 12,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+      };
+      const plan = simulateRothPlan(inputs, { ...fillAca, gainsHarvest: false });
+      const y = (yr: number) => plan.years.find((v) => v.year === yr)!;
+      const integrity = assessCandidateIntegrity(plan);
+      return {
+        toleranceCents: SETTLEMENT_TOLERANCE_CENTS,
+        y2047Converged: y(2047).settlementConverged ? 1 : 0,
+        y2047MismatchGains: y(2047).settlementMismatchCents.gains,
+        y2047MismatchPretax: y(2047).settlementMismatchCents.pretax,
+        y2047MismatchAcaCredit: y(2047).settlementMismatchCents.acaCredit,
+        y2047Rounds: y(2047).settlementRounds,
+        y2047Passes: y(2047).settlementPasses,
+        y2047Stop: y(2047).settlementStopReason,
+        y2047InnerStop: y(2047).settlementInnerStopReason,
+        y2045Converged: y(2045).settlementConverged ? 1 : 0,
+        y2045MismatchGains: y(2045).settlementMismatchCents.gains,
+        y2045MismatchPretax: y(2045).settlementMismatchCents.pretax,
+        y2045MismatchAcaCredit: y(2045).settlementMismatchCents.acaCredit,
+        y2045Rounds: y(2045).settlementRounds,
+        y2045Passes: y(2045).settlementPasses,
+        integrityStatus: integrity.status,
+        integrityMaxGains: integrity.maxMismatchGainsCents,
+        integrityMaxPretax: integrity.maxMismatchPretaxCents,
+        integrityMaxAcaCredit: integrity.maxMismatchAcaCreditCents,
+        integrityNonConverged: integrity.nonConvergedYears,
+        integrityNonConvergedYears: integrity.nonConvergedYearList.join(","),
+        integrityReasons: integrity.reasons.length,
+      };
+    },
+  },
+  {
+    id: "c3-v1-harvest-reprice-s3-state5",
+    kind: "tax",
+    note: "Engine Review C3, C3-V1 (W3 fixture (a), S3): the harvest's tax bill was paid out of Taxable with the pay-sale's own gain never priced — the sale's gain is income of the year. FIX: the harvest block reprices the payment legs to a fixed point (assumed and created feedback agree to the cent) and the year's gross gains carry the pay-sale gain. PINNED on the shared fictional sample household (server/src/sampleHousehold.ts), single year 2026, Do Nothing + harvest, state 5%: federal tax $265.86, state tax $5,033.62, harvested gain $109,600.00, pay-sale gain $1,772.41 (detail.ltcg − draw gains − harvested gain). INTERACTION NOTE (W3 + W5-C1, re-derived from first principles in c3-verify-harvest.ts, all eight cases matching an independent priceYear reprice to the cent): W3's published figure was state $5,362.47, computed with the pay sale at the PRE-step-up ratio; the combined fix applies the step-up FIRST (W5-C1), so the pay sale prices at the POST-step-up ratio and the converged total is $5,299.48 (federal $265.86 + state $5,033.62). The W3 figure is superseded, not adjusted to match the code — the independent reprice at the post-step-up ratio reproduces these pins exactly. (Pre-fix: federal $0, state $4,945.00, pay-sale gain $1,924.84 at the pre-step-up ratio and unpriced.)",
+    expected: {
+      federalTax: 26586,
+      stateTax: 503362,
+      gainsHarvested: 10960000,
+      paySaleGain: 177241,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        gainsHarvested: Math.round(y.gainsHarvested * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-v1-harvest-reprice-s2-ss58",
+    kind: "tax",
+    note: "Engine Review C3, C3-V1 (W3 fixture (d), S2): same pay-sale-gain defect as c3-v1-harvest-reprice-s3-state5, on the Social Security-at-58 shape. PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, SS from 58: federal tax $1,592.79, state tax $0, pay-sale gain $551.95. INTERACTION NOTE: W3's published figure was federal $1,601.31 at the pre-step-up ratio; the combined fix prices the pay sale at the post-step-up ratio (step-up first, W5-C1), and the independent first-principles reprice reproduces $1,592.79 exactly — the W3 figure is superseded for the same reason as in the S3 fixture. (Pre-fix: federal $1,510.00.)",
+    expected: {
+      federalTax: 159279,
+      stateTax: 0,
+      paySaleGain: 55195,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        ssPrimaryStartAge: 58,
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-v1-harvest-reprice-s8-aca",
+    kind: "tax",
+    note: "Engine Review C3, C3-V1 (W3 fixture (b), S8-ACA): the unpriced pay-sale gain also understated ACA MAGI, so the year kept a $23,191.44 credit it was over the cliff for. FIX: the ACA credit and the lookback write read the converged MAGI. PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, retired 58, state 5%, ACA cliff cap: ACA MAGI $129,237.19 (over the $128,600 cliff), ACA credit kept $0.00, federal tax $0, state tax $4,851.86, pay-sale gain $637.19. INTERACTION NOTE: W3's published figures were ACA MAGI $129,269.96 and total tax $4,853.50 at the pre-step-up ratio; the combined fix prices the pay sale at the post-step-up ratio (step-up first, W5-C1), and the independent first-principles reprice reproduces these pins exactly. (Pre-fix: ACA MAGI $128,600.00, credit kept $23,191.44, state $4,820.00.)",
+    expected: {
+      acaMagi: 12923719,
+      acaCreditKept: 0,
+      federalTax: 0,
+      stateTax: 485186,
+      paySaleGain: 63719,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        retirementAge: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+      });
+      const plan = simulateRothPlan(inputs, {
+        ...DO_NOTHING,
+        gainsHarvest: true,
+        ceilings: { ...NO_CEILINGS, acaCliffCap: true },
+      });
+      const y = plan.years[0]!;
+      return {
+        acaMagi: Math.round(y.acaMagi * 100),
+        acaCreditKept: Math.round(y.acaCreditKept * 100),
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-v1-harvest-reprice-s9-tiers",
+    kind: "tax",
+    note: "Engine Review C3, C3-V1 (W3 fixture (c), S9): same pay-sale-gain defect on tiered Taxable (50/50 tiers at 90% / 10% basis). PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, state 5%: federal tax $75.69, state tax $4,970.23, total tax $5,045.92, harvested gain $109,600.00, pay-sale gain $504.59 (the pay sale takes the 90% tier first, after the step-up lands on the 10% tier). NOTE: W3's published figure $5,045.92 is the TOTAL tax (federal + state), not state alone as the build brief mislabelled it — the total matches W3 exactly, and the independent first-principles reprice reproduces the federal/state split exactly. (Pre-fix: federal $0, state $4,945.00.)",
+    expected: {
+      federalTax: 7569,
+      stateTax: 497023,
+      totalTax: 504592,
+      gainsHarvested: 10960000,
+      paySaleGain: 50459,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+        taxableTiers: [
+          { sharePct: 50, basisPct: 90 },
+          { sharePct: 50, basisPct: 10 },
+        ],
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        totalTax: Math.round((y.federalTax + y.stateTax) * 100),
+        gainsHarvested: Math.round(y.gainsHarvested * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-v1-harvest-reprice-s8-irmaa",
+    kind: "tax",
+    note: "Engine Review C3, C3-V1 (W3 fixture (e), S8-IRMAA): the unpriced pay-sale gain understated 2031 MAGI, so the 2033 IRMAA lookback graded the wrong tier. FIX: the lookback write reads the converged MAGI. PINNED on the shared fictional sample household, 3-year plan from 2031, Do Nothing + harvest, retired 62, state 5%, $115,000/yr tax-exempt interest, IRMAA tier cap 0: 2031 MAGI $219,012.60, federal tax $0, state tax $3,590.63; 2033 IRMAA paid $1,148.40, tier 1, graded on source MAGI $219,012.60. The IRMAA figures match W3's published figures exactly; the 2031 MAGI is the post-step-up-ratio converged figure (W3's $219,073.09 was the pre-step-up ratio), re-derived by the independent first-principles reprice. (Pre-fix: 2031 MAGI $218,000.00, 2033 IRMAA $0, tier 0.)",
+    expected: {
+      y2031Magi: 21901260,
+      y2031FederalTax: 0,
+      y2031StateTax: 359063,
+      y2033IrmaaPaid: 114840,
+      y2033IrmaaTier: 1,
+      y2033IrmaaSourceMagi: 21901260,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        startYear: 2031,
+        endAgePrimary: 65,
+        retirementAge: 62,
+        windowStartAge: 62,
+        windowStopAge: 62,
+        residenceState: "other",
+        stateRatePct: 5,
+        taxExemptInterestAnnual: 115000,
+      });
+      const plan = simulateRothPlan(inputs, {
+        ...DO_NOTHING,
+        gainsHarvest: true,
+        ceilings: { ...NO_CEILINGS, irmaaTierCap: 0 },
+      });
+      const y31 = plan.years[0]!;
+      const y33 = plan.years[2]!;
+      return {
+        y2031Magi: Math.round(y31.magi * 100),
+        y2031FederalTax: Math.round(y31.federalTax * 100),
+        y2031StateTax: Math.round(y31.stateTax * 100),
+        y2033IrmaaPaid: Math.round(y33.irmaaPaid * 100),
+        y2033IrmaaTier: y33.detail.irmaa.paidTier,
+        y2033IrmaaSourceMagi: Math.round((y33.detail.irmaa.paidSourceMagi ?? 0) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-w5c1-basis-order-b4",
+    kind: "tax",
+    note: "Engine Review C3, W5-C1 (W5 fixture (a), B4): the harvest applied the pay sale BEFORE the step-up, so the sale was debited at the pre-step-up ratio and the step-up then overstated basis by exactly pay × hv / balPre. FIX: the step-up applies first; the pay sale debits at the post-step-up ratio (basis + hv) / balance. PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, retired 58, state 5%: ending Taxable basis $1,146,732.84, harvested gain $36,348.98, federal tax $108.34, state tax $4,981.11, pay-sale gain $722.29. INTERACTION NOTE (W3 + W5-C1): W5's published basis was $1,146,824.11, computed at the pre-fix pay ($1,817.45); the combined fix's V1 reprice grows the converged pay to $1,961.90, removing more basis, and the independent first-principles reprice reproduces $1,146,732.84 exactly — the W5 figure is superseded for that reason, re-derived, not adjusted to match the code. (Pre-fix: basis $1,146,860.47.)",
+    expected: {
+      taxableBasis: 114673284,
+      gainsHarvested: 3634898,
+      federalTax: 10834,
+      stateTax: 498111,
+      paySaleGain: 72229,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        retirementAge: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        taxableBasis: Math.round(y.detail.taxableBasisDollars * 100),
+        gainsHarvested: Math.round(y.gainsHarvested * 100),
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-w5c1-basis-order-b5d-tiers",
+    kind: "tax",
+    note: "Engine Review C3, W5-C1 (W5 fixture (b), B5d): same step-up/pay-sale ordering defect on tiered Taxable (50/50 tiers at 95% / 90% basis) — the step-up must run first, then sellFromTiers(pay, \"highest\"). PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, retired 58, state 5%: ending Taxable basis $1,796,155.00, harvested gain $100,600.00, pay-sale gain $0.00 (the step-up raises the 95% tier to 100% basis, so the pay sale from it realizes no gain — the V1 reprice therefore moves nothing and this figure matches W5's published figure exactly). (Pre-fix: basis $1,796,402.25.)",
+    expected: {
+      taxableBasis: 179615500,
+      gainsHarvested: 10060000,
+      paySaleGain: 0,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        retirementAge: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+        taxableTiers: [
+          { sharePct: 50, basisPct: 95 },
+          { sharePct: 50, basisPct: 90 },
+        ],
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        taxableBasis: Math.round(y.detail.taxableBasisDollars * 100),
+        gainsHarvested: Math.round(y.gainsHarvested * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
+      };
+    },
+  },
+  {
+    id: "c3-w5c1-basis-order-b4b-ss58",
+    kind: "tax",
+    note: "Engine Review C3, W5-C1 (W5 fixture (c), B4b): same step-up/pay-sale ordering defect on the Social Security-at-58 shape. PINNED on the shared fictional sample household, single year 2026, Do Nothing + harvest, retired 58, state 5%, SS from 58: ending Taxable basis $1,152,070.94, harvested gain $13,691.84, federal tax $1,552.36, state tax $4,959.12, ACA MAGI $138,582.42, pay-sale gain $282.42 — the fixed point converges exactly (assumed and created deltas equal, traced in c3-trace-b4b.ts). INTERACTION NOTE: W5's published basis was $1,152,105.90 at the pre-fix pay ($684.59); the combined fix's V1 reprice grows the converged pay to $741.07, and the independent first-principles reprice reproduces $1,152,070.94 exactly. (Pre-fix: basis $1,152,110.94.)",
+    expected: {
+      taxableBasis: 115207094,
+      gainsHarvested: 1369184,
+      federalTax: 155236,
+      stateTax: 495912,
+      acaMagi: 13858242,
+      paySaleGain: 28242,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        endAgePrimary: 58,
+        retirementAge: 58,
+        residenceState: "other",
+        stateRatePct: 5,
+        ssPrimaryStartAge: 58,
+      });
+      const plan = simulateRothPlan(inputs, { ...DO_NOTHING, gainsHarvest: true });
+      const y = plan.years[0]!;
+      return {
+        taxableBasis: Math.round(y.detail.taxableBasisDollars * 100),
+        gainsHarvested: Math.round(y.gainsHarvested * 100),
+        federalTax: Math.round(y.federalTax * 100),
+        stateTax: Math.round(y.stateTax * 100),
+        acaMagi: Math.round(y.acaMagi * 100),
+        paySaleGain: Math.round((y.detail.ltcg - y.detail.drawGains - y.gainsHarvested) * 100),
       };
     },
   },

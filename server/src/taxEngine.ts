@@ -3944,8 +3944,30 @@ export type RothYear = {
   // iteration's best iterated state, not an exact fixed
   // point. Observability only — no priced figure is derived
   // from these.
+  // (Engine Review C3, C3-S1): the mismatch carries a THIRD
+  // component, acaCredit — the kept settlement's ACA credit
+  // feedback residual, |created credit − assumed credit| in
+  // integer cents. The credit iteration can fail while the
+  // gains / pre-tax iteration converges, so a year could
+  // report settlementConverged false with {gains: 0,
+  // pretax: 0} and no stated discrepancy; the ACA component
+  // names it (0 when the credit iteration converged or never
+  // engaged). The residual is computed from the kept
+  // settlement object itself at selection time — never
+  // re-derived from the year's reported post-harvest credit
+  // (acaCreditKept), which the harvest can move after the
+  // settlement. settlementRounds / settlementPasses count
+  // the inner gains/pre-tax rounds and outer credit passes
+  // the kept settlement took; settlementStopReason /
+  // settlementInnerStopReason name why each level stopped
+  // ("converged", "repeated-assumption" for a repeated
+  // assumed value — a cycle — or "iteration-limit").
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number };
+  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementRounds: number;
+  settlementPasses: number;
+  settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
+  settlementInnerStopReason: "converged" | "repeated-assumption" | "iteration-limit";
   // CEILING BREACHED (round-7 R7-4): true when the year
   // carries a switched-on ceiling and the FINAL priced
   // figures still exceed it after the settlement reduced the
@@ -6306,11 +6328,21 @@ export function simulateRothPlan(
       let bestConverged = false;
       let bestMismatchGainsCents = 0;
       let bestMismatchPretaxCents = 0;
+      // (Engine Review C3, C3-S1 diagnostics): how many rounds
+      // the kept settlement took and why the iteration stopped.
+      let roundsUsed = 0;
+      let innerStop: "converged" | "repeated-assumption" | "iteration-limit" =
+        "iteration-limit";
       const seenAssumed = new Set<string>();
       for (let round = 0; round < SETTLEMENT_MAX_ROUNDS; round++) {
         const key = `${r2(fbGains)}|${r2(fbPretax)}`;
-        if (seenAssumed.has(key)) break;
+        if (seenAssumed.has(key)) {
+          // A repeated assumed pair — the iteration cycles.
+          innerStop = "repeated-assumption";
+          break;
+        }
         seenAssumed.add(key);
+        roundsUsed = round + 1;
         const s = settleRound(
           additionalArg,
           pretaxDrawCapArg,
@@ -6328,6 +6360,7 @@ export function simulateRothPlan(
           bestConverged = true;
           bestMismatchGainsCents = 0;
           bestMismatchPretaxCents = 0;
+          innerStop = "converged";
           break;
         }
         if (mismatch < bestMismatch) {
@@ -6343,6 +6376,13 @@ export function simulateRothPlan(
       // always set; the fallback only satisfies the type.
       const kept =
         best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, fbCreditIn);
+      const fallbackRounds = best != null ? roundsUsed : 1;
+      const fallbackStop =
+        best != null
+          ? innerStop
+          : kept.createdFbGains === 0 && kept.createdFbPretax === 0
+            ? "converged"
+            : "iteration-limit";
       return {
         ...kept,
         settlementConverged:
@@ -6351,11 +6391,20 @@ export function simulateRothPlan(
             : kept.createdFbGains === 0 && kept.createdFbPretax === 0,
         settlementMismatchCents:
           best != null
-            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents }
+            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, acaCredit: 0 }
             : {
                 gains: Math.round(Math.abs(kept.createdFbGains) * 100),
                 pretax: Math.round(Math.abs(kept.createdFbPretax) * 100),
+                acaCredit: 0,
               },
+        // (Engine Review C3, C3-S1): the inner iteration's own
+        // diagnostics. The ACA component is 0 here by
+        // construction — this driver iterates gains / pre-tax
+        // only, at a FIXED assumed credit; the outer driver
+        // (settleYear) overwrites acaCredit with the kept
+        // pass's own credit residual.
+        settlementRounds: fallbackRounds,
+        settlementInnerStopReason: fallbackStop,
       };
     };
 
@@ -6385,7 +6434,15 @@ export function simulateRothPlan(
     // in the same way.
     const settleYear = (additionalArg: number, pretaxDrawCapArg?: number) => {
       if (!premiumReconcile && !healthAcaThisYear) {
-        return settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
+        // No ACA driver ran: the outer level never executed,
+        // so the outer stop reason IS the inner one and the
+        // pass count is 1 (the single settleYearOnce call).
+        const s = settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
+        return {
+          ...s,
+          settlementPasses: 1,
+          settlementStopReason: s.settlementInnerStopReason,
+        };
       }
       // The health premium term (build v208) iterates the
       // same credit fixed point, starting from a $0 assumed
@@ -6395,16 +6452,37 @@ export function simulateRothPlan(
       let assumed = premiumReconcile ? premiumInitialCredit : 0;
       let best: ReturnType<typeof settleYearOnce> | null = null;
       let bestCreditDiff = Infinity;
+      // (Engine Review C3, C3-S1 diagnostics): how many
+      // credit passes the kept settlement took and why the
+      // outer iteration stopped.
+      let passesUsed = 0;
+      let outerStop: "converged" | "repeated-assumption" | "iteration-limit" =
+        "iteration-limit";
       const seenCredits = new Set<number>();
       for (let pass = 0; pass < 8; pass++) {
-        if (seenCredits.has(assumed)) break;
+        if (seenCredits.has(assumed)) {
+          // A repeated assumed credit — the iteration cycles.
+          outerStop = "repeated-assumption";
+          break;
+        }
         seenCredits.add(assumed);
+        passesUsed = pass + 1;
         const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
         const diff = Math.abs(s.createdFbCredit - assumed);
         if (s.createdFbCredit === r2(assumed)) {
           // Exact credit fixed point: the settlement funded
-          // the premium its own pricing implies.
-          return s;
+          // the premium its own pricing implies. The ACA
+          // residual is 0 by the equality just checked; the
+          // inner fields pass through from `s` untouched.
+          return {
+            ...s,
+            settlementMismatchCents: {
+              ...s.settlementMismatchCents,
+              acaCredit: 0,
+            },
+            settlementPasses: passesUsed,
+            settlementStopReason: "converged" as const,
+          };
         }
         if (diff < bestCreditDiff) {
           bestCreditDiff = diff;
@@ -6423,7 +6501,27 @@ export function simulateRothPlan(
           pretaxDrawCapArg,
           premiumReconcile ? premiumInitialCredit : 0,
         );
-      return { ...kept, settlementConverged: false };
+      // (Engine Review C3, C3-S1): the kept pass's own ACA
+      // credit residual — |created credit − assumed credit|
+      // of the kept settlement, in integer cents — computed
+      // from the kept object itself (its createdFbCredit
+      // against its feedbackCredit, the assumption it was
+      // priced under), never from the year's reported
+      // post-harvest credit. The previous code computed this
+      // diff (bestCreditDiff) and discarded it here.
+      const keptAcaCreditCents = Math.round(
+        Math.abs(kept.createdFbCredit - kept.feedbackCredit) * 100,
+      );
+      return {
+        ...kept,
+        settlementConverged: false,
+        settlementMismatchCents: {
+          ...kept.settlementMismatchCents,
+          acaCredit: keptAcaCreditCents,
+        },
+        settlementPasses: best != null ? passesUsed : 1,
+        settlementStopReason: best != null ? outerStop : "iteration-limit",
+      };
     };
 
     // Whether a FINAL priced year respects every switched-on
@@ -7021,6 +7119,14 @@ export function simulateRothPlan(
     // is counted in the year's unpaid tax (round-5 fix 1),
     // never silently dropped.
     let gainsHarvested = 0;
+    // (Engine Review C3, C3-V1): the gain the harvest's own
+    // tax-payment sale realizes (pay − basis removed), $0
+    // when the harvest pays no tax from Taxable. It is priced
+    // income of the year — the fixed-point reprice above
+    // prices it — so the year's gross-gains total below
+    // (detail.ltcg and the year-end loss ledger) carries it
+    // beside the harvested gain.
+    let harvestPaySaleGains = 0;
     // YEAR FUNDING capture for the harvest's own reprice delta
     // (display only): the kept settlement's tax channels plus
     // these amounts are the year's gross tax funding.
@@ -7162,35 +7268,174 @@ export function simulateRothPlan(
               extraDraw + feedbackPretax,
               conversion,
             );
-            const delta = r2(
-              hp.federalTax + hp.stateTax - (federalTax + stateTax),
+            // The settled (pre-harvest) tax — the baseline every
+            // harvest delta below is measured against.
+            const settledFederalTax = federalTax;
+            const settledStateTax = stateTax;
+            const delta0 = r2(
+              hp.federalTax + hp.stateTax - (settledFederalTax + settledStateTax),
             );
-            priced = hp;
-            federalTax = hp.federalTax;
-            stateTax = hp.stateTax;
-            if (delta > 0) {
-              const pay = Math.min(delta, Math.max(0, taxableBal));
-              // The harvest's own tax payment out of Taxable is
-              // an outflow like any other: on the drift ledger
-              // (the only ledger a harvest can run on — the
-              // toggle is inert on a blank basis) the basis
-              // leaves pro-rata before the step-up lands. With
-              // basis tiers the payment is an ordinary sale —
-              // highest-ratio tier first, like every tax
-              // payment — before the step-up lands.
-              if (pay > 0 && taxableBal > 0) {
-                if (tiersActive && tierState) {
-                  sellFromTiers(tierState, pay, "highest");
+            if (delta0 > 0) {
+              // (Engine Review C3, C3-V1 + W5-C1): the harvest's
+              // tax delta is paid by selling Taxable shares (then
+              // pre-tax, then Roth), and that payment itself
+              // creates income — the Taxable sale realizes
+              // gains, the pre-tax leg is ordinary income — so
+              // the delta must be re-priced to a fixed point,
+              // exactly as settleYearOnce re-prices the
+              // settlement's own tax payments. The pre-fix code
+              // committed hp (priced WITHOUT the payment legs'
+              // income) and never re-priced, understating the
+              // year's tax by the payment legs' tax.
+              //
+              // The payment legs are derived from a SNAPSHOT of
+              // the pre-payment state (balances, basis, tiers),
+              // never from mutated state: each iteration
+              // re-derives the legs from its assumed delta,
+              // re-prices with the legs' income, and repeats
+              // until the assumed and created deltas agree to
+              // the cent (tolerance 1¢, the settleYearOnce
+              // pattern; bounded at 100 iterations, cycle-safe
+              // via a seen set, keeping the closest round —
+              // the best iterated state — exactly as
+              // settleYearOnce does). The harvested amount hv
+              // is NOT re-solved against the payment-leg
+              // income: the harvest still fills to the cap on
+              // priced gains; only the tax its payment creates
+              // is now priced.
+              //
+              // (W5-C1 ordering): the step-up lands BEFORE the
+              // pay sale — the harvest is a sale + immediate
+              // rebuy, so the pay sale sells from the
+              // post-step-up pool at the post-step-up ratio
+              // (basis + hv) / balance (single pool) or after
+              // stepUpTiers (tiers). The pre-fix order sold
+              // first at the pre-harvest ratio and still landed
+              // the full step-up, overstating the basis by
+              // pay × hv / balance.
+              const balPre = taxableBal;
+              const basisPre = taxableBasisDollars;
+              const tiersPre =
+                tiersActive && tierState
+                  ? tierState.map((t) => ({ ...t }))
+                  : null;
+              const pretaxPPre = pretaxBalP;
+              const pretaxSPre = pretaxBalS;
+              const rothPre = rothBal;
+              const legsFor = (delta: number) => {
+                const pay = Math.min(delta, Math.max(0, balPre));
+                let paySaleGains = 0;
+                let tierCopy: typeof tiersPre = null;
+                if (pay > 0 && balPre > 0) {
+                  if (tiersPre) {
+                    tierCopy = tiersPre.map((t) => ({ ...t }));
+                    // Step-up FIRST, then the pay sale from the
+                    // stepped-up ledger, highest-ratio first.
+                    stepUpTiers(tierCopy, gainsHarvested);
+                    paySaleGains = r2(
+                      sellFromTiers(tierCopy, pay, "highest"),
+                    );
+                  } else {
+                    // Post-step-up ratio: the rebuy has already
+                    // raised the basis by the harvested amount.
+                    const ratioPost =
+                      (basisPre + gainsHarvested) / balPre;
+                    paySaleGains = r2(pay * (1 - ratioPost));
+                  }
+                }
+                let rest = delta - pay;
+                const fromP = Math.min(rest, Math.max(0, pretaxPPre));
+                rest -= fromP;
+                const fromS = Math.min(rest, Math.max(0, pretaxSPre));
+                rest -= fromS;
+                const preTaxLeg = fromP + fromS;
+                const fromR = Math.min(rest, Math.max(0, rothPre));
+                const unpaid = Math.max(0, rest - fromR);
+                return {
+                  pay,
+                  paySaleGains,
+                  tierCopy,
+                  fromP,
+                  fromS,
+                  preTaxLeg,
+                  fromR,
+                  unpaid,
+                  rest,
+                };
+              };
+              let delta = delta0;
+              let legs = legsFor(delta);
+              let bestDelta = delta;
+              let bestLegs = legs;
+              let bestPriced = hp;
+              let bestDiff = Infinity;
+              const seenDeltas = new Set<number>();
+              for (let iter = 0; iter < 100; iter++) {
+                const p = priceWith(
+                  realizedGains + gainsHarvested + legs.paySaleGains,
+                  extraDraw + feedbackPretax + legs.preTaxLeg,
+                  conversion,
+                );
+                const newDelta = r2(
+                  p.federalTax +
+                    p.stateTax -
+                    (settledFederalTax + settledStateTax),
+                );
+                const diff = Math.abs(newDelta - delta);
+                if (diff < bestDiff) {
+                  bestDiff = diff;
+                  bestDelta = delta;
+                  bestLegs = legs;
+                  bestPriced = p;
+                }
+                if (diff <= 0.01) break;
+                if (seenDeltas.has(newDelta)) break;
+                seenDeltas.add(newDelta);
+                delta = newDelta;
+                legs = legsFor(delta);
+              }
+              // Commit the converged (or, on a cycle / the
+              // iteration limit, the closest) round: its
+              // pricing IS the year's priced tax, its legs ARE
+              // the debits taken. The ACA credit kept below
+              // (acaCreditFor on priced.acaMagi) and the
+              // lookback write (priced.magi) therefore read
+              // the converged MAGI, not the pre-payment one.
+              priced = bestPriced;
+              federalTax = bestPriced.federalTax;
+              stateTax = bestPriced.stateTax;
+              harvestPaySaleGains = bestLegs.paySaleGains;
+              const pay = bestLegs.pay;
+              // The step-up has already landed inside the
+              // committed ledger: single-pool, the basis is
+              // the pre-harvest basis plus the harvested
+              // amount less the basis the pay sale removed
+              // at the post-step-up ratio; tiers, the
+              // committed copy already carries step-up then
+              // sale. (The min(basis, balance) cap below
+              // stays inside this hv > 0 branch, as before.)
+              if (pay > 0 && balPre > 0) {
+                if (bestLegs.tierCopy) {
+                  tierState = bestLegs.tierCopy;
                   taxableBasisDollars = tierState.reduce(
-                    (s, t) => s + t.basis,
+                    (sum, t) => sum + t.basis,
                     0,
                   );
                 } else {
+                  const basisRemoved = pay - bestLegs.paySaleGains;
                   taxableBasisDollars = Math.max(
                     0,
-                    taxableBasisDollars - pay * (taxableBasisDollars / taxableBal),
+                    basisPre + gainsHarvested - basisRemoved,
                   );
                 }
+              } else if (tiersActive && tierState) {
+                stepUpTiers(tierState, gainsHarvested);
+                taxableBasisDollars = tierState.reduce(
+                  (sum, t) => sum + t.basis,
+                  0,
+                );
+              } else {
+                taxableBasisDollars = basisPre + gainsHarvested;
               }
               taxableBal -= pay;
               fundHarvestTaxTaxable += pay;
@@ -7216,61 +7461,74 @@ export function simulateRothPlan(
                   );
                 }
               }
-              let rest = delta - pay;
-              const fromP = Math.min(rest, Math.max(0, pretaxBalP));
-              pretaxBalP -= fromP;
-              rest -= fromP;
-              const fromS = Math.min(rest, Math.max(0, pretaxBalS));
-              pretaxBalS -= fromS;
-              rest -= fromS;
-              fundHarvestTaxPretax += fromP + fromS;
-              if (rest > 0) {
-                const fromR = Math.min(rest, Math.max(0, rothBal));
-                fundHarvestTaxRoth += fromR;
-                rothBal = Math.max(0, rothBal - rest);
+              // The debit chain below pays the ASSUMED delta
+              // of the committed round (bestDelta), not the
+              // initial delta0 — on convergence they are the
+              // same to the cent; on the best-round fallback
+              // they are the round's own assumed delta,
+              // matching the pricing committed above.
+              const restAfterPretax =
+                bestDelta - pay - bestLegs.fromP - bestLegs.fromS;
+              pretaxBalP -= bestLegs.fromP;
+              pretaxBalS -= bestLegs.fromS;
+              fundHarvestTaxPretax += bestLegs.fromP + bestLegs.fromS;
+              if (restAfterPretax > 0) {
+                fundHarvestTaxRoth += bestLegs.fromR;
+                rothBal = Math.max(0, rothBal - restAfterPretax);
                 // UNPAID TAX (round-5 fix 1): whatever even the
                 // Roth leg could not cover is still owed — it
                 // joins the year's unpaid tax rather than
                 // vanishing at the end of this chain.
-                unpaidTaxYear = r2(unpaidTaxYear + Math.max(0, rest - fromR));
+                unpaidTaxYear = r2(unpaidTaxYear + bestLegs.unpaid);
               }
-            } else if (delta < 0) {
-              taxableBal += -delta;
-              fundHarvestTaxTaxable += delta;
-              // A harvest credit is after-tax money in: with
-              // tiers it lands at 100% basis like any inflow.
+              // The step-up can never carry the basis past the
+              // balance it steps up within.
+              taxableBasisDollars = Math.min(
+                taxableBasisDollars,
+                Math.max(0, taxableBal),
+              );
+            } else {
+              priced = hp;
+              federalTax = hp.federalTax;
+              stateTax = hp.stateTax;
+              if (delta0 < 0) {
+                taxableBal += -delta0;
+                fundHarvestTaxTaxable += delta0;
+                // A harvest credit is after-tax money in: with
+                // tiers it lands at 100% basis like any inflow.
+                if (tiersActive && tierState) {
+                  buyIntoTiers(tierState, -delta0);
+                  taxableBasisDollars = tierState.reduce(
+                    (s, t) => s + t.basis,
+                    0,
+                  );
+                } else {
+                  taxableBasisDollars += -delta0;
+                }
+              }
+              // The step-up: the harvest sold from the
+              // lowest-ratio tier (the gains live there) and the
+              // rebuy lands at full basis on those same shares —
+              // with tiers, the lowest tiers' basis rises by the
+              // harvested amount, capped at each tier's own
+              // unrealized gain; single-pool, the ledger rises
+              // by the amount outright.
               if (tiersActive && tierState) {
-                buyIntoTiers(tierState, -delta);
+                stepUpTiers(tierState, gainsHarvested);
                 taxableBasisDollars = tierState.reduce(
                   (s, t) => s + t.basis,
                   0,
                 );
               } else {
-                taxableBasisDollars += -delta;
+                taxableBasisDollars += gainsHarvested;
               }
-            }
-            // The step-up: the harvest sold from the
-            // lowest-ratio tier (the gains live there) and the
-            // rebuy lands at full basis on those same shares —
-            // with tiers, the lowest tiers' basis rises by the
-            // harvested amount, capped at each tier's own
-            // unrealized gain; single-pool, the ledger rises
-            // by the amount outright.
-            if (tiersActive && tierState) {
-              stepUpTiers(tierState, gainsHarvested);
-              taxableBasisDollars = tierState.reduce(
-                (s, t) => s + t.basis,
-                0,
+              // The step-up can never carry the basis past the
+              // balance it steps up within.
+              taxableBasisDollars = Math.min(
+                taxableBasisDollars,
+                Math.max(0, taxableBal),
               );
-            } else {
-              taxableBasisDollars += gainsHarvested;
             }
-            // The step-up can never carry the basis past the
-            // balance it steps up within.
-            taxableBasisDollars = Math.min(
-              taxableBasisDollars,
-              Math.max(0, taxableBal),
-            );
           }
         }
       }
@@ -7311,7 +7569,7 @@ export function simulateRothPlan(
     // transform is the in-year computation term for term, so the
     // loss year's own pricing is unchanged; only its reported
     // carry-out (and the next year's carry-in) newly appear.
-    const grossGains = realizedGains + injectedLtcg + gainsHarvested;
+    const grossGains = realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains;
     const ledFinal =
       ledgerOn || grossGains < 0
         ? applyLossLedger(
@@ -7953,9 +8211,12 @@ export function simulateRothPlan(
       pretaxTaxDebit: r2(feedbackPretax),
       // Total gains priced this year: the draws' realized gains
       // plus any injected counterfactual sale gain plus the
-      // harvested gain. With the two yield lines below, the
-      // detail's income pieces still sum exactly to AGI.
-      ltcg: r2(realizedGains + injectedLtcg + gainsHarvested),
+      // harvested gain plus the gain the harvest's own
+      // tax-payment sale realized (Engine Review C3, C3-V1 —
+      // priced income of the year, like the harvested gain).
+      // With the two yield lines below, the detail's income
+      // pieces still sum exactly to AGI.
+      ltcg: r2(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains),
       // The priced netting of that same gross total (P-S9;
       // see the RothYearDetail note): the year-end ledger's
       // net result when a carryforward entered — the
@@ -7969,14 +8230,14 @@ export function simulateRothPlan(
       // either way.
       ltcgNet: ledFinal
         ? ledFinal.netResult
-        : r2(realizedGains + injectedLtcg + gainsHarvested),
+        : r2(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains),
       capitalLossAllowance: ledFinal
         ? ledFinal.allowance
         : Math.min(
             capitalLossAllowanceCap(effFilingStatus),
             Math.max(
               0,
-              -(realizedGains + injectedLtcg + gainsHarvested),
+              -(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains),
             ),
           ),
       dividendIncome: r2(dividendIncome),
@@ -8149,6 +8410,10 @@ export function simulateRothPlan(
       unpaidTax: r2(unpaidTaxYear),
       settlementConverged: settled.settlementConverged,
       settlementMismatchCents: settled.settlementMismatchCents,
+      settlementRounds: settled.settlementRounds,
+      settlementPasses: settled.settlementPasses,
+      settlementStopReason: settled.settlementStopReason,
+      settlementInnerStopReason: settled.settlementInnerStopReason,
       ceilingBreached:
         yearCeilings != null &&
         ceilingsActive(yearCeilings) &&
