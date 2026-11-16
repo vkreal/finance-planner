@@ -135,7 +135,12 @@ describe("C9 Build 3 — W4-GAP-1: the compare crowns valid winners only", () =>
     // The W4 probe-E reproduction, now with the verdict in the
     // response: all three orders short $3,970,953.88 of spending
     // (unpaid tax $0 — the shortfall is spending, not tax, and
-    // the two signals stay distinct). Every scenario prices
+    // the two signals stay distinct). That shortfall is
+    // $77,264.00 above probe E's $3,893,689.88 — exactly the
+    // compare path's acaEmbeddedNetPremium ($13,147.20/yr),
+    // which probe E's direct march never charged: removing that
+    // one field from the compare-path inputs reproduces probe E
+    // exactly, so the figure has not drifted. Every scenario prices
     // net cost $0 / wealth $0, so the raw crown is a three-way
     // $0 tie broken by list order — taxable-first — and it is
     // crowned UNQUALIFIED, with the raw cheapest named beside

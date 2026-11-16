@@ -249,6 +249,7 @@ runRothMonteCarloStats,
 splitRothBlob,
 type ClaimAgeInfo,
 type OptimizerCandidateSpec,
+type RothCompareResult,
 type RothExecutionCents,
 type RothSavedLike,
 type ScoredCandidate,
@@ -4490,6 +4491,33 @@ async function readRothBlobRawState(
    needs the year-by-year schedule. Money in these outputs is
    DOLLARS (the tax engine's units), unlike the stored inputs,
    which are cents. */
+// Candidate-integrity assessment (Engine Review 4, E4-S1):
+// the settlement / funding diagnostics of a candidate's own
+// priced march. "valid" = every year converged exactly (or
+// within the 2¢ benign-residual tolerance — see
+// "valid-with-benign-residual"), no unpaid tax, no unfunded
+// spending; "invalid" = a material unresolved discrepancy,
+// unpaid tax, unfunded spending, or a ceiling breached with
+// conversion above $0, with the reasons named. A
+// ceilingBreached count is NOT an invalidity by itself:
+// breached years at conversion $0 mean the draws alone
+// breach, which no fill can fix. Shared by the optimizer
+// scores and the compare scenarios (Engine Review C9, Build 3
+// NICEs, N1): one definition, so the two paths can never
+// drift apart.
+const candidateIntegrityOut = z.object({
+  status: z.enum(["valid", "valid-with-benign-residual", "invalid"]),
+  nonConvergedYears: z.number(),
+  maxMismatchGainsCents: z.number(),
+  maxMismatchPretaxCents: z.number(),
+  maxMismatchAcaCreditCents: z.number(),
+  ceilingBreachedYears: z.number(),
+  ceilingBreachedAtZeroConversionYears: z.number(),
+  unpaidTax: z.number(),
+  spendShortfall: z.number(),
+  reasons: z.array(z.string()),
+});
+
 const optScoreOut = z.object({
   name: z.string(),
   windowLabel: z.string(),
@@ -4565,28 +4593,8 @@ const optScoreOut = z.object({
   drawOrder: z.string(),
   drawOrderLabel: z.string(),
   // Candidate-integrity assessment (Engine Review 4, E4-S1):
-  // the settlement / funding diagnostics of this candidate's
-  // own priced march. "valid" = every year converged exactly
-  // (or within the 2¢ benign-residual tolerance — see
-  // "valid-with-benign-residual"), no unpaid tax, no unfunded
-  // spending; "invalid" = a material unresolved discrepancy,
-  // unpaid tax, unfunded spending, or a ceiling breached with
-  // conversion above $0, with the reasons named. A
-  // ceilingBreached count is NOT an invalidity by itself:
-  // breached years at conversion $0 mean the draws alone
-  // breach, which no fill can fix.
-  integrity: z.object({
-    status: z.enum(["valid", "valid-with-benign-residual", "invalid"]),
-    nonConvergedYears: z.number(),
-    maxMismatchGainsCents: z.number(),
-    maxMismatchPretaxCents: z.number(),
-    maxMismatchAcaCreditCents: z.number(),
-    ceilingBreachedYears: z.number(),
-    ceilingBreachedAtZeroConversionYears: z.number(),
-    unpaidTax: z.number(),
-    spendShortfall: z.number(),
-    reasons: z.array(z.string()),
-  }),
+  // the shared candidateIntegrityOut shape below.
+  integrity: candidateIntegrityOut,
 });
 
 // What the optimizer search priced and what it held fixed
@@ -7705,6 +7713,116 @@ async function restoreEpochConflict(
   return decideRestoreEpoch(storedEpoch, baseEpoch).allowed
     ? null
     : casRestoreEpochConflictReason(what);
+}
+
+// Shape a runRothCompare engine result into the action's
+// response (Engine Review C9, Build 3 NICEs, N1): the
+// per-scenario rows the handler used to build inline, plus the
+// crowned winners and per-scenario integrity the action used to
+// drop. Pure — everything it reads comes from the engine result
+// and the resolved base plan — so a test can drive the exact
+// response the Lab renders without a database or a ctx, and
+// parse it against the action's own response schema.
+export function shapeRothCompareResponse(
+  result: RothCompareResult,
+  resolved: RothSavedLike,
+  capturedYear: number,
+) {
+  const fallbackInputs = parseRothInputs(resolved);
+  return {
+    ok: result.ok,
+    reason: result.reason,
+    provenance: apiProvenance(),
+    baselineName: result.baselineName,
+    winnerByNetCost: result.winnerByNetCost,
+    winnerByEndingWealth: result.winnerByEndingWealth,
+    winnerQualified: result.winnerQualified,
+    excludedInvalidWinner:
+      result.excludedInvalidWinner == null
+        ? null
+        : {
+            name: result.excludedInvalidWinner.name,
+            reasons: result.excludedInvalidWinner.integrity.reasons,
+          },
+    winnersDiffer: result.winnersDiffer,
+    deltaConvention:
+      "Deltas are scenario − baseline, in cents: a negative deltaNetCostCents means the scenario costs less than the baseline; a positive deltaAcaCreditCents means the scenario keeps more ACA premium credit than the baseline.",
+    scenarios: result.scenarios.map((s) => {
+      const scenarioInputs = planInputsFromSaved(s.saved, capturedYear);
+      return {
+        name: s.name,
+        strategyDescription: s.strategyDescription,
+        netCostCents: s.netCostCents,
+        totalTaxCents: s.totalTaxCents,
+        federalTaxCents: s.federalTaxCents,
+        stateTaxCents: s.stateTaxCents,
+        years: s.years,
+        penaltyCents: s.penaltyCents,
+        irmaaCents: s.irmaaCents,
+        acaCreditCents: s.acaCreditCents,
+        healthPremiumCents: s.healthPremiumCents,
+        healthPremiumNetCents: s.healthPremiumNetCents,
+        educationRefundableCents: s.educationRefundableCents,
+        amtCents: s.amtCents,
+        terminalCents: s.terminalCents,
+        ssCollectedCents: s.ssCollectedCents,
+        unpaidTaxCents: s.unpaidTaxCents,
+        // Integrity verdict on this scenario's own priced
+        // march, in the optimizer scores' shape — the totals
+        // are dollars, as the engine carries them.
+        integrity: {
+          status: s.integrity.status,
+          nonConvergedYears: s.integrity.nonConvergedYears,
+          maxMismatchGainsCents: s.integrity.maxMismatchGainsCents,
+          maxMismatchPretaxCents: s.integrity.maxMismatchPretaxCents,
+          maxMismatchAcaCreditCents: s.integrity.maxMismatchAcaCreditCents,
+          ceilingBreachedYears: s.integrity.ceilingBreachedYears,
+          ceilingBreachedAtZeroConversionYears:
+            s.integrity.ceilingBreachedAtZeroConversionYears,
+          unpaidTax: s.integrity.unpaidTaxTotal,
+          spendShortfall: s.integrity.spendShortfallTotal,
+          reasons: s.integrity.reasons,
+        },
+        endingPretaxCents: s.endingPretaxCents,
+        endingRothCents: s.endingRothCents,
+        endingTaxableCents: s.endingTaxableCents,
+        endingHsaCents: s.endingHsaCents,
+        endingAfterTaxWealthCents: s.endingAfterTaxWealthCents,
+        deltaNetCostCents: s.deltaNetCostCents,
+        deltaAcaCreditCents: s.deltaAcaCreditCents,
+        deltaEducationRefundableCents: s.deltaEducationRefundableCents,
+        // The echo carries the merged scenario's DERIVED
+        // sleeve (the engine's effective starting sleeve for
+        // that scenario, R4-3 F7), not the threaded
+        // transient — attached exactly like the other
+        // compute echoes. Balance keys pass through
+        // withResolvedOverrideBalances first (hardening
+        // package, finding A-2): an override's explicit null
+        // priced that balance at $0, so the echo shows the
+        // resolved 0 — the value that priced — not the null
+        // that was sent.
+        effectiveInputs: withThreadedEcho(
+          withSleeveEcho(
+            withResolvedOverrideBalances(
+              parseRothInputs(s.saved) ?? fallbackInputs ?? (resolved as z.infer<typeof rothSavedInputs>),
+              s.saved,
+            ),
+            scenarioInputs == null
+              ? null
+              : Math.round(deriveSpendFromCashSleeveStartDollars(scenarioInputs) * 100),
+          ),
+          // Threaded-pricing echo (re-audit SHOULD S-7): this
+          // scenario's own threaded transients off its merged
+          // shape (buildCompareScenario's per-scenario
+          // re-derivation, or an override's supplied values)
+          // and its effective yields off the engine inputs
+          // built from that same shape — never recomputed.
+          s.saved,
+          scenarioInputs,
+        ),
+      };
+    }),
+  };
 }
 
 export const Actions = {
@@ -14133,6 +14251,26 @@ export const Actions = {
       reason: z.string(),
       provenance: provenanceOut,
       baselineName: z.string().nullable(),
+      // Crowned winners (Engine Review C9, Build 3 — W4-GAP-1;
+      // threaded through the action in the Build 3 NICEs fix,
+      // N1): the two objective winners, crowned over the VALID
+      // scenarios only. winnerQualified is false exactly when no
+      // scenario was valid — the raw winners are still crowned
+      // and excludedInvalidWinner names the raw cheapest with
+      // its integrity reasons. Null / false / null / false on an
+      // ok:false return, where nothing was crowned. The Strategy
+      // Lab badges read these names, never a raw min/max over
+      // the rows (client/src/RothConversion.tsx).
+      winnerByNetCost: z.string().nullable(),
+      winnerByEndingWealth: z.string().nullable(),
+      winnerQualified: z.boolean(),
+      excludedInvalidWinner: z
+        .object({
+          name: z.string(),
+          reasons: z.array(z.string()),
+        })
+        .nullable(),
+      winnersDiffer: z.boolean(),
       deltaConvention: z.string(),
       scenarios: z.array(
         z.object({
@@ -14246,6 +14384,15 @@ export const Actions = {
           // the scenario's assessed tax its balances could not
           // pay. 0 whenever the scenario always covers its bill.
           unpaidTaxCents: z.number(),
+          // Integrity verdict on this scenario's own priced
+          // march (Engine Review C9, Build 3 — W4-GAP-1;
+          // threaded through the action in the Build 3 NICEs
+          // fix, N1): the same shape the optimizer scores carry
+          // (candidateIntegrityOut) — status, the diagnostic
+          // counts, the unpaid-tax / shortfall totals in
+          // dollars, and the reasons. The Lab marks an invalid
+          // row from this field.
+          integrity: candidateIntegrityOut,
           endingPretaxCents: z.number(),
           endingRothCents: z.number(),
           endingTaxableCents: z.number(),
@@ -14270,74 +14417,11 @@ export const Actions = {
         args.baselineName ?? null,
         await readStoredTaxReturn(ctx),
       );
-      const fallbackInputs = parseRothInputs(resolved);
-      return {
-        ok: result.ok,
-        reason: result.reason,
-        provenance: apiProvenance(),
-        baselineName: result.baselineName,
-        deltaConvention:
-          "Deltas are scenario − baseline, in cents: a negative deltaNetCostCents means the scenario costs less than the baseline; a positive deltaAcaCreditCents means the scenario keeps more ACA premium credit than the baseline.",
-        scenarios: result.scenarios.map((s) => {
-          const scenarioInputs = planInputsFromSaved(s.saved, capturedYear);
-          return {
-          name: s.name,
-          strategyDescription: s.strategyDescription,
-          netCostCents: s.netCostCents,
-          totalTaxCents: s.totalTaxCents,
-          federalTaxCents: s.federalTaxCents,
-          stateTaxCents: s.stateTaxCents,
-          years: s.years,
-          penaltyCents: s.penaltyCents,
-          irmaaCents: s.irmaaCents,
-          acaCreditCents: s.acaCreditCents,
-          healthPremiumCents: s.healthPremiumCents,
-          healthPremiumNetCents: s.healthPremiumNetCents,
-          educationRefundableCents: s.educationRefundableCents,
-          amtCents: s.amtCents,
-          terminalCents: s.terminalCents,
-          ssCollectedCents: s.ssCollectedCents,
-          unpaidTaxCents: s.unpaidTaxCents,
-          endingPretaxCents: s.endingPretaxCents,
-          endingRothCents: s.endingRothCents,
-          endingTaxableCents: s.endingTaxableCents,
-          endingHsaCents: s.endingHsaCents,
-          endingAfterTaxWealthCents: s.endingAfterTaxWealthCents,
-          deltaNetCostCents: s.deltaNetCostCents,
-          deltaAcaCreditCents: s.deltaAcaCreditCents,
-          deltaEducationRefundableCents: s.deltaEducationRefundableCents,
-          // The echo carries the merged scenario's DERIVED
-          // sleeve (the engine's effective starting sleeve for
-          // that scenario, R4-3 F7), not the threaded
-          // transient — attached exactly like the other
-          // compute echoes. Balance keys pass through
-          // withResolvedOverrideBalances first (hardening
-          // package, finding A-2): an override's explicit null
-          // priced that balance at $0, so the echo shows the
-          // resolved 0 — the value that priced — not the null
-          // that was sent.
-          effectiveInputs: withThreadedEcho(
-            withSleeveEcho(
-              withResolvedOverrideBalances(
-                parseRothInputs(s.saved) ?? fallbackInputs ?? (resolved as z.infer<typeof rothSavedInputs>),
-                s.saved,
-              ),
-              scenarioInputs == null
-                ? null
-                : Math.round(deriveSpendFromCashSleeveStartDollars(scenarioInputs) * 100),
-            ),
-            // Threaded-pricing echo (re-audit SHOULD S-7): this
-            // scenario's own threaded transients off its merged
-            // shape (buildCompareScenario's per-scenario
-            // re-derivation, or an override's supplied values)
-            // and its effective yields off the engine inputs
-            // built from that same shape — never recomputed.
-            s.saved,
-            scenarioInputs,
-          ),
-          };
-        }),
-      };
+      // The response shape lives in shapeRothCompareResponse
+      // (Engine Review C9, Build 3 NICEs, N1) — the handler
+      // only resolves balances and prices; the shaping is pure
+      // and tested without a ctx.
+      return shapeRothCompareResponse(result, resolved, capturedYear);
     },
   }),
 

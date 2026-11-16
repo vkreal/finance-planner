@@ -711,7 +711,13 @@ export type CompareCrownEntry = {
 // the optimizer); exact wealth ties keep the cost-first-earliest
 // candidate (lowest net cost, then list order — mirroring
 // pickEndingWealthWinner's strict-greater scan over the
-// cost-first-sorted list). When no candidate is valid the raw
+// cost-first-sorted list). The deterministic fallback leg is
+// list order alone — unlike the optimizer, whose fallback ranks
+// Do-Nothing first, then plan order, then candidate key
+// (crownOptimizerWinners): compare entries carry no candidate
+// key and no Do-Nothing scenario, so there is nothing else to
+// rank by, and "same tie-breaks" must not be read as full
+// parity on a full tie. When no candidate is valid the raw
 // winners are crowned anyway and qualified is false, so the
 // disqualification is disclosed, never silent. Deliberately NOT
 // crownOptimizerWinners: compare scenarios have no optimizer
@@ -856,11 +862,24 @@ export type ScoredCandidate = {
 
 function fmtDollars(n: number): string {
   const neg = n < 0;
-  const abs = Math.abs(Math.round(n));
+  const abs = Math.abs(n);
+  if (abs > 0 && abs < 0.5) {
+    // A non-zero amount that rounds to $0 at whole dollars
+    // (Engine Review C9, Build 3 NICEs, N5): a 1¢ unpaid tax
+    // reasoned as "unpaid tax of $0" — verdict and money
+    // correct, the human-readable amount wrong. Show cents, so
+    // a sub-$0.50 amount never reads as $0. (Totals reaching
+    // here are cent-rounded upstream, so the cents figure is
+    // exact; a sub-half-cent remainder renders $0.00.)
+    const cents = Math.round(abs * 100);
+    const s = `$0.${String(cents).padStart(2, "0")}`;
+    return neg ? `−${s}` : s;
+  }
+  const rounded = Math.round(abs);
   // Manual thousands grouping — identical output to
   // toLocaleString("en-US") for a non-negative integer, without
   // the ICU call (this runs while naming every candidate spec).
-  let digits = String(abs);
+  let digits = String(rounded);
   let grouped = "";
   while (digits.length > 3) {
     grouped = `,${digits.slice(-3)}${grouped}`;

@@ -25,6 +25,7 @@ hintCls,
 InfoNote,
 inputCls,
 labelCls,
+labWinnerFigures,
 moneyField,
 monthlyRaw,
 monthlyToAnnual,
@@ -5954,11 +5955,19 @@ export function RothConversion({
 
   // The two winner badges of the merged Strategy Lab table
   // (see the Lab table below): "Lowest tax" on every folded
-  // group tied at the run's minimum engine-returned net cost,
-  // and "Most left at the end" on every group tied at the
-  // run's maximum ending after-tax wealth. A group can carry
-  // both. Saved strategies, your current plan, the baseline,
-  // and the built-in fill rules are all eligible for both.
+  // group tied at the ENGINE's crowned lowest-tax winner's net
+  // cost, and "Most left at the end" on every group tied at the
+  // engine's crowned ending-wealth winner's wealth (Engine
+  // Review C9, Build 3 NICEs, N1 — labWinnerFigures in
+  // rothShared). A group can carry both. On a qualified run
+  // these are exactly the run's minimum net cost / maximum
+  // ending wealth, so a valid compare badges identically to
+  // before; on a mixed run an invalid cheaper row wears no
+  // badge. When no tested strategy was valid the badged rows
+  // also wear the Unqualified badge and the note above the
+  // table names the excluded cheapest strategy. Saved
+  // strategies, your current plan, the baseline, and the
+  // built-in fill rules are all eligible for both.
   const lowestTaxBadge = (
     <span className="mt-1 block w-fit rounded-full border border-[var(--accent)] px-2 py-0.5 text-xs font-medium whitespace-nowrap text-[var(--accent)]">
       Lowest tax
@@ -5967,6 +5976,16 @@ export function RothConversion({
   const mostLeftBadge = (
     <span className="mt-1 block w-fit rounded-full border border-[var(--accent)] px-2 py-0.5 text-xs font-medium whitespace-nowrap text-[var(--accent)]">
       Most left at the end
+    </span>
+  );
+  // The unqualified crown (Engine Review C9, Build 3 NICEs,
+  // N1): when no tested strategy was fully valid the engine
+  // still crowns the raw winners, and the Lab says so on the
+  // badged rows — the badges mark the crowned rows, not a
+  // recommendation to follow.
+  const unqualifiedBadge = (
+    <span className="mt-1 block w-fit rounded-full border border-[var(--bad)] px-2 py-0.5 text-xs font-medium whitespace-nowrap text-[var(--bad)]">
+      Unqualified
     </span>
   );
 
@@ -13990,6 +14009,14 @@ export function RothConversion({
               library again for current figures.
             </p>
           )}
+          {labResult?.ok && !labResult.winnerQualified && (
+            <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+              No tested strategy was fully valid — treat the winners below as unqualified.
+              {labResult.excludedInvalidWinner
+                ? ` The cheapest strategy priced (${labResult.excludedInvalidWinner.name}) was excluded: ${labResult.excludedInvalidWinner.reasons.join("; ")}.`
+                : ""}
+            </p>
+          )}
           {labResult?.ok && (
             <div className="mt-3 overflow-x-auto">
               <table className="w-full min-w-[760px] text-sm">
@@ -14015,22 +14042,28 @@ export function RothConversion({
                     // priced identically in every field show
                     // once, under a plain-words title, with an
                     // "Also:" line naming every folded row.
-                    // Every group tied at the minimum net cost
-                    // wears the Lowest tax badge, and every
-                    // group tied at the maximum ending after-tax
-                    // wealth wears the Most left at the end
-                    // badge (a group can wear both); the group
-                    // holding the baseline row keeps the
-                    // Baseline badge and tint wherever it lands.
+                    // Every group tied at the ENGINE winner's net
+                    // cost wears the Lowest tax badge, and every
+                    // group tied at the ENGINE winner's ending
+                    // after-tax wealth wears the Most left at the
+                    // end badge (a group can wear both); an
+                    // invalid group also wears the Invalid badge
+                    // with its reasons, and on an unqualified
+                    // run the badged rows wear the Unqualified
+                    // badge too; the group holding the
+                    // baseline row keeps the Baseline badge and
+                    // tint wherever it lands.
                     const groups = labDisplayGroups(labResult.scenarios);
-                    const minNetCostCents = groups.length
-                      ? groups[0]!.rep.netCostCents
-                      : null;
-                    const maxWealthCents = groups.length
-                      ? Math.max(
-                          ...groups.map((g) => g.rep.endingAfterTaxWealthCents),
-                        )
-                      : null;
+                    // The badges follow the engine's crowned
+                    // winners (labWinnerFigures — Engine Review
+                    // C9, Build 3 NICEs, N1), not a raw min/max
+                    // over the rows: on a mixed run the invalid
+                    // cheapest row wears no badge.
+                    const winnerFigures = labWinnerFigures(labResult);
+                    const minNetCostCents =
+                      winnerFigures.lowestTaxNetCostCents;
+                    const maxWealthCents =
+                      winnerFigures.mostLeftWealthCents;
                     return groups.map((group) => {
                       const row = group.rep;
                       const isBaseline = group.members.some(
@@ -14045,6 +14078,12 @@ export function RothConversion({
                       const isMostLeft =
                         maxWealthCents != null &&
                         row.endingAfterTaxWealthCents === maxWealthCents;
+                      // Per-scenario integrity (Build 3 NICEs,
+                      // N1): the group's representative row
+                      // carries its own verdict — an invalid
+                      // group is marked, with its reasons, even
+                      // when it wears no winner badge.
+                      const isInvalid = row.integrity.status === "invalid";
                       return (
                     <tr
                       key={group.key}
@@ -14064,9 +14103,22 @@ export function RothConversion({
                         )}
                         {isLowest && lowestTaxBadge}
                         {isMostLeft && mostLeftBadge}
+                        {!labResult.winnerQualified &&
+                          (isLowest || isMostLeft) &&
+                          unqualifiedBadge}
+                        {isInvalid && (
+                          <span className="mt-1 block w-fit rounded-full border border-[var(--bad)] px-2 py-0.5 text-xs font-medium whitespace-nowrap text-[var(--bad)]">
+                            Invalid
+                          </span>
+                        )}
                         <span className="block text-xs text-[var(--dim)]">
                           {row.strategyDescription}
                         </span>
+                        {isInvalid && (
+                          <span className="block text-xs text-[var(--bad)]">
+                            {row.integrity.reasons.join("; ")}
+                          </span>
+                        )}
                         {group.members.length > 1 && (
                           <span className="block text-xs text-[var(--dim)]">
                             Also: {group.members.map((m) => m.name).join(" · ")}

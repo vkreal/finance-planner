@@ -16,6 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  compareRothConversions,
   compareWithdrawalStrategies,
   type ComparisonScopeInfo,
 } from "../src/adapter";
@@ -81,4 +82,43 @@ describe("C9 Build 3 — adapter: the compare verdict reaches the caller", () =>
     expect(r.comparisonScope.excludedInvalidWinner).toBeNull();
     expect(res.warnings).not.toContain(UNQUALIFIED_WARNING);
   });
+});
+
+describe("C9 Build 3 NICEs — N6: no valid winner is claimed when none exists", () => {
+  test("full optimizer, depleted household: the warnings never claim a cheapest valid candidate", () => {
+    // Every candidate shorts spending, so the search is
+    // all-invalid (3,025 candidates, 0 valid — Pass 2's probe).
+    // Before this fix the warnings carried BOTH the correct
+    // "No tested candidate was valid" line AND "… The crowned
+    // winner is the cheapest valid candidate." — a claim with
+    // no valid candidate behind it. The exclusion line still
+    // names the cheapest priced candidate and its reason; only
+    // the false valid-winner sentence is gone.
+    const res = compareRothConversions(
+      normalizedScenario({
+        pretax: 10000,
+        taxable: 10000,
+        roth: 0,
+        hsa: 0,
+        comparisonScope: "full",
+      }),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("fixture failed");
+    const r = res.results as unknown as CompareResults;
+    expect(r.comparisonScope.winnerQualified).toBe(false);
+    expect(r.comparisonScope.excludedInvalidWinner).not.toBeNull();
+    expect(res.warnings).toContain(
+      "No tested candidate was valid — the crowned winner carries a material unresolved discrepancy, unpaid tax, or unfunded spending. Treat its figures as unqualified.",
+    );
+    expect(res.warnings.join(" ")).not.toMatch(/cheapest valid candidate/);
+    // The exclusion itself is still disclosed — the sentence
+    // conditioned away is only the valid-winner claim.
+    expect(
+      res.warnings.some((w) => w.includes("was excluded as invalid")),
+    ).toBe(true);
+    // Slow leg (the full optimizer search, ~5s on the depleted
+    // shape alone, longer under load): carries its own timeout,
+    // as the other full-optimizer tests do.
+  }, 300000);
 });

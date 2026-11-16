@@ -517,3 +517,51 @@ export const pctField = (
   </div>
   );
 };
+
+/* Strategy Lab winner figures (Engine Review C9, Build 3
+   NICEs, N1): the "Lowest tax" / "Most left at the end" badges
+   follow the ENGINE's crowned winners — looked up by the
+   winner names the runRothCompare action now threads through
+   — not a raw min/max over the rows. A raw min/max would crown
+   an invalid cheapest row on a mixed run (the Build 3 defect
+   the engine already fixes, which the Lab reintroduced by
+   re-deriving the winners client-side). On a run whose crown
+   is qualified the figures are exactly the raw min net cost /
+   max ending wealth, so a valid compare badges identically to
+   before; on a mixed run the invalid cheaper row is not badged.
+   The fallback (winner name absent or not among the rows —
+   defensive only; an ok run always names both winners) is the
+   raw min/max, i.e. the pre-N1 behavior. Pure, so a test can
+   drive the badge decision from the shaped action response. */
+export type LabWinnerInput = {
+  winnerByNetCost: string | null;
+  winnerByEndingWealth: string | null;
+  scenarios: readonly {
+    name: string;
+    netCostCents: number;
+    endingAfterTaxWealthCents: number;
+  }[];
+};
+export function labWinnerFigures(result: LabWinnerInput): {
+  lowestTaxNetCostCents: number | null;
+  mostLeftWealthCents: number | null;
+} {
+  const costWinner = result.scenarios.find(
+    (s) => s.name === result.winnerByNetCost,
+  );
+  const wealthWinner = result.scenarios.find(
+    (s) => s.name === result.winnerByEndingWealth,
+  );
+  return {
+    lowestTaxNetCostCents:
+      costWinner?.netCostCents ??
+      (result.scenarios.length
+        ? Math.min(...result.scenarios.map((s) => s.netCostCents))
+        : null),
+    mostLeftWealthCents:
+      wealthWinner?.endingAfterTaxWealthCents ??
+      (result.scenarios.length
+        ? Math.max(...result.scenarios.map((s) => s.endingAfterTaxWealthCents))
+        : null),
+  };
+}

@@ -2484,10 +2484,15 @@ function compareRothConversionsFull(
           },
         ]),
         "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+        // (Engine Review C9, Build 3 NICEs, N6): the "cheapest
+        // valid candidate" sentence runs only when the crown IS
+        // qualified — on an all-invalid search there is no valid
+        // candidate, so claiming one beside the "No tested
+        // candidate was valid" warning contradicted it.
         ...(result.excludedInvalidWinner == null
           ? []
           : [
-              `The cheapest candidate the search priced (${optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec)}) was excluded as invalid: ${result.excludedInvalidWinner.integrity.reasons.join("; ")}. The crowned winner is the cheapest valid candidate.`,
+              `The cheapest candidate the search priced (${optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec)}) was excluded as invalid: ${result.excludedInvalidWinner.integrity.reasons.join("; ")}.${result.winnerQualified ? " The crowned winner is the cheapest valid candidate." : ""}`,
             ]),
         ...(!result.winnerQualified
           ? [

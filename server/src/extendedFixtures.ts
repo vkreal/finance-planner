@@ -5956,6 +5956,13 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
             s.educationRefundableCents
         )
           netCostIdentityExact += 1;
+        // Wealth identity (Engine Review C9, Build 3 NICEs,
+        // N2): the published SCORE_IDENTITIES identity reads
+        // balances − terminal − unpaid tax — the unpaid-tax term
+        // is load-bearing here, not a $0 formality: without it
+        // this check passed vacuously on the seeded example
+        // (unpaid $0 on both scenarios) and could never catch a
+        // W2-D2 regression.
         if (
           Math.abs(
             s.endingAfterTaxWealthCents -
@@ -5963,7 +5970,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
                 s.endingRothCents +
                 s.endingTaxableCents +
                 s.endingHsaCents -
-                s.terminalCents),
+                s.terminalCents -
+                s.unpaidTaxCents),
           ) <= 1
         )
           wealthIdentityWithinCent += 1;
