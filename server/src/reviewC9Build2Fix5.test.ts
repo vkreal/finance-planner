@@ -352,7 +352,14 @@ describe("phantom alignment pinned at march level (Pass 6 scouts 4/5)", () => {
     });
   });
 
-  test("tracking S=659k: B1 and top-up move together to $3,832.75 — the cap, not a coincidence", () => {
+  // Re-pinned under Fix 8: the old pins embedded the r2-draw dust
+  // (short -0.01, fundSpendRoth 1c high) that Fix 6 removed. The
+  // fixed march matches the 58bb12e base bit-for-bit on every
+  // quantity pinned here (probe logs-fix7/b1-base.log vs
+  // b1-repo.log — identical B1, topUp, fundSpendRoth, rothDraw,
+  // taxSale, pretaxDraw), so the pins now read the base-consistent
+  // values: B1 $3,832.76 (not .75), short 0, fundTaxRoth $0.01.
+  test("tracking S=659k: B1 $3,832.76, top-up $3,832.75 — a cent apart at the cap, not a coincidence", () => {
     const wOpen = measureOpeningWithholding();
     const res = simulateRothPlan(
       marchInputs({ annualSpending: 659_000 }),
@@ -366,13 +373,13 @@ describe("phantom alignment pinned at march level (Pass 6 scouts 4/5)", () => {
     const fundTaxRoth = y27.rothDraw - fundSpendRoth;
     const B1 = y26.rothEnd + (y27.conv - wOpen) - fundSpendRoth;
     const topUp = y27.pretaxDraw - wOpen;
-    expect(B1).toBeCloseTo(3832.75, 2);
+    expect(B1).toBeCloseTo(3832.76, 2);
     expect(topUp).toBeCloseTo(3832.75, 2);
-    expect(fundTaxRoth).toBeCloseTo(0, 2);
-    expect(1000000 - fundSpendRoth).toBeCloseTo(412352.09, 2);
+    expect(fundTaxRoth).toBeCloseTo(0.01, 2);
+    expect(1000000 - fundSpendRoth).toBeCloseTo(412352.1, 2);
     expect(y27).toEqual({
       conv: 100000, fed: 12321.07, pen: 20000, unpaid: 19968.98,
-      short: -0.01, rothEnd: 0, earnInc: 0, clock: 2029, unknown: false,
+      short: 0, rothEnd: 0, earnInc: 0, clock: 2029, unknown: false,
       rothDraw: 587647.91, pretaxDraw: 12352.09, taxSale: 71352.1,
       taxForTax: 0,
     });
