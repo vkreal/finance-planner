@@ -118,7 +118,15 @@ import {
   type RothTaxReturnStored,
 } from "./taxReturnCore";
 import { DEFAULT_HEIR_RATE_PCT } from "./rothDefaults";
-import { blendedExpected, STOCKS_PCT_DEFAULT } from "./retirementEngines";
+import {
+  blendedExpected,
+  medianOf as sharedMedianOf,
+  mulberry32 as sharedMulberry32,
+  normalRandom as sharedNormalRandom,
+  percentile as sharedPercentile,
+  STOCKS_PCT_DEFAULT,
+  validateMonteCarloSeed,
+} from "./retirementEngines";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -2103,31 +2111,20 @@ export const ROTH_MC_CHECK_PATHS = 250;
 // identically; only the per-path consumption count is fixed.
 export const MC_STREAM_STRIDE_YEARS = 160;
 
-// mulberry32 + Box–Muller, replicated from retirementEngines.ts
-// (runMonteCarlo draws its batch exactly this way); that module
-// is not modified.
-function mcMulberry32(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function mcNormalRandom(rng: () => number): number {
-  // Box–Muller
-  let u = 0;
-  let v = 0;
-  while (u === 0) u = rng();
-  while (v === 0) v = rng();
-  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-}
+// mulberry32 + Box–Muller, imported from retirementEngines.ts
+// (Engine Review C5, C5-S2): the Roth stream helpers are the
+// same primitives runMonteCarlo draws with — one implementation,
+// one sequence — not a replication. The names stay local aliases
+// so the stream helpers below read unchanged, and the drawn
+// sequence is bit-identical to the replicated pair (pinned by the
+// mc-golden-shocks fixture's externally computed shock literals).
+const mcMulberry32 = sharedMulberry32;
+const mcNormalRandom = sharedNormalRandom;
 
 // The check's random stream: one mulberry32 seeded
 // `seed * 7919 + 17`, the runMonteCarlo convention.
 export function rothMcStream(seed: number): () => number {
+  validateMonteCarloSeed(seed);
   return mcMulberry32(seed * 7919 + 17);
 }
 
@@ -2161,21 +2158,51 @@ export function rothMcReturnSeries(
 // retirementEngines' medianOf / percentile — the median is the
 // middle value of a sorted copy (or the mean of the two middle
 // values), and percentile p reads index floor(p/100 × n) of the
-// sorted values, clamped to the ends. Replicated here as tiny
-// helpers; retirementEngines is not modified.
-function mcMedianOf(values: number[]): number {
-  if (values.length === 0) return 0;
-  const s = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 1 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
-}
-function mcPercentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.floor((p / 100) * sorted.length)),
-  );
-  return sorted[idx] ?? 0;
+// sorted values, clamped to the ends. Imported from
+// retirementEngines (Engine Review C5, C5-S2) rather than
+// replicated: the conventions are identical, so the shared
+// helpers price bit-identically here.
+const mcMedianOf = sharedMedianOf;
+const mcPercentile = sharedPercentile;
+
+// ----- Monte Carlo input validation (Engine Review C5, C5-M1) -----
+// The Roth entry points used to accept any path count, seed, and
+// volatility: pathCount 0 / negative returned a successful result
+// (the check) or ok:true (the stats run) with zero-value summary
+// statistics, a fractional count silently ran ceil(N) paths, a
+// NaN seed silently drew the seed-0 stream, and a NaN volatility
+// priced NaN costs while the shortfall rates still read 100%.
+// The API actions already fix pathCount at ROTH_MC_CHECK_PATHS
+// (250) and seed at ROTH_MC_CHECK_SEED (12345) and zod-validate
+// volatility 0–100, so these guards are defense in depth at the
+// core and change no valid call. The bound is 4× the 250-path
+// API default. The check throws (it has no ok:false channel);
+// the stats run returns { ok: false, reason } — its existing
+// error channel, which the API handler forwards directly.
+export const MAX_ROTH_MONTE_CARLO_PATHS = 1000;
+function invalidRothMcOptsReason(opts: {
+  volatilityPct: number;
+  pathCount: number;
+  seed: number;
+}): string | null {
+  if (
+    !Number.isInteger(opts.pathCount) ||
+    opts.pathCount < 1 ||
+    opts.pathCount > MAX_ROTH_MONTE_CARLO_PATHS
+  ) {
+    return `The Monte Carlo path count must be a whole number from 1 to ${MAX_ROTH_MONTE_CARLO_PATHS}, got ${opts.pathCount}.`;
+  }
+  if (!Number.isInteger(opts.seed)) {
+    return `Monte Carlo seed must be a finite integer, got ${opts.seed}.`;
+  }
+  if (
+    !Number.isFinite(opts.volatilityPct) ||
+    opts.volatilityPct < 0 ||
+    opts.volatilityPct > 100
+  ) {
+    return `Monte Carlo volatility must be between 0 and 100 percent, got ${opts.volatilityPct}.`;
+  }
+  return null;
 }
 
 // Price one candidate under one return series, mirroring
@@ -2241,6 +2268,9 @@ export function runRothMonteCarloCheck(
   doNothing: { spec: OptimizerCandidateSpec; claimAges: ClaimAgeInfo },
   opts: { volatilityPct: number; pathCount: number; seed: number },
 ): RothMcCheckResult {
+  // C5-M1: a 0-path check must not return zero-value statistics.
+  const optsError = invalidRothMcOptsReason(opts);
+  if (optsError) throw new RangeError(optsError);
   const rng = rothMcStream(opts.seed);
   const paths: RothMcCheckPath[] = [];
   // The plan's horizon in years — the prefix of each path's
@@ -2381,6 +2411,11 @@ export function runRothMonteCarloStats(
     taxReturnActuals?: RothTaxReturnStored | null;
   },
 ): RothMcStatsResult {
+  // C5-M1: invalid Monte Carlo options fail in this function's
+  // own { ok: false, reason } channel, before any pricing — a
+  // 0-path run must not report ok:true with zero statistics.
+  const optsError = invalidRothMcOptsReason(opts);
+  if (optsError) return { ok: false, reason: optsError, scenarios: [] };
   const noBirthYear: RothMcStatsResult = {
     ok: false,
     reason:

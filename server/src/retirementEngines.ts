@@ -19,7 +19,7 @@
 
 import { HISTORICAL } from "./retirementData";
 
-function percentile(sorted: number[], p: number): number {
+export function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(
     sorted.length - 1,
@@ -27,7 +27,7 @@ function percentile(sorted: number[], p: number): number {
   );
   return sorted[idx] ?? 0;
 }
-function medianOf(values: number[]): number {
+export function medianOf(values: number[]): number {
   if (values.length === 0) return 0;
   const s = [...values].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
@@ -61,7 +61,13 @@ export function horizonYears(currentAge: number, endAge: number): number {
 }
 
 // Deterministic PRNG so a Monte Carlo batch is stable until Re-run.
-function mulberry32(seed: number) {
+// Exported (Engine Review C5, C5-S2): the Roth engine's stream
+// helpers are the same mulberry32 + Box–Muller pair, imported from
+// here rather than replicated — one implementation, one sequence.
+// The algorithm itself is unchanged: the same seed draws the same
+// values as before the unification, pinned by the mc-golden-shocks
+// fixture's externally computed shock literals.
+export function mulberry32(seed: number) {
   let a = seed >>> 0;
   return () => {
     a |= 0;
@@ -71,13 +77,76 @@ function mulberry32(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-function normalRandom(rng: () => number): number {
+export function normalRandom(rng: () => number): number {
   // Box–Muller
   let u = 0;
   let v = 0;
   while (u === 0) u = rng();
   while (v === 0) v = rng();
   return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+// ----- Monte Carlo input validation (Engine Review C5, C5-M1) -----
+// The core Monte Carlo entry points used to accept any run count,
+// seed, and return/volatility a direct caller passed: a 0 or NaN
+// run count returned a successful-looking result with NaN success
+// rates and zero medians, a negative count read as a 0% failed
+// plan, a fractional count silently ran ceil(N) runs, an infinite
+// count never returned (unbounded allocation), a NaN/Infinity or
+// fractional seed silently collapsed to the seed-0 stream
+// (`seed >>> 0`), and NaN/Infinity/negative return or volatility
+// values priced NaN balances with self-contradictory success
+// rates. The API layer already constrains its own calls (fixed
+// 250-path Roth counts, zod volatility 0–100, adapter mcRuns
+// 10–5000 / integer seed), so these guards are defense in depth
+// at the core — every direct caller gets the same explicit
+// rejection, and no valid call changes behavior. The errors are
+// RangeErrors: invalid Monte Carlo parameters are programmer
+// errors, not a "no answer" horizon (which keeps returning null).
+// The bounds: MAX_MONTE_CARLO_RUNS is 10× the 1,000-run tab
+// default, so every legitimate tab/solver/adapter call (≤ 5,000)
+// is untouched; the Roth path cap lives with the Roth engine
+// (MAX_ROTH_MONTE_CARLO_PATHS, 4× its 250-path default).
+export const MAX_MONTE_CARLO_RUNS = 10000;
+export function validateMonteCarloSeed(seed: number): void {
+  if (!Number.isInteger(seed)) {
+    throw new RangeError(
+      `Monte Carlo seed must be a finite integer, got ${seed}.`,
+    );
+  }
+}
+export function validateMonteCarloRunCount(
+  runCount: number,
+  maxRuns: number = MAX_MONTE_CARLO_RUNS,
+): void {
+  if (!Number.isInteger(runCount) || runCount < 1 || runCount > maxRuns) {
+    throw new RangeError(
+      `Monte Carlo run count must be a whole number from 1 to ${maxRuns}, got ${runCount}.`,
+    );
+  }
+}
+export function validateMonteCarloReturn(expected: number, vol: number): void {
+  if (!Number.isFinite(expected)) {
+    throw new RangeError(
+      `Monte Carlo expected return must be a finite number, got ${expected}.`,
+    );
+  }
+  if (!Number.isFinite(vol) || vol < 0) {
+    throw new RangeError(
+      `Monte Carlo volatility must be a finite number at or above 0, got ${vol}.`,
+    );
+  }
+}
+export function validateMonteCarloVolatilityPct(volatilityPct: number): void {
+  if (
+    !Number.isFinite(volatilityPct) ||
+    volatilityPct < 0 ||
+    volatilityPct > 100
+  ) {
+    throw new RangeError(
+      `Monte Carlo volatility must be between 0 and 100 percent, got ${volatilityPct}.`,
+    );
+  }
 }
 
 export type SpendingStrategy = "constant" | "percent" | "guardrails" | "phased";
@@ -477,6 +546,36 @@ export function simulateDetailed(inputs: SimInputs, returns: number[]): SimDetai
   return { balances, grossWithdrawals, netWithdrawals };
 }
 
+// The never-runs-out verdict read off a detailed run (Engine
+// Review C5, C5-S1): runNeverRunsOut's year loop IS
+// simulateDetailed's year loop with the funding test taken
+// before each withdrawal, and the two loops evolve the balance
+// identically (same withdrawal, same floors, same return step)
+// — so the detailed run's own arrays decide the same verdict:
+// a retired year whose net withdrawal exceeds the balance on
+// hand at its start fails the run. The first such year is the
+// first year either loop floors the balance, so the balances
+// agree at every year-start up to and including it, and the
+// verdict is settled there. runMonteCarlo and runHistorical
+// used to price every run twice — once detailed, once
+// success-only — for the same answer; they now read it off the
+// detailed run they already have (measured: the sim phase of a
+// 1,000-run batch drops ~45%, probe-phase6b/c). runNeverRunsOut
+// itself is unchanged and still serves the max-spending
+// solver's scan, where no detailed run exists to read from.
+// Pinned by retirementReviewC5.test.ts (derived verdict vs
+// runNeverRunsOut on every MC-drawn vector, all strategies).
+export function neverRunsOutFromDetailed(
+  det: SimDetailed,
+  inputs: SimInputs,
+): boolean {
+  for (let i = 0; i < det.netWithdrawals.length; i++) {
+    if (inputs.currentAge + i < inputs.retirementAge) continue;
+    if ((det.netWithdrawals[i] ?? 0) > (det.balances[i] ?? 0)) return false;
+  }
+  return true;
+}
+
 // Balances-only path (the original simulate shape).
 export function simulate(inputs: SimInputs, returns: number[]): number[] {
   return simulateDetailed(inputs, returns).balances;
@@ -730,6 +829,7 @@ export function runHistorical(inputs: SimInputs, stocksPct: number): HistResult 
   const allReturns = historicalRealReturns(stocksPct);
   const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
   const runs: HistRun[] = [];
+  let neverOut = 0;
   for (let idx = 0; idx < HISTORICAL.length; idx++) {
     const sy = HISTORICAL[idx]?.year ?? 0;
     if (sy + planYears - 1 > lastYear) break;
@@ -743,11 +843,14 @@ export function runHistorical(inputs: SimInputs, stocksPct: number): HistResult 
       grossWithdrawals: det.grossWithdrawals,
       netWithdrawals: det.netWithdrawals,
     });
+    // C5-S1: the never-runs-out verdict is read off the
+    // detailed run (neverRunsOutFromDetailed), not
+    // re-simulated — see the helper for the equivalence proof.
+    if (neverRunsOutFromDetailed(det, inputs)) neverOut++;
   }
   if (runs.length === 0) return null;
   const endings = runs.map((r) => r.ending);
   const successes = endings.filter((e) => e > 0).length;
-  const neverOut = runs.filter((r) => runNeverRunsOut(inputs, r.returns)).length;
   const worst = runs.reduce(
     (a, b) => (b.ending < a.ending ? b : a),
     runs[0] ?? { startYear: 0, path: [], ending: 0, returns: [], grossWithdrawals: [], netWithdrawals: [] },
@@ -831,6 +934,9 @@ export function runMonteCarlo(
   seed: number,
   runCount = MONTE_CARLO_TAB_RUNS,
 ): McResult | null {
+  validateMonteCarloRunCount(runCount);
+  validateMonteCarloSeed(seed);
+  validateMonteCarloReturn(expected, vol);
   const planYears = horizonYears(inputs.currentAge, inputs.endAge);
   if (planYears <= 0) return null;
   const rng = mulberry32(seed * 7919 + 17);
@@ -847,7 +953,9 @@ export function runMonteCarlo(
     paths.push(det.balances);
     runsGross.push(det.grossWithdrawals);
     endings.push(det.balances[det.balances.length - 1] ?? 0);
-    if (runNeverRunsOut(inputs, returns)) neverOut++;
+    // C5-S1: the never-runs-out verdict is read off the
+    // detailed run (neverRunsOutFromDetailed), not re-simulated.
+    if (neverRunsOutFromDetailed(det, inputs)) neverOut++;
   }
   const sortedEndings = [...endings].sort((a, b) => a - b);
   const successes = endings.filter((e) => e > 0).length;
@@ -919,20 +1027,39 @@ export function runMonteCarlo(
    $100-step scan instead, using success-only feasibility checks
    (runNeverRunsOut over the same return sequences the engines use,
    decided as soon as the success count is settled either way). The
-   scan stops at a proven ceiling: in the first retired year the
-   guardrail level is still the base spending itself (the initial
-   rate equals the current rate, so no adjustment can fire), and
+   scan walks DOWN from the ceiling and stops at the first feasible
+   step — which is the maximum under non-monotonicity — and each
+   step first passes a first-year feasibility filter (a step whose
+   first-year net withdrawal exceeds all but fewer-than-needed
+   runs' retirement balances is provably infeasible without
+   simulating); both preserve the exact answer (Engine Review C5,
+   Phase 6). The scan stops at a proven ceiling, and the ceiling
+   depends on the cut rail: in the first retired year the current
+   rate equals the initial rate, so the cut rail fires exactly
+   when guardrailsCutPct < 100 and the raise rail exactly when
+   guardrailsRaisePct > 100 (up to the 1e-9 relative rail
+   tolerance, which only matters within a hair of a rail). When
+   cut >= 100 no cut fires, so the year-1 gross is the base
+   spending itself or larger (a raise only increases it), and
    that year's net withdrawal is the base spending minus at most
-   the extra income, so a spending strictly above the best run's
-   balance at retirement plus the extra income fails every run in
-   year one — its net withdrawal exceeds every run's balance.
-   The spending exactly AT that ceiling is different: its
-   first-year net withdrawal exactly equals the best run's
-   balance, an exactly funded withdrawal is not short, and a
-   plan whose later years are covered by the income can succeed
-   there — so the scan INCLUDES the ceiling step and lets
-   runNeverRunsOut decide it, like every other step (Prompt 13
-   fix, build v40).
+   the extra income — a spending strictly above the best run's
+   balance at retirement plus the extra income fails every run
+   in year one. When cut < 100 the cut fires in year 1 and the
+   year-1 gross is round(cents * (1 - adj)), so the ceiling is
+   that same balance-plus-income total DIVIDED by the year-1
+   cut factor (1 - adj), with slack for the rounding and the
+   step floor (Engine Review C5, fix round 2, Pass B MUST-1:
+   the undivided ceiling understated the maximum on an
+   income-dominated plan). With adj >= 100 the year-1 cut
+   zeroes the spending, so no finite year-1 ceiling exists and
+   the search cap is the only bound.
+   The spending exactly AT that ceiling is different: at the
+   undivided ceiling its first-year net withdrawal exactly
+   equals the best run's balance, an exactly funded withdrawal
+   is not short, and a plan whose later years are covered by
+   the income can succeed there — so the scan INCLUDES the
+   ceiling step and lets runNeverRunsOut decide it, like every
+   other step (Prompt 13 fix, build v40).
    Note the ceiling must use the income amount itself, not the
    income active in the first retired year: an income that starts
    later and exceeds the spending revives a zeroed balance once it
@@ -1099,6 +1226,54 @@ function solveGuardrailsScan(
   const needed = Math.ceil((targetPct / 100) * runReturns.length - 1e-9);
   const allowedFail = runReturns.length - needed;
   const feasible = (cents: number): boolean => {
+    // First-year filter (Engine Review C5, Phase 6; threshold
+    // corrected in the C5 fix round): the first retired year's
+    // guardrails gross is the base spending itself ONLY when
+    // cut >= 100 and raise <= 100 (within the documented
+    // relative tolerance). In year 1 the current rate equals
+    // the initial rate — the initial rate is set from the base
+    // spending over the balance at retirement — so a rail
+    // fires exactly when its knob crosses 100: the cut rail
+    // when guardrailsCutPct < 100, the raise rail when
+    // guardrailsRaisePct > 100. The cut is checked first, so
+    // with cut < 100 the year-1 gross is
+    // round(cents * (1 - adj)) for every run with a positive
+    // balance at retirement (a zero balance takes no
+    // adjustment, so its gross stays the base spending — a
+    // HIGHER net, which is the safe direction for this
+    // filter). The filter must therefore bound the TRUE
+    // first-year net: with cut < 100 the threshold is the cut
+    // gross minus the first-year income, the lowest net any
+    // run can take; otherwise the base spending minus the
+    // first-year income still bounds it from below (the raise
+    // side only ever increases the gross). The earlier version
+    // of this filter assumed the gross was always the base
+    // spending and so overstated the net — and undercounted
+    // the runs that can pass year 1 — whenever cut < 100.
+    // A run whose balance at retirement is below that net
+    // fails in year one, whatever later years would do. The
+    // runs that can possibly succeed at this step are exactly
+    // those with retBal >= firstYearNet; if fewer than the
+    // needed count exist, the step is provably infeasible
+    // without simulating a single run. The bound is an UPPER
+    // bound on successes, never a lower one: passing the filter
+    // proves nothing, so every step that passes is still
+    // decided by runNeverRunsOut below.
+    const firstYearGross =
+      base.guardrailsCutPct < 100
+        ? Math.round(cents * (1 - base.guardrailsAdjustmentPct / 100))
+        : cents;
+    const firstYearNet = firstYearGross - firstYearIncome;
+    if (firstYearNet > 0) {
+      let lo = 0;
+      let hi = sortedRetBals.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if ((sortedRetBals[mid] ?? 0) < firstYearNet) lo = mid + 1;
+        else hi = mid;
+      }
+      if (sortedRetBals.length - lo < needed) return false;
+    }
     const inp: SimInputs = { ...base, spendingCents: cents };
     let succ = 0;
     let fail = 0;
@@ -1116,13 +1291,19 @@ function solveGuardrailsScan(
   // (The no-retired-years case never reaches this scan:
   // solveMaxSpending refuses it at entry — build v66, F6.)
   // Proven ceiling (see the solver note above): no spending
-  // strictly above the best balance at retirement plus the extra
-  // income can succeed, but the spending exactly AT that ceiling
-  // can — its first-year net withdrawal exactly equals the best
-  // run's retirement balance, and an exactly funded withdrawal
-  // is not short — so the scan bound is INCLUSIVE of the ceiling
-  // step (Prompt 13 fix, build v40; the bound previously
-  // subtracted one cent and never tested that step).
+  // strictly above the ceiling can succeed — the best balance
+  // at retirement plus the extra income when cut >= 100, that
+  // total divided by the year-1 cut factor (1 - adj) when cut
+  // < 100 and adj < 100 (the cut fires in year 1, so the gross
+  // is round(cents * (1 - adj))), and the search cap when cut
+  // < 100 and adj >= 100 (the year-1 cut zeroes the spending,
+  // so no finite year-1 ceiling exists). The spending exactly
+  // AT that ceiling can succeed — an exactly funded first-year
+  // withdrawal is not short, and a plan whose later years are
+  // covered by the income can succeed there — so the scan bound
+  // is INCLUSIVE of the ceiling step (Prompt 13 fix, build v40;
+  // the bound previously subtracted one cent and never tested
+  // that step).
   // Feasibility of the endpoint, like every scanned step, is
   // decided by runNeverRunsOut. The income term is the eventual
   // income — the amount itself whenever it has a start age —
@@ -1145,6 +1326,13 @@ function solveGuardrailsScan(
     Math.min(planYears, base.retirementAge - base.currentAge),
   );
   const eventualIncome = eventualIncomeCents(base);
+  // Balance at the start of the first retired year, per run —
+  // the starting balance grown through the pre-retirement years
+  // (no withdrawals before retirement, and no income banked
+  // before retirement either — see incomeCentsAt). Collected
+  // here for the ceiling (its max) and, sorted, for the
+  // first-year feasibility filter in feasible() below.
+  const retBals: number[] = [];
   let maxRetBal = 0;
   for (const returns of runReturns) {
     let b = base.startCents;
@@ -1152,15 +1340,71 @@ function solveGuardrailsScan(
       b = b * (1 + (returns[i] ?? 0));
       if (b < 0) b = 0;
     }
+    retBals.push(b);
     if (b > maxRetBal) maxRetBal = b;
   }
-  const scanSteps = Math.min(
-    capSteps,
-    Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)),
-  );
+  const sortedRetBals = [...retBals].sort((a, b) => a - b);
+  // Income active in the first retired year — the first age at
+  // or after the retirement age inside the horizon (when the
+  // retirement age is already past, the first modeled year is
+  // the current age).
+  const firstRetiredAge = Math.max(base.currentAge, base.retirementAge);
+  const firstYearIncome = incomeCentsAt(base, firstRetiredAge);
+  // Year-1 cut factor: with cut < 100 the year-1 gross is at
+  // least round(cents * (1 - adj)) — when the cut fires that is
+  // the gross exactly; when it does not fire (tolerance edge or
+  // zero balance) the gross is the base spending or the raise
+  // gross, both larger for adj >= 0 — so a step with cents
+  // above (maxRetBal + eventualIncome + 0.5) / (1 - adj) has a
+  // year-1 net above every run's retirement balance and is
+  // provably infeasible. The +1 cent covers the Math.round
+  // slack and the +1 step covers the floor. A negative adj
+  // (raw direct call only; the app clamps adj to 1..50) would
+  // make the factor exceed 1 and shrink the ceiling below the
+  // sound undivided bound, so the factor is floored at 1 via
+  // Math.max(0, adj); adj >= 100 zeroes the year-1 gross, so
+  // no finite year-1 ceiling exists and the search cap is the
+  // only bound.
+  const cutFactor =
+    1 - Math.max(0, base.guardrailsAdjustmentPct) / 100;
+  const scanSteps =
+    base.guardrailsCutPct < 100 && cutFactor > 0
+      ? Math.min(
+          capSteps,
+          Math.max(
+            0,
+            Math.floor(
+              (maxRetBal + eventualIncome + 1) / (STEP * cutFactor),
+            ) + 1,
+          ),
+        )
+      : base.guardrailsCutPct < 100
+        ? capSteps
+        : Math.min(
+            capSteps,
+            Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)),
+          );
+  // Descending scan (Engine Review C5, Phase 6): the scan used
+  // to walk k = 1..scanSteps and keep the largest feasible step.
+  // Under non-monotonicity that tests every step — including the
+  // whole feasible region, where each low step scans ~needed
+  // runs to confirm. Walking DOWN from the ceiling instead, the
+  // FIRST feasible step found IS the maximum feasible step, so
+  // the scan stops there: the steps above it are all infeasible
+  // (each decided cheaply — by the first-year filter, or by
+  // failing in the first retired year) and no step below it can
+  // beat it. The answer is identical by construction; when no
+  // step is feasible the scan tests them all and best stays 0,
+  // exactly as before. Measured on the bench plan (ceiling
+  // (probe-phase6.ts; the best itself is recorded in
+  // bench-after.log). The filter cuts the infeasible tail
+  // further still — see bench-after.
   let best = 0;
-  for (let k = 1; k <= scanSteps; k++) {
-    if (feasible(k * STEP)) best = k;
+  for (let k = scanSteps; k >= 1; k--) {
+    if (feasible(k * STEP)) {
+      best = k;
+      break;
+    }
   }
   const winner = evaluatePlan(
     { ...base, spendingCents: best * STEP },
@@ -1207,6 +1451,11 @@ export function solveMaxSpending(
   targetPct: number,
   mcSeed: number = MONTE_CARLO_TAB_SEED_DEFAULT,
 ): SolverResult | null {
+  // The seed is validated up front: the Monte Carlo legs reach
+  // runMonteCarlo (which validates it) but the historical leg
+  // never does, so without this a NaN seed would silently solve
+  // on the historical engine.
+  validateMonteCarloSeed(mcSeed);
   // No retired years (build v66, boundary audit F6): when
   // the retirement age is at or past the plan's end age, no
   // modeled year ever withdraws the solved spending, so every
