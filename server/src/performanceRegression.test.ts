@@ -440,6 +440,12 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // (620 ms for 50). Budget 5,000 ms CPU is ~30× the
     // 4-scenario baseline.
     expect(first.cpuMs).toBeLessThanOrEqual(5_000);
+    // Heap growth at the call: a fresh-process probe measured
+    // +4.1 MB (two runs agreeing; heap-probe.ts). The 0.0 MB
+    // delta in measure.log is a high-water artifact — the
+    // earlier joint legs had already set the heap at 161.9 MB
+    // — not a baseline, so it is not cited. Budget 128 MB
+    // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
   }, 300_000);
 
@@ -460,6 +466,12 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // audit-blocking.md measured 45 ms CPU for 1,000 runs.
     // Budget 2,000 ms CPU is ~40× the baseline.
     expect(first.cpuMs).toBeLessThanOrEqual(2_000);
+    // Heap growth at the call: a fresh-process probe measured
+    // +3.8 / +3.9 MB (two runs; heap-probe.ts). The 0.0 MB
+    // delta in measure.log is a high-water artifact — the
+    // earlier joint legs had already set the heap at 161.9 MB
+    // — not a baseline, so it is not cited. Budget 128 MB
+    // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
   }, 300_000);
 
@@ -483,6 +495,14 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // dominate the file's wall time under load).
     // Budget 5,000 ms CPU is ~15× the baseline.
     expect(first.cpuMs).toBeLessThanOrEqual(5_000);
+    // Heap growth at the call: a fresh-process probe measured
+    // +5.6 / +4.6 MB on the first call (two runs; heap-probe.ts),
+    // and a second call in the same fresh process adds ~6.5 MB
+    // more (~12 MB cumulative). The 0.0 MB first-call delta in
+    // measure.log is a high-water artifact — the earlier joint
+    // legs had already set the heap at 161.9 MB — not a
+    // baseline, so it is not cited. Budget 256 MB is ~45× the
+    // first-call growth and ~20× the two-call cumulative.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(256);
   }, 300_000);
 
