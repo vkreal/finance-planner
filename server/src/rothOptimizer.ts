@@ -1824,7 +1824,18 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
    caller mutating its result cannot poison the cache. Bounded:
    the cache clears when it grows past 50 entries. */
 const jointOptimizerCache = new Map<string, JointOptimizerResult>();
-function jointInputsKey(inputs: RothPlanInputs): string {
+// Cache key for the joint search: a stable serialization of the FULL
+// inputs with keys sorted recursively. Non-finite numbers get distinct
+// object tokens — plain JSON.stringify maps NaN, Infinity, and
+// -Infinity all to `null`, so without this a NaN run and a null run
+// key identically and the second call is served the first call's
+// result (Engine Review C7, A4: a null call after a NaN run returned
+// the NaN run's NaN netCost in hit time, while a fresh null run
+// prices finite). The tokens are objects, not bare strings, so a
+// genuine string field can never collide with one; every finite
+// value serializes exactly as before, so valid inputs hit the cache
+// bit-identically to the pre-fix key.
+export function jointInputsKey(inputs: RothPlanInputs): string {
   const sortValue = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(sortValue);
     if (v != null && typeof v === "object") {
@@ -1836,7 +1847,15 @@ function jointInputsKey(inputs: RothPlanInputs): string {
     }
     return v;
   };
-  return JSON.stringify(sortValue(inputs));
+  const nonFiniteReplacer = (_key: string, value: unknown): unknown => {
+    if (typeof value === "number") {
+      if (Number.isNaN(value)) return { __c7NonFinite__: "NaN" };
+      if (value === Infinity) return { __c7NonFinite__: "Infinity" };
+      if (value === -Infinity) return { __c7NonFinite__: "-Infinity" };
+    }
+    return value;
+  };
+  return JSON.stringify(sortValue(inputs), nonFiniteReplacer);
 }
 export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const key = jointInputsKey(inputs);
