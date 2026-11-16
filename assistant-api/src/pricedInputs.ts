@@ -78,82 +78,9 @@ export const REQUIRED_INPUTS_GLOBAL: string[] = [
   "currentAge",
 ];
 
-/**
- * Canonical field order: the declaration order in schema.ts
- * (RetirementQuestionInputs). suppliedFields is stored in this
- * order so reports are stable regardless of caller key order.
- * The drift test asserts this equals the zod shape's key order.
- */
-export const FIELD_ORDER: string[] = [
-  "pretax",
-  "taxable",
-  "roth",
-  "hsa",
-  "monthlySpending",
-  "currentAge",
-  "spouseAge",
-  "retirementAge",
-  "endAge",
-  "filingStatus",
-  "householdSize",
-  "taxableBasisPct",
-  "taxableDividendYieldPct",
-  "taxableInterestYieldPct",
-  "expectedRealReturnPct",
-  "volatilityPct",
-  "stocksPct",
-  "strategy",
-  "minimumAnnualSpending",
-  "socialSecurityAnnual",
-  "spouseSocialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityStartAge",
-  "state",
-  "stateRatePct",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "priorYearMagi",
-  "healthPremiumAcaHouseholdAnnual",
-  "healthPremiumAcaSingleAnnual",
-  "healthPremiumMedicarePerPersonAnnual",
-  "spendingIncludesHealthPremiums",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "salaryAnnual",
-  "employer401kAnnual",
-  "employerHsaAnnual",
-  "hsaCoverage",
-  "hsaEligible",
-  "medicareAgePrimary",
-  "priorYearWagesAnnual",
-  "taxYear",
-  "interestAnnual",
-  "ordinaryDividendsAnnual",
-  "qualifiedDividendsAnnual",
-  "conversionAnnual",
-  "spendingDrawAnnual",
-  "cashDrawAnnual",
-  "rothDrawAnnual",
-  "stockSoldAnnual",
-  "stockBasisAnnual",
-  "pretaxPriorYearEndAnnual",
-  "pretaxSpousePriorYearEndAnnual",
-  "rmdAlreadyReceivedAnnual",
-  "primarySoleBeneficiaryOfSpouse",
-  "firstRmdDeferralPrimary",
-  "firstRmdDeferralSpouse",
-  "firstRmdDeferredCarryPrimaryAnnual",
-  "firstRmdDeferredCarrySpouseAnnual",
-  "survivorEnabled",
-  "survivorWho",
-  "survivorDeathYear",
-  "survivorClaimAge",
-  "mcSeed",
-  "mcRuns",
-  "compareAges",
-  "comparisonScope",
-];
+// FIELD_ORDER lives in ./types (Engine Review C1, cycle break):
+// re-exported here so existing import sites keep working.
+export { FIELD_ORDER } from "./types";
 
 /**
  * Optional inputs each tool's engine actually prices. These are the

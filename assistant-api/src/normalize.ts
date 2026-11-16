@@ -43,7 +43,7 @@
 //   100% basis (blank-basis path — no gains on draws).
 
 import { RetirementQuestionInputs } from "./schema.js";
-import { FIELD_ORDER } from "./pricedInputs.js";
+import { FIELD_ORDER } from "./types.js";
 import {
   EXPECTED_RETURN_DEFAULT,
   GUARDRAILS_ADJUSTMENT_DEFAULT,

@@ -40,9 +40,7 @@ acaCreditFor,
 acaEmbeddedNetPremiumFor,
 acaFirstStepYear,
 acaHouseholdSizeForYear,
-applyLossLedger,
 resolveAcaHouseholdSchedule,
-capitalLossAllowanceCap,
 deflationFactor,
 deriveSpendFromCashSleeveStartDollars,
 drawOrderFromKey,
@@ -62,6 +60,7 @@ type RothPlanResult,
 type RothStrategy,
 type RothYear,
 } from "./taxEngine";
+import { applyLossLedger, capitalLossAllowanceCap } from "./lossLedger";
 import {
 DO_NOTHING_SPEC,
 MC_STREAM_STRIDE_YEARS,

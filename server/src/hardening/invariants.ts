@@ -65,7 +65,8 @@
    is the side under test; this module never adjusts a
    priced figure to make an invariant hold. */
 
-import { applyLossLedger, DEFAULT_DRAW_ORDER, simulateRothPlan } from "../taxEngine";
+import { applyLossLedger } from "../lossLedger";
+import { DEFAULT_DRAW_ORDER, simulateRothPlan } from "../taxEngine";
 import type { RothPlanInputs } from "../taxEngine";
 import { buildRothFunding } from "../rothOptimizer";
 import type { RothFundingRow } from "../rothOptimizer";

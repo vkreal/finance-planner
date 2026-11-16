@@ -66,7 +66,6 @@ acaCreditFor,
 acaEmbeddedNetPremiumFor,
 acaFirstStepYear,
 acaHouseholdSizeForYear,
-applyLossLedger,
 ceilingsActive,
 drawOrderFromKey,
 drawOrderKey,
@@ -113,11 +112,12 @@ ssBenefitFactor,
 // calls ssAnnualAtClaimAge directly.
 export { fullRetirementAgeMonths, ssAnnualAtClaimAge, ssBenefitFactor };
 import { irmaaTierFor, irmaaTierUpTo } from "./taxEngine";
+import { applyLossLedger } from "./lossLedger";
 import {
   impliedYieldPctsFromTaxReturn,
   type RothTaxReturnStored,
 } from "./taxReturnCore";
-import { DEFAULT_HEIR_RATE_PCT } from "./rothSeed";
+import { DEFAULT_HEIR_RATE_PCT } from "./rothDefaults";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "./retirementEngines";
 
 function r2(n: number): number {

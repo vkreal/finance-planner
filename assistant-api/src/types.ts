@@ -109,3 +109,89 @@ export const ADAPTER_VERSION = "assistant-api 0.1.0";
  * change and did not move the version on its own.
  */
 export const API_CONTRACT_VERSION_REPORTED = 164;
+
+/**
+ * Canonical field order (Engine Review C1: moved verbatim from
+ * pricedInputs.ts so normalize.ts no longer imports it from
+ * there — that import was the value half of the
+ * pricedInputs <-> normalize import cycle; the other half was
+ * already type-only. types.ts is the leaf every adapter module
+ * may import, so the cycle is gone in both the static and the
+ * runtime graph. pricedInputs re-exports this constant, so
+ * existing import sites keep working unchanged.
+ *
+ * The declaration order in schema.ts
+ * (RetirementQuestionInputs). suppliedFields is stored in this
+ * order so reports are stable regardless of caller key order.
+ * The drift test asserts this equals the zod shape's key order.
+ */
+export const FIELD_ORDER: string[] = [
+  "pretax",
+  "taxable",
+  "roth",
+  "hsa",
+  "monthlySpending",
+  "currentAge",
+  "spouseAge",
+  "retirementAge",
+  "endAge",
+  "filingStatus",
+  "householdSize",
+  "taxableBasisPct",
+  "taxableDividendYieldPct",
+  "taxableInterestYieldPct",
+  "expectedRealReturnPct",
+  "volatilityPct",
+  "stocksPct",
+  "strategy",
+  "minimumAnnualSpending",
+  "socialSecurityAnnual",
+  "spouseSocialSecurityAnnual",
+  "socialSecurityStartAge",
+  "spouseSocialSecurityStartAge",
+  "state",
+  "stateRatePct",
+  "acaBenchmarkCouple",
+  "acaBenchmarkSingle",
+  "acaBenchmarkFamily",
+  "priorYearMagi",
+  "healthPremiumAcaHouseholdAnnual",
+  "healthPremiumAcaSingleAnnual",
+  "healthPremiumMedicarePerPersonAnnual",
+  "spendingIncludesHealthPremiums",
+  "otherOrdinaryAnnual",
+  "taxExemptInterestAnnual",
+  "salaryAnnual",
+  "employer401kAnnual",
+  "employerHsaAnnual",
+  "hsaCoverage",
+  "hsaEligible",
+  "medicareAgePrimary",
+  "priorYearWagesAnnual",
+  "taxYear",
+  "interestAnnual",
+  "ordinaryDividendsAnnual",
+  "qualifiedDividendsAnnual",
+  "conversionAnnual",
+  "spendingDrawAnnual",
+  "cashDrawAnnual",
+  "rothDrawAnnual",
+  "stockSoldAnnual",
+  "stockBasisAnnual",
+  "pretaxPriorYearEndAnnual",
+  "pretaxSpousePriorYearEndAnnual",
+  "rmdAlreadyReceivedAnnual",
+  "primarySoleBeneficiaryOfSpouse",
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "firstRmdDeferredCarryPrimaryAnnual",
+  "firstRmdDeferredCarrySpouseAnnual",
+  "survivorEnabled",
+  "survivorWho",
+  "survivorDeathYear",
+  "survivorClaimAge",
+  "mcSeed",
+  "mcRuns",
+  "compareAges",
+  "comparisonScope",
+];

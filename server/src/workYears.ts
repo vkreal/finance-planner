@@ -167,16 +167,18 @@
 // and compare row — never silently.
 
 import {
-  applyLossLedger,
-  capitalLossAllowanceCap,
   deflationFactor,
   priceYear,
   rmdForYear,
   settleFirstRmdDeferral,
   type FirstRmdDeferralState,
-  type LossCarryforward,
   type RothPlanInputs,
 } from "./taxEngine";
+import {
+  applyLossLedger,
+  capitalLossAllowanceCap,
+  type LossCarryforward,
+} from "./lossLedger";
 import {
   lawForYear,
   rmdAgeForBirthYear,
