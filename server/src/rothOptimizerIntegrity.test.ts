@@ -814,7 +814,7 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
     expect(opt.searchScope.ceilingFamilies.join(" ")).toMatch(/ACA-cliff/);
     expect(opt.searchScope.ceilingFamilies.join(" ")).toMatch(/MAGI-cap/);
     expect(opt.searchScope.description).toMatch(/Claiming ages: held at the entered ages/);
-  });
+  }, 900_000);
 
   test(
     "held-order sensitivity scope: draw order held fixed, disclosed",

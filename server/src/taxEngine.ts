@@ -54,6 +54,11 @@ type FilingStatus,
 type YearLaw,
 } from "./taxLaw";
 import { applyLossLedger, capitalLossAllowanceCap } from "./lossLedger";
+import {
+  reinvestYieldIntoTiers,
+  sellFromTiers,
+  type TierLedgerEntry,
+} from "./tierLedger";
 
 export type { FilingStatus };
 
@@ -2243,58 +2248,36 @@ export type TaxableTier = { sharePct: number; basisPct: number };
 
 // The engine's per-tier ledger state: balance and basis
 // dollars for one tier. `inflow` marks the synthetic tier that
-// collects after-tax inflows (surplus sweeps, settlement
-// credits, harvest credits) at 100% basis — new money is its
-// own lot, merged into that one tier across years. `cash`
-// marks the CASH tier for the spend-from-cash sleeve (see
+// The march's tier shape is the shared tier entry plus the
+// march's own flags: `inflow` marks the tier that collects
+// after-tax inflows (surplus sweeps, settlement credits,
+// harvest credits) at 100% basis — new money is its own lot,
+// merged into that one tier across years. `cash` marks the
+// CASH tier for the spend-from-cash sleeve (see
 // RothPlanInputs.spendFromCashPct): the first tier whose
 // starting basis % is 100 — on a record whose tiers split the
 // snapshot cash out as its own lot, that tier's balance IS
-// the cash portion of the pool.
-type TierLedger = { bal: number; basis: number; inflow: boolean; cash?: boolean };
+// the cash portion of the pool. The sale and yield step-up
+// transforms live in ./tierLedger, shared with the roll.
+type TierLedger = TierLedgerEntry & { inflow: boolean; cash?: boolean };
 
-// Consume `amount` of balance from a tier ledger, HIGHEST
-// current basis ratio first ("highest" — ordinary sales: sell
-// the least-gain shares first) or LOWEST first ("lowest" —
-// the gain harvest: the gains live in the most-appreciated
-// tier). The order is re-evaluated on every call; within a
-// tier the sale is pro-rata (basis leaves at the tier's ratio
-// in force), so a tier's ratio never changes by selling from
-// it, and a sale larger than the top tier spills into the
-// next tier in the same call. Returns the gains realized.
-// Mutates the ledger in place; the caller owns the copies it
-// passes (a settlement works on its own snapshot).
-function sellFromTiers(
-  tiers: TierLedger[],
-  amount: number,
-  order: "highest" | "lowest",
-): number {
-  if (amount <= 0) return 0;
-  const ranked = tiers
-    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : null }))
-    .filter((o): o is { i: number; ratio: number } => o.ratio != null)
-    .sort((a, b) => (order === "highest" ? b.ratio - a.ratio : a.ratio - b.ratio));
-  let remaining = amount;
-  let gains = 0;
-  for (const { i } of ranked) {
-    if (remaining <= 0) break;
-    const t = tiers[i]!;
-    const take = Math.min(remaining, t.bal);
-    if (take <= 0) continue;
-    const ratio = t.basis / t.bal;
-    gains += take * (1 - ratio);
-    t.basis = Math.max(0, t.basis - take * ratio);
-    t.bal -= take;
-    remaining -= take;
+// Indexed tier read under noUncheckedIndexedAccess: cashTierIndex is
+// a findIndex result, so >= 0 proves it in range — in the committed
+// ledger and in a settlement's same-length copy alike — and the
+// helper says so once instead of a `!` at every use site. The throw
+// is unreachable wherever the caller's >= 0 guard holds; it fails
+// loudly instead of reading `.bal` off undefined if that invariant
+// ever breaks.
+function tierAt(tiers: TierLedger[], index: number): TierLedger {
+  const tier = tiers[index];
+  if (tier === undefined) {
+    throw new Error(
+      `tier index ${index} out of range for a ${tiers.length}-tier ledger`,
+    );
   }
-  return gains;
+  return tier;
 }
 
-// After-tax money into Taxable lands at 100% basis: it merges
-// into the ledger's inflow tier (created on first use), whose
-// balance and basis rise by the same amount — the lot
-// analogue of the single-pool ledger's dollar-for-dollar
-// basisIn. The inflow tier then drifts like any other tier.
 function buyIntoTiers(tiers: TierLedger[], amount: number): void {
   if (amount <= 0) return;
   const existing = tiers.find((t) => t.inflow);
@@ -2314,69 +2297,15 @@ function buyIntoTiers(tiers: TierLedger[], amount: number): void {
 function stepUpTiers(tiers: TierLedger[], amount: number): void {
   if (amount <= 0) return;
   const ranked = tiers
-    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
+    .map((t) => ({ tier: t, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
     .sort((a, b) => a.ratio - b.ratio);
   let remaining = amount;
-  for (const { i } of ranked) {
+  for (const { tier: t } of ranked) {
     if (remaining <= 0) break;
-    const t = tiers[i]!;
     const room = Math.max(0, t.bal - t.basis);
     const add = Math.min(room, remaining);
     t.basis += add;
     remaining -= add;
-  }
-}
-
-// Reinvested taxable yield on the tiers path: the yield cash
-// is already inside the year's balance (the balance grows at
-// the total return, of which the yield is a component), so NO
-// tier balance moves here — unlike a real after-tax inflow
-// (buyIntoTiers), which arrives with its own balance and
-// raises the inflow tier's balance with it. Only the basis
-// ledger rises, by the FULL yield amount — the single pool's
-// uncapped basisIn treatment (basisBal += yieldTotal), NOT
-// the harvest's step-up helper: stepUpTiers caps each tier's
-// addition at its own unrealized gain, which is right for a
-// harvest rebuy (the rebuy's basis cannot exceed the gain it
-// realized) but wrong for reinvested yield, whose basis is
-// dollars actually paid for the reinvested shares. Capping
-// it discarded real basis whenever a tier stood at (or
-// under) its basis — a 100%-basis tier reinvesting a 2%
-// yield added NO basis at all — and invented a gain on the
-// later sale (FOLLOW-UP #2, engines review: the settlement's
-// worked example priced $300 of extra federal tax at 15% on
-// a $100,000 pool for exactly this discard).
-// Distribution: the added basis fills the tiers in the
-// ledger's standing order — lowest basis ratio first, the
-// order the capped path already used, so every total the
-// cap did not bind is unchanged — but it does NOT stop at
-// each tier's balance: once every tier stands at (or above)
-// its own balance, the remaining yield basis lands on the
-// first tier in that order, pushing its basis past its
-// balance rather than being discarded. A tier's basis may
-// therefore pass its balance when the tier is underwater at
-// reinvestment time (a decline shrank the balance, not the
-// basis paid); that excess is real basis, floored at $0
-// only, exactly as the single pool and the commit/growth
-// reconciler already treat it. The total added is the full
-// amount in every case.
-function reinvestYieldIntoTiers(tiers: TierLedger[], amount: number): void {
-  if (amount <= 0 || tiers.length === 0) return;
-  const ranked = tiers
-    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
-    .sort((a, b) => a.ratio - b.ratio);
-  let remaining = amount;
-  for (const { i } of ranked) {
-    if (remaining <= 0) break;
-    const t = tiers[i]!;
-    const room = Math.max(0, t.bal - t.basis);
-    const add = Math.min(room, remaining);
-    t.basis += add;
-    remaining -= add;
-  }
-  if (remaining > 0) {
-    const host = tiers[ranked[0]!.i]!;
-    host.basis += remaining;
   }
 }
 
@@ -4423,8 +4352,8 @@ export function deriveSpendFromCashSleeveStartDollars(
     inputs.taxableBasisBlank !== true &&
     Array.isArray(inputs.taxableTiers) &&
     inputs.taxableTiers.length > 0;
-  if (tiersActive) {
-    const rawTiers = inputs.taxableTiers as TaxableTier[];
+  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
+    const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce(
       (s, t) => s + Math.max(0, t.sharePct),
       0,
@@ -4467,10 +4396,15 @@ export function acaEmbeddedNetPremiumFor(
   inputs: RothPlanInputs,
 ): number | null {
   const spouseAcaEndAge = inputs.acaSpouseEndAge ?? 65;
-  const survOn =
-    inputs.survivorEnabled === true && inputs.survivorDeathYear != null;
+  // The death year, narrowed: the null test is stated here — not
+  // via survOn — so the checker sees the proof without a cast.
+  // survOn is exactly "the death year is known".
+  const survDeathYear =
+    inputs.survivorEnabled === true && inputs.survivorDeathYear != null
+      ? inputs.survivorDeathYear
+      : null;
+  const survOn = survDeathYear != null;
   const survWho = inputs.survivorWho ?? "primary";
-  const survDeathYear = survOn ? (inputs.survivorDeathYear as number) : null;
   const retirementYear = inputs.birthYearPrimary + inputs.retirementAge;
   for (
     let year = inputs.startYear;
@@ -4593,10 +4527,15 @@ export function simulateRothPlan(
   // deceased's own final RMD is still taken that year — from
   // their own balance, on their own clock and table, exactly
   // as if they had lived it (see the RMD step below).
-  const survOn =
-    inputs.survivorEnabled === true && inputs.survivorDeathYear != null;
+  // The death year, narrowed: the null test is stated here — not
+  // via survOn — so the checker sees the proof without a cast.
+  // survOn is exactly "the death year is known".
+  const survDeathYear =
+    inputs.survivorEnabled === true && inputs.survivorDeathYear != null
+      ? inputs.survivorDeathYear
+      : null;
+  const survOn = survDeathYear != null;
   const survWho = inputs.survivorWho ?? "primary";
-  const survDeathYear = survOn ? (inputs.survivorDeathYear as number) : null;
   let survCombined = false;
   let roth = inputs.rothStart;
   let taxable = inputs.taxableStart;
@@ -4720,8 +4659,8 @@ export function simulateRothPlan(
     Array.isArray(inputs.taxableTiers) &&
     inputs.taxableTiers.length > 0;
   let tierState: TierLedger[] | null = null;
-  if (tiersActive) {
-    const rawTiers = inputs.taxableTiers as TaxableTier[];
+  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
+    const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce(
       (s, t) => s + Math.max(0, t.sharePct),
       0,
@@ -5305,12 +5244,12 @@ export function simulateRothPlan(
         deceasedAnchorAge: deceasedIsPrimary
           ? inputs.ssPrimaryStartAge
           : inputs.ssSpouseStartAge,
-        deceasedBirthYear: deceasedBirthYear as number,
+        deceasedBirthYear: deceasedBirthYear,
         deceasedDeathAge:
-          (survDeathYear ?? year) - (deceasedBirthYear as number),
-        survivorBirthYear: survivorBirthYear as number,
-        survivorAge: survivorAge as number,
-        survivorClaimAge: survivorClaimAgeInput as number,
+          (survDeathYear ?? year) - deceasedBirthYear,
+        survivorBirthYear: survivorBirthYear,
+        survivorAge: survivorAge,
+        survivorClaimAge: survivorClaimAgeInput,
         ownAnnualThisYear: deceasedIsPrimary
           ? ssSpouseThisYear
           : ssPrimaryThisYear,
@@ -5424,8 +5363,8 @@ export function simulateRothPlan(
     const healthAcaCapThisYear = healthActive && acaActive;
     const premiumInitialCredit = premiumReconcile
       ? Math.min(
-          Math.max(0, (benchmark as number) - (premiumEmbeddedDollars as number)),
-          benchmark as number,
+          Math.max(0, benchmark - premiumEmbeddedDollars),
+          benchmark,
         )
       : 0;
 
@@ -5663,7 +5602,7 @@ export function simulateRothPlan(
       // attributed to the non-cash portion first).
       if (spendCashPct > 0 && sleeveDollars > 0) {
         if (tierState != null && cashTierIndex >= 0) {
-          sleeveDollars = Math.max(0, tierState[cashTierIndex]!.bal);
+          sleeveDollars = Math.max(0, tierAt(tierState, cashTierIndex).bal);
         } else if (taxable > 0) {
           const removedGift =
             taxable -
@@ -6044,8 +5983,8 @@ export function simulateRothPlan(
             0,
             r2(
               spendNeedYear -
-                (premiumEmbeddedDollars as number) +
-                Math.max(0, (benchmark as number) - fbCreditIn),
+                premiumEmbeddedDollars +
+                Math.max(0, benchmark - fbCreditIn),
             ),
           )
         : healthActive && retiredYear
@@ -6328,7 +6267,7 @@ export function simulateRothPlan(
       const sleeveDebit = (amount: number, poolBefore: number) => {
         if (spendCashPct <= 0 || amount <= 0 || sleeveBal <= 0) return;
         if (sTiers && cashTierIndex >= 0) {
-          sleeveBal = Math.max(0, sTiers[cashTierIndex]!.bal);
+          sleeveBal = Math.max(0, tierAt(sTiers, cashTierIndex).bal);
         } else {
           // Single pool: the debit is attributed to the
           // pool's non-cash portion first (the pool model
@@ -6481,7 +6420,7 @@ export function simulateRothPlan(
         );
         if (take > 0) {
           if (sTiers && cashTierIndex >= 0) {
-            const t = sTiers[cashTierIndex]!;
+            const t = tierAt(sTiers, cashTierIndex);
             take = Math.min(take, Math.max(0, t.bal));
             t.bal -= take;
             t.basis = Math.max(0, t.basis - take);
@@ -6552,7 +6491,13 @@ export function simulateRothPlan(
             Math.max(0, pretaxBalP) + Math.max(0, pretaxBalS);
           if (cliffCapOnDraws || pretaxDrawCapArg != null) {
             let drawCap = Infinity;
-            if (cliffCapOnDraws) {
+            // The target is stated non-null here — not via the
+            // cliffCapOnDraws boolean — so the checker sees the
+            // proof without a cast. The conjunct is implied by
+            // cliffCapOnDraws (which requires acaCliffDollars,
+            // and the target is non-null exactly when the cliff
+            // is), so the branch taken never changes.
+            if (cliffCapOnDraws && acaTargetDollars != null) {
               // Room left by the non-draw income (priced with
               // no conversion and no draw — precedence step 1)
               // and the gains realized so far this settlement.
@@ -6565,7 +6510,7 @@ export function simulateRothPlan(
                   ? r2(pricedGains)
                   : r2(taxableDrawn * drawGainRate)) + fbGainsIn;
               const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn, 0).acaMagi;
-              drawCap = Math.max(0, (acaTargetDollars as number) - baseAcaMagi);
+              drawCap = Math.max(0, acaTargetDollars - baseAcaMagi);
             }
             if (pretaxDrawCapArg != null) {
               drawCap = Math.min(drawCap, pretaxDrawCapArg);
@@ -7239,8 +7184,12 @@ export function simulateRothPlan(
       if (p.taxableIncome > taxableCap + 0.005) return false;
       if (p.magi > magiCap + 0.005) return false;
       if (ceilings.acaCliffCap) {
-        if (acaCliffDollars != null) {
-          if (p.acaMagi > (acaTargetDollars as number) + 0.005) return false;
+        // The target is stated non-null alongside the cliff —
+        // it is non-null exactly when the cliff is — so the
+        // checker sees the proof without a cast. The conjunct
+        // is implied, so the branch taken never changes.
+        if (acaCliffDollars != null && acaTargetDollars != null) {
+          if (p.acaMagi > acaTargetDollars + 0.005) return false;
         } else if (
           ceilings.bracketTopPct == null &&
           ceilings.irmaaTierCap == null &&
@@ -7429,8 +7378,13 @@ export function simulateRothPlan(
       respectsCeilings(settled.priced)
     ) {
       const lawG = lawForYear(year);
+      // Narrowed once: the gate above proves irmaaTierCap
+      // non-null, and the local carries that proof into the
+      // tierOk closure below (a `let` object's property
+      // narrowing does not survive a closure boundary).
+      const irmaaTierCap = yearCeilings.irmaaTierCap;
       const tierTop = irmaaTierUpTo(
-        yearCeilings.irmaaTierCap,
+        irmaaTierCap,
         effFilingStatus,
         lawG,
         year,
@@ -7502,7 +7456,7 @@ export function simulateRothPlan(
             lawG,
             year,
             inputs.inflationPct,
-          ) <= (yearCeilings.irmaaTierCap as number);
+          ) <= irmaaTierCap;
         let lo = 0;
         let hi = Math.round((maxAdditional - additional) * 100);
         let bestAdd = additional;
@@ -7568,14 +7522,20 @@ export function simulateRothPlan(
     // year's effective target (acaTargetDollars — the true
     // cliff less any safety buffer), so a buffered year is
     // tightened to cliff − buffer, not to the cliff itself.
+    // The target is stated non-null alongside the cliff — it
+    // is non-null exactly when the cliff is — so the checker
+    // sees the proof without a cast, in this block and every
+    // comparison below it. The conjunct is implied, so the
+    // branch taken never changes.
     if (
       yearCeilings?.acaCliffCap === true &&
       acaCliffDollars != null &&
+      acaTargetDollars != null &&
       settled.extraDraw > 0 &&
-      settled.priced.acaMagi > (acaTargetDollars as number) + 0.005
+      settled.priced.acaMagi > acaTargetDollars + 0.005
     ) {
       const atZeroDraw = settleYear(additional, 0);
-      if (atZeroDraw.priced.acaMagi <= (acaTargetDollars as number) + 0.005) {
+      if (atZeroDraw.priced.acaMagi <= acaTargetDollars + 0.005) {
         // Satisfiable from the draw: binary-search the largest
         // cent-exact cap whose settlement respects the cliff.
         // Invariants: lo is feasible (its settlement is kept
@@ -7587,7 +7547,7 @@ export function simulateRothPlan(
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional, mid / 100);
-          if (candidate.priced.acaMagi <= (acaTargetDollars as number) + 0.005) {
+          if (candidate.priced.acaMagi <= acaTargetDollars + 0.005) {
             lo = mid;
             best = candidate;
           } else {
@@ -7600,7 +7560,7 @@ export function simulateRothPlan(
         // breaches): the legacy stepped tightening, unchanged.
         let drawCap = settled.extraDraw;
         for (let pass = 0; pass < 6; pass++) {
-          const excess = settled.priced.acaMagi - (acaTargetDollars as number);
+          const excess = settled.priced.acaMagi - acaTargetDollars;
           if (excess <= 0.005 || drawCap <= 0) break;
           const nextCap = Math.max(0, drawCap - excess);
           if (nextCap >= drawCap) break;
@@ -7657,12 +7617,13 @@ export function simulateRothPlan(
     if (
       yearCeilings?.acaCliffCap === true &&
       acaCliffDollars != null &&
+      acaTargetDollars != null &&
       inWindow &&
       !bunchZero &&
       !eraZeroFill &&
       !forceZeroConversion &&
       respectsCeilings(settled.priced) &&
-      settled.priced.acaMagi < (acaTargetDollars as number) - 0.005
+      settled.priced.acaMagi < acaTargetDollars - 0.005
     ) {
       const maxAdditional = Math.max(
         0,
@@ -7728,7 +7689,7 @@ export function simulateRothPlan(
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional + mid / 100);
           if (
-            candidate.priced.acaMagi <= (acaTargetDollars as number) + 0.005 &&
+            candidate.priced.acaMagi <= acaTargetDollars + 0.005 &&
             respectsCeilings(candidate.priced) &&
             guardrailStepOk(candidate, already + additional + mid / 100)
           ) {
@@ -7924,8 +7885,10 @@ export function simulateRothPlan(
           magiLimit = Math.min(magiLimit, yearCeilings.magiCap);
         }
         const acaLimit =
-          yearCeilings?.acaCliffCap === true && acaCliffDollars != null
-            ? (acaTargetDollars as number)
+          yearCeilings?.acaCliffCap === true &&
+          acaCliffDollars != null &&
+          acaTargetDollars != null
+            ? acaTargetDollars
             : Infinity;
         const settledAt15 = priced.gainsAt15;
         const settledAt20 = priced.gainsAt20;
@@ -8137,7 +8100,7 @@ export function simulateRothPlan(
               // balance).
               if (spendCashPct > 0 && sleeveDollars > 0 && pay > 0) {
                 if (tiersActive && tierState && cashTierIndex >= 0) {
-                  sleeveDollars = Math.max(0, tierState[cashTierIndex]!.bal);
+                  sleeveDollars = Math.max(0, tierAt(tierState, cashTierIndex).bal);
                 } else if (taxableBal + pay > 0) {
                   const poolBeforePay = taxableBal + pay;
                   sleeveDollars = Math.max(
@@ -8546,7 +8509,7 @@ export function simulateRothPlan(
     if (spendCashPct > 0) {
       sleeveDollars =
         tierState != null && cashTierIndex >= 0
-          ? Math.max(0, tierState[cashTierIndex]!.bal)
+          ? Math.max(0, tierAt(tierState, cashTierIndex).bal)
           : Math.min(sleeveDollars, Math.max(0, taxable));
     }
 
@@ -8962,20 +8925,20 @@ export function simulateRothPlan(
       // year priced), and their signed difference — the
       // adjustment the year's funded spending carried.
       acaPremiumEmbedded: premiumReconcile
-        ? r2(premiumEmbeddedDollars as number)
+        ? r2(premiumEmbeddedDollars)
         : 0,
       acaPremiumNet: premiumReconcile
         ? r2(
             Math.max(
               0,
-              (benchmark as number) - settled.feedbackCredit,
+              benchmark - settled.feedbackCredit,
             ),
           )
         : 0,
       acaPremiumAdjustment: premiumReconcile
         ? r2(
-            Math.max(0, (benchmark as number) - settled.feedbackCredit) -
-              (premiumEmbeddedDollars as number),
+            Math.max(0, benchmark - settled.feedbackCredit) -
+              premiumEmbeddedDollars,
           )
         : 0,
       gainsHarvested: r2(gainsHarvested),

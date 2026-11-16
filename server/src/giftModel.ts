@@ -7,7 +7,14 @@
 //
 // MODEL (per the settled design): the user describes ONE
 // hypothetical gift of appreciated stock to ONE child. The plan
-// is priced twice with the existing joint optimizer:
+// is priced twice with the joint optimizer — INJECTED by the
+// caller (runRothGiftCompare, the fixtures), never imported
+// here: this module reads no value from the optimizer, so the
+// gift/seed/optimizer graph stays acyclic (Engine Review C1,
+// NICE-3). The injected function prices a plan exactly as
+// runJointOptimizer does; the gift comparison only ever calls
+// it on the plan as saved, plus the sale-gain / gift-outflow
+// seams below.
 //   · BASELINE — the plan as saved, plus (only when a sale age
 //     is set) the counterfactual sale: in the sale year the
 //     parents sell the gifted shares themselves, and the gain —
@@ -49,11 +56,8 @@ type RothPlanInputs,
 type RothYear,
 } from "./taxEngine";
 import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
-import {
-claimAgeLabel,
-runJointOptimizer,
-type JointOptimizerResult,
-} from "./rothOptimizer";
+import { claimAgeLabel } from "./claimAge";
+import type { JointOptimizerResult } from "./rothOptimizer";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -342,9 +346,20 @@ export function parentsAllocableCgTax(
   );
 }
 
+// The optimizer the gift comparison prices through, injected
+// by the caller: a plan in, the joint optimizer's result out.
+// The comparison never calls it on anything but the plan as
+// saved (plus the sale-gain / gift-outflow seams), so any
+// function with this shape prices the same comparison — the
+// production caller passes runJointOptimizer.
+export type GiftOptimizer = (
+  inputs: RothPlanInputs,
+) => JointOptimizerResult;
+
 export function computeGiftComparison(
   plan: RothPlanInputs,
   gift: GiftParams,
+  runOptimizer: GiftOptimizer,
 ): GiftComparison {
   // Guards first: an out-of-window or inconsistent
   // description is never priced. The action pre-checks with
@@ -381,7 +396,7 @@ export function computeGiftComparison(
     const provisionalGain = salePriced
       ? gainFor(typedAmount, typedBasis)
       : 0;
-    provisionalBaseline = runJointOptimizer(
+    provisionalBaseline = runOptimizer(
       salePriced && provisionalGain > 0
         ? { ...plan, saleGainAge: saleAge, saleGainAmount: provisionalGain }
         : plan,
@@ -428,7 +443,7 @@ export function computeGiftComparison(
     if (saleAge <= startAge) {
       holdings = plan.taxableStart;
     } else {
-      const noInjectionBaseline = runJointOptimizer(plan);
+      const noInjectionBaseline = runOptimizer(plan);
       const startRow = noInjectionBaseline.winner.result.years.find(
         (y) => y.agePrimary === saleAge - 1,
       );
@@ -458,7 +473,7 @@ export function computeGiftComparison(
   const baselineOpt =
     !capped && baselineGain === parentsGain && provisionalBaseline
       ? provisionalBaseline
-      : runJointOptimizer(
+      : runOptimizer(
           salePriced && baselineGain > 0
             ? { ...plan, saleGainAge: saleAge, saleGainAmount: baselineGain }
             : plan,
@@ -470,7 +485,7 @@ export function computeGiftComparison(
   // exactly.
   const withGiftOpt =
     amount > 0
-      ? runJointOptimizer({
+      ? runOptimizer({
           ...plan,
           giftOutflowAge: giftAge,
           giftOutflowAmount: amount,

@@ -6722,7 +6722,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: 58,
-      });
+      }, runJointOptimizer);
       return {
         baselineNet: cmp.baseline.netCost,
         baselineWealth: cmp.baseline.endingAfterTax,
@@ -10143,7 +10143,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           kidStudent: true,
           kidOtherIncome: 0,
           saleAge: 60,
-        },
+        }, runJointOptimizer
       );
       return {
         giftYear: cmp.giftYear,
@@ -10188,7 +10188,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: true,
         kidOtherIncome: 0,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       return {
         kidAge: cmp.child.kidAge,
         kiddieGate: cmp.child.kiddieGate ? 1 : 0,
@@ -10223,7 +10223,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: null,
-      });
+      }, runJointOptimizer);
       const plain = runJointOptimizer(plan);
       return {
         salePriced: cmp.salePriced ? 1 : 0,
@@ -10251,7 +10251,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: true,
         kidOtherIncome: 0,
         saleAge: null,
-      });
+      }, runJointOptimizer);
       return {
         hasGift: cmp.hasGift ? 1 : 0,
         netDiff: Math.round((cmp.withGift.netCost - cmp.baseline.netCost) * 100) / 100,
@@ -10284,10 +10284,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidOtherIncome: 0,
         saleAge: 60,
       };
-      const mfj = computeGiftComparison(giftFixturePlan(), gift);
+      const mfj = computeGiftComparison(giftFixturePlan(), gift, runJointOptimizer);
       const single = computeGiftComparison(
         giftFixturePlan({ filingStatus: "single", birthYearSpouse: null }),
-        gift,
+        gift, runJointOptimizer
       );
       return {
         mfjAvail: mfj.giftTax.exclusionAvailable,
@@ -10372,7 +10372,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 20000,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       return {
         gain: cmp.child.gain,
         childTax: cmp.child.childTax,
@@ -10394,7 +10394,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 50000,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       return {
         gain: cmp.child.gain,
         childTax: cmp.child.childTax,
@@ -10427,7 +10427,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
             kidStudent: false,
             kidOtherIncome: 0,
             saleAge: gift.saleAge,
-          });
+          }, runJointOptimizer);
           return "";
         } catch (e) {
           return e instanceof Error ? e.message : String(e);
@@ -10468,7 +10468,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           kidStudent: false,
           kidOtherIncome: 0,
           saleAge: 60,
-        },
+        }, runJointOptimizer
       );
       return {
         typed: cmp.typedAmount,
@@ -10498,7 +10498,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       return {
         value: cmp.child.valueAtSale,
         gain: cmp.child.gain,
@@ -10521,7 +10521,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: 56,
-      });
+      }, runJointOptimizer);
       return {
         value: cmp.child.valueAtSale,
         gain: cmp.child.gain,
@@ -10684,7 +10684,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       const plain = runJointOptimizer(plan);
       return {
         baselineNetDiff:
@@ -10733,8 +10733,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidOtherIncome: 0,
         saleAge: null,
       };
-      const deathYear = computeGiftComparison(plan, { ...gift, giftAge: 57 });
-      const after = computeGiftComparison(plan, { ...gift, giftAge: 58 });
+      const deathYear = computeGiftComparison(plan, { ...gift, giftAge: 57 }, runJointOptimizer);
+      const after = computeGiftComparison(plan, { ...gift, giftAge: 58 }, runJointOptimizer);
       return {
         deathYearDonors: deathYear.giftTax.donors,
         deathYearAvail: deathYear.giftTax.exclusionAvailable,
@@ -12262,7 +12262,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           kidStudent: true,
           kidOtherIncome: 0,
           saleAge: 60,
-        },
+        }, runJointOptimizer
       );
       return {
         giftYear: cmp.giftYear,
@@ -12310,7 +12310,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           kidStudent: true,
           kidOtherIncome: 0,
           saleAge: 60,
-        },
+        }, runJointOptimizer
       );
       return {
         giftYear: cmp.giftYear,
@@ -12444,9 +12444,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidOtherIncome: (g.giftKidOtherIncomeCents ?? 0) / 100,
         saleAge: g.giftSaleAge,
       });
-      const priced = computeGiftComparison(giftFixturePlan(), params(parseRothGift(stored)));
+      const priced = computeGiftComparison(giftFixturePlan(), params(parseRothGift(stored)), runJointOptimizer);
       const clearedParsed = parseRothGift({ ...stored, giftAmountCents: null });
-      const cleared = computeGiftComparison(giftFixturePlan(), params(clearedParsed));
+      const cleared = computeGiftComparison(giftFixturePlan(), params(clearedParsed), runJointOptimizer);
       return {
         pricedHasGift: priced.hasGift ? 1 : 0,
         clearedParsed: clearedParsed.giftAmountCents,
@@ -12481,7 +12481,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 20000,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       const kd = computeGiftComparison(giftFixturePlan(), {
         giftAge: 56,
         amount: 100000,
@@ -12490,7 +12490,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: true,
         kidOtherIncome: 20000,
         saleAge: 60,
-      });
+      }, runJointOptimizer);
       return {
         gain: nk.child.gain,
         nkGate: nk.child.kiddieGate ? 1 : 0,
@@ -16489,7 +16489,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: null,
-      });
+      }, runJointOptimizer);
       return {
         divPct: inputs.taxableDividendYieldPct ?? null,
         intPct: inputs.taxableInterestYieldPct ?? null,
@@ -17586,7 +17586,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         kidStudent: false,
         kidOtherIncome: 0,
         saleAge: null,
-      });
+      }, runJointOptimizer);
       return {
         pct: inputs.spendFromCashPct ?? null,
         sleeveStart: inputs.spendFromCashSleeveStart ?? null,

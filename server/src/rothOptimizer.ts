@@ -127,6 +127,15 @@ import {
   STOCKS_PCT_DEFAULT,
   validateMonteCarloSeed,
 } from "./retirementEngines";
+import { claimAgeLabel, type ClaimAgeInfo } from "./claimAge";
+// The claiming-age label lives in claimAge.ts (Engine Review
+// C1, NICE-3) and is re-exported here so the import sites that
+// read it from this module — the gift action, the fixtures —
+// keep working unchanged. The import above (not a bare
+// `export ... from`) is what puts the type in this module's own
+// scope: the optimizer's claiming-age search annotates with
+// ClaimAgeInfo directly.
+export { claimAgeLabel, type ClaimAgeInfo };
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -143,28 +152,6 @@ function r2(n: number): number {
    without an import cycle) and are re-exported here, so every
    existing import site and every figure is unchanged. */
 
-// Which claiming ages a scored candidate was priced at, and the
-// yearly benefits those ages imply. `searched*` marks the
-// spouses whose claiming age the joint search actually varied
-// (only a spouse with an entered benefit is searched); for a
-// fixed-age run both flags are false and the ages are the
-// entered ones. `locked*` (Round-7 Build 3, N-1) marks a person
-// whose benefit had already started at plan start — their
-// entered claim age is the ONLY candidate age for them, because
-// a claim that is already being paid cannot be changed.
-// Optional so every pre-existing literal keeps its meaning:
-// absent = not locked.
-export type ClaimAgeInfo = {
-  primaryAge: number | null;
-  spouseAge: number | null;
-  primaryAnnual: number;
-  spouseAnnual: number;
-  searchedPrimary: boolean;
-  searchedSpouse: boolean;
-  lockedPrimary?: boolean;
-  lockedSpouse?: boolean;
-};
-
 export function enteredClaimInfo(inputs: RothPlanInputs): ClaimAgeInfo {
   return {
     primaryAge: inputs.ssPrimaryStartAge,
@@ -174,15 +161,6 @@ export function enteredClaimInfo(inputs: RothPlanInputs): ClaimAgeInfo {
     searchedPrimary: false,
     searchedSpouse: false,
   };
-}
-
-// "You claim at 70 · Spouse claims at 67" — only the searched
-// spouses appear; empty when neither benefit was entered.
-export function claimAgeLabel(c: ClaimAgeInfo): string {
-  const parts: string[] = [];
-  if (c.searchedPrimary && c.primaryAge != null) parts.push(`You claim at ${c.primaryAge}`);
-  if (c.searchedSpouse && c.spouseAge != null) parts.push(`Spouse claims at ${c.spouseAge}`);
-  return parts.join(" · ");
 }
 
 /* ---------------- Objective ---------------- */

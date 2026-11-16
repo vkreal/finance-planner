@@ -14740,7 +14740,7 @@ export const Actions = {
       if (guardError) {
         return { ok: false, reason: guardError, provenance: apiProvenance(), effectiveInputs, ...empty };
       }
-      const cmp = computeGiftComparison(inputs, giftParams);
+      const cmp = computeGiftComparison(inputs, giftParams, runJointOptimizer);
       return {
         ok: true,
         provenance: apiProvenance(),

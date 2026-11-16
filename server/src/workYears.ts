@@ -180,6 +180,11 @@ import {
   type LossCarryforward,
 } from "./lossLedger";
 import {
+  reinvestYieldIntoTiers,
+  sellFromTiers,
+  type TierLedgerEntry,
+} from "./tierLedger";
+import {
   lawForYear,
   rmdAgeForBirthYear,
   type FilingStatus,
@@ -695,7 +700,7 @@ export function ficaTax(
    left exactly as entered — the march prices a blank-basis
    plan off its flat entered percentage, not off dollars. */
 
-export type WorkTierLedger = { bal: number; basis: number };
+export type WorkTierLedger = TierLedgerEntry;
 
 export type TaxableLedger = {
   // Per-tier ledger when the plan carries basis tiers;
@@ -808,27 +813,11 @@ function consumeLedgerSale(
 // ratio first (the march's sellFromTiers "highest" order):
 // within a tier the sale is pro-rata, so a tier's ratio never
 // changes by selling from it. Returns the gains realized and
-// mutates the tiers passed in.
+// mutates the tiers passed in. A thin alias over the shared
+// transform (./tierLedger) — the sale itself is the march's,
+// this name is the roll's.
 function sellFromLedgerTiers(tiers: WorkTierLedger[], amount: number): number {
-  if (amount <= 0) return 0;
-  const ranked = tiers
-    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : null }))
-    .filter((o): o is { i: number; ratio: number } => o.ratio != null)
-    .sort((a, b) => b.ratio - a.ratio);
-  let remaining = amount;
-  let gains = 0;
-  for (const { i } of ranked) {
-    if (remaining <= 0) break;
-    const t = tiers[i]!;
-    const take = Math.min(remaining, t.bal);
-    if (take <= 0) continue;
-    const ratio = t.basis / t.bal;
-    gains += take * (1 - ratio);
-    t.basis = Math.max(0, t.basis - take * ratio);
-    t.bal -= take;
-    remaining -= take;
-  }
-  return gains;
+  return sellFromTiers(tiers, amount, "highest");
 }
 
 // The yield step-up (the march's reinvestYieldIntoTiers /
@@ -856,21 +845,11 @@ function stepUpLedgerForYield(
     ledger.basis = Math.max(0, ledger.basis + yieldTotal);
     return;
   }
-  const ranked = ledger.tiers
-    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
-    .sort((a, b) => a.ratio - b.ratio);
-  let remaining = yieldTotal;
-  for (const { i } of ranked) {
-    if (remaining <= 0) break;
-    const t = ledger.tiers[i]!;
-    const room = Math.max(0, t.bal - t.basis);
-    const add = Math.min(room, remaining);
-    t.basis += add;
-    remaining -= add;
-  }
-  if (remaining > 0 && ranked.length > 0) {
-    ledger.tiers[ranked[0]!.i]!.basis += remaining;
-  }
+  // Tiers: the shared transform (./tierLedger) — the march's
+  // distribution, lowest basis ratio first with the remainder
+  // on the first tier in that order. The roll's own part is
+  // only the ledger total below.
+  reinvestYieldIntoTiers(ledger.tiers, yieldTotal);
   ledger.basis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
 }
 
