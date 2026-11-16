@@ -437,7 +437,7 @@ export function contributionStack(
   // there would misstate the year's reasoning.
   if (hsaOpts?.eligible == null && hsaEligible) {
     assumptions.push(
-      "HSA eligibility not stated: assumed eligible (qualifying HDHP coverage with no disqualifying coverage). Medicare enrollment ends eligibility from the entered enrollment age; enter eligibility explicitly when it is known.",
+      "HSA eligibility not stated: assumed eligible (qualifying HDHP coverage with no disqualifying coverage). Medicare enrollment ends eligibility from the enrollment age when one is entered; enter eligibility explicitly when it is known.",
     );
   }
   if (salary <= 0)
@@ -611,11 +611,19 @@ export function payrollTaxBreakdown(
       0,
       ficaWages - law.payrollAdditionalMedicareThreshold[filingStatus] * defl,
     );
+  const socialSecurity = r2(ss);
+  const medicareTax = r2(medicare);
+  const additionalMedicare = r2(additional);
+  // The displayed total is the sum of the displayed (rounded)
+  // parts, so it always equals what the parts add to. Rounding
+  // the unrounded components once instead could differ by 1¢
+  // from that sum (e.g. wages $1,001: parts $62.06 + $14.51
+  // = $76.57, while the once-rounded total was $76.58).
   return {
-    socialSecurity: r2(ss),
-    medicare: r2(medicare),
-    additionalMedicare: r2(additional),
-    total: r2(ss + medicare + additional),
+    socialSecurity,
+    medicare: medicareTax,
+    additionalMedicare,
+    total: r2(socialSecurity + medicareTax + additionalMedicare),
   };
 }
 

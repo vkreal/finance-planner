@@ -11469,7 +11469,11 @@ export function RothConversion({
                 leaving either blank falls back to the old rule (the family
                 limit for joint filers, the self-only limit otherwise, and
                 eligibility assumed unless Medicare enrollment ends it) and
-                the run names the fallback as an assumption. A spouse&rsquo;s
+                the run names the fallback as an assumption. From Jan 1,
+                2026, bronze and catastrophic plans count as
+                HSA-compatible even when they do not meet the usual HDHP
+                deductible minimums (IRS Notice 2026-05), so a bronze
+                plan is qualifying coverage — not &ldquo;none.&rdquo; A spouse&rsquo;s
                 $1,000 age-55 catch-up is never added to your HSA: each
                 spouse&rsquo;s catch-up belongs in their own HSA. The
                 mandatory Roth catch-up test reads the prior-year wages you
@@ -11490,8 +11494,10 @@ export function RothConversion({
               </p>
               <p>
                 At higher pay the law requires catch-ups to be Roth; that
-                rule keys on the prior year&rsquo;s wages, and this model
-                uses the salary you entered as the wage proxy. Payroll tax
+                rule keys on the prior year&rsquo;s wages, and when you
+                leave prior-year wages blank this model uses the first
+                year&rsquo;s own Box-3 wages — your salary minus your
+                payroll HSA contribution — as the stand-in. Payroll tax
                 is the employee share: Social Security up to the
                 year&rsquo;s wage base, Medicare on all wages, and the
                 additional Medicare tax over $250,000 (joint) or $200,000

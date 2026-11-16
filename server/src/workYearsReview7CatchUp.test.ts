@@ -44,6 +44,7 @@ import { describe, expect, test } from "bun:test";
 import { lawForYear } from "./taxLaw";
 import {
   contributionStack,
+  payrollTaxBreakdown,
   priceOneWorkYear,
   rollWorkYears,
   type WorkYearJob,
@@ -172,6 +173,52 @@ describe("E7-S2 §2 — prior-year wage classification", () => {
 });
 
 // ---------------------------------------------------------------------------
+// §4 — payroll prices on the 2025 law row, not the 2026 one
+// ---------------------------------------------------------------------------
+
+describe("E7-S2 §4 — payroll on the 2025 law row", () => {
+  test("2025 row: SS wage base $176,100 (not 2026's $184,500); rates 6.2 / 1.45 / 0.9", () => {
+    // Direct, on stated FICA wages $300,000 (MFJ): SS is
+    // capped at 6.2% × $176,100 = $10,918.20 — on the 2026
+    // row the same wages would cap at 6.2% × $184,500 =
+    // $11,439.00, so this figure proves the 2025 row priced.
+    // Medicare 1.45% × $300,000 = $4,350.00; additional
+    // 0.9% × ($300,000 − $250,000) = $450.00; total
+    // $10,918.20 + $4,350.00 + $450.00 = $15,718.20.
+    const p = payrollTaxBreakdown(300000, "mfj", LAW_2025, 1);
+    expect(p.socialSecurity).toBe(10918.2);
+    expect(p.medicare).toBe(4350);
+    expect(p.additionalMedicare).toBe(450);
+    expect(p.total).toBe(15718.2);
+    // Cent equality, in integer cents (raw double sums can
+    // carry a 1e-14 representation wobble).
+    const cents = (n: number) => Math.round(n * 100);
+    expect(cents(p.socialSecurity) + cents(p.medicare) + cents(p.additionalMedicare)).toBe(
+      cents(p.total),
+    );
+    // End to end through the priced line: age 45 in 2025,
+    // salary $308,550, MFJ family, no employer money. Own
+    // HSA is the 2025 family limit $8,550 (no age-55
+    // catch-up under 55), so FICA wages are exactly
+    // $308,550 − $8,550 = $300,000 and the line prices the
+    // same figures as the direct call.
+    const plan = wyPlan(45, 2025);
+    const line = priceOneWorkYear(
+      plan,
+      { salary: 308550, employer401k: 0, employerHsa: 0, hsaCoverage: "family", hsaEligible: true },
+      45,
+    );
+    expect(line.stack.ownHsa).toBe(8550);
+    expect(line.ficaWages).toBe(300000);
+    expect(line.payrollSocialSecurity).toBe(10918.2);
+    expect(line.payrollMedicare).toBe(4350);
+    expect(line.payrollAdditionalMedicare).toBe(450);
+    expect(line.payrollTax).toBe(15718.2);
+    expect(line.fica).toBe(15718.2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §2 — the first modeled year: explicit wages vs the proxy
 // ---------------------------------------------------------------------------
 
@@ -223,7 +270,7 @@ describe("E7-S2 §2 — first modeled year", () => {
 
   test("proxy above the threshold forces Roth — the proxy can change the answer", () => {
     // Salary $160,000, no prior wages: proxy Box-3 wages
-    // $160,000 − $8,750 = $151,450 > $150,000 → catch-up Roth,
+    // $160,000 − $8,750 = $151,250 > $150,000 → catch-up Roth,
     // taxable wages $160,000 − $24,500 − $8,750 = $126,750.
     // The same salary WITH explicit prior wages of $140,000
     // would price pre-tax — which is why the proxy is disclosed.

@@ -527,6 +527,45 @@ describe("E7 §4 — payroll tax (hand-derived)", () => {
     );
     expect(line.fica).toBe(line.payrollTax);
   });
+
+  test("displayed payroll total always equals the sum of the displayed parts (1¢ rounding)", () => {
+    // FICA wages $1,001 (2026, MFJ): SS 6.2% × $1,001 =
+    // $62.062 → $62.06; Medicare 1.45% × $1,001 = $14.5145 →
+    // $14.51; no additional tax. The parts sum to $76.57, but
+    // rounding the unrounded components once gave $76.58
+    // (r2($62.062 + $14.5145) = r2($76.5765)) — the total is
+    // now derived from the already-rounded parts, so the
+    // displayed total can never differ from the displayed sum.
+    const p = payrollTaxBreakdown(1001, "mfj", LAW_2026, 1);
+    expect(p.socialSecurity).toBe(62.06);
+    expect(p.medicare).toBe(14.51);
+    expect(p.additionalMedicare).toBe(0);
+    expect(p.total).toBe(76.57);
+    // Cent equality, in integer cents: the raw double sum
+    // 62.06 + 14.51 is 76.57000000000001, so the sum is
+    // compared after rounding each part to cents, not as
+    // raw doubles.
+    const cents = (n: number) => Math.round(n * 100);
+    expect(cents(p.socialSecurity) + cents(p.medicare) + cents(p.additionalMedicare)).toBe(
+      cents(p.total),
+    );
+    // End to end through the priced line, on the same wages:
+    // salary $1,001, no HSA (the deferral takes the whole
+    // salary, so no payroll HSA reduces Box-3 wages).
+    const plan = wyPlan(45);
+    const line = priceOneWorkYear(plan, { salary: 1001, employer401k: 0, employerHsa: 0 }, 45);
+    expect(line.ficaWages).toBe(1001);
+    expect(line.payrollSocialSecurity).toBe(62.06);
+    expect(line.payrollMedicare).toBe(14.51);
+    expect(line.payrollAdditionalMedicare).toBe(0);
+    expect(line.payrollTax).toBe(76.57);
+    expect(line.fica).toBe(76.57);
+    expect(
+      cents(line.payrollSocialSecurity) +
+        cents(line.payrollMedicare) +
+        cents(line.payrollAdditionalMedicare),
+    ).toBe(cents(line.payrollTax));
+  });
 });
 
 // ---------------------------------------------------------------------------
