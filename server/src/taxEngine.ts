@@ -2856,18 +2856,37 @@ function debitRothAccountLedger(
 // negative-return year shrank the balance while basis
 // deliberately survived, exactly like the taxable basis
 // beside it), so exhausting the balance leaves composition
-// standing. The clearEmptyRothAccountLedger call below is
-// the guarantee — it zeroes whatever the take could not
-// consume whenever the balance reaches $0, and is a no-op
-// whenever the balance is positive or composition is
-// already clear.
+// standing. The clearEmptyRothAccountLedger calls are the
+// guarantee — one on the take path below AND one above the
+// `take <= 0` early return (C9 Build 2 fix 5 — Pass 6
+// SHOULD-1: a ledger entered already at $0 with standing
+// composition used to early-return with the composition
+// standing, because the call below never ran). Either call
+// zeroes whatever the take could not consume whenever the
+// balance is $0, and both are no-ops whenever the balance is
+// positive or composition is already clear. Note the
+// invariant is per-call, not per-path: the top-up's LOT step
+// zeroes a balance without calling this function at all, so
+// settleRound calls the backstop on both IRA legs after the
+// lot-step/residual block (fix 5) — see the call site there.
 export function shrinkRothAccountLedgerBalance(
   led: RothAccountLedger,
   amount: number,
 ): number {
   const left = Math.max(0, amount);
   const take = Math.min(left, Math.max(0, led.balance));
-  if (take <= 0) return left;
+  // The backstop runs on this exit too (C9 Build 2 fix 5 —
+  // Pass 6 SHOULD-1): a ledger entered already at $0 with
+  // standing composition must be cleared even though the take
+  // is $0 — before Fix 5 the early return skipped the
+  // backstop, so {balance $0, contributions $40, lot 2024
+  // $50} shrunk $30 left the composition standing (the
+  // reviewer's (z)/(z2)). A no-op whenever the balance is
+  // positive or composition is already clear.
+  if (take <= 0) {
+    clearEmptyRothAccountLedger(led);
+    return left;
+  }
   led.balance = Math.max(0, led.balance - take);
   let remaining = take;
   if (remaining > 0 && led.contributions > 0) {
@@ -2911,7 +2930,15 @@ export function shrinkRothAccountLedgerBalance(
 // the top-up residual shrink, whose take consumes
 // composition first but cannot clear a post-decline ledger
 // whose balance sits below its standing basis (C9 Build 2
-// fix 4 — Pass 5 SHOULD-1). On a
+// fix 4 — Pass 5 SHOULD-1) — and the top-up LOT step
+// (C9 Build 2 fix 5 — Pass 6 SHOULD-1): the lot step
+// zeroes a balance while shrinking only the appended lot,
+// consuming NO composition at all, so settleRound calls the
+// backstop on both IRA legs after the lot-step/residual
+// block — including the shrinkLeft = 0 sub-case, where the
+// residual never runs — and the residual shrink itself now
+// calls it on its take-$0 early return, so a ledger entered
+// already at $0 is cleared too. On a
 // KNOWN ledger the lots go too (a lot standing against $0
 // would price on a later draw); on an UNKNOWN ledger the
 // lots stay — the Fix 1 landing default (unknown draws
@@ -2991,19 +3018,27 @@ function debitRothLedgers(
 // exist), and its first year must not pull the merged
 // 5-year clock earlier. A $0 side's contributions are $0
 // — and the plain contributions sum below is exact —
-// because balance $0 ⟹ contributions $0 is GUARANTEED by
-// mechanism on every path that reduces a balance, not
-// assumed: init clamps contributions to the balance; every
-// debit consumes contributions before lots/earnings
+// because balance $0 ⟹ contributions $0 is maintained by a
+// backstop call on every path that can leave a $0 balance,
+// not assumed: init clamps contributions to the balance;
+// every debit consumes contributions before lots/earnings
 // (debitRothAccountLedger, in both the known and the
 // unknown branch) and clearEmptyRothAccountLedger zeroes
 // any composition left standing when a debit exhausts the
 // balance (the post-decline case, where a negative-return
 // year shrank the balance below the standing basis — basis
 // deliberately survives declines, so only the exhaustion
-// clears it); the top-up shrink's lot step reduces balance
-// and lot together, preserving the composition identity,
-// and its residual step consumes composition via
+// clears it); the top-up path calls
+// clearEmptyRothAccountLedger on both IRA legs after its
+// lot-step loop / residual block (C9 Build 2 fix 5 — Pass 6
+// SHOULD-1: the lot step reduces the balance and the
+// appended lot together but consumes NO other composition,
+// so when it zeroes the balance the old lots stand until
+// that call — the residual step alone could not cover it,
+// because the residual never runs when the lot step already
+// consumed the whole top-up, or enters shrink at $0 and
+// early-returns), and its residual step consumes
+// composition via
 // shrinkRothAccountLedgerBalance (C9 Build 2 fix 3 —
 // Pass 4 SHOULD-1: the residual IS reachable inside one
 // settleRound — the top-up cap is on TOTAL Roth balance
@@ -3016,7 +3051,8 @@ function debitRothLedgers(
 // balance reaches $0 (C9 Build 2 fix 4 — Pass 5 SHOULD-1:
 // the take alone cannot clear a post-decline ledger whose
 // balance sits below its standing basis, so the backstop
-// zeroes whatever the take could not consume); and
+// zeroes whatever the take could not consume), including on
+// its take-$0 early return (fix 5); and
 // year-end growth clears composition when a return zeroes
 // a balance (−100% prices a wipeout; the schema allows
 // −100 at the save boundary). The one composition the
@@ -7867,6 +7903,24 @@ export function simulateRothPlan(
                     );
                   }
                 }
+                // The backstop (C9 Build 2 fix 5 — Pass 6
+                // SHOULD-1): the lot step above zeroes a
+                // balance while shrinking only the appended
+                // lot, consuming NO composition — so when it
+                // zeroes the balance, the old lots (and any
+                // contributions above the balance) stand on a
+                // $0 KNOWN ledger, and the residual shrink
+                // never runs (shrinkLeft = 0) or enters at $0
+                // and early-returns. ONE call site here, after
+                // the lot-step loop / residual block, covers
+                // BOTH sub-cases, on both IRA legs. Fixing
+                // shrink's early return alone does NOT fix the
+                // demonstrated case — the residual never runs
+                // there. A no-op whenever the balance is
+                // positive or composition is already clear, so
+                // the gate stays byte-identical.
+                clearEmptyRothAccountLedger(sRothLedP.ira);
+                clearEmptyRothAccountLedger(sRothLedS.ira);
               }
             }
           }

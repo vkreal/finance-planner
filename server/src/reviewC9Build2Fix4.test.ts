@@ -18,11 +18,21 @@
 // $50 standing on a KNOWN ledger. The debit does NOT share
 // the hole — both debit returns call the backstop — and the
 // lot step cannot zero a ledger holding standing
-// contributions, so the hole was the residual shrink's
-// alone.
+// contributions at ordinary magnitudes (the draw consumes
+// contributions first), BUT the inference drawn from that —
+// "so the hole was the residual shrink's alone" — is FALSE
+// for LOTS, as Pass 6 showed (C9 Build 2 fix 5): the lot
+// step zeroed a KNOWN ledger holding $500,000.00 of standing
+// lots (old 2024 lot $410,695.93 + new 2027 lot $89,304.07),
+// and Fix 4's backstop never fired on that path — the
+// residual never runs (shrinkLeft = 0) or enters shrink at
+// $0 and early-returns. The hole spans the lot step AND the
+// residual; Fix 5 adds the backstop after the lot-step /
+// residual block in settleRound and above shrink's take-$0
+// early return.
 //
-// THE FIX (taxEngine.ts, in shrinkRothAccountLedgerBalance
-// ONLY): one clearEmptyRothAccountLedger(led) call after the
+// THE FIX (Fix 4's fix, in shrinkRothAccountLedgerBalance
+// only — extended by Fix 5, see the note above): one clearEmptyRothAccountLedger(led) call after the
 // composition consumption, so a shrink to $0 clears
 // contributions — and lots on a KNOWN ledger (lots stay on
 // an UNKNOWN ledger, per the Fix 1 design, as the backstop

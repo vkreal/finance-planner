@@ -23,7 +23,11 @@
 //       consume contributions first and clear a wiped ledger
 //       via the backstop, the top-up residual consumes
 //       composition and clears a wiped ledger via the
-//       backstop, growth clears a wiped ledger;
+//       backstop, the top-up lot step clears a wiped ledger
+//       via the backstop after the lot-step/residual block
+//       (C9 Build 2 fix 5 — the lot step zeroes a balance
+//       while shrinking only the appended lot), growth clears
+//       a wiped ledger;
 //       see the merge comment) — so the plain contributions
 //       sum stays exact;
 //   (3) a $0 side's firstYear must not pull the merged
