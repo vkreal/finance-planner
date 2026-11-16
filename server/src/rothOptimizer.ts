@@ -4696,9 +4696,9 @@ export type PlaygroundYearResult = {
   // as the readout prints them, and the leftover is derived
   // FROM those rounded figures, so printed proceeds − printed
   // tax = printed leftover, always. `text` is the
-  // ready-to-render sentence; when the year's total tax exceeds
-  // the proceeds it says so plainly instead of printing a
-  // negative "left".
+  // ready-to-render sentence; when the tax netted against the
+  // sale exceeds the proceeds it says so plainly instead of
+  // printing a negative "left".
   saleAfterTax: PlaygroundSaleAfterTax | null;
 };
 
@@ -4708,12 +4708,22 @@ export type PlaygroundYearResult = {
 // plus the state tax whenever a state rate is typed and priced,
 // plus the §72(t) early-withdrawal penalty on the pre-tax
 // spending draw when one is priced — C9 fix 2; the sentence
-// therefore never calls the figure federal).
+// therefore never calls the figure federal). It does NOT net
+// the refundable education credit or the APTC settlement
+// adjustments (credit still due / excess repayment) that
+// netTaxBill carries (C9 fix 3): leftover == proceeds −
+// netTaxBill only in the no-credit / no-settlement case — in a
+// credit or settlement shape the leftover differs from
+// proceeds − netTaxBill by exactly −educationRefundable −
+// creditStillDue + excessAptcRepayment, and the sentence names
+// the three items it nets instead of calling the figure "this
+// year's total tax".
 export type PlaygroundSaleAfterTax = {
   proceeds: number; // the typed sale amount, whole dollars as printed
   totalTax: number; // displayed federal + displayed state + displayed penalty, whole dollars as printed
   // proceeds − totalTax at the printed (whole-dollar) precision;
-  // negative when the year's tax exceeds the sale's cash.
+  // negative when the tax netted against the sale exceeds the
+  // sale's cash.
   leftover: number;
   text: string;
 };
@@ -5752,19 +5762,27 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // against it is the year's total tax as priced: federal
   // (ordinary + gains, NIIT included) plus state when priced,
   // PLUS the §72(t) early-withdrawal penalty on the pre-tax
-  // spending draw (C9 fix 2) — the same penalty the result's
-  // netTaxBill carries, so the leftover agrees with
-  // cashLeftAfterTax on the sale's share of the year's cash:
-  // before fix 2 the line netted federal+state only and
-  // overstated the penalty-inclusive cash by exactly the
-  // penalty. Figures are rounded to the whole dollars the readout
-  // prints, and the leftover is computed from those rounded
-  // figures so the three printed numbers foot exactly. The
-  // total tax is the SUM OF THE DISPLAYED COMPONENTS —
-  // Math.round(federal) + Math.round(state) +
-  // Math.round(penalty), exactly as the Tax block's own rows
-  // print them — not the rounding of the raw sum, which can
-  // differ by $1 when both carry cents.
+  // spending draw (C9 fix 2) — and NOTHING ELSE. It does NOT
+  // net the refundable education credit or the APTC settlement
+  // adjustments (credit still due / excess repayment) that the
+  // result's netTaxBill carries, so the leftover agrees with
+  // cashLeftAfterTax on the sale's share of the year's cash
+  // ONLY in the no-credit / no-settlement case; in a credit or
+  // settlement shape the leftover differs from proceeds −
+  // netTaxBill by exactly −educationRefundable − creditStillDue
+  // + excessAptcRepayment (C9 fix 3, Pass 1c SHOULD). The
+  // sentence therefore names the three items it nets instead of
+  // calling the figure "this year's total tax", so it never
+  // reads as the year's net filing outcome. Before fix 2 the
+  // line netted federal+state only and overstated the
+  // penalty-inclusive cash by exactly the penalty. Figures are
+  // rounded to the whole dollars the readout prints, and the
+  // leftover is computed from those rounded figures so the three
+  // printed numbers foot exactly. The total tax is the SUM OF
+  // THE DISPLAYED COMPONENTS — Math.round(federal) +
+  // Math.round(state) + Math.round(penalty), exactly as the Tax
+  // block's own rows print them — not the rounding of the raw
+  // sum, which can differ by $1 when both carry cents.
   let saleAfterTax: PlaygroundSaleAfterTax | null = null;
   if (inp.stockSold > 0) {
     const proceeds = Math.round(inp.stockSold);
@@ -5773,14 +5791,28 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       Math.round(priced.stateTax) +
       Math.round(priced.earlyWithdrawalPenalty);
     const leftover = proceeds - totalTax;
+    // The sentence names exactly what the line nets — federal +
+    // state tax, plus the early-withdrawal penalty when one is
+    // priced (a $0 penalty is not named) — so it never reads as
+    // the year's net filing outcome: the refundable education
+    // credit and the APTC settlement adjustments are NOT in this
+    // figure (C9 fix 3).
+    const penaltyPriced = Math.round(priced.earlyWithdrawalPenalty) > 0;
+    const taxNoun = penaltyPriced
+      ? "federal + state tax and the early-withdrawal penalty"
+      : "federal + state tax";
+    const taxNounCap = penaltyPriced
+      ? "Federal + state tax and the early-withdrawal penalty"
+      : "Federal + state tax";
+    const taxVerb = penaltyPriced ? "come" : "comes";
     saleAfterTax = {
       proceeds,
       totalTax,
       leftover,
       text:
         leftover >= 0
-          ? `Sale brought in ${fmtDollars(proceeds)}. After this year's total tax of ${fmtDollars(totalTax)}, ${fmtDollars(leftover)} of it is left.`
-          : `Sale brought in ${fmtDollars(proceeds)}. This year's total tax is ${fmtDollars(totalTax)} — ${fmtDollars(-leftover)} more than the sale brought in.`,
+          ? `Sale brought in ${fmtDollars(proceeds)}. After ${taxNoun} of ${fmtDollars(totalTax)}, ${fmtDollars(leftover)} of it is left.`
+          : `Sale brought in ${fmtDollars(proceeds)}. ${taxNounCap} ${taxVerb} to ${fmtDollars(totalTax)} — ${fmtDollars(-leftover)} more than the sale brought in.`,
     };
   }
 

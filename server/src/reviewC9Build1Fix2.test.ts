@@ -92,18 +92,22 @@ describe("C9 fix 2 — sale-after-tax line nets the penalty", () => {
         Math.round(r.earlyWithdrawalPenalty),
     );
     expect(sat.leftover).toBe(62_160);
-    // The leftover agrees with cashLeftAfterTax: the sale's share
-    // of the year's cash after ALL of the year's tax.
+    // The leftover agrees with cashLeftAfterTax on this shape
+    // (no refundable credit, no APTC settlement — the only case
+    // the agreement holds; C9 fix 3): the sale's share of the
+    // year's cash after the tax the line nets.
     expect(sat.leftover).toBe(100_000 - r.netTaxBill);
     expect(sat.leftover).not.toBe(77_160); // pre-fix, penalty excluded
     expect(sat.text).toBe(
-      "Sale brought in $100,000. After this year's total tax of $37,840, $62,160 of it is left.",
+      "Sale brought in $100,000. After federal + state tax and the early-withdrawal penalty of $37,840, $62,160 of it is left.",
     );
   });
 
   test("zero-penalty control: the line is unchanged ($77,160)", () => {
-    // Same shape, fully eligible draw — penalty $0, so the line must
-    // read exactly as it did before fix 2 (federal + state only).
+    // Same shape, fully eligible draw — penalty $0, so the line
+    // nets federal + state only, and the sentence names just
+    // those two (no penalty to name). Figures identical to
+    // before fix 2; the wording is the fix 3 form.
     const r = pricePlaygroundYear(
       pgBase({
         spendingDraw: 150_000,
@@ -121,7 +125,7 @@ describe("C9 fix 2 — sale-after-tax line nets the penalty", () => {
     expect(sat.leftover).toBe(77_160);
     expect(sat.leftover).toBe(100_000 - r.netTaxBill);
     expect(sat.text).toBe(
-      "Sale brought in $100,000. After this year's total tax of $22,840, $77,160 of it is left.",
+      "Sale brought in $100,000. After federal + state tax of $22,840, $77,160 of it is left.",
     );
   });
 
@@ -150,7 +154,7 @@ describe("C9 fix 2 — sale-after-tax line nets the penalty", () => {
     expect(sat.totalTax).toBe(30_340);
     expect(sat.leftover).toBe(10_000 - 30_340);
     expect(sat.text).toBe(
-      "Sale brought in $10,000. This year's total tax is $30,340 — $20,340 more than the sale brought in.",
+      "Sale brought in $10,000. Federal + state tax and the early-withdrawal penalty come to $30,340 — $20,340 more than the sale brought in.",
     );
   });
 });

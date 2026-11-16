@@ -8107,9 +8107,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       proceeds: 30000,
       totalTax: 14600,
       leftover: 15400,
-      text: "Sale brought in $30,000. After this year's total tax of $14,600, $15,400 of it is left.",
+      text: "Sale brought in $30,000. After federal + state tax of $14,600, $15,400 of it is left.",
       helperText:
-        "Sale brought in $30,000. After this year's total tax of $14,600, $15,400 of it is left.",
+        "Sale brought in $30,000. After federal + state tax of $14,600, $15,400 of it is left.",
     },
     actual: () => {
       const inp = {
@@ -8157,7 +8157,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       proceeds: 30000,
       totalTax: 20640,
       leftover: 9360,
-      text: "Sale brought in $30,000. After this year's total tax of $20,640, $9,360 of it is left.",
+      text: "Sale brought in $30,000. After federal + state tax of $20,640, $9,360 of it is left.",
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -8204,7 +8204,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       proceeds: 10000,
       totalTax: 11600,
       leftover: -1600,
-      text: "Sale brought in $10,000. This year's total tax is $11,600 — $1,600 more than the sale brought in.",
+      text: "Sale brought in $10,000. Federal + state tax comes to $11,600 — $1,600 more than the sale brought in.",
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -8253,7 +8253,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       proceeds: 30000,
       totalTax: 11240,
       leftover: 18760,
-      text: "Sale brought in $30,000. After this year's total tax of $11,240, $18,760 of it is left.",
+      text: "Sale brought in $30,000. After federal + state tax of $11,240, $18,760 of it is left.",
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -8301,7 +8301,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       proceeds: 30000,
       totalTax: 0,
       leftover: 30000,
-      text: "Sale brought in $30,000. After this year's total tax of $0, $30,000 of it is left.",
+      text: "Sale brought in $30,000. After federal + state tax of $0, $30,000 of it is left.",
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -8349,7 +8349,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       aProceeds: 30000,
       aTotalTax: 18488,
       aLeftover: 11512,
-      aText: "Sale brought in $30,000. After this year's total tax of $18,488, $11,512 of it is left.",
+      aText: "Sale brought in $30,000. After federal + state tax of $18,488, $11,512 of it is left.",
       bFederalTax: 12933.82,
       bStateTax: 5678.67,
       bFederalDisplayed: 12934,
@@ -8357,7 +8357,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       bProceeds: 30000,
       bTotalTax: 18613,
       bLeftover: 11387,
-      bText: "Sale brought in $30,000. After this year's total tax of $18,613, $11,387 of it is left.",
+      bText: "Sale brought in $30,000. After federal + state tax of $18,613, $11,387 of it is left.",
     },
     actual: () => {
       const base = {
