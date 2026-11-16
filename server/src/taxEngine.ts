@@ -2878,7 +2878,28 @@ function debitRothLedgers(
 // EARLIER of the two first years (Reg. §1.408A-6 Q&A-7(b) —
 // treats-as-own). A side whose composition was unknown
 // keeps the merged ledger unknown (its dollars cannot be
-// told apart from the known side's).
+// told apart from the known side's) — UNLESS that side
+// holds $0 (C9 Build 2 fix 2 — SHOULD-1): a $0 side
+// contributed no dollars, so it contributes NOTHING to the
+// merge — its unknown composition cannot poison the merged
+// ledger, its lots must not ride in (an unknown side can
+// hold phantom lots against a $0 balance — the Fix 1
+// phantom — and carrying them into a now-known merged
+// ledger would price a penalty on dollars that do not
+// exist), and its first year must not pull the merged
+// 5-year clock earlier. Its contributions are already $0
+// whenever its balance is $0 (contributions are consumed
+// before lots/earnings on every reachable path —
+// debitRothAccountLedger, in both the known and the
+// unknown branch; the top-up shrink's lot step reduces
+// balance and lot together, so balance $0 implies
+// contributions $0 there too, and its residual step is
+// unreachable inside one settleRound — the top-up is
+// capped by the post-draw Roth balance while the lots
+// still standing cover the remainder — and rounds start
+// from fresh ledger copies, so no cross-round
+// accumulation; init clamps contributions to the balance),
+// so the plain contributions sum below is exact.
 function mergeRothOwnerLedgers(
   a: RothOwnerLedger,
   b: RothOwnerLedger,
@@ -2887,12 +2908,25 @@ function mergeRothOwnerLedgers(
     x: RothAccountLedger,
     y: RothAccountLedger,
   ): RothAccountLedger => {
-    const firstYear =
-      x.firstYear == null
-        ? y.firstYear
-        : y.firstYear == null
-          ? x.firstYear
-          : Math.min(x.firstYear, y.firstYear);
+    // A $0 side contributes nothing: it cannot poison
+    // `known`, its lots are dropped, and its first year is
+    // ignored. (A guard on `known` alone would be worse
+    // than the poison — it would let a $0 side's phantom
+    // lots price a penalty on nonexistent dollars — so the
+    // lot drop rides with the guard, never without it.)
+    const xEmpty = x.balance <= 0;
+    const yEmpty = y.balance <= 0;
+    const firstYear = xEmpty
+      ? yEmpty
+        ? null
+        : y.firstYear
+      : yEmpty
+        ? x.firstYear
+        : x.firstYear == null
+          ? y.firstYear
+          : y.firstYear == null
+            ? x.firstYear
+            : Math.min(x.firstYear, y.firstYear);
     // The BALANCE carries full precision — exactly like the
     // scalar rothBal it replaces. Rounding it here (r2) while
     // the scalar path stays unrounded drifts the committed
@@ -2905,11 +2939,14 @@ function mergeRothOwnerLedgers(
     return {
       balance: x.balance + y.balance,
       contributions: r2(x.contributions + y.contributions),
-      lots: [...x.lots, ...y.lots]
+      lots: [
+        ...(xEmpty ? [] : x.lots),
+        ...(yEmpty ? [] : y.lots),
+      ]
         .map((l) => ({ ...l }))
         .sort((m, n) => m.year - n.year),
       firstYear,
-      known: x.known && y.known,
+      known: (x.known || xEmpty) && (y.known || yEmpty),
     };
   };
   return {
