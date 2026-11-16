@@ -2725,12 +2725,32 @@ function debitRothAccountLedger(
   let penalty = 0;
   let unknown = false;
   if (!led.known) {
-    // Unknown composition: the landing default — the draw
-    // prices $0 and the flag says so. Entered contributions
-    // still shelter draws up to their amount (partial
-    // knowledge prices what it can); entered lots are NOT
-    // consumed by an unknown draw, because the draw cannot
-    // be shown to have reached them.
+    // Unknown composition: the landing default — the WHOLE
+    // draw prices $0 and the flag says so, even when the
+    // draw provably exceeds the unknown tier and reaches
+    // known lots. Entered contributions still shelter draws
+    // up to their amount (partial knowledge prices what it
+    // can), but entered lots are NOT consumed by an unknown
+    // draw, and no penalty is priced on the determinable lot
+    // portion — that unpriced penalty is the known, flagged
+    // cost of the bit-identical landing default, not
+    // something that "cannot be shown": a draw larger than
+    // the unknown opening balance provably reaches the lots
+    // behind it (the partial-knowledge case: a $230,000 draw
+    // against a $61,000 unknown opening reaches $169,000 of
+    // the march-appended lot, whose penalty goes unpriced).
+    // INVARIANT BREAK: after an unknown over-draw, surviving
+    // lots can exceed the balance (phantom lots — the case
+    // above leaves the lot standing against a $0 balance).
+    // This is inert today: `known` is set only at init and
+    // in merges (AND of sides) and is never recomputed from
+    // the balance mid-march, so a phantom lot can never flip
+    // a ledger to known and price later; the five-year-clock
+    // derivation is gated on both IRA ledgers being known,
+    // so the legacy fallback shields the display; and
+    // rothLedgerEarnings clamps the residual at 0. A future
+    // lots-reader must NOT assume lots sum to at most the
+    // balance on an unknown ledger.
     if (led.contributions > 0) {
       const fromContrib = Math.min(remaining, led.contributions);
       led.contributions -= fromContrib;
@@ -6901,9 +6921,12 @@ export function simulateRothPlan(
       // withdrawn the same year prices its penalty (never
       // flagged unknown). On a ledger whose opening
       // composition was NOT entered, the new lot sits
-      // FIFO-behind unknown opening dollars and no draw can
-      // be shown to have reached it (see the note at the
-      // append below). The appended lots are kept as
+      // FIFO-behind unknown opening dollars and the debit's
+      // unknown path prices the whole draw $0 + flag without
+      // consuming it (see the note at the append below) —
+      // even when the draw provably exceeds the unknown
+      // opening dollars, the determinable lot penalty goes
+      // unpriced by the landing default. The appended lots are kept as
       // references (appendedLotP / appendedLotS) so the
       // top-up below can shrink them: the top-up is a
       // withholding OUT OF the conversion, so it reduces the
@@ -6955,16 +6978,24 @@ export function simulateRothPlan(
         sRothLedP.ira.balance = sRothLedP.ira.balance + shareP;
         sRothLedS.ira.balance = sRothLedS.ira.balance + shareS;
         // The appended lot does NOT make its ledger known:
-        // the lot sits FIFO-BEHIND any opening lots, whose
-        // amounts are unentered, so a draw cannot be shown
-        // to have reached it — the debit's unknown path
-        // returns before consuming any lot (see
-        // debitRothAccountLedger). Only a ledger whose
-        // opening composition was entered consumes its lots.
-        // The lot's dollars still count in the balance and
-        // in the residual, and a later year with the same
-        // unknown opening prices the same way — the flag,
-        // never a silent $0.
+        // the lot sits FIFO-BEHIND the unknown opening
+        // dollars, and the debit's unknown path returns
+        // before consuming any lot (see
+        // debitRothAccountLedger) — by the landing default,
+        // the whole draw prices $0 + flag even when it
+        // provably exceeds the unknown tier and reaches this
+        // lot, so the determinable lot penalty goes unpriced
+        // (the known, flagged cost of the bit-identical
+        // default, not something that "cannot be shown").
+        // Only a ledger whose opening composition was entered
+        // consumes its lots. The lot's dollars still count in
+        // the balance and in the residual, and a later year
+        // with the same unknown opening prices the same way —
+        // the flag, never a silent $0. After an unknown
+        // over-draw the lot can outlive the balance (phantom
+        // lot — see the unknown branch); nothing recomputes
+        // `known` from the balance mid-march, so it can never
+        // price later.
       }
       // EARLIEST LOT YEAR (for fiveYearClockYear below): the
       // earliest conversion-lot year this settlement's
