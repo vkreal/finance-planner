@@ -3945,6 +3945,26 @@ export type PlaygroundYearInputs = {
   //   MAGI alone and could show a credit (and an under-the-
   //   cliff position) the household is not owed.
   pretaxBalanceSpouse?: number | null;
+  // Rule-of-55 eligibility for the pre-tax spending draw
+  // (Engine Review C9, Build 1 fix 1 — SHOULD 2): the eligible
+  // 401(k) balance and separation age per owner — the SAME four
+  // inputs the plan march carries on RothPlanInputs (and the
+  // saved record carries in cents). All optional — absent /
+  // null = unanswered, and the year's pre-tax spending draw
+  // then prices $0 penalty with the disclosure flag set on a
+  // pre-59½ year (the march's bit-identical landing default),
+  // exactly as an unanswered march year does. The pricer
+  // replicates the march's eligible-first ledger for the draw
+  // (RMD, then conversion, then draw — see
+  // pricePlaygroundYear), so these are the ENTERED balances;
+  // the draw-time remainders are computed inside. NOT part of
+  // the runPlaygroundYear request yet — no API/client wiring
+  // in this fix (the engine prices the disclosure on the
+  // unanswered default until a caller supplies them).
+  pretax401kEligiblePrimary?: number | null;
+  pretax401kEligibleSpouse?: number | null;
+  separationAgePrimary?: number | null;
+  separationAgeSpouse?: number | null;
   rmdAlreadyReceived?: number | null;
   dependentMagiForAca?: number | null;
   primarySoleBeneficiaryOfSpouse?: boolean | null;
@@ -4417,6 +4437,29 @@ export type PlaygroundYearResult = {
   waStandardDeduction: number;
   waTaxableGains: number;
   totalTax: number;
+  // Early-withdrawal penalty on the pre-tax spending draw
+  // (Engine Review C9, Build 1 fix 1 — SHOULD 2): the §72(t)
+  // penalty on the year's spendingDraw, priced with the
+  // march's draw-loop semantics (per-owner own-age test,
+  // eligible-first shelter, separation-age gate — see
+  // pricePlaygroundYear's ledger). $0 when the draw was fully
+  // sheltered, absent, or post-59½, and $0 with the flag below
+  // when the eligibility was unanswered. It is NOT inside
+  // totalTax above (the Tax block's federal + state display)
+  // — it IS inside netTaxBill below, the year's net tax bill,
+  // exactly as the march's funding row carries federal +
+  // penalty. A conversion carries no penalty here (a rollover;
+  // its only penalty is withheld tax, which this pricer never
+  // models).
+  earlyWithdrawalPenalty: number;
+  // True exactly when this year priced a pre-59½ pre-tax
+  // spending draw while the drawing owner's eligibility was
+  // unanswered (no eligible balance entered for that owner)
+  // — so the $0 penalty above is UNKNOWN, not a computed $0.
+  // False when every pre-59½ pre-tax draw was priced with
+  // the eligibility answered, and false in every year with no
+  // pre-59½ pre-tax draw.
+  earlyWithdrawalEligibilityUnknown: boolean;
   // Cash-in / cash-left readouts (build v114): cashIn is
   // every dollar of cash the year's entered income brings
   // in — interest, the TOTAL ordinary dividends (Form 1040
@@ -4453,7 +4496,9 @@ export type PlaygroundYearResult = {
   // identical figure the December console settles the
   // same year on, so the two surfaces' cash left cannot
   // disagree. When no facts are supplied it is totalTax
-  // less the refundable education credit alone: the ACA
+  // plus the §72(t) penalty on the pre-tax spending draw
+  // (C9 fix 1 — SHOULD 2), less the refundable education
+  // credit alone: the ACA
   // premium credit is NOT subtracted then — it is treated
   // as fully advanced, and it offsets only the separately
   // priced health premium (build v208: the annual spending
@@ -5094,6 +5139,70 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const rmd = r2(rmdGross - rmdAlreadyReceived);
   const dependentMagiForAca = Math.max(0, inp.dependentMagiForAca ?? 0);
 
+  // RULE-OF-55 ELIGIBILITY (C9 fix 1 — SHOULD 2): the eligible
+  // ledger the year's pre-tax spending draw arrives with,
+  // replicating the march's order — the RMD consumes eligible
+  // dollars first, then the conversion, then the draw
+  // (settleRound's debit order; every pre-tax outflow takes
+  // eligible dollars first within its owner's pool). The draw
+  // itself splits primary-first across the balances left after
+  // the RMD and the conversion, the march's sourcing rule, each
+  // side capped by what is actually left there (a draw beyond
+  // the pools prices its income in full but its penalty only
+  // on the dollars the pools could actually distribute — the
+  // march shortfalls the rest instead). All of it is computed
+  // ONLY when a pre-tax balance was entered: with no balance
+  // the draw cannot be attributed to an owner, so no facts are
+  // passed and priceYear prices $0 with the flag set (unknown)
+  // on a pre-59½ draw. An entered eligible balance clamps to
+  // its owner's pool (the march's init rule); an unentered one
+  // stays null (unanswered), never $0.
+  const pgPrimaryBalance = Math.max(0, inp.pretaxBalance ?? 0);
+  const pgSpouseBalance = Math.max(0, spouseBalanceCounted ?? 0);
+  const pgEligP0 =
+    totalPretaxBalance == null || inp.pretax401kEligiblePrimary == null
+      ? null
+      : Math.min(
+          Math.max(0, inp.pretax401kEligiblePrimary),
+          pgPrimaryBalance,
+        );
+  const pgEligS0 =
+    totalPretaxBalance == null || inp.pretax401kEligibleSpouse == null
+      ? null
+      : Math.min(
+          Math.max(0, inp.pretax401kEligibleSpouse),
+          pgSpouseBalance,
+        );
+  const pgEligP1 =
+    pgEligP0 == null ? null : Math.max(0, pgEligP0 - rmdPrimary);
+  const pgEligS1 =
+    pgEligS0 == null ? null : Math.max(0, pgEligS0 - rmdSpouse);
+  const pgConvFromP = Math.min(
+    Math.max(0, inp.conversion),
+    Math.max(0, pgPrimaryBalance - rmdPrimary),
+  );
+  const pgConvFromS = Math.max(0, Math.max(0, inp.conversion) - pgConvFromP);
+  const pgEligP2 =
+    pgEligP1 == null ? null : Math.max(0, pgEligP1 - pgConvFromP);
+  const pgEligS2 =
+    pgEligS1 == null ? null : Math.max(0, pgEligS1 - pgConvFromS);
+  const pgDrawAvailP = Math.max(
+    0,
+    pgPrimaryBalance - rmdPrimary - pgConvFromP,
+  );
+  const pgDrawAvailS = Math.max(
+    0,
+    pgSpouseBalance - rmdSpouse - pgConvFromS,
+  );
+  const pgDrawP =
+    totalPretaxBalance == null
+      ? undefined
+      : Math.min(spendingDraw, pgDrawAvailP);
+  const pgDrawS =
+    totalPretaxBalance == null
+      ? undefined
+      : Math.min(Math.max(0, spendingDraw - (pgDrawP ?? 0)), pgDrawAvailS);
+
   const base: PriceYearInput = {
     calendarYear: inp.taxYear,
     filingStatus: fs,
@@ -5114,13 +5223,34 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // of the entered line 3b total computed above.
     ordinaryDividends: nonQualifiedDividends,
     rmd,
-    // The TOTAL pre-tax money out (conversion + spending
-    // draw, the M-2 split above): priceYear's one money-out
-    // dial prices the sum, so the year's tax, MAGI, and
-    // credit are exactly what either dial alone would price
-    // at the same total.
-    conversion: moneyOut,
-    extraPreTaxDraw: 0,
+    // The pre-tax money out, split by purpose (M-2): the
+    // conversion rides priceYear's conversion dial and the
+    // spending draw rides its extraPreTaxDraw dial — the two
+    // dials sum to the same money-out total, so the year's
+    // tax, MAGI, and credit are exactly what the folded
+    // moneyOut priced at the same total. The split matters
+    // because only the DRAW is a §72(t) distribution: the
+    // conversion is a rollover, and the draw's penalty prices
+    // on the extraPreTaxDraw dial through the eligibility
+    // facts below (C9 fix 1 — SHOULD 2).
+    conversion: inp.conversion,
+    extraPreTaxDraw: spendingDraw,
+    // Rule-of-55 eligibility (C9 fix 1 — SHOULD 2): the
+    // eligible balances the draw arrives with and its
+    // per-owner split (the ledger above) — passed only when
+    // a pre-tax balance was entered; with no balance the draw
+    // cannot be attributed, so no facts are passed and the
+    // draw prices $0 with the flag set on a pre-59½ year.
+    ...(totalPretaxBalance != null
+      ? {
+          pretax401kEligiblePrimary: pgEligP2,
+          pretax401kEligibleSpouse: pgEligS2,
+          separationAgePrimary: inp.separationAgePrimary ?? null,
+          separationAgeSpouse: inp.separationAgeSpouse ?? null,
+          extraPreTaxDrawPrimary: pgDrawP ?? 0,
+          extraPreTaxDrawSpouse: pgDrawS ?? 0,
+        }
+      : {}),
     ssBenefits,
     taxExemptInterest: inp.taxExemptInterest,
     // The capital result passes RAW (negative = a net
@@ -5264,13 +5394,13 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const prefTyped = r2(ltcgNet + qualifiedDividends);
 
   const priced = priceYear(base);
-  // The no-CONVERSION price: the money-out dial keeps only
-  // the spending draw, if one rides (M-2 split) — so the
-  // conversion's own cost below is the tax the conversion
-  // alone adds on top of the same year with the same draw
-  // still taken. With no draw entered this is exactly the
-  // pre-split $0-conversion price.
-  const pricedZero = priceYear({ ...base, conversion: spendingDraw });
+  // The no-CONVERSION price: the conversion dial is zeroed
+  // while the spending draw still rides the extraPreTaxDraw
+  // dial (M-2 split) — so the conversion's own cost below is
+  // the tax the conversion alone adds on top of the same year
+  // with the same draw still taken. With no draw entered this
+  // is exactly the pre-split $0-conversion price.
+  const pricedZero = priceYear({ ...base, conversion: 0 });
 
   // Loss-ledger year-end reconciliation (build v111):
   // the carry-out is fixed ONCE, against the priced year's
@@ -5752,7 +5882,18 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       rothDraw +
       inp.stockSold,
   );
-  const totalTaxBill = r2(priced.federalTax + priced.stateTax);
+  // The year's total tax bill, INCLUDING the §72(t) penalty
+  // on the pre-tax spending draw (C9 fix 1 — SHOULD 2): the
+  // penalty is an additional tax liability the year must fund,
+  // exactly as the march's funding row carries federal +
+  // penalty — so it enters the net bill (and the cash left)
+  // here. totalTax on the result below stays federal + state
+  // (the Tax block's display invariant); the penalty is named
+  // on its own result field beside it.
+  const earlyWithdrawalPenalty = priced.earlyWithdrawalPenalty;
+  const totalTaxBill = r2(
+    priced.federalTax + priced.stateTax + earlyWithdrawalPenalty,
+  );
   let netTaxBill = r2(totalTaxBill - priced.educationRefundable);
   // Whether the settlement below actually priced — the
   // health premium pairing further down keys on it (S-1).
@@ -5967,6 +6108,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     waStandardDeduction: priced.waStandardDeduction,
     waTaxableGains: priced.waTaxableGains,
     totalTax: r2(priced.federalTax + priced.stateTax),
+    earlyWithdrawalPenalty,
+    earlyWithdrawalEligibilityUnknown:
+      priced.earlyWithdrawalEligibilityUnknown,
     netTaxBill,
     cashIn,
     cashLeftAfterTax,

@@ -61,6 +61,46 @@ function r2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// Gross-up of a withheld distribution with a Rule-of-55 shelter
+// (Engine Review C9, Build 1 fix 1 — MUST 2): the distribution is
+// tax + penalty, and the §72(t) penalty is 10% of the INELIGIBLE
+// part of the distribution only — the part beyond the eligible
+// share `shelter` (conversion dollars sourced from eligible
+// employer-plan money whose separation gate passes; §72(t)(2)(A)(v)
+// shelters a distribution from an employer plan after separation
+// in/after the year the owner turns 55, and the withheld part of a
+// conversion is a distribution from the distributing plan). Given
+// tax-to-pay W, shelter E, capacity H (the most the conversion can
+// distribute):
+//   W ≤ E → penalty 0, distribution W
+//   W > E → penalty (W − E)/9, distribution W + penalty
+//   distribution > H → distribution H, penalty 10% × max(0, H − E),
+//     tax H − penalty.
+// With E = 0 this is exactly the pre-fix gross-up (penalty W/9),
+// so unanswered eligibility prices bit-identically. `tax` +
+// `penalty` is the distribution to within a cent of rounding.
+function grossUpWithheld(
+  taxToPay: number,
+  shelter: number,
+  capacity: number,
+): { tax: number; penalty: number; total: number } {
+  const e = Math.max(0, shelter);
+  const h = Math.max(0, capacity);
+  const w = Math.max(0, taxToPay);
+  const wantPenalty = w <= e ? 0 : r2((w - e) / 9);
+  const wantTotal = w + wantPenalty;
+  if (wantTotal <= h + 0.005) {
+    return { tax: w, penalty: wantPenalty, total: wantTotal };
+  }
+  // Capacity binds: the whole capacity is the distribution —
+  // penalty 10% of its ineligible part, the other part tax
+  // (the rounding-dust mirror of the pre-fix overflow branch:
+  // with E = 0 this is penalty = 10% of the capacity, tax the
+  // other 90%, exactly as before).
+  const cappedPenalty = h <= e ? 0 : r2((h - e) * 0.1);
+  return { tax: h - cappedPenalty, penalty: cappedPenalty, total: h };
+}
+
 /* ---------------- Social Security (IRC §86) ---------------- */
 
 export function ssTaxableAmount(
@@ -95,6 +135,36 @@ export type PriceYearInput = {
   rmd: number;
   conversion: number;
   extraPreTaxDraw: number;
+  // Rule-of-55 eligibility for the pre-tax spending draw
+  // (Engine Review C9, Build 1 fix 1 — SHOULD 2): the eligible
+  // 401(k) balance and separation age per owner — the SAME four
+  // inputs the plan march carries on RothPlanInputs — plus the
+  // draw's per-owner split (extraPreTaxDrawPrimary /
+  // extraPreTaxDrawSpouse), which the caller supplies when it
+  // knows which pool the draw came from. The eligible balances
+  // are the balances the draw ARRIVES with: the caller's
+  // draw-time remainders, after the year's earlier pre-tax
+  // outflows (RMD, then conversion) consumed eligible dollars
+  // first — pricePlaygroundYear replicates the march's
+  // RMD-then-conversion ledger for them. All six optional —
+  // absent = the pre-fix pricing, bit-identical: the draw
+  // prices as ordinary income with no penalty and no flag.
+  // When the caller supplies them, priceYear prices the §72(t)
+  // penalty on the draw's ineligible share exactly as the
+  // march's draw loop does (per-owner own-age test,
+  // eligible-first shelter, separation-age gate) and reports it
+  // beside the tax — NEVER inside federalTax, so the march's
+  // priceWith calls (which never pass these fields) are
+  // untouched and no penalty can double-count with the draw
+  // loop's own. Without the per-owner split the draw cannot be
+  // attributed, so it prices $0 penalty with the flag set when
+  // it is pre-59½ (unknown, not a computed $0).
+  pretax401kEligiblePrimary?: number | null;
+  pretax401kEligibleSpouse?: number | null;
+  separationAgePrimary?: number | null;
+  separationAgeSpouse?: number | null;
+  extraPreTaxDrawPrimary?: number;
+  extraPreTaxDrawSpouse?: number;
   ssBenefits: number;
   taxExemptInterest: number;
   ltcg: number;
@@ -347,6 +417,29 @@ export type PriceYearResult = {
   niit: number;
   federalTax: number;
   stateTax: number;
+  // Early-withdrawal penalty on the pre-tax spending draw
+  // (Engine Review C9, Build 1 fix 1 — SHOULD 2): the §72(t)
+  // penalty on input.extraPreTaxDraw's ineligible share
+  // (per-owner own-age test, eligible-first shelter,
+  // separation-age gate — the march's draw-loop semantics),
+  // $0 whenever the draw was fully sheltered, absent, or
+  // post-59½, and $0 with the flag below when the eligibility
+  // was unanswered or the draw unattributed. NEVER inside
+  // federalTax above — it is an additional tax liability
+  // reported beside the tax, exactly as the march's year
+  // penalty sits beside its federal tax. The march's own
+  // priceWith calls never pass the eligibility facts, so this
+  // is $0 / false on every march pricing.
+  earlyWithdrawalPenalty: number;
+  // True exactly when this pricing priced a pre-59½ pre-tax
+  // spending draw while the drawing owner's eligibility was
+  // unanswered (no eligible balance entered for that owner)
+  // or the draw's per-owner split was not supplied — so the
+  // $0 penalty above is UNKNOWN, not a computed $0. False
+  // when every pre-59½ pre-tax draw was priced with the
+  // eligibility answered, and false in every year with no
+  // pre-59½ pre-tax draw.
+  earlyWithdrawalEligibilityUnknown: boolean;
   // Washington excise breakdown (T3): the year's WA-allocated
   // long-term gains entering the excise base (max(0, ltcg) —
   // or max(0, waGainsBase) when the caller supplies the
@@ -1483,6 +1576,97 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
         })
       : null;
   const stateTax = wa ? wa.tax : (input.stateRatePct / 100) * taxableIncome;
+  // EARLY-WITHDRAWAL PENALTY ON THE SPENDING DRAW (C9 fix 1 —
+  // SHOULD 2): the §72(t) penalty on the pre-tax spending draw
+  // (input.extraPreTaxDraw), priced with the march's draw-loop
+  // semantics — per-owner own-age test, eligible-first shelter,
+  // separation-age gate — on the per-owner split the caller
+  // supplies. The conversion dial carries NO penalty here: a
+  // conversion is a rollover, and its only penalty (tax
+  // withheld from it) is the march's withholding path, which
+  // this pricer never models; the RMD likewise carries none
+  // (it prices at 73+, past 59½). The penalty is an additional
+  // tax liability, computed beside the tax above and never
+  // inside it. When the caller passes no eligibility facts
+  // (the march's priceWith calls), a pre-59½ draw prices $0
+  // with the flag set — the unknown, not a computed $0 — and
+  // the march's own draw loop remains the penalty's home.
+  const drawSplitSupplied =
+    input.extraPreTaxDrawPrimary != null ||
+    input.extraPreTaxDrawSpouse != null;
+  const drawP = drawSplitSupplied
+    ? Math.max(0, input.extraPreTaxDrawPrimary ?? 0)
+    : 0;
+  const drawS = drawSplitSupplied
+    ? Math.max(0, input.extraPreTaxDrawSpouse ?? 0)
+    : 0;
+  const shelterForDraw = (
+    elig: number | null | undefined,
+    sep: number | null | undefined,
+    ownerAge: number,
+  ): number => {
+    if (elig == null) return 0;
+    if (sep != null && (sep < 55 || ownerAge < sep)) return 0;
+    return elig;
+  };
+  let earlyWithdrawalPenalty = 0;
+  let earlyWithdrawalEligibilityUnknown = false;
+  if (input.extraPreTaxDraw > 0) {
+    if (!drawSplitSupplied) {
+      // No attribution — the draw cannot be priced per owner.
+      if (
+        input.agePrimary < 59.5 ||
+        (input.ageSpouse != null && input.ageSpouse < 59.5)
+      ) {
+        earlyWithdrawalEligibilityUnknown = true;
+      }
+    } else {
+      if (drawP > 0 && input.agePrimary < 59.5) {
+        if (input.pretax401kEligiblePrimary == null) {
+          earlyWithdrawalEligibilityUnknown = true;
+        } else {
+          const ineligibleP = Math.max(
+            0,
+            drawP -
+              shelterForDraw(
+                input.pretax401kEligiblePrimary,
+                input.separationAgePrimary,
+                input.agePrimary,
+              ),
+          );
+          if (ineligibleP > 0) {
+            earlyWithdrawalPenalty = r2(
+              earlyWithdrawalPenalty + r2(ineligibleP * 0.1),
+            );
+          }
+        }
+      }
+      if (
+        drawS > 0 &&
+        input.ageSpouse != null &&
+        input.ageSpouse < 59.5
+      ) {
+        if (input.pretax401kEligibleSpouse == null) {
+          earlyWithdrawalEligibilityUnknown = true;
+        } else {
+          const ineligibleS = Math.max(
+            0,
+            drawS -
+              shelterForDraw(
+                input.pretax401kEligibleSpouse,
+                input.separationAgeSpouse,
+                input.ageSpouse,
+              ),
+          );
+          if (ineligibleS > 0) {
+            earlyWithdrawalPenalty = r2(
+              earlyWithdrawalPenalty + r2(ineligibleS * 0.1),
+            );
+          }
+        }
+      }
+    }
+  }
   return {
     provisionalIncome: r2(provisional),
     ssTaxable: r2(ssTaxable),
@@ -1508,6 +1692,8 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     niit: r2(niit),
     federalTax: r2(federalTax),
     stateTax: r2(stateTax),
+    earlyWithdrawalPenalty,
+    earlyWithdrawalEligibilityUnknown,
     waGains: wa ? wa.waGains : 0,
     waStandardDeduction: wa ? wa.standardDeduction : 0,
     waCharitableDeduction: wa ? wa.charitableDeduction : 0,
@@ -3932,9 +4118,14 @@ export type RothYear = {
   // eligibility answered (penalty priced on the ineligible
   // share, $0 only where the eligible balance sheltered it),
   // and false in every year with no pre-59½ pre-tax draw.
-  // The conversion-withholding penalty does not consult
-  // eligibility (it prices as before, on the conversion
-  // owner's age alone) and never sets this flag.
+  // The conversion-withholding penalty DOES consult
+  // eligibility (C9 Build 1 fix 1 — MUST 2): the withheld
+  // distribution shelters up to the conversion's eligible
+  // share (§72(t)(2)(A)(v)), so on answered-eligible
+  // conversions the penalty is $0 where the share covers the
+  // withholding and prices only on the ineligible remainder.
+  // It never sets this flag — the flag is about the spending
+  // draw only.
   earlyWithdrawalEligibilityUnknown: boolean;
   pretaxEnd: number;
   // Per-spouse pre-tax ending balances (Part 1). Their sum is
@@ -5864,23 +6055,75 @@ export function simulateRothPlan(
       // (conversions draw his balance first), the survivor's
       // once the balances are combined.
       const convOwnerAge = survCombined ? (survivorAge ?? age) : age;
+      // RULE-OF-55 SHELTER (C9 Build 1 fix 1 — MUST 2): the
+      // withheld part of a conversion is a distribution from
+      // the distributing plan, so §72(t)(2)(A)(v) shelters it
+      // up to the conversion's eligible share — the part of
+      // the conversion sourced from eligible employer-plan
+      // dollars, which the engine routes eligible-first (the
+      // conversion debit below takes eligible dollars first
+      // within each owner's pool). The share is measured
+      // against the post-RMD ledger, before the conversion
+      // debits it, with the SAME separation gate the
+      // spending-draw shelter below applies (shelterP /
+      // shelterS): a separation age under 55 never shelters,
+      // 55+ shelters only from that age on, null shelters at
+      // face value; an unanswered owner (null ledger)
+      // shelters $0 — the landing default, penalty as before.
+      // The conversion draws primary-first, so the share is
+      // the primary's eligible part of his portion plus the
+      // spouse's eligible part of hers.
+      const shelterForConv = (
+        elig: number | null | undefined,
+        sep: number | null | undefined,
+        ownerAge: number | null,
+      ): number => {
+        if (elig == null) return 0;
+        if (sep != null && (sep < 55 || ownerAge == null || ownerAge < sep))
+          return 0;
+        return elig;
+      };
+      const convFromP = Math.min(
+        additionalArg,
+        Math.max(0, pretaxPAfterRmd),
+      );
+      const convFromS = Math.max(0, additionalArg - convFromP);
+      const convEligShare =
+        Math.min(
+          convFromP,
+          shelterForConv(
+            eligPAfterRmd,
+            inputs.separationAgePrimary,
+            age,
+          ),
+        ) +
+        Math.min(
+          convFromS,
+          shelterForConv(
+            eligSAfterRmd,
+            inputs.separationAgeSpouse,
+            spouseAge,
+          ),
+        );
+      // The eligible share the opening withholding has NOT
+      // consumed — the top-up below shelters in what is left
+      // of it (the withheld distribution is sourced
+      // eligible-first, so the opening distribution consumes
+      // the share first).
+      let convEligShelterRemaining = convEligShare;
       if (withheld > 0 && convOwnerAge < 59.5) {
-        const grossedPenalty = r2(withheld / 9);
-        const grossedTotal = withheld + grossedPenalty;
-        if (grossedTotal <= additionalArg + 0.005) {
-          penalty = grossedPenalty;
-          withheldFromConversion = grossedTotal;
-        } else if (additionalArg > 0) {
-          penalty = r2(additionalArg * 0.1);
-          withheldFromConversion = additionalArg;
-          overflowTax = r2(withheld - (additionalArg - penalty));
-        } else {
-          withheldFromConversion = 0;
-          overflowTax = withheld;
-        }
+        const g = grossUpWithheld(withheld, convEligShare, additionalArg);
+        penalty = g.penalty;
+        withheldFromConversion = g.total;
+        overflowTax = r2(withheld - g.tax);
+        convEligShelterRemaining = Math.max(0, convEligShare - g.total);
       } else {
         overflowTax = Math.max(0, withheld - additionalArg);
         withheldFromConversion = Math.min(withheld, additionalArg);
+        convEligShelterRemaining = Math.max(
+          0,
+          convEligShare - withheldFromConversion,
+        );
       }
       const rothIn = Math.max(0, additionalArg - withheldFromConversion);
 
@@ -6292,8 +6535,10 @@ export function simulateRothPlan(
           // draw prices $0 penalty — the bit-identical landing
           // default — and sets the unknown flag instead of
           // silently presenting a $0. The conversion-
-          // withholding penalty above does NOT consult
-          // eligibility and is unchanged by this branch.
+          // withholding penalty above DOES consult eligibility
+          // (C9 Build 1 fix 1 — MUST 2: it shelters up to the
+          // conversion's eligible share) and is unchanged by
+          // this branch.
           // The ledger moves on every draw (eligible-first),
           // whatever the penalty answer: the dollars left the
           // pool either way. The penalty is measured FIRST,
@@ -6414,22 +6659,44 @@ export function simulateRothPlan(
               additionalArg - withheldFromConversion,
             );
             if (headroom > 0) {
-              const wantTax = Math.min(delta, r2(headroom * 0.9));
-              const wantPenalty = r2(wantTax / 9);
-              let topUpPenalty = 0;
-              if (wantTax + wantPenalty <= headroom + 0.005) {
-                topUpTax = wantTax;
-                topUpPenalty = wantPenalty;
-              } else {
-                // Rounding dust would over-distribute the
-                // conversion by a cent: the whole headroom is
-                // the distribution instead (mirror of the
-                // opening overflow branch above) — penalty 10%
-                // of it, the other 90% tax.
-                topUpPenalty = r2(headroom * 0.1);
-                topUpTax = r2(headroom - topUpPenalty);
-              }
-              if (topUpTax > 0) {
+              // MUST 2 (same treatment as the opening
+              // withholding): the top-up distribution shelters
+              // in the eligible share the opening withholding
+              // left (convEligShelterRemaining), so its
+              // penalty is 10% of the ineligible remainder
+              // only — grossed up on that remainder. The most
+              // tax the headroom can carry grows with the
+              // shelter: total = tax + (tax − shelter)/9 ≤
+              // headroom, i.e. tax ≤ (9 × headroom + shelter)/10
+              // (with no shelter this is the pre-fix 90% of
+              // headroom, bit-identical).
+              const wantTax = Math.min(
+                delta,
+                r2((9 * headroom + convEligShelterRemaining) / 10),
+              );
+              // MUST 1: the top-up is a distribution out of
+              // the conversion — it can only distribute Roth
+              // dollars that are actually there at the reprice
+              // point. The spending draw above may already have
+              // spent the conversion's Roth inflow, so the
+              // distribution is capped at the lesser of the
+              // conversion headroom and rothBal; the remainder
+              // of the delta tax stays on the Taxable /
+              // debitUnpaid path below and lands in unpaidTax
+              // honestly, instead of being recorded as tax paid
+              // from nothing.
+              const topUpCapacity = Math.min(
+                headroom,
+                Math.max(0, rothBal),
+              );
+              const g = grossUpWithheld(
+                wantTax,
+                convEligShelterRemaining,
+                topUpCapacity,
+              );
+              const topUpPenalty = g.penalty;
+              if (g.tax > 0) {
+                topUpTax = r2(g.tax);
                 topUpTotal = r2(topUpTax + topUpPenalty);
                 penalty = r2(penalty + topUpPenalty);
                 withheldFromConversion = r2(
@@ -6438,7 +6705,10 @@ export function simulateRothPlan(
                 // The top-up leaves the conversion (Roth
                 // receives that much less) and joins the
                 // pre-tax tax funding — the funding row's
-                // pre-tax leg for this bill.
+                // pre-tax leg for this bill. The cap above
+                // already bounds the top-up by rothBal, so
+                // the max(0, …) here only absorbs sub-cent
+                // rounding dust, never a real shortfall.
                 rothBal = Math.max(0, rothBal - topUpTotal);
                 fundTaxPretax = r2(fundTaxPretax + topUpTotal);
               }

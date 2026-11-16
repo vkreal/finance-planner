@@ -1434,8 +1434,14 @@ function irmaaAcaCompareWarnings(
     }
     if (m.earlyWithdrawalUnknownYears.length > 0) {
       const years = m.earlyWithdrawalUnknownYears.join(", ");
+      // Qualified to the SPENDING draw (C9 Build 1 fix 1 —
+      // SHOULD 1): the flag names the penalty on the pre-tax
+      // spending draw only. A year on this list can ALSO price
+      // a conversion-withholding penalty — priced separately,
+      // on the conversion owner's age — so the sentence must
+      // never read as if the year's whole penalty were $0.
       out.push(
-        `Early-withdrawal penalty is $0 but UNKNOWN for ${m.name} in ${years}: a pre-59½ pre-tax spending draw was priced while that owner's Rule-of-55 eligibility was not entered, so the $0 is an unanswered question, not a computed $0 — the real §72(t) penalty depends on how much of the draw came from an eligible employer plan. Enter the eligible balance and separation age to price it.`,
+        `Early-withdrawal penalty on the pre-tax spending draw is $0 but UNKNOWN for ${m.name} in ${years}: a pre-59½ pre-tax spending draw was priced while that owner's Rule-of-55 eligibility was not entered, so the $0 on that draw is an unanswered question, not a computed $0 — the real §72(t) penalty on the draw depends on how much of it came from an eligible employer plan. A conversion-withholding penalty in the same year, if any, is priced separately and is NOT part of this $0. Enter the eligible balance and separation age to price it.`,
       );
     }
   }
