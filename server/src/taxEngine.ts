@@ -10514,7 +10514,17 @@ export function simulateRothPlan(
     (endingPretaxTotal - endingPreserved) * (1 - inputs.heirRatePct / 100) +
     roth +
     taxable +
-    hsa;
+    hsa -
+    // (Engine Review C9, Build 3 — W2-D2): lifetime unpaid tax
+    // nets out of ending wealth AS STATED — no growth on it,
+    // because the engine models no interest on unpaid tax.
+    // Unpaid tax is a liability still owed, so a plan whose
+    // balances could not pay its assessed tax must not report
+    // those balances as wealth while ignoring the debt. Valid
+    // plans carry $0 unpaid tax, so their wealth is unchanged
+    // bit for bit; an insolvent plan's wealth falls by exactly
+    // the unpaid amount and can go negative.
+    lifetimeUnpaidTax;
   return {
     years,
     lifetimeFederalTax: r2(lifetimeFederalTax),

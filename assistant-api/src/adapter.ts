@@ -896,6 +896,21 @@ type MappedCompareScenario = {
   // scenario with no Roth draw, or with the composition
   // entered for every drawing owner.
   rothBasisUnknownYears: number[];
+  // INTEGRITY (Engine Review C9, Build 3 — W4-GAP-1): the
+  // lifetime tax this scenario's balances could not pay
+  // (unpaidTax — the engine's lifetimeUnpaidTax, $0 on a
+  // solvent plan), the lifetime spending its draws could
+  // not fund (spendShortfall), and the E4 verdict on the
+  // scenario's own priced march (integrityStatus, with
+  // integrityReasons naming the disqualification when
+  // invalid). All dollars. A scenario whose status is
+  // "invalid" never wins a qualified crown — see
+  // winnerQualified / excludedInvalidWinner on the
+  // comparisonScope block.
+  unpaidTax: number;
+  spendShortfall: number;
+  integrityStatus: "valid" | "valid-with-benign-residual" | "invalid";
+  integrityReasons: string[];
   // Lifetime health premiums (Review 3 R3-S1; $0 when the v208
   // term is not entered): the GROSS premium the score identity
   // adds beside acaCreditKept, and the NET premium actually
@@ -997,6 +1012,13 @@ function mapCompareScenario(
     acaBelow100FplYears: s.acaBelow100FplYears,
     earlyWithdrawalUnknownYears: s.earlyWithdrawalUnknownYears,
     rothBasisUnknownYears: s.rothBasisUnknownYears,
+    // (Engine Review C9, Build 3 — W4-GAP-1): the integrity
+    // totals are already dollars on the engine verdict — never
+    // cents-divided — while unpaidTaxCents is cents, as usual.
+    unpaidTax: centsToDollars(s.unpaidTaxCents),
+    spendShortfall: s.integrity.spendShortfallTotal,
+    integrityStatus: s.integrity.status,
+    integrityReasons: s.integrity.reasons,
     lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
     lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
@@ -1172,6 +1194,15 @@ type CompareOutcome = {
   baselineRaw: RothCompareScenarioResult;
   winnerByEndingWealth: string | null;
   winnerByNetCost: string | null;
+  // (Engine Review C9, Build 3 — W4-GAP-1): the engine's
+  // crowning verdict — false exactly when no scenario was
+  // valid, with the raw cheapest invalid named beside its
+  // integrity reasons (null in the ordinary case).
+  winnerQualified: boolean;
+  excludedInvalidWinner: {
+    name: string;
+    reasons: string[];
+  } | null;
 };
 
 function runCompare(
@@ -1190,18 +1221,43 @@ function runCompare(
     result.scenarios[0]!;
   const baseline =
     mapped.find((m) => m.name === result.baselineName) ?? mapped[0]!;
-  const wealthWinner = pickWinner(mapped, (a, b) => a.endingWealth > b.endingWealth);
-  const costWinner = pickWinner(mapped, (a, b) => a.lifetimeNetCost < b.lifetimeNetCost);
+  // (Engine Review C9, Build 3 — W4-GAP-1): the winners come
+  // from the ENGINE's crowning (crownCompareWinners in
+  // runRothCompare) — valid-only, with the optimizer's
+  // tie-breaks — never from a raw min / max over the mapped
+  // rows, which would crown an invalid candidate exactly
+  // when its $0 figures look cheapest. pickWinner survives
+  // below only for the work-years all-in-tax winner, which
+  // has no integrity verdict to filter on.
   return {
     ok: true,
     outcome: {
       mapped,
       baseline,
       baselineRaw,
-      winnerByEndingWealth: wealthWinner ? wealthWinner.name : null,
-      winnerByNetCost: costWinner ? costWinner.name : null,
+      winnerByEndingWealth: result.winnerByEndingWealth,
+      winnerByNetCost: result.winnerByNetCost,
+      winnerQualified: result.winnerQualified,
+      excludedInvalidWinner:
+        result.excludedInvalidWinner == null
+          ? null
+          : {
+              name: result.excludedInvalidWinner.name,
+              reasons: result.excludedInvalidWinner.integrity.reasons,
+            },
     },
   };
+}
+
+/** The unqualified-winner warning for a compare run whose
+ *  crowning found no valid candidate (Engine Review C9,
+ *  Build 3 — W4-GAP-1, mirroring the optimizer UI copy in
+ *  client/src/RothConversion.tsx). Empty when the winner is
+ *  qualified — callers spread it into their warnings arrays. */
+function unqualifiedWinnerWarning(outcome: CompareOutcome): string[] {
+  return outcome.winnerQualified
+    ? []
+    : ["No tested candidate was fully valid — treat the winner as unqualified."];
 }
 
 function deltasVsBaseline(
@@ -1261,6 +1317,16 @@ export type ComparisonScopeInfo = {
   baselineName: string;
   winnerByNetCost: string | null;
   winnerByEndingWealth: string | null;
+  // (Engine Review C9, Build 3 — W4-GAP-1): the crowning
+  // verdict — false exactly when no candidate was valid, with
+  // the raw cheapest invalid named beside its integrity
+  // reasons (null in the ordinary case). The unqualified
+  // warning beside it rides the response warnings array.
+  winnerQualified: boolean;
+  excludedInvalidWinner: {
+    name: string;
+    reasons: string[];
+  } | null;
   globalOptimalityClaimed: false;
   netCostObjective: string;
   wealthObjective: string;
@@ -1356,6 +1422,16 @@ function mapScoredCandidate(
     acaBelow100FplYears: s.result.acaBelow100FplYears,
     earlyWithdrawalUnknownYears: s.result.earlyWithdrawalUnknownYears,
     rothBasisUnknownYears: s.result.rothBasisUnknownYears,
+    // (Engine Review C9, Build 3 — W4-GAP-1): same four fields
+    // as the compare path, off the scored candidate's own
+    // assessment. A stub without an assessment (no verdict
+    // exists) reads as valid with no reasons — the E6 rule
+    // that a candidate with no assessment is never excluded
+    // as invalid; real candidates always carry one.
+    unpaidTax: r2(s.result.lifetimeUnpaidTax),
+    spendShortfall: s.integrity?.spendShortfallTotal ?? 0,
+    integrityStatus: s.integrity?.status ?? "valid",
+    integrityReasons: s.integrity?.reasons ?? [],
     lifetimeHealthPremiumGross: r2(s.result.lifetimeHealthPremiumGross),
     lifetimeHealthPremiumNet: r2(s.result.lifetimeHealthPremiumNet),
     endingPretax: r2(s.result.endingPretax),
@@ -1932,6 +2008,8 @@ export function compareWithdrawalStrategies(
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: LIMITED_TIE_BREAK,
       excludedCandidateFamilies: full
         ? [
@@ -1957,6 +2035,7 @@ export function compareWithdrawalStrategies(
         ...healthPremiumWarnings(scenario),
         YEARLY_TABLE_WARNING,
         ...irmaaAcaCompareWarnings(outcome.mapped),
+        ...unqualifiedWinnerWarning(outcome),
       ],
       taxAwareAssumptions(scenario),
       null,
@@ -2121,6 +2200,8 @@ export function compareRothConversions(
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: LIMITED_TIE_BREAK,
       excludedCandidateFamilies: [
         "Every other conversion ceiling (other bracket tops, IRMAA tiers, ACA-cliff caps, MAGI caps) — pass comparisonScope \"full\" to search them.",
@@ -2143,6 +2224,7 @@ export function compareRothConversions(
         ...healthPremiumWarnings(scenario),
         YEARLY_TABLE_WARNING,
         ...irmaaAcaCompareWarnings(outcome.mapped),
+        ...unqualifiedWinnerWarning(outcome),
       ],
       taxAwareAssumptions(scenario),
       null,
@@ -2247,6 +2329,16 @@ function compareRothConversionsFull(
       baselineName: baseline.name,
       winnerByNetCost: winnerName,
       winnerByEndingWealth: wealthWinnerName,
+      winnerQualified: result.winnerQualified,
+      excludedInvalidWinner:
+        result.excludedInvalidWinner == null
+          ? null
+          : {
+              name: optimizerCandidateDisplayName(
+                result.excludedInvalidWinner.candidate.spec,
+              ),
+              reasons: result.excludedInvalidWinner.integrity.reasons,
+            },
       tieBreakPolicy: OPTIMIZER_TIE_BREAK,
       excludedCandidateFamilies,
     });
@@ -2628,6 +2720,8 @@ export function compareRetirementAges(
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: WORK_YEARS_TIE_BREAK,
       excludedCandidateFamilies: [
         "Conversion strategies beyond the entered-plan Do-Nothing fill per quit age.",
@@ -2652,6 +2746,7 @@ export function compareRetirementAges(
         YEARLY_TABLE_WARNING,
         WORK_YEARS_HORIZON_WARNING,
         ...irmaaAcaCompareWarnings(outcome.mapped),
+        ...unqualifiedWinnerWarning(outcome),
         // The work-years leg prices its own rolled marches,
         // so their unknown-IRMAA / below-100% years are
         // warned here too, keyed by quit age.

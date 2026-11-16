@@ -5434,7 +5434,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-score-identities-content",
     kind: "apicontract",
-    note: "Score identities (hardening package, finding A-4; extended by the T2 payroll build; extended by the cold-AI audit fix): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit − educationRefundableCents (the refundable AOTC term the cold-AI audit found missing: educationCreditSemantics credits it in the score beside the ACA credit, and netCostBreakdown subtracts it, so the printed formula must too), with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state in the identity itself that AMT is inside federalTax and never added on top, and where the NIIT sits (inside federalTax, therefore inside totalTax) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), state the ending-wealth identity, and state the T2 fold-in: on a salary-carrying row the all-in identity holds (with the same − educationRefundable term) with totalTax folding in the work years' employee payroll tax as its own component, priced from each salary year's own law table, the employer share not priced. The identities themselves are exercised arithmetically in api-compare-example-executes and in the tax suite's workyears-payroll-fold-in-identity case; this fixture pins only that the published text cannot silently lose them.",
+    note: "Score identities (hardening package, finding A-4; extended by the T2 payroll build; extended by the cold-AI audit fix): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit − educationRefundableCents (the refundable AOTC term the cold-AI audit found missing: educationCreditSemantics credits it in the score beside the ACA credit, and netCostBreakdown subtracts it, so the printed formula must too), with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state in the identity itself that AMT is inside federalTax and never added on top, and where the NIIT sits (inside federalTax, therefore inside totalTax) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), state the ending-wealth identity (ending balances minus terminal tax minus unpaid tax — Engine Review C9, Build 3: without the unpaid-tax term an insolvent plan's wealth was overstated by exactly the unpaid amount), and state the T2 fold-in: on a salary-carrying row the all-in identity holds (with the same − educationRefundable term) with totalTax folding in the work years' employee payroll tax as its own component, priced from each salary year's own law table, the employer share not priced. The identities themselves are exercised arithmetically in api-compare-example-executes and in the tax suite's workyears-payroll-fold-in-identity case; this fixture pins only that the published text cannot silently lose them.",
     expected: { phrasesFound: 10 },
     actual: () => {
       const phrases = [
@@ -5442,7 +5442,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "priced at preserveExitRatePct, any excess at heirRatePct",
         "can be NEGATIVE",
         "-21041257",
-        "endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents",
+        "endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents − unpaidTaxCents",
         "payroll tax is its own component of totalTax",
         "allInTax = totalTax + penalty + irmaa − acaCredit − educationRefundable + terminal",
         "AMT is inside federalTax and never added on top",
@@ -5884,13 +5884,21 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-compare-example-executes",
     kind: "apicontract",
-    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2; the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
+    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. (Engine Review C9, Build 3: the fixture also verifies the response-level crowning — the five winner fields — and each scenario's published integrity verdict — status, reasons, and the unpaid-tax / shortfall totals.) It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2; the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
     expected: {
       fieldsCompared: 38,
       fieldsMatched: 38,
       netCostIdentityExact: 2,
       wealthIdentityWithinCent: 2,
       descriptionsCarryRetirePrefix: 2,
+      // (Engine Review C9, Build 3): the response-level
+      // crowning (five winner fields) and each scenario's
+      // published integrity verdict (status, reasons, and
+      // the unpaid-tax / shortfall totals).
+      winnerFieldsCompared: 5,
+      winnerFieldsMatched: 5,
+      integrityFieldsCompared: 2,
+      integrityFieldsMatched: 2,
     },
     actual: () => {
       const req = ROTH_COMPARE_EXAMPLE.request as unknown as Record<
@@ -5962,6 +5970,49 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         if (s.strategyDescription.startsWith("Retire at "))
           descriptionsCarryRetirePrefix += 1;
       });
+      // (Engine Review C9, Build 3): the response-level
+      // crowning must match the published winner fields, and
+      // each scenario's integrity verdict must match the
+      // published one (status, reasons, unpaid-tax and
+      // shortfall totals — the load-bearing parts of the
+      // verdict, not the diagnostic counts).
+      const pub = ROTH_COMPARE_EXAMPLE.response as unknown as Record<
+        string,
+        unknown
+      >;
+      const winnerFields = [
+        "winnerByNetCost",
+        "winnerByEndingWealth",
+        "winnerQualified",
+        "excludedInvalidWinner",
+        "winnersDiffer",
+      ] as const;
+      let winnerFieldsCompared = 0;
+      let winnerFieldsMatched = 0;
+      for (const f of winnerFields) {
+        winnerFieldsCompared += 1;
+        if (
+          JSON.stringify((res as unknown as Record<string, unknown>)[f]) ===
+          JSON.stringify(pub[f])
+        )
+          winnerFieldsMatched += 1;
+      }
+      let integrityFieldsCompared = 0;
+      let integrityFieldsMatched = 0;
+      res.scenarios.forEach((sc, i) => {
+        const pubInt = (
+          published[i]! as unknown as Record<string, unknown>
+        ).integrity as Record<string, unknown>;
+        integrityFieldsCompared += 1;
+        if (
+          sc.integrity.status === pubInt.status &&
+          JSON.stringify(sc.integrity.reasons) ===
+            JSON.stringify(pubInt.reasons) &&
+          sc.integrity.unpaidTaxTotal === pubInt.unpaidTaxTotal &&
+          sc.integrity.spendShortfallTotal === pubInt.spendShortfallTotal
+        )
+          integrityFieldsMatched += 1;
+      });
       return {
         fieldsCompared,
         fieldsMatched:
@@ -5971,6 +6022,16 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         netCostIdentityExact,
         wealthIdentityWithinCent,
         descriptionsCarryRetirePrefix,
+        winnerFieldsCompared,
+        winnerFieldsMatched:
+          res.ok && res.baselineName === ROTH_COMPARE_EXAMPLE.response.baselineName
+            ? winnerFieldsMatched
+            : -1,
+        integrityFieldsCompared,
+        integrityFieldsMatched:
+          res.ok && res.baselineName === ROTH_COMPARE_EXAMPLE.response.baselineName
+            ? integrityFieldsMatched
+            : -1,
       };
     },
   },

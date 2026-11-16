@@ -747,7 +747,7 @@ export function withThreadedEcho<T extends object>(
    benchmark $32,000) priced through runRothCompare returned
    netCostCents -21041257. */
 export const SCORE_IDENTITIES =
-  "Score identities, in the field names the pricing responses carry: netCostCents = totalTaxCents + irmaaCents + penaltyCents + terminalCents − acaCreditCents − educationRefundableCents, plus — only when the plan enters the health premium term (build v208; see the healthPremiumSemantics convention) — healthPremiumCents, the lifetime GROSS health premium, added beside the ACA credit subtracted above so the identity's net premium effect is the lifetime net premium; a plan that does not enter the term carries healthPremiumCents of 0 and the identity is exactly as stated, where totalTaxCents is lifetime federal plus state tax, educationRefundableCents is the lifetime refundable education credit (the refundable AOTC portion, §25A(i)) credited beside the ACA premium credit, and terminalCents is the exit tax on the ending pre-tax balance — the preserved portion (up to preservePretaxCents) priced at preserveExitRatePct, any excess at heirRatePct. AMT is inside federalTax and never added on top: each year's federalTax is its regular income tax after nonrefundable credits plus its NIIT plus any AMT owed, so the AMT sits inside totalTax (and totalTaxCents) already and the lifetime and scenario AMT figures name that component only. The NIIT likewise sits inside federalTax — it is a component of the year's federalTax and therefore of totalTax, never a separate add-on beside them. For a plan with salary years (priced through runWorkYearsCompare, whose money is in dollars), the same identity holds on the all-in figures: allInTax = totalTax + penalty + irmaa − acaCredit − educationRefundable + terminal, where totalTax folds in the work years' own federal tax, state tax, and employee payroll tax — payroll tax is its own component of totalTax (the payrollTax field on the compare rows and in the work-years ledger, with its Social Security, Medicare, and Additional Medicare parts), priced from each salary year's own law table (that year's wage base, rates, and Additional Medicare threshold); the employer share of payroll tax is not priced. A plan with no salary years carries payrollTax of $0 and prices exactly as before. The score can be NEGATIVE: when a plan's lifetime ACA premium credits exceed its lifetime taxes, the plan net-saves — an observed runRothCompare run on a synthetic fixture plan returned netCostCents of -21041257, a net gain, not an error. endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents (the engine computes wealth from unrounded dollars and rounds once, so recomputing it from the published cents can differ by a cent).";
+  "Score identities, in the field names the pricing responses carry: netCostCents = totalTaxCents + irmaaCents + penaltyCents + terminalCents − acaCreditCents − educationRefundableCents, plus — only when the plan enters the health premium term (build v208; see the healthPremiumSemantics convention) — healthPremiumCents, the lifetime GROSS health premium, added beside the ACA credit subtracted above so the identity's net premium effect is the lifetime net premium; a plan that does not enter the term carries healthPremiumCents of 0 and the identity is exactly as stated, where totalTaxCents is lifetime federal plus state tax, educationRefundableCents is the lifetime refundable education credit (the refundable AOTC portion, §25A(i)) credited beside the ACA premium credit, and terminalCents is the exit tax on the ending pre-tax balance — the preserved portion (up to preservePretaxCents) priced at preserveExitRatePct, any excess at heirRatePct. AMT is inside federalTax and never added on top: each year's federalTax is its regular income tax after nonrefundable credits plus its NIIT plus any AMT owed, so the AMT sits inside totalTax (and totalTaxCents) already and the lifetime and scenario AMT figures name that component only. The NIIT likewise sits inside federalTax — it is a component of the year's federalTax and therefore of totalTax, never a separate add-on beside them. For a plan with salary years (priced through runWorkYearsCompare, whose money is in dollars), the same identity holds on the all-in figures: allInTax = totalTax + penalty + irmaa − acaCredit − educationRefundable + terminal, where totalTax folds in the work years' own federal tax, state tax, and employee payroll tax — payroll tax is its own component of totalTax (the payrollTax field on the compare rows and in the work-years ledger, with its Social Security, Medicare, and Additional Medicare parts), priced from each salary year's own law table (that year's wage base, rates, and Additional Medicare threshold); the employer share of payroll tax is not priced. A plan with no salary years carries payrollTax of $0 and prices exactly as before. The score can be NEGATIVE: when a plan's lifetime ACA premium credits exceed its lifetime taxes, the plan net-saves — an observed runRothCompare run on a synthetic fixture plan returned netCostCents of -21041257, a net gain, not an error. endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents − unpaidTaxCents, where unpaidTaxCents is the lifetime assessed tax the balances could not pay ($0 on any solvent plan — without the term an insolvent plan's wealth was overstated by exactly the unpaid amount; see the unpaidTaxSemantics convention) (the engine computes wealth from unrounded dollars and rounds once, so recomputing it from the published cents can differ by a cent).";
 
 /* A-13: what lawYear means across a multi-decade plan, as
    rewritten by the T1 build (per-calendar-year law tables):
@@ -1091,7 +1091,7 @@ const ROTH_COMPARE_EXAMPLE_BASE = {
 };
 export const ROTH_COMPARE_EXAMPLE = {
   action: "runRothCompare",
-  note: "A complete, valid runRothCompare request and the response it prices. The base plan is the seeded fresh-user plan shape with explicit balances (a saved record's balances are usually null, which follows the Net Worth snapshot instead). Response figures are the engine's output for this exact request at start year 2026, re-verified by the accuracy fixtures on every run. Each scenario also carries federalTaxCents / stateTaxCents (the lifetime federal / state split of totalTaxCents, build v51 — both scenarios here price at a 0% state rate, so the split is all federal) and a years array of per-year tax readouts (build v51); the years arrays are omitted from this published example for size.",
+  note: "A complete, valid runRothCompare request and the response it prices. The base plan is the seeded fresh-user plan shape with explicit balances (a saved record's balances are usually null, which follows the Net Worth snapshot instead). Response figures are the engine's output for this exact request at start year 2026, re-verified by the accuracy fixtures on every run. Each scenario also carries federalTaxCents / stateTaxCents (the lifetime federal / state split of totalTaxCents, build v51 — both scenarios here price at a 0% state rate, so the split is all federal) and a years array of per-year tax readouts (build v51); the years arrays are omitted from this published example for size. Each scenario also carries its integrity verdict (Engine Review C9, Build 3 — both scenarios valid here), and the response crowns the two objective winners (both 'Seeded plan as-is' here — the two scenarios tie exactly on net cost, so the cost winner is the one with the higher ending wealth) with winnerQualified true and no excluded invalid winner.",
   request: {
     ...ROTH_COMPARE_EXAMPLE_BASE,
     baselineName: "Seeded plan as-is",
@@ -1103,6 +1103,16 @@ export const ROTH_COMPARE_EXAMPLE = {
   response: {
     ok: true,
     baselineName: "Seeded plan as-is",
+    // Engine Review C9, Build 3 (W4-GAP-1): the crowned winners
+    // — the two scenarios tie exactly on net cost
+    // (194,504,904 cents each), so the cost winner is the one
+    // with the higher ending wealth; both scenarios are valid,
+    // so the crown is qualified and nothing is excluded.
+    winnerByNetCost: "Seeded plan as-is",
+    winnerByEndingWealth: "Seeded plan as-is",
+    winnerQualified: true,
+    excludedInvalidWinner: null,
+    winnersDiffer: false,
     scenarios: [
       {
         name: "Seeded plan as-is",
@@ -1129,7 +1139,25 @@ export const ROTH_COMPARE_EXAMPLE = {
         // priced on this plan (the default draw order spends
         // Taxable first and the balances never exhaust it),
         // so no year prices a draw on unentered Roth basis.
-        rothBasisUnknownYears: [],
+        // Engine Review C9, Build 3 (W4-GAP-1): the E4 verdict
+        // on this scenario's own priced march — valid, no unpaid
+        // tax, no unfunded spending, no unresolved settlement.
+        // The 21 ceiling-breached years are all breached at
+        // conversion $0 (the draws alone breach), which is not
+        // an invalidity.
+        integrity: {
+          status: "valid",
+          nonConvergedYears: 0,
+          nonConvergedYearList: [],
+          maxMismatchGainsCents: 0,
+          maxMismatchPretaxCents: 0,
+          maxMismatchAcaCreditCents: 0,
+          ceilingBreachedYears: 21,
+          ceilingBreachedAtZeroConversionYears: 21,
+          unpaidTaxTotal: 0,
+          spendShortfallTotal: 0,
+          reasons: [],
+        },
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,
@@ -1164,7 +1192,25 @@ export const ROTH_COMPARE_EXAMPLE = {
         earlyWithdrawalUnknownYears: [],
         // Engine Review C9, Build 2 (W3): as above — no Roth
         // draw, so no unknown-basis year.
-        rothBasisUnknownYears: [],
+        // Engine Review C9, Build 3 (W4-GAP-1): the E4 verdict
+        // on this scenario's own priced march — valid, no unpaid
+        // tax, no unfunded spending, no unresolved settlement.
+        // The 21 ceiling-breached years are all breached at
+        // conversion $0 (the draws alone breach), which is not
+        // an invalidity.
+        integrity: {
+          status: "valid",
+          nonConvergedYears: 0,
+          nonConvergedYearList: [],
+          maxMismatchGainsCents: 0,
+          maxMismatchPretaxCents: 0,
+          maxMismatchAcaCreditCents: 0,
+          ceilingBreachedYears: 21,
+          ceilingBreachedAtZeroConversionYears: 21,
+          unpaidTaxTotal: 0,
+          spendShortfallTotal: 0,
+          reasons: [],
+        },
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,

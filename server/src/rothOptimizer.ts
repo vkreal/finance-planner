@@ -692,6 +692,104 @@ export function crownOptimizerWinners(
   };
 }
 
+// One fixed compare scenario, as crownCompareWinners ranks it:
+// the scenario's own name, its priced net cost and ending
+// after-tax wealth in cents, and its integrity verdict.
+export type CompareCrownEntry = {
+  name: string;
+  netCostCents: number;
+  endingAfterTaxWealthCents: number;
+  integrity: CandidateIntegrity;
+};
+
+// Crown the two objective winners for one compare run — the
+// compare-path mirror of crownOptimizerWinners (Engine Review
+// C9, Build 3 — W4-GAP-1). Same rule, same tie-breaks: only
+// VALID candidates may win; exact net-cost ties break toward the
+// highest ending after-tax wealth (the cost-first sort carries
+// the wealth order, exactly as compareScoredCandidates does for
+// the optimizer); exact wealth ties keep the cost-first-earliest
+// candidate (lowest net cost, then list order — mirroring
+// pickEndingWealthWinner's strict-greater scan over the
+// cost-first-sorted list). When no candidate is valid the raw
+// winners are crowned anyway and qualified is false, so the
+// disqualification is disclosed, never silent. Deliberately NOT
+// crownOptimizerWinners: compare scenarios have no optimizer
+// spec (no candidate key, no ceilings / window / draw-order spec
+// to display), so forcing them into ScoredCandidate would invent
+// a spec the run never priced. Callers pass at least one entry
+// (runRothCompare refuses an empty scenario list first).
+export function crownCompareWinners(
+  entries: CompareCrownEntry[],
+): {
+  winnerByNetCost: CompareCrownEntry;
+  winnerByEndingWealth: CompareCrownEntry;
+  validCandidatesTested: number;
+  invalidCandidatesTested: number;
+  excludedInvalidWinner: {
+    name: string;
+    integrity: CandidateIntegrity;
+  } | null;
+  winnerQualified: boolean;
+  winnersDiffer: boolean;
+} {
+  const sorted = entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) =>
+      a.e.netCostCents !== b.e.netCostCents
+        ? a.e.netCostCents - b.e.netCostCents
+        : a.e.endingAfterTaxWealthCents !== b.e.endingAfterTaxWealthCents
+          ? b.e.endingAfterTaxWealthCents - a.e.endingAfterTaxWealthCents
+          : a.i - b.i,
+    )
+    .map((x) => x.e);
+  const valid = sorted.filter((e) => e.integrity.status !== "invalid");
+  const invalid = sorted.length - valid.length;
+  const rawFirst = sorted[0]!;
+  const excludedInvalidWinner =
+    rawFirst.integrity.status === "invalid"
+      ? { name: rawFirst.name, integrity: rawFirst.integrity }
+      : null;
+  const netCostWinner = valid[0] ?? null;
+  // Strict-greater scan over the cost-first-sorted valid list:
+  // wealth ties keep the earliest entry (lowest net cost, then
+  // list order) — the pickEndingWealthWinner rule.
+  const wealthWinner = valid.reduce<CompareCrownEntry | null>(
+    (best, e) =>
+      best == null || e.endingAfterTaxWealthCents > best.endingAfterTaxWealthCents
+        ? e
+        : best,
+    null,
+  );
+  if (netCostWinner == null || wealthWinner == null) {
+    // No valid candidate at all: crown the raw winners and say
+    // so — the recommendation is unqualified, in the open.
+    const rawWealthWinner = sorted.reduce<CompareCrownEntry>(
+      (best, e) =>
+        e.endingAfterTaxWealthCents > best.endingAfterTaxWealthCents ? e : best,
+      rawFirst,
+    );
+    return {
+      winnerByNetCost: rawFirst,
+      winnerByEndingWealth: rawWealthWinner,
+      validCandidatesTested: 0,
+      invalidCandidatesTested: invalid,
+      excludedInvalidWinner,
+      winnerQualified: false,
+      winnersDiffer: rawWealthWinner.name !== rawFirst.name,
+    };
+  }
+  return {
+    winnerByNetCost: netCostWinner,
+    winnerByEndingWealth: wealthWinner,
+    validCandidatesTested: valid.length,
+    invalidCandidatesTested: invalid,
+    excludedInvalidWinner,
+    winnerQualified: true,
+    winnersDiffer: wealthWinner.name !== netCostWinner.name,
+  };
+}
+
 /* ---------------- Candidates ---------------- */
 
 export type OptimizerWindowKind = "stop65" | "stopRmd" | "throughRmd";
@@ -9925,6 +10023,15 @@ export type RothCompareScenarioResult = {
   // never actually paid out of the accounts. 0 for any
   // scenario whose balances always cover the bill.
   unpaidTaxCents: number;
+  // INTEGRITY (Engine Review C9, Build 3 — W4-GAP-1): the
+  // E4 verdict on this scenario's OWN priced march
+  // (assessCandidateIntegrity) — valid,
+  // valid-with-benign-residual, or invalid with reasons.
+  // Its totals are DOLLARS (unpaidTaxTotal /
+  // spendShortfallTotal), while every other money field on
+  // this scenario is CENTS — read them as dollars,
+  // never as cents.
+  integrity: CandidateIntegrity;
   endingPretaxCents: number;
   endingRothCents: number;
   endingTaxableCents: number;
@@ -9943,6 +10050,22 @@ export type RothCompareResult = {
   reason: string;
   baselineName: string | null;
   scenarios: RothCompareScenarioResult[];
+  // Crowned winners (Engine Review C9, Build 3 — W4-GAP-1):
+  // the two objective winners, crowned by crownCompareWinners
+  // over the VALID scenarios only. winnerQualified is false
+  // exactly when no scenario was valid — the raw winners
+  // are still crowned (there is nothing else to recommend)
+  // and excludedInvalidWinner names the raw cheapest with its
+  // integrity reasons. Null / false / null / false on an
+  // ok:false return, where nothing was crowned.
+  winnerByNetCost: string | null;
+  winnerByEndingWealth: string | null;
+  winnerQualified: boolean;
+  excludedInvalidWinner: {
+    name: string;
+    integrity: CandidateIntegrity;
+  } | null;
+  winnersDiffer: boolean;
 };
 
 const toCents = (dollars: number): number => Math.round(dollars * 100);
@@ -9969,6 +10092,11 @@ export function runRothCompare(
       reason: "The compare needs at least one scenario — name a strategy to price.",
       baselineName: null,
       scenarios: [],
+      winnerByNetCost: null,
+      winnerByEndingWealth: null,
+      winnerQualified: false,
+      excludedInvalidWinner: null,
+      winnersDiffer: false,
     };
   }
   const built: RothCompareScenarioBuilt[] = [];
@@ -9981,6 +10109,11 @@ export function runRothCompare(
           "The compare needs a birth year before it can price a plan — enter it in the base plan and run again.",
         baselineName: null,
         scenarios: [],
+        winnerByNetCost: null,
+        winnerByEndingWealth: null,
+        winnerQualified: false,
+        excludedInvalidWinner: null,
+        winnersDiffer: false,
       };
     }
     built.push(b);
@@ -9993,6 +10126,11 @@ export function runRothCompare(
       reason: `No scenario is named "${baselineName}" — the baseline must be one of the scenarios in the run.`,
       baselineName: null,
       scenarios: [],
+      winnerByNetCost: null,
+      winnerByEndingWealth: null,
+      winnerQualified: false,
+      excludedInvalidWinner: null,
+      winnersDiffer: false,
     };
   }
   const priced = built.map((b) => {
@@ -10086,6 +10224,11 @@ export function runRothCompare(
       terminalCents: toCents(cost.terminal),
       ssCollectedCents: toCents(cost.ssCollected),
       unpaidTaxCents: toCents(result.lifetimeUnpaidTax),
+      // (Engine Review C9, Build 3 — W4-GAP-1): the E4 verdict
+      // on this scenario's OWN priced march, attached here so
+      // the crowning below and every consumer read the same
+      // assessment — never re-derived from the mapped rows.
+      integrity: assessCandidateIntegrity(result),
       endingPretaxCents: toCents(result.endingPretax),
       endingRothCents: toCents(result.endingRoth),
       endingTaxableCents: toCents(result.endingTaxable),
@@ -10094,10 +10237,28 @@ export function runRothCompare(
     };
   });
   const basePriced = priced.find((p) => p.built === baseline) ?? priced[0]!;
+  // (Engine Review C9, Build 3 — W4-GAP-1): crown the two
+  // objective winners over the VALID scenarios only — an
+  // invalid candidate is never a qualified winner on the
+  // compare path either. The crowning reads the integrity
+  // attached to each priced march above.
+  const crowned = crownCompareWinners(
+    priced.map((p) => ({
+      name: p.built.name,
+      netCostCents: p.netCostCents,
+      endingAfterTaxWealthCents: p.endingAfterTaxWealthCents,
+      integrity: p.integrity,
+    })),
+  );
   return {
     ok: true,
     reason: `Priced ${priced.length} scenario${priced.length === 1 ? "" : "s"} as fixed strategies against the baseline "${baseline.name}". Deltas are scenario − baseline, in cents: a negative net-cost delta means the scenario costs less than the baseline; a positive ACA-credit delta means it keeps more premium credit.`,
     baselineName: baseline.name,
+    winnerByNetCost: crowned.winnerByNetCost.name,
+    winnerByEndingWealth: crowned.winnerByEndingWealth.name,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    winnersDiffer: crowned.winnersDiffer,
     scenarios: priced.map((p) => ({
       name: p.built.name,
       strategyDescription: p.built.strategyDescription,
@@ -10121,6 +10282,7 @@ export function runRothCompare(
       terminalCents: p.terminalCents,
       ssCollectedCents: p.ssCollectedCents,
       unpaidTaxCents: p.unpaidTaxCents,
+      integrity: p.integrity,
       endingPretaxCents: p.endingPretaxCents,
       endingRothCents: p.endingRothCents,
       endingTaxableCents: p.endingTaxableCents,
