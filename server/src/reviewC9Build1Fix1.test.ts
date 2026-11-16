@@ -109,9 +109,18 @@ describe("C9 fix 1 — MUST 1: top-up capped at the Roth balance actually there"
     // Opening withholding $29,368.89 (tax $26,432 + penalty $2,936.89)
     // is the only distribution that happened: the top-up had no Roth
     // dollars to distribute, so it prices $0 penalty and $0 tax.
+    // (Engine Review C9, Build 2 — W3: the year's penalty is no
+    // longer the withholding penalty alone. Roth starts at $0, so
+    // its ledger is KNOWN by construction and the conversion lot
+    // the march appends ($170,631.11 reaching Roth) is a known lot:
+    // the spending draw withdraws the whole lot the same year at
+    // 55, so 10% × $170,631.11 = $17,063.11 joins the $2,936.89 —
+    // $20,000.00 in all, 10% of the whole $200,000 conversion,
+    // every dollar penalized exactly once. The bill is $30,182 +
+    // $20,000 = $50,182, paid $29,368.89, unpaid $20,813.11.)
     expect(y26.conversion).toBe(200_000);
     expect(y26.federalTax).toBe(30_182);
-    expect(y26.penalty).toBe(2936.89);
+    expect(y26.penalty).toBe(20000);
     expect(y26.pretaxEnd).toBe(0);
     expect(y26.rothEnd).toBe(0);
     expect(y26.taxableEnd).toBe(0);
@@ -120,11 +129,12 @@ describe("C9 fix 1 — MUST 1: top-up capped at the Roth balance actually there"
     expect(y26.spendShortfall).toBe(59368.89);
     // The reprice-delta tax ($3,750 on the $25,000 taxable-sale gains)
     // could not be carried by the conversion and Taxable was empty, so
-    // it lands in unpaidTax honestly — the bill is $30,182 + $2,936.89
-    // = $33,118.89, paid $29,368.89, unpaid $3,750. (Before the fix the
-    // year reported unpaidTax $0 while recording the $4,166.67 top-up
-    // as paid from nothing.)
-    expect(y26.unpaidTax).toBe(3750);
+    // it lands in unpaidTax honestly — and so does the Roth-draw
+    // penalty ($17,063.11), which no pool remains to pay: the bill is
+    // $30,182 + $20,000 = $50,182, paid $29,368.89, unpaid $20,813.11.
+    // (Before the fix the year reported unpaidTax $0 while recording
+    // the $4,166.67 top-up as paid from nothing.)
+    expect(y26.unpaidTax).toBe(20813.11);
 
     const f26 = buildRothFunding(inputs, FILL22 as never).find(
       (r) => r.year === 2026,
@@ -133,8 +143,8 @@ describe("C9 fix 1 — MUST 1: top-up capped at the Roth balance actually there"
 
     // Balance identity, W2 §8 style: closing total ==
     // (opening total − funded needs) × 1.05. Funded needs are the
-    // full $250,000 opening (spending $280,000 + bill $33,118.89 −
-    // shortfall $59,368.89 − unpaid $3,750), so the close is $0.
+    // full $250,000 opening (spending $280,000 + bill $50,182 −
+    // shortfall $59,368.89 − unpaid $20,813.11), so the close is $0.
     const openingTotal = 200_000 + 0 + 50_000 + 0;
     const fundedNeeds =
       (f26.totalNeedCents - f26.spendShortfallCents - f26.unpaidTaxCents) / 100;

@@ -62,6 +62,7 @@ drawOrderKey,
 drawOrderLabel,
 simulateRothPlan,
 type FillCeilings,
+type RothConversionLotSaved,
 type RothPlanInputs,
 type RothStrategy,
 type RothYear,
@@ -603,6 +604,23 @@ export function RothConversion({
   const [elig401kSpouseCents, setElig401kSpouseCents] = useState<number | null>(null);
   const [separationAgePrimaryState, setSeparationAgePrimaryState] = useState<number | null>(null);
   const [separationAgeSpouseState, setSeparationAgeSpouseState] = useState<number | null>(null);
+  // Roth IRA vs designated Roth split + Roth basis / clock
+  // (Engine Review C9, Build 2 — W3): the saved record's
+  // entered values, held as cents / lots / whole years
+  // (null = not established) so the client round-trips them
+  // — local pricing and the save payload carry what the
+  // record holds. No UI field edits them yet; a later UI
+  // writes these setters.
+  const [rothIraCents, setRothIraCents] = useState<number | null>(null);
+  const [rothEmployerCents, setRothEmployerCents] = useState<number | null>(null);
+  const [rothBasisPrimaryCents, setRothBasisPrimaryCents] = useState<number | null>(null);
+  const [rothBasisSpouseCents, setRothBasisSpouseCents] = useState<number | null>(null);
+  const [rothLotsPrimary, setRothLotsPrimary] = useState<RothConversionLotSaved[] | null>(null);
+  const [rothLotsSpouse, setRothLotsSpouse] = useState<RothConversionLotSaved[] | null>(null);
+  const [firstRothYearPrimaryState, setFirstRothYearPrimaryState] = useState<number | null>(null);
+  const [firstRothYearSpouseState, setFirstRothYearSpouseState] = useState<number | null>(null);
+  const [firstDesignatedRothYearPrimaryState, setFirstDesignatedRothYearPrimaryState] = useState<number | null>(null);
+  const [firstDesignatedRothYearSpouseState, setFirstDesignatedRothYearSpouseState] = useState<number | null>(null);
   const [rothBal, setRothBal] = useState("");
   const [taxableBal, setTaxableBal] = useState("");
   // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
@@ -1499,6 +1517,19 @@ export function RothConversion({
     firstRmdDeferralPrimary?: boolean | null;
     firstRmdDeferralSpouse?: boolean | null;
     rothCents: number | null;
+    // Roth IRA vs designated Roth split + Roth basis / clock
+    // (Engine Review C9, Build 2 — W3): cents / lots / whole
+    // years, null = not established.
+    rothIraCents?: number | null;
+    rothEmployerCents?: number | null;
+    rothContributionBasisPrimaryCents?: number | null;
+    rothContributionBasisSpouseCents?: number | null;
+    rothConversionLotsPrimary?: RothConversionLotSaved[] | null;
+    rothConversionLotsSpouse?: RothConversionLotSaved[] | null;
+    firstRothYearPrimary?: number | null;
+    firstRothYearSpouse?: number | null;
+    firstDesignatedRothYearPrimary?: number | null;
+    firstDesignatedRothYearSpouse?: number | null;
     taxableCents: number | null;
     taxableExcludeCents?: number | null;
     cashSetAsideCents?: number | null;
@@ -1609,6 +1640,16 @@ export function RothConversion({
     setElig401kSpouseCents(src.pretax401kEligibleSpouseCents ?? null);
     setSeparationAgePrimaryState(src.separationAgePrimary ?? null);
     setSeparationAgeSpouseState(src.separationAgeSpouse ?? null);
+    setRothIraCents(src.rothIraCents ?? null);
+    setRothEmployerCents(src.rothEmployerCents ?? null);
+    setRothBasisPrimaryCents(src.rothContributionBasisPrimaryCents ?? null);
+    setRothBasisSpouseCents(src.rothContributionBasisSpouseCents ?? null);
+    setRothLotsPrimary(src.rothConversionLotsPrimary ?? null);
+    setRothLotsSpouse(src.rothConversionLotsSpouse ?? null);
+    setFirstRothYearPrimaryState(src.firstRothYearPrimary ?? null);
+    setFirstRothYearSpouseState(src.firstRothYearSpouse ?? null);
+    setFirstDesignatedRothYearPrimaryState(src.firstDesignatedRothYearPrimary ?? null);
+    setFirstDesignatedRothYearSpouseState(src.firstDesignatedRothYearSpouse ?? null);
     setSurvivorOn(src.survivorEnabled ?? false);
     setSurvivorWho(src.survivorWho ?? "primary");
     setSurvivorDeathYear(num(src.survivorDeathYear ?? null));
@@ -2550,6 +2591,23 @@ export function RothConversion({
       pretax401kEligibleSpouseCents: elig401kSpouseCents,
       separationAgePrimary: separationAgePrimaryState,
       separationAgeSpouse: separationAgeSpouseState,
+      // Roth IRA vs designated Roth split + Roth basis / clock
+      // (Engine Review C9, Build 2 — W3): no UI field enters
+      // these yet, so the payload carries the loaded saved
+      // values (null = not established — the engine prices $0
+      // income and $0 penalty on Roth draws exactly as before,
+      // with the unknown flag saying so). A later UI that
+      // enters them writes the state these read.
+      rothIraCents,
+      rothEmployerCents,
+      rothContributionBasisPrimaryCents: rothBasisPrimaryCents,
+      rothContributionBasisSpouseCents: rothBasisSpouseCents,
+      rothConversionLotsPrimary: rothLotsPrimary,
+      rothConversionLotsSpouse: rothLotsSpouse,
+      firstRothYearPrimary: firstRothYearPrimaryState,
+      firstRothYearSpouse: firstRothYearSpouseState,
+      firstDesignatedRothYearPrimary: firstDesignatedRothYearPrimaryState,
+      firstDesignatedRothYearSpouse: firstDesignatedRothYearSpouseState,
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: year(survivorDeathYear),
@@ -3623,6 +3681,21 @@ export function RothConversion({
       pretax401kEligibleSpouseCents: sc.pretax401kEligibleSpouseCents ?? null,
       separationAgePrimary: sc.separationAgePrimary ?? null,
       separationAgeSpouse: sc.separationAgeSpouse ?? null,
+      // Roth IRA vs designated Roth split + Roth basis / clock
+      // (Engine Review C9, Build 2 — W3): carried like every
+      // other saved field, so a scenario keeps the base
+      // plan's answers (null = not established) instead of
+      // dropping them.
+      rothIraCents: sc.rothIraCents ?? null,
+      rothEmployerCents: sc.rothEmployerCents ?? null,
+      rothContributionBasisPrimaryCents: sc.rothContributionBasisPrimaryCents ?? null,
+      rothContributionBasisSpouseCents: sc.rothContributionBasisSpouseCents ?? null,
+      rothConversionLotsPrimary: sc.rothConversionLotsPrimary ?? null,
+      rothConversionLotsSpouse: sc.rothConversionLotsSpouse ?? null,
+      firstRothYearPrimary: sc.firstRothYearPrimary ?? null,
+      firstRothYearSpouse: sc.firstRothYearSpouse ?? null,
+      firstDesignatedRothYearPrimary: sc.firstDesignatedRothYearPrimary ?? null,
+      firstDesignatedRothYearSpouse: sc.firstDesignatedRothYearSpouse ?? null,
       survivorEnabled: sc.survivorEnabled ?? false,
       survivorWho: sc.survivorWho ?? "primary",
       survivorDeathYear: clampYear(sc.survivorDeathYear ?? null),
@@ -4393,6 +4466,40 @@ export function RothConversion({
         elig401kSpouseCents == null ? null : elig401kSpouseCents / 100,
       separationAgePrimary: separationAgePrimaryState,
       separationAgeSpouse: separationAgeSpouseState,
+      // Roth IRA vs designated Roth split + Roth basis / clock
+      // (Engine Review C9, Build 2 — W3): the loaded saved
+      // values in dollars (null = not established) — the
+      // local march prices the same composition the server
+      // paths price from the record. The lots convert cents
+      // to dollars lot by lot; an entered empty list stays
+      // an empty list.
+      rothIraStart: rothIraCents == null ? null : rothIraCents / 100,
+      rothEmployerStart:
+        rothEmployerCents == null ? null : rothEmployerCents / 100,
+      rothContributionBasisPrimary:
+        rothBasisPrimaryCents == null ? null : rothBasisPrimaryCents / 100,
+      rothContributionBasisSpouse:
+        rothBasisSpouseCents == null ? null : rothBasisSpouseCents / 100,
+      rothConversionLotsPrimary:
+        rothLotsPrimary == null
+          ? null
+          : rothLotsPrimary.map((l) => ({
+              year: l.year,
+              taxableAmount: l.taxableAmountCents / 100,
+              nontaxableAmount: l.nontaxableAmountCents / 100,
+            })),
+      rothConversionLotsSpouse:
+        rothLotsSpouse == null
+          ? null
+          : rothLotsSpouse.map((l) => ({
+              year: l.year,
+              taxableAmount: l.taxableAmountCents / 100,
+              nontaxableAmount: l.nontaxableAmountCents / 100,
+            })),
+      firstRothYearPrimary: firstRothYearPrimaryState,
+      firstRothYearSpouse: firstRothYearSpouseState,
+      firstDesignatedRothYearPrimary: firstDesignatedRothYearPrimaryState,
+      firstDesignatedRothYearSpouse: firstDesignatedRothYearSpouseState,
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: parseIntField(survivorDeathYear),

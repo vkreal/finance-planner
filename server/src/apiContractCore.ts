@@ -1125,6 +1125,11 @@ export const ROTH_COMPARE_EXAMPLE = {
         // draw order spends Taxable first), so no year prices
         // a draw on unanswered eligibility.
         earlyWithdrawalUnknownYears: [],
+        // Engine Review C9, Build 2 (W3): no Roth draw is
+        // priced on this plan (the default draw order spends
+        // Taxable first and the balances never exhaust it),
+        // so no year prices a draw on unentered Roth basis.
+        rothBasisUnknownYears: [],
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,
@@ -1157,6 +1162,9 @@ export const ROTH_COMPARE_EXAMPLE = {
         // Engine Review C9, Build 1: as above — no pre-59½
         // pre-tax spending draw, so no unknown-eligibility year.
         earlyWithdrawalUnknownYears: [],
+        // Engine Review C9, Build 2 (W3): as above — no Roth
+        // draw, so no unknown-basis year.
+        rothBasisUnknownYears: [],
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,

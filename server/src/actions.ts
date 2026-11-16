@@ -2665,6 +2665,22 @@ const rothEducationStudents = z
   .array(rothEducationStudent)
   .max(24)
   .nullable();
+// ROTH CONVERSION LOTS (Engine Review C9, Build 2 — W3): one
+// lot per conversion year, in cents (the saved record stores
+// money in cents): the taxable year of the conversion, the
+// dollars included in income on conversion (what the §72(t)
+// 5-year penalty keys on), and the dollars of basis converted
+// (penalty-free on withdrawal). At most one lot per year —
+// the engine merges same-year lots — and at most 64 lots
+// (a conversion a year for a lifetime). Null = the lots were
+// never entered (NOT ESTABLISHED); an entered empty list is
+// a real answer (no prior conversions).
+const rothConversionLot = z.strictObject({
+  year: z.number().int().min(1900).max(2200),
+  taxableAmountCents: z.number().int().min(0),
+  nontaxableAmountCents: z.number().int().min(0),
+});
+const rothConversionLots = z.array(rothConversionLot).max(64).nullable();
 // Exported for the input-validation tests (the saved-shape
 // fields are the single source the writers, the compute
 // variant, and the compare overrides all share).
@@ -2736,6 +2752,64 @@ export const rothInputFields = {
   firstRmdDeferralPrimary: z.boolean().nullable(),
   firstRmdDeferralSpouse: z.boolean().nullable(),
   rothCents: rothBalanceField,
+  // ROTH IRA vs DESIGNATED ROTH SPLIT + ROTH BASIS / CLOCK
+  // (Engine Review C9, Build 2 — W3): the household's Roth
+  // balance split between a Roth IRA and a designated Roth
+  // employer plan (401(k) / 403(b) / 457(b)), and per owner
+  // the regular-contribution basis still sitting in the Roth
+  // accounts, the prior conversion lots still sitting in the
+  // Roth IRA, and the two 5-taxable-year clocks (the Roth
+  // IRA's first-contribution year and the employer plan's
+  // first designated-Roth year). Required keys like every
+  // field here: null accepted, omission rejected. Null on
+  // records written before this build = NOT ESTABLISHED:
+  // the engine prices the plan exactly as before ($0 income,
+  // $0 penalty on Roth draws) and the year's rothBasisUnknown
+  // flag says the $0 is unknown, not computed. An entered 0
+  // basis is a real answer (none of this owner's Roth is
+  // contribution basis); an entered empty lot list is a real
+  // answer (no prior conversions). The entered basis is
+  // clamped to the owner's balance and the entered lots are
+  // clamped FIFO to fit after it (the engine's init rule) —
+  // no two entered numbers can disagree about the split.
+  // The balance split divides the FOLLOWED Roth balance
+  // (the snapshot's single Roth bucket subtotal): the IRA
+  // share is rothIraCents when entered, else the total less
+  // the employer share; the employer share is
+  // rothEmployerCents when entered, else $0. No per-owner
+  // balance split is carried — the record's single rothCents
+  // follows the snapshot, so a saved plan always lands the
+  // split on the primary (per-owner splits are engine /
+  // adapter inputs for direct callers). Conversions the
+  // march itself makes append a lot automatically (the
+  // amount reaching Roth after withholding, all taxable) —
+  // entered lots are the OPENING lots only. The rollover
+  // clock rule (IRS Pub. 590-B; Reg. §1.408A-6 Q&A-4): the
+  // time funds spent in the designated Roth account does NOT
+  // count toward the Roth IRA's 5-taxable-year period — the
+  // merged period begins with the earlier of the Roth IRA's
+  // own first-contribution year and the rollover year — so
+  // the designated-Roth first year NEVER carries into a Roth
+  // IRA on rollover. NEVER defaulted to the full balance:
+  // that would silently bless the mispricing this build
+  // fixes. Adding these ten fields grows the saveRothInputs
+  // request from 75 to 85 fields. The fields ride
+  // rothInputFields into every writer and compute action, so
+  // a compare scenario can override them like any other
+  // input — but they are NOT Strategy Lab dials and the
+  // adapter exposes only the household split and the primary
+  // owner's composition (it models no per-owner split; see
+  // the DATA-PLAN entry).
+  rothIraCents: rothBalanceField,
+  rothEmployerCents: rothBalanceField,
+  rothContributionBasisPrimaryCents: z.number().int().min(0).nullable(),
+  rothContributionBasisSpouseCents: z.number().int().min(0).nullable(),
+  rothConversionLotsPrimary: rothConversionLots,
+  rothConversionLotsSpouse: rothConversionLots,
+  firstRothYearPrimary: z.number().int().min(1900).max(2200).nullable(),
+  firstRothYearSpouse: z.number().int().min(1900).max(2200).nullable(),
+  firstDesignatedRothYearPrimary: z.number().int().min(1900).max(2200).nullable(),
+  firstDesignatedRothYearSpouse: z.number().int().min(1900).max(2200).nullable(),
   taxableCents: rothBalanceField,
   // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
   // the snapshot-followed taxable pool (Taxable + Cash buckets)
@@ -3151,6 +3225,29 @@ export const rothComputeFields = {
     rothInputFields.pretax401kEligibleSpouseCents.optional(),
   separationAgePrimary: rothInputFields.separationAgePrimary.optional(),
   separationAgeSpouse: rothInputFields.separationAgeSpouse.optional(),
+  // Compute path only (Engine Review C9, Build 2 — W3): a
+  // pricing payload may omit the Roth split / basis / clock
+  // inputs — absent prices exactly as null (composition not
+  // established; the $0 income and $0 penalty on a Roth draw
+  // are flagged unknown, not computed). An entered 0 basis
+  // is a real answer and an entered empty lot list is a real
+  // answer (see rothInputFields).
+  rothIraCents: rothInputFields.rothIraCents.optional(),
+  rothEmployerCents: rothInputFields.rothEmployerCents.optional(),
+  rothContributionBasisPrimaryCents:
+    rothInputFields.rothContributionBasisPrimaryCents.optional(),
+  rothContributionBasisSpouseCents:
+    rothInputFields.rothContributionBasisSpouseCents.optional(),
+  rothConversionLotsPrimary:
+    rothInputFields.rothConversionLotsPrimary.optional(),
+  rothConversionLotsSpouse:
+    rothInputFields.rothConversionLotsSpouse.optional(),
+  firstRothYearPrimary: rothInputFields.firstRothYearPrimary.optional(),
+  firstRothYearSpouse: rothInputFields.firstRothYearSpouse.optional(),
+  firstDesignatedRothYearPrimary:
+    rothInputFields.firstDesignatedRothYearPrimary.optional(),
+  firstDesignatedRothYearSpouse:
+    rothInputFields.firstDesignatedRothYearSpouse.optional(),
   // Compute path only (build v208): a pricing payload may
   // omit the health premium amounts — absent prices exactly
   // as null (that part not entered; all three absent = the
@@ -3629,6 +3726,58 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     firstRmdDeferralPrimary: bool(r.firstRmdDeferralPrimary),
     firstRmdDeferralSpouse: bool(r.firstRmdDeferralSpouse),
     rothCents: num(r.rothCents),
+    // Roth IRA vs designated Roth split + Roth basis / clock
+    // (Engine Review C9, Build 2 — W3), read leniently like
+    // every field here: absent on a pre-build record reads
+    // as null = NOT ESTABLISHED (the split follows the
+    // engine's fallback; the composition prices $0 with the
+    // unknown flag). The lots keep the well-formed entries
+    // of a stored array — an entry needs a finite year and
+    // two finite cent amounts — capped at 64; anything else
+    // (absent, not an array, no well-formed entry) reads as
+    // null = no lots entered. An entered empty list is a
+    // real answer (no prior conversions) and reads back as
+    // an empty list, never as null.
+    rothIraCents: num(r.rothIraCents),
+    rothEmployerCents: num(r.rothEmployerCents),
+    rothContributionBasisPrimaryCents: num(r.rothContributionBasisPrimaryCents),
+    rothContributionBasisSpouseCents: num(r.rothContributionBasisSpouseCents),
+    rothConversionLotsPrimary: ((): { year: number; taxableAmountCents: number; nontaxableAmountCents: number }[] | null => {
+      if (!Array.isArray(r.rothConversionLotsPrimary)) return null;
+      if (r.rothConversionLotsPrimary.length === 0) return [];
+      const lots: { year: number; taxableAmountCents: number; nontaxableAmountCents: number }[] = [];
+      for (const raw of r.rothConversionLotsPrimary as unknown[]) {
+        if (raw == null || typeof raw !== "object") continue;
+        const t = raw as Record<string, unknown>;
+        const year = num(t.year);
+        const taxableAmountCents = num(t.taxableAmountCents);
+        const nontaxableAmountCents = num(t.nontaxableAmountCents);
+        if (year == null || taxableAmountCents == null || nontaxableAmountCents == null) continue;
+        lots.push({ year, taxableAmountCents, nontaxableAmountCents });
+        if (lots.length >= 64) break;
+      }
+      return lots.length > 0 ? lots : null;
+    })(),
+    rothConversionLotsSpouse: ((): { year: number; taxableAmountCents: number; nontaxableAmountCents: number }[] | null => {
+      if (!Array.isArray(r.rothConversionLotsSpouse)) return null;
+      if (r.rothConversionLotsSpouse.length === 0) return [];
+      const lots: { year: number; taxableAmountCents: number; nontaxableAmountCents: number }[] = [];
+      for (const raw of r.rothConversionLotsSpouse as unknown[]) {
+        if (raw == null || typeof raw !== "object") continue;
+        const t = raw as Record<string, unknown>;
+        const year = num(t.year);
+        const taxableAmountCents = num(t.taxableAmountCents);
+        const nontaxableAmountCents = num(t.nontaxableAmountCents);
+        if (year == null || taxableAmountCents == null || nontaxableAmountCents == null) continue;
+        lots.push({ year, taxableAmountCents, nontaxableAmountCents });
+        if (lots.length >= 64) break;
+      }
+      return lots.length > 0 ? lots : null;
+    })(),
+    firstRothYearPrimary: num(r.firstRothYearPrimary),
+    firstRothYearSpouse: num(r.firstRothYearSpouse),
+    firstDesignatedRothYearPrimary: num(r.firstDesignatedRothYearPrimary),
+    firstDesignatedRothYearSpouse: num(r.firstDesignatedRothYearSpouse),
     taxableCents: num(r.taxableCents),
     // Exclude-from-plan, read leniently like every field here:
     // absent on a pre-build record reads as null = blank = no

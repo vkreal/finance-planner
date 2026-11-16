@@ -52,6 +52,51 @@ export const RetirementQuestionInputs = z.strictObject({
   taxable: dollars,
   /** Roth balances, dollars. */
   roth: dollars,
+  // --- Roth composition (Engine Review C9, Build 2 — W3;
+  // all optional dollars / years). The Roth balance above
+  // is the household total; these fields describe its
+  // composition for the PRIMARY owner only — the adapter
+  // models a single Roth pool with no per-owner split, so
+  // the spouse's composition is NOT representable here
+  // (see the DATA-PLAN entry): the spouse's basis, lots,
+  // and clocks are never entered, and a Roth draw priced
+  // while the composition is unentered is flagged unknown
+  // on the outputs instead. Absent = not established: the
+  // engine prices Roth draws $0 income / $0 penalty exactly
+  // as before, with the year's rothBasisUnknown flag saying
+  // the $0 is unknown, not computed. An entered 0 basis is
+  // a real answer; an entered empty lot list is a real
+  // answer (no prior conversions).
+  /** Roth IRA share of the Roth balance, dollars. Absent = the whole balance is a Roth IRA (less any entered employer share). */
+  rothIra: dollars.optional(),
+  /** Designated Roth employer-plan share of the Roth balance, dollars. Absent = $0. */
+  rothEmployer: dollars.optional(),
+  /** Regular-contribution basis still sitting in the primary owner's Roth accounts, dollars. */
+  rothContributionBasis: dollars.optional(),
+  /** Prior conversions still sitting in the primary owner's Roth IRA — one lot per conversion year, FIFO. */
+  rothConversionLots: z
+    .array(
+      z.strictObject({
+        /** Taxable year of the conversion. */
+        year: z.number().int().finite().min(1900).max(2200),
+        /** Dollars included in income on conversion (what the §72(t) 5-year penalty keys on). */
+        taxableAmount: dollars,
+        /** Dollars of basis converted (penalty-free on withdrawal). */
+        nontaxableAmount: dollars,
+      }),
+    )
+    .max(64)
+    .optional(),
+  /** First taxable year of any Roth IRA contribution (the qualified-distribution 5-year clock), primary owner. */
+  firstRothYear: z.number().int().finite().min(1900).max(2200).optional(),
+  /** First taxable year of designated Roth contributions to the employer plan (that plan's own 5-year clock), primary owner. */
+  firstDesignatedRothYear: z
+    .number()
+    .int()
+    .finite()
+    .min(1900)
+    .max(2200)
+    .optional(),
   /** HSA balance, dollars. */
   hsa: dollars,
   /** Typical monthly spending, dollars. Must be > 0, <= $200,000/mo.

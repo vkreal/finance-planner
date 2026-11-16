@@ -67,18 +67,21 @@ acaEmbeddedNetPremiumFor,
 acaFirstStepYear,
 acaHouseholdSizeForYear,
 ceilingsActive,
+debitRothOwnerLedger,
 drawOrderFromKey,
 drawOrderKey,
 drawOrderLabel,
 effectiveSsPrimaryAnnual,
 effectiveSsSpouseAnnual,
 fillConversion,
+initRothAccountLedger,
 irmaaAnnualPerPerson,
 priceYear,
 resolveAcaHouseholdSchedule,
 rmdForYear,
 settleFirstRmdDeferral,
 simulateRothPlan,
+splitRothBasisAcrossAccounts,
 survivorBenefitAnnualEnhanced,
 type AcaHouseholdStep,
 type DrawOrder,
@@ -87,6 +90,9 @@ type FilingStatus,
 type FillCeilings,
 type FirstRmdDeferralState,
 type PriceYearInput,
+type RothConversionLotInput,
+type RothConversionLotSaved,
+type RothOwnerLedger,
 type RothPlanInputs,
 type RothPlanResult,
 type RothStrategy,
@@ -397,7 +403,7 @@ export function assessCandidateIntegrity(
     // Defensive reads (?? 0 / ?? false): the engine always sets
     // these fields, but a caller assessing a mapped row (e.g. a
     // compare-path readout) must never NaN-poison the totals.
-    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, acaCredit: 0 };
+    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, roth: 0, acaCredit: 0 };
     const conversion = y.conversion ?? 0;
     if (!y.settlementConverged) nonConvergedYearList.push(y.year);
     maxMismatchGainsCents = Math.max(maxMismatchGainsCents, mismatch.gains ?? 0);
@@ -2807,6 +2813,31 @@ export type RothSavedLike = {
   firstRmdDeferralPrimary?: boolean | null;
   firstRmdDeferralSpouse?: boolean | null;
   rothCents: number | null;
+  // Roth IRA vs designated Roth split + Roth basis / clock
+  // (Engine Review C9, Build 2 — W3). Optional: a saved
+  // record written before this build has none of them,
+  // which reads as NOT ESTABLISHED — the engine prices $0
+  // income and $0 penalty on Roth draws exactly as before,
+  // with the year's rothBasisUnknown flag saying the $0 is
+  // unknown, not computed. Cents for the split and the
+  // bases; the lots carry cents too (taxableAmountCents /
+  // nontaxableAmountCents per lot); whole years for the
+  // clocks. An entered 0 basis is a real answer; an entered
+  // empty lot list is a real answer (no prior conversions).
+  // The split divides the followed Roth balance (see
+  // planInputsFromSaved); no per-owner balance split is
+  // carried. Nothing here is ever inferred or defaulted to
+  // the full balance.
+  rothIraCents?: number | null;
+  rothEmployerCents?: number | null;
+  rothContributionBasisPrimaryCents?: number | null;
+  rothContributionBasisSpouseCents?: number | null;
+  rothConversionLotsPrimary?: RothConversionLotSaved[] | null;
+  rothConversionLotsSpouse?: RothConversionLotSaved[] | null;
+  firstRothYearPrimary?: number | null;
+  firstRothYearSpouse?: number | null;
+  firstDesignatedRothYearPrimary?: number | null;
+  firstDesignatedRothYearSpouse?: number | null;
   taxableCents: number | null;
   // Exclude-from-plan amount for the taxable pool (added with
   // the EXCLUDE-FROM-PLAN build). Optional: a saved record
@@ -3764,22 +3795,89 @@ export type PlaygroundYearInputs = {
   // Roth draw is a distribution of already-taxed money,
   // which the single-year pricer treats as tax-free funding
   // exactly as the plan march's funding ledger does (its
-  // rothDraw row is a source, never income). NEITHER enters
-  // the tax pricing at all — not AGI, not MAGI, not the ACA
-  // or IRMAA bases, not the gains stack — so a year funded
-  // from cash or Roth prices the same tax as the same year
-  // funded any other way; the draws enter ONLY cashIn, as
-  // spendable funding, beside the spending draw. Before S-6
-  // the Playground had no dial for either, so a cash- or
-  // Roth-funded year showed no funding for the money that
-  // actually paid its spending and its verdict read short
-  // by the whole draw (the mirror image of M-2: a $100,000
-  // cash drawing read −$78,500 "Short" against $180,000 of
-  // spending where the true answer is +$21,500 "Enough" —
-  // pinned by the tax suite's
+  // rothDraw row is a source, never income) — WHILE its
+  // composition shelters it (Engine Review C9, Build 2 —
+  // W3): the non-qualified earnings portion of a Roth draw
+  // IS ordinary income, priced through the other-ordinary
+  // dial, plus the §72(t) 10% under 59½ (see the
+  // rothContributionBasis / rothConversionLots /
+  // firstRothYear inputs below and the result's
+  // rothEarningsIncome / rothPenalty). With no composition
+  // entered the draw prices under the assumed-qualified
+  // default — tax-free, with the result's rothBasisUnknown
+  // / rothAssumedQualified flags saying so. The CASH draw
+  // never enters the tax pricing at all — not AGI, not
+  // MAGI, not the ACA or IRMAA bases, not the gains stack;
+  // the ROTH draw enters it only through its non-qualified
+  // earnings portion (above). Both draws enter cashIn, as
+  // spendable funding, beside the spending draw.
+  // Before S-6 the Playground had no dial for either, so a
+  // cash- or Roth-funded year showed no funding for the
+  // money that actually paid its spending and its verdict
+  // read short by the whole draw (the mirror image of M-2:
+  // a $100,000 cash drawing read −$78,500 "Short" against
+  // $180,000 of spending where the true answer is +$21,500
+  // "Enough" — pinned by the tax suite's
   // tax-engines-playground-cash-roth-funding-s6 fixture).
   cashDraw?: number;
   rothDraw?: number;
+  // ROTH BASIS / CLOCK (Engine Review C9, Build 2 — W3):
+  // the composition facts the rothDraw dial above prices
+  // against — the single-owner (primary) form of the march's
+  // per-owner ledgers. All optional — absent / null on every
+  // pre-existing caller, and the year then prices exactly as
+  // before ($0 income, $0 penalty on the Roth draw) with the
+  // result's rothBasisUnknown / rothAssumedQualified flags
+  // saying the $0 is unknown, not computed:
+  // · rothContributionBasis — the regular contributions
+  //   still sitting in the Roth accounts (ordering tier 1,
+  //   always tax-free, never penalized). An entered 0 is a
+  //   real answer.
+  // · rothConversionLots — the prior conversions still
+  //   sitting in the Roth IRA, one lot per conversion year,
+  //   FIFO (ordering tier 2; the 10% prices on the TAXABLE
+  //   portion withdrawn while the owner is under 59½ and
+  //   the lot is inside its own 5-year period). An entered
+  //   empty list is a real answer (no prior conversions).
+  // · firstRothYear — the first taxable year of any Roth IRA
+  //   contribution (the qualified-distribution 5-year
+  //   clock). Absent while earnings are reached prices the
+  //   earnings as ordinary income (the non-qualified
+  //   direction) with the flag set.
+  // · firstDesignatedRothYear — the first taxable year of
+  //   designated Roth contributions to the employer plan
+  //   (that plan's own 5-year clock). It governs ONLY the
+  //   employer ledger's earnings; it never carries into a
+  //   Roth IRA on rollover (see taxEngine's rollover clock
+  //   rule). The pricer holds ONE combined ledger for the
+  //   draw: the IRA clock governs the IRA share, the
+  //   designated clock the employer share — see
+  //   pricePlaygroundYear.
+  // · rothBalance — the Roth balance the draw comes out of
+  //   (the total of both accounts). Absent = the draw is
+  //   assumed to come out of a balance at least as large as
+  //   the draw itself (the draw prices in full, never
+  //   capped by an unknown balance).
+  // · rothIraBalance / rothEmployerBalance — the split of
+  //   that balance between the Roth IRA and the designated
+  //   Roth employer plan. Both absent = the whole balance
+  //   is a Roth IRA (the single-clock case); only the
+  //   employer share entered = the IRA share is the balance
+  //   less the employer share. The draw debits the IRA
+  //   ledger first, then the employer ledger, each on its
+  //   own 5-year clock (firstRothYear / firstDesignatedRothYear
+  //   above) — the march's per-account ordering, in
+  //   single-owner form. The entered contribution basis
+  //   splits across the two accounts in proportion to their
+  //   balances; entered conversion lots attach to the IRA
+  //   ledger.
+  rothContributionBasis?: number | null;
+  rothConversionLots?: RothConversionLotInput[] | null;
+  firstRothYear?: number | null;
+  firstDesignatedRothYear?: number | null;
+  rothBalance?: number | null;
+  rothIraBalance?: number | null;
+  rothEmployerBalance?: number | null;
   // Reinvested yield (S-3, engines review round 2; supplied
   // ONLY by the saved-plan-year loader — absent / false on
   // every other caller, and the year then prices
@@ -4520,9 +4618,47 @@ export type PlaygroundYearResult = {
   // draw added to cashIn ($0 when the caller supplied
   // none). The draws priced as their own source: they are
   // in cashIn and in NO income, gain, MAGI, or tax figure
-  // above.
+  // above — EXCEPT the Roth draw's non-qualified earnings
+  // portion (Engine Review C9, Build 2 — W3): that portion
+  // IS ordinary income, priced through the other-ordinary
+  // dial (see rothEarningsIncome below), so a Roth draw
+  // prices the same tax as the same year funded any other
+  // way ONLY while its composition shelters it.
   cashDraw: number;
   rothDraw: number;
+  // ROTH DRAW ORDERING (Engine Review C9, Build 2 — W3):
+  // the Roth draw's priced pieces, following the march's
+  // ordering (contributions → conversion lots FIFO →
+  // earnings, IRA ledger first, then the employer ledger,
+  // on the primary's age):
+  // · rothEarningsIncome — the non-qualified earnings
+  //   portion of the draw, priced as ordinary income
+  //   (inside agi / magi / acaMagi above, through the
+  //   other-ordinary dial — Roth distributions are NOT
+  //   net investment income, so the NIIT base never sees
+  //   it). $0 on a qualified or basis-covered draw.
+  // · rothPenalty — the §72(t) 10% on the taxable portion
+  //   of conversion lots inside their 5-year period and on
+  //   non-qualified earnings, both under 59½. It IS inside
+  //   netTaxBill below (beside earlyWithdrawalPenalty),
+  //   never inside totalTax above.
+  // · rothBasisUnknown — true when the draw priced while
+  //   the composition was unentered (contributions and/or
+  //   lots absent) — so the $0 income and $0 penalty above
+  //   are UNKNOWN, not computed. False when the draw was
+  //   priced with the composition answered, and false with
+  //   no draw.
+  // · rothAssumedQualified — true exactly when the draw
+  //   priced under the assumed-qualified default (basis
+  //   absent): the draw is treated as a qualified
+  //   distribution because no composition was entered to
+  //   say otherwise. False whenever the composition was
+  //   entered (the draw then prices on its own facts), and
+  //   false with no draw.
+  rothEarningsIncome: number;
+  rothPenalty: number;
+  rothBasisUnknown: boolean;
+  rothAssumedQualified: boolean;
   // Pre-tax spending draw (R3-M1, engines review round 3):
   // the spendingDraw input echoed — the part of the year's
   // pre-tax money out that was taken FOR SPENDING and so
@@ -4842,6 +4978,72 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // reads $0, bit-identical to before.
   const cashDraw = Math.max(0, inp.cashDraw ?? 0);
   const rothDraw = Math.max(0, inp.rothDraw ?? 0);
+  // ROTH DRAW ORDERING (Engine Review C9, Build 2 — W3):
+  // the rothDraw dial above, priced on the primary's
+  // ledgers — the single-owner form of the march's
+  // per-owner ledgers (contributions → conversion lots
+  // FIFO → earnings, IRA ledger first, then the employer
+  // ledger, each on its own 5-year clock, on the primary's
+  // whole-year age). The balance split resolves exactly
+  // like the march's (see the input fields' notes): an
+  // absent total balance is assumed at least as large as
+  // the draw, so the draw prices in full, never capped by
+  // an unknown balance. The earnings portion is ordinary
+  // income — it rides the base's otherOrdinary dial below
+  // (Roth distributions are NOT net investment income, so
+  // the NIIT base never sees it) — and the penalty joins
+  // the result beside the pre-tax draw's penalty. With no
+  // composition entered the draw prices under the
+  // assumed-qualified default ($0 income, $0 penalty) and
+  // the flags below say so. The draw's FULL amount still
+  // joins cashIn (spendable funding), and the earnings
+  // never join otherOrdinaryTotal (that echo is the
+  // ENTERED income only — the draw's cash is already in
+  // cashIn as rothDraw).
+  const rothEmployerBal = Math.max(0, inp.rothEmployerBalance ?? 0);
+  const rothIraBal =
+    inp.rothIraBalance != null
+      ? Math.max(0, inp.rothIraBalance)
+      : inp.rothBalance != null
+        ? Math.max(0, inp.rothBalance - rothEmployerBal)
+        : Math.max(0, rothDraw - rothEmployerBal);
+  const rothBasisSplit = splitRothBasisAcrossAccounts(
+    inp.rothContributionBasis,
+    rothIraBal,
+    rothEmployerBal,
+  );
+  const pgRothLedger: RothOwnerLedger = {
+    ira: initRothAccountLedger(
+      rothIraBal,
+      rothBasisSplit.ira,
+      inp.rothConversionLots,
+      inp.firstRothYear,
+    ),
+    employer: initRothAccountLedger(
+      rothEmployerBal,
+      rothBasisSplit.employer,
+      // As in the march: the employer ledger never holds
+      // conversion lots, so its lot list is entered-empty,
+      // never unentered — otherwise the ledger would stay
+      // unknown whatever the caller entered.
+      [],
+      inp.firstDesignatedRothYear,
+    ),
+  };
+  const pgRothOut =
+    rothDraw > 0
+      ? debitRothOwnerLedger(pgRothLedger, rothDraw, {
+          year: inp.taxYear,
+          age: inp.agePrimary,
+        })
+      : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  const rothEarningsIncome = r2(pgRothOut.income);
+  const rothPenalty = r2(pgRothOut.penalty);
+  const rothBasisUnknown = pgRothOut.unknown;
+  const rothAssumedQualified =
+    rothDraw > 0 &&
+    inp.rothContributionBasis == null &&
+    inp.rothConversionLots == null;
   // Dividends are entered exactly as printed on the Form
   // 1040: ordinaryDividends is the line 3b TOTAL, which
   // already includes the line 3a qualified part. Count them
@@ -5229,7 +5431,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // priceYear forms (AGI, provisional income, the ordinary
     // stack) are the same total as the folded otherOrdinaryTotal
     // this replaces, term for term.
-    otherOrdinary: inp.otherOrdinary,
+    otherOrdinary: r2((inp.otherOrdinary ?? 0) + rothEarningsIncome),
     interestIncome: inp.interest,
     // priceYear's ordinaryDividends is the NON-qualified
     // part only (its internal stack contract) — the split
@@ -5783,14 +5985,20 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // THE DISPLAYED COMPONENTS — Math.round(federal) +
   // Math.round(state) + Math.round(penalty), exactly as the Tax
   // block's own rows print them — not the rounding of the raw
-  // sum, which can differ by $1 when both carry cents.
+  // sum, which can differ by $1 when both carry cents. The
+  // penalty term is BOTH early-withdrawal penalties (Engine
+  // Review C9, Build 2 — W3): the pre-tax draw's and the Roth
+  // draw's — the Roth penalty is an additional tax liability
+  // of the year too, so the sale's leftover nets it exactly
+  // like the pre-tax penalty.
   let saleAfterTax: PlaygroundSaleAfterTax | null = null;
   if (inp.stockSold > 0) {
     const proceeds = Math.round(inp.stockSold);
     const totalTax =
       Math.round(priced.federalTax) +
       Math.round(priced.stateTax) +
-      Math.round(priced.earlyWithdrawalPenalty);
+      Math.round(priced.earlyWithdrawalPenalty) +
+      Math.round(rothPenalty);
     const leftover = proceeds - totalTax;
     // The sentence names exactly what the line nets — federal +
     // state tax, plus the early-withdrawal penalty when one is
@@ -5798,7 +6006,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // the year's net filing outcome: the refundable education
     // credit and the APTC settlement adjustments are NOT in this
     // figure (C9 fix 3).
-    const penaltyPriced = Math.round(priced.earlyWithdrawalPenalty) > 0;
+    const penaltyPriced =
+      Math.round(priced.earlyWithdrawalPenalty) > 0 ||
+      Math.round(rothPenalty) > 0;
     const taxNoun = penaltyPriced
       ? "federal + state tax and the early-withdrawal penalty"
       : "federal + state tax";
@@ -5926,17 +6136,18 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       rothDraw +
       inp.stockSold,
   );
-  // The year's total tax bill, INCLUDING the §72(t) penalty
-  // on the pre-tax spending draw (C9 fix 1 — SHOULD 2): the
-  // penalty is an additional tax liability the year must fund,
+  // The year's total tax bill, INCLUDING the §72(t) penalties
+  // — the pre-tax spending draw's (C9 fix 1 — SHOULD 2) AND
+  // the Roth draw's (Engine Review C9, Build 2 — W3): both
+  // are additional tax liabilities the year must fund,
   // exactly as the march's funding row carries federal +
-  // penalty — so it enters the net bill (and the cash left)
+  // penalty — so they enter the net bill (and the cash left)
   // here. totalTax on the result below stays federal + state
-  // (the Tax block's display invariant); the penalty is named
+  // (the Tax block's display invariant); each penalty is named
   // on its own result field beside it.
   const earlyWithdrawalPenalty = priced.earlyWithdrawalPenalty;
   const totalTaxBill = r2(
-    priced.federalTax + priced.stateTax + earlyWithdrawalPenalty,
+    priced.federalTax + priced.stateTax + earlyWithdrawalPenalty + rothPenalty,
   );
   let netTaxBill = r2(totalTaxBill - priced.educationRefundable);
   // Whether the settlement below actually priced — the
@@ -6162,6 +6373,10 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     reinvestedYield,
     cashDraw,
     rothDraw,
+    rothEarningsIncome,
+    rothPenalty,
+    rothBasisUnknown,
+    rothAssumedQualified,
     spendingDraw,
     inflationPct,
     healthPremiumGross,
@@ -6986,6 +7201,38 @@ export function projectPlaygroundYears(
       // arrives without it; this strip covers a template
       // captured in-memory from the dials.
       irmaaPayableAnnual: undefined,
+      // ROTH BASIS / CLOCK (Engine Review C9, Build 2 —
+      // W3): the template's Roth composition is a ONE-YEAR
+      // opening fact — the first walked year prices the
+      // template whole, exactly as before, but the walk
+      // does NOT track the ledger forward (no depletion of
+      // contributions / lots, no lot appended by the
+      // walk's conversions), so from the second walked
+      // year on the composition is unknown, not the
+      // template's opening figures repeated: the inputs
+      // are stripped and those years price the Roth draw
+      // under the assumed-qualified default with the
+      // result's rothBasisUnknown flag saying so. Carrying
+      // the opening basis into every year would price
+      // every year's draw against basis the first year
+      // already spent. A full ledger walk (chaining the
+      // ledger state like the loss carryforward above) is
+      // a follow-up — see the builder report.
+      rothContributionBasis: firstWalkYear
+        ? template.rothContributionBasis
+        : undefined,
+      rothConversionLots: firstWalkYear
+        ? template.rothConversionLots
+        : undefined,
+      firstRothYear: firstWalkYear ? template.firstRothYear : undefined,
+      firstDesignatedRothYear: firstWalkYear
+        ? template.firstDesignatedRothYear
+        : undefined,
+      rothBalance: firstWalkYear ? template.rothBalance : undefined,
+      rothIraBalance: firstWalkYear ? template.rothIraBalance : undefined,
+      rothEmployerBalance: firstWalkYear
+        ? template.rothEmployerBalance
+        : undefined,
     };
     const result = pricePlaygroundYear(inputs);
     const startBalances: PlaygroundProjectionBalances = {
@@ -8441,6 +8688,13 @@ export type RothFundingRow = {
   // federal tax carries on that draw is UNKNOWN, not a
   // computed $0. Read off the engine's RothYear. Display only.
   earlyWithdrawalEligibilityUnknown: boolean;
+  // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+  // true exactly when this year priced a Roth draw while
+  // the drawing owner's Roth composition was unentered —
+  // so the $0 income and $0 penalty the year shows on that
+  // draw are UNKNOWN, not computed. Read off the engine's
+  // RothYear. Display only.
+  rothBasisUnknown: boolean;
   totalNeedCents: number;
   // Sources (integer cents, applied amounts — see the
   // RothYearFunding waterfall).
@@ -8522,7 +8776,7 @@ export type RothFundingRow = {
   // plus how many rounds / passes the kept settlement took
   // and why each level stopped.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -8616,6 +8870,7 @@ export function buildRothFunding(
       irmaaSurchargeKnown: y.irmaaSurchargeKnown,
       acaBelow100Fpl: y.acaBelow100Fpl,
       earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+      rothBasisUnknown: y.rothBasisUnknown,
       totalNeedCents: 0,
       ssCents: cents(f.ss),
       rmdCents: cents(f.rmd),
@@ -8756,6 +9011,58 @@ export function planInputsFromSaved(
     firstRmdDeferralPrimary: saved.firstRmdDeferralPrimary ?? undefined,
     firstRmdDeferralSpouse: saved.firstRmdDeferralSpouse ?? undefined,
     rothStart: dollars(saved.rothCents),
+    // Roth IRA vs designated Roth split + Roth basis / clock
+    // (Engine Review C9, Build 2 — W3): the saved cents map
+    // to engine dollars; absent / null = not established
+    // (the engine's null), never $0 — an entered 0 stays 0
+    // through dollars() and is a real answer. The split
+    // divides the followed Roth balance: the IRA share is the
+    // entered rothIraCents when present, else the total less
+    // the employer share; the employer share is the entered
+    // rothEmployerCents when present, else $0 (the engine's
+    // own fallback — the nulls here let it resolve). The
+    // lots convert cents to dollars lot by lot; an entered
+    // empty list stays an empty list (no prior conversions),
+    // null stays null (not established). The clocks pass
+    // through as whole years. No per-owner balance split is
+    // carried — a saved plan always lands the split on the
+    // primary (see the RothSavedLike note).
+    rothIraStart:
+      saved.rothIraCents == null ? null : dollars(saved.rothIraCents),
+    rothEmployerStart:
+      saved.rothEmployerCents == null
+        ? null
+        : dollars(saved.rothEmployerCents),
+    rothContributionBasisPrimary:
+      saved.rothContributionBasisPrimaryCents == null
+        ? null
+        : dollars(saved.rothContributionBasisPrimaryCents),
+    rothContributionBasisSpouse:
+      saved.rothContributionBasisSpouseCents == null
+        ? null
+        : dollars(saved.rothContributionBasisSpouseCents),
+    rothConversionLotsPrimary:
+      saved.rothConversionLotsPrimary == null
+        ? null
+        : saved.rothConversionLotsPrimary.map((l) => ({
+            year: l.year,
+            taxableAmount: l.taxableAmountCents / 100,
+            nontaxableAmount: l.nontaxableAmountCents / 100,
+          })),
+    rothConversionLotsSpouse:
+      saved.rothConversionLotsSpouse == null
+        ? null
+        : saved.rothConversionLotsSpouse.map((l) => ({
+            year: l.year,
+            taxableAmount: l.taxableAmountCents / 100,
+            nontaxableAmount: l.nontaxableAmountCents / 100,
+          })),
+    firstRothYearPrimary: saved.firstRothYearPrimary ?? null,
+    firstRothYearSpouse: saved.firstRothYearSpouse ?? null,
+    firstDesignatedRothYearPrimary:
+      saved.firstDesignatedRothYearPrimary ?? null,
+    firstDesignatedRothYearSpouse:
+      saved.firstDesignatedRothYearSpouse ?? null,
     taxableStart: dollars(saved.taxableCents),
     hsaStart: dollars(saved.hsaCents),
     taxableBasisPct: saved.taxableBasisPct ?? 100,
@@ -9468,6 +9775,13 @@ export type RothCompareScenarioYear = {
   // shows on that draw is UNKNOWN, not a computed $0. Display
   // only — no score, ranking, or delta reads it.
   earlyWithdrawalEligibilityUnknown: boolean;
+  // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+  // true exactly when this year priced a Roth draw while
+  // the drawing owner's Roth composition was unentered —
+  // so the $0 income and $0 penalty the year shows on that
+  // draw are UNKNOWN, not computed. Display only — no score,
+  // ranking, or delta reads it.
+  rothBasisUnknown: boolean;
   // Health premium (build v208): the year's NET health
   // premium funded (the engine's RothYear.healthPremiumNet).
   // $0 in every year of a plan that does not enter the
@@ -9503,7 +9817,7 @@ export type RothCompareScenarioYear = {
   // stopped. Display only — no score, ranking, or delta is
   // derived from them, and no pricing changed.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -9571,6 +9885,14 @@ export type RothCompareScenarioResult = {
   // scenario with no pre-59½ pre-tax draw, or with
   // eligibility answered for every drawing owner.
   earlyWithdrawalUnknownYears: number[];
+  // ROTH BASIS UNKNOWN YEARS (Engine Review C9, Build 2 —
+  // W3, display only): the years whose Roth draw was priced
+  // while the drawing owner's Roth composition was
+  // unentered — the $0 income and $0 penalty in those years
+  // are unknown, not computed. Empty on a scenario with no
+  // Roth draw, or with the composition answered for every
+  // drawing owner.
+  rothBasisUnknownYears: number[];
   // Lifetime health premiums (build v208): the GROSS
   // premium the score identity adds beside acaCreditCents,
   // and the NET premium (gross less the funded credits) for
@@ -9699,6 +10021,7 @@ export function runRothCompare(
         irmaaSurchargeKnown: y.irmaaSurchargeKnown,
         acaBelow100Fpl: y.acaBelow100Fpl,
         earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+        rothBasisUnknown: y.rothBasisUnknown,
         healthPremiumCents: toCents(y.healthPremiumNet),
         healthPremiumGrossCents: toCents(y.healthPremiumGross),
         conversionCents: toCents(y.conversion),
@@ -9755,6 +10078,7 @@ export function runRothCompare(
       irmaaLookbackMissingYears: result.irmaaLookbackMissingYears,
       acaBelow100FplYears: result.acaBelow100FplYears,
       earlyWithdrawalUnknownYears: result.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: result.rothBasisUnknownYears,
       healthPremiumCents: toCents(cost.healthPremium),
       healthPremiumNetCents: toCents(cost.healthPremiumNet),
       educationRefundableCents: toCents(cost.educationRefundable),
@@ -9789,6 +10113,7 @@ export function runRothCompare(
       irmaaLookbackMissingYears: p.irmaaLookbackMissingYears,
       acaBelow100FplYears: p.acaBelow100FplYears,
       earlyWithdrawalUnknownYears: p.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: p.rothBasisUnknownYears,
       healthPremiumCents: p.healthPremiumCents,
       healthPremiumNetCents: p.healthPremiumNetCents,
       educationRefundableCents: p.educationRefundableCents,

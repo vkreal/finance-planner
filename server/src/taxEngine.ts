@@ -2503,6 +2503,433 @@ export function resolveAcaHouseholdSchedule(src: {
   return null;
 }
 
+/* ---------------- Roth distribution ordering (Engine Review C9,
+   Build 2 — W3) ----------------
+   A Roth distribution is ordered by law (IRS Pub. 590-B (2025),
+   "Ordering Rules for Distributions"; Reg. §1.408A-6 Q&A-8):
+   regular contributions first, then conversion / rollover
+   contributions FIFO (within each lot the TAXABLE portion
+   first, then the nontaxable portion), then earnings. The
+   consequences, per dollar:
+   · Contributions: always tax-free, never penalized.
+   · Conversion lot, owner under 59½ and the lot inside its
+     own 5-taxable-year period (lot year Y → within while the
+     distribution year < Y + 5; Pub. 590-B, "Distributions of
+     conversion and certain rollover contributions within
+     5-year period"): 10% additional tax on the TAXABLE
+     portion withdrawn, no income (already taxed on
+     conversion). At/after 59½, or lot age ≥ 5: free.
+   · Earnings: free only when the distribution is QUALIFIED —
+     owner 59½ or older AND the 5-taxable-year period from the
+     owner's first Roth year is met (distribution year ≥
+     firstYear + 5; §408A(d)(2), Pub. 590-B "What Are Qualified
+     Distributions?"). Otherwise ordinary income, plus 10%
+     when under 59½ (Pub. 590-B, "Other early distributions").
+   Earnings is RESIDUAL — balance − (contributions + unwithdrawn
+   lots) — so growth accrues to earnings automatically and no
+   separate earnings tracking exists.
+   The ledger is per owner (primary / spouse) and per account
+   (Roth IRA / designated Roth employer plan, §402A(d)(2) —
+   each employer plan carries its own 5-taxable-year period of
+   participation). Draws consume the primary's ledgers first,
+   then the spouse's (the march's primary-first sourcing, as
+   for pre-tax), and within an owner the IRA ledger before the
+   employer ledger. Conversions the march itself makes append
+   a lot to the converting owner's IRA ledger: lot amount = the
+   amount actually reaching Roth after withholding, all of it
+   taxable (the conversion was pre-tax money; a
+   non-deductible-basis input does not exist yet — scope
+   boundary, do not invent one).
+   ROLLOVER CLOCK RULE (verified against IRS Pub. 590-B and
+   the IRS "Retirement plans FAQs on designated Roth
+   accounts"): when a designated Roth account rolls into a
+   Roth IRA, the time the funds spent in the designated Roth
+   account does NOT count toward the Roth IRA's 5-taxable-year
+   period; the merged period begins with the EARLIER of the
+   Roth IRA's own first-contribution year and the taxable year
+   the rollover contribution is made (Reg. §1.408A-6 Q&A-4) —
+   so a rollover starts the IRA clock in the rollover year
+   when no earlier IRA clock exists, and never backdates it
+   to the designated Roth account's first year. See
+   mergeRothLedgersForRollover.
+   SURVIVOR CLOCK RULE: the march combines balances onto the
+   survivor (treats-as-own). Under Reg. §1.408A-6 Q&A-7(b) the
+   merged 5-taxable-year period ends at the EARLIER of the
+   decedent's period and the survivor's own — so the merged
+   first year is the earlier of the two. Once the account is
+   the survivor's own, the death event no longer qualifies a
+   distribution and the §72(t) death exception no longer
+   applies to the survivor's draws; the survivor's own age
+   governs. (The "keeps it inherited" alternative, where the
+   death exception would apply and the decedent's clock
+   governs, is not modeled — the march has no
+   inherited-vs-own election input.)
+   UNKNOWN BASIS (the landing default): absent = today's
+   pricing, bit-identical — a draw prices $0 income and $0
+   penalty, with the year's rothBasisUnknown flag saying the
+   $0 is unknown, not computed. A ledger counts as KNOWN only
+   when its opening contributions AND its opening lots were
+   both entered (or its opening balance is $0, which fixes
+   both at $0 by construction); march-created lots are always
+   known. Partial knowledge prices what it can: entered
+   contributions shelter draws up to their amount, and only
+   the dollars past them are flagged unknown. An entered
+   first year of null with earnings reached prices the
+   earnings as ordinary income (the non-qualified direction)
+   with the flag set — never a silent $0. Basis is NEVER
+   defaulted to the full balance: that would silently bless
+   the mispricing this build fixes. */
+
+export type RothConversionLotInput = {
+  year: number; // taxable year of the conversion / rollover
+  taxableAmount: number; // dollars included in income on conversion
+  nontaxableAmount: number; // dollars of basis converted
+};
+
+// The saved record's form of a conversion lot (actions.ts /
+// rothSeed.ts): the same lot, money in integer cents — the
+// saved record stores money in cents throughout. planInputsFromSaved
+// converts each lot to engine dollars (cents / 100).
+export type RothConversionLotSaved = {
+  year: number;
+  taxableAmountCents: number;
+  nontaxableAmountCents: number;
+};
+
+export type RothAccountLedger = {
+  balance: number;
+  contributions: number; // remaining regular-contribution basis
+  lots: { year: number; taxable: number; nontaxable: number }[];
+  firstYear: number | null; // qualified-distribution clock start
+  known: boolean; // opening composition entered (or balance $0)
+};
+
+export type RothOwnerLedger = {
+  ira: RothAccountLedger;
+  employer: RothAccountLedger;
+};
+
+export function rothLedgerEarnings(led: RothAccountLedger): number {
+  const lots = led.lots.reduce((s, l) => s + l.taxable + l.nontaxable, 0);
+  return Math.max(0, led.balance - led.contributions - lots);
+}
+
+export function cloneRothAccountLedger(
+  led: RothAccountLedger,
+): RothAccountLedger {
+  return {
+    balance: led.balance,
+    contributions: led.contributions,
+    lots: led.lots.map((l) => ({ ...l })),
+    firstYear: led.firstYear,
+    known: led.known,
+  };
+}
+
+export function cloneRothOwnerLedger(led: RothOwnerLedger): RothOwnerLedger {
+  return {
+    ira: cloneRothAccountLedger(led.ira),
+    employer: cloneRothAccountLedger(led.employer),
+  };
+}
+
+export function initRothAccountLedger(
+  balance: number,
+  contributions: number | null | undefined,
+  lots: RothConversionLotInput[] | null | undefined,
+  firstYear: number | null | undefined,
+): RothAccountLedger {
+  const bal = Math.max(0, balance);
+  const known =
+    (contributions != null && lots != null) || bal <= 0;
+  // Clamp the entered contributions to the balance (the
+  // Build-1 eligible-ledger rule): an entered basis larger
+  // than the pool it describes cannot shelter more dollars
+  // than the pool holds. An unentered basis stays unknown.
+  let contrib =
+    contributions == null ? 0 : Math.min(Math.max(0, contributions), bal);
+  // Clamp the entered lots FIFO to what is left after the
+  // contributions: the earliest lots survive, later lots are
+  // truncated to fit (a lot split across the boundary keeps
+  // its taxable portion first — the ordering rule's own
+  // within-lot order). An unentered lot list stays unknown.
+  const kept: { year: number; taxable: number; nontaxable: number }[] = [];
+  if (lots != null) {
+    let room = Math.max(0, bal - contrib);
+    for (const raw of [...lots].sort((a, b) => a.year - b.year)) {
+      if (room <= 0) break;
+      const taxable = Math.max(0, raw.taxableAmount);
+      const nontaxable = Math.max(0, raw.nontaxableAmount);
+      const total = taxable + nontaxable;
+      if (total <= 0) continue;
+      const take = Math.min(total, room);
+      const takeTaxable = Math.min(taxable, take);
+      kept.push({
+        year: raw.year,
+        taxable: takeTaxable,
+        nontaxable: take - takeTaxable,
+      });
+      room -= take;
+    }
+  }
+  if (contributions == null) contrib = 0;
+  return {
+    balance: bal,
+    contributions: contrib,
+    lots: kept,
+    firstYear: firstYear ?? null,
+    known,
+  };
+}
+
+// Split one owner's entered contribution basis across the
+// owner's two accounts in proportion to their starting
+// balances (the allocation rule when the record enters one
+// basis per owner, not one per account): an account holding
+// none of the balance holds none of the basis; a single
+// account holds it all. The split is computed once, at
+// march start (and at roll handoff) — later draws consume
+// the split ledgers, never re-split.
+export function splitRothBasisAcrossAccounts(
+  basis: number | null | undefined,
+  iraBalance: number,
+  employerBalance: number,
+): { ira: number | null; employer: number | null } {
+  if (basis == null) return { ira: null, employer: null };
+  const total = Math.max(0, iraBalance) + Math.max(0, employerBalance);
+  if (total <= 0) return { ira: 0, employer: 0 };
+  const iraShare = Math.max(0, iraBalance) / total;
+  return {
+    ira: Math.max(0, basis) * iraShare,
+    employer: Math.max(0, basis) * (1 - iraShare),
+  };
+}
+
+export type RothDebitOutcome = {
+  drawn: number; // dollars actually debited (≤ the request)
+  income: number; // ordinary income priced (non-qualified earnings)
+  penalty: number; // §72(t) 10% priced (conversion lots + earnings)
+  unknown: boolean; // any drawn dollar priced on unknown composition
+};
+
+function debitRothAccountLedger(
+  led: RothAccountLedger,
+  amount: number,
+  ctx: { year: number; age: number },
+): RothDebitOutcome {
+  const take = Math.min(Math.max(0, amount), Math.max(0, led.balance));
+  if (take <= 0) return { drawn: 0, income: 0, penalty: 0, unknown: false };
+  led.balance = Math.max(0, led.balance - take);
+  let remaining = take;
+  let income = 0;
+  let penalty = 0;
+  let unknown = false;
+  if (!led.known) {
+    // Unknown composition: the landing default — the draw
+    // prices $0 and the flag says so. Entered contributions
+    // still shelter draws up to their amount (partial
+    // knowledge prices what it can); entered lots are NOT
+    // consumed by an unknown draw, because the draw cannot
+    // be shown to have reached them.
+    if (led.contributions > 0) {
+      const fromContrib = Math.min(remaining, led.contributions);
+      led.contributions -= fromContrib;
+      remaining -= fromContrib;
+    }
+    if (remaining > 0) unknown = true;
+    return { drawn: take, income: 0, penalty: 0, unknown };
+  }
+  // 1. Regular contributions — always free.
+  if (remaining > 0 && led.contributions > 0) {
+    const fromContrib = Math.min(remaining, led.contributions);
+    led.contributions -= fromContrib;
+    remaining -= fromContrib;
+  }
+  // 2. Conversion lots, FIFO; within a lot the taxable
+  // portion first (Pub. 590-B ordering rule 2.1). The 10%
+  // prices on the taxable portion withdrawn while the owner
+  // is under 59½ and the lot is inside its own 5-year
+  // period — never on the nontaxable portion, never at or
+  // after 59½, never once the lot is 5 years old.
+  for (const lot of led.lots) {
+    if (remaining <= 0) break;
+    const lotTotal = lot.taxable + lot.nontaxable;
+    if (lotTotal <= 0) continue;
+    const fromLot = Math.min(remaining, lotTotal);
+    const fromTaxable = Math.min(fromLot, lot.taxable);
+    const fromNontaxable = fromLot - fromTaxable;
+    lot.taxable = Math.max(0, lot.taxable - fromTaxable);
+    lot.nontaxable = Math.max(0, lot.nontaxable - fromNontaxable);
+    if (fromTaxable > 0 && ctx.age < 59.5 && ctx.year < lot.year + 5) {
+      penalty = r2(penalty + r2(fromTaxable * 0.1));
+    }
+    remaining -= fromLot;
+  }
+  led.lots = led.lots.filter((l) => l.taxable + l.nontaxable > 0);
+  // 3. Earnings (residual). Qualified — owner 59½+ AND the
+  // 5-year period from the first year met — is free;
+  // otherwise ordinary income, plus 10% under 59½. An
+  // unentered first year cannot establish qualified, so the
+  // earnings price as income (the non-qualified direction)
+  // with the flag set.
+  if (remaining > 0) {
+    // Earnings is the residual: the balance was already
+    // debited by the whole take above, so the earnings still
+    // standing are (balance + remaining) − contributions −
+    // lots — the take's not-yet-sourced part added back.
+    const lotsSum = led.lots.reduce(
+      (s, l) => s + l.taxable + l.nontaxable,
+      0,
+    );
+    const earnings = Math.max(
+      0,
+      led.balance + remaining - led.contributions - lotsSum,
+    );
+    const fromEarnings = Math.min(remaining, earnings);
+    if (fromEarnings > 0) {
+      const qualified =
+        ctx.age >= 59.5 &&
+        led.firstYear != null &&
+        ctx.year >= led.firstYear + 5;
+      if (!qualified) {
+        income = r2(income + fromEarnings);
+        if (ctx.age < 59.5) {
+          penalty = r2(penalty + r2(fromEarnings * 0.1));
+        }
+        if (led.firstYear == null) unknown = true;
+      }
+      remaining -= fromEarnings;
+    }
+  }
+  return { drawn: take, income: r2(income), penalty: r2(penalty), unknown };
+}
+
+// Debit across one owner's two accounts — IRA first, then
+// the employer plan — and combine the outcome.
+export function debitRothOwnerLedger(
+  owner: RothOwnerLedger,
+  amount: number,
+  ctx: { year: number; age: number },
+): RothDebitOutcome {
+  const first = debitRothAccountLedger(owner.ira, amount, ctx);
+  const second =
+    first.drawn < amount
+      ? debitRothAccountLedger(owner.employer, amount - first.drawn, ctx)
+      : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  return {
+    drawn: r2(first.drawn + second.drawn),
+    income: r2(first.income + second.income),
+    penalty: r2(first.penalty + second.penalty),
+    unknown: first.unknown || second.unknown,
+  };
+}
+
+// Debit across both owners — primary first, then the spouse
+// (the march's primary-first sourcing, as for pre-tax) —
+// each on their own age.
+function debitRothLedgers(
+  ledP: RothOwnerLedger,
+  ledS: RothOwnerLedger,
+  amount: number,
+  ctx: { year: number; agePrimary: number; ageSpouse: number | null },
+): RothDebitOutcome {
+  const first = debitRothOwnerLedger(ledP, amount, {
+    year: ctx.year,
+    age: ctx.agePrimary,
+  });
+  const second =
+    first.drawn < amount && ctx.ageSpouse != null
+      ? debitRothOwnerLedger(ledS, amount - first.drawn, {
+          year: ctx.year,
+          age: ctx.ageSpouse,
+        })
+      : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  return {
+    drawn: r2(first.drawn + second.drawn),
+    income: r2(first.income + second.income),
+    penalty: r2(first.penalty + second.penalty),
+    unknown: first.unknown || second.unknown,
+  };
+}
+
+// Merge two owners' ledgers onto one side (the survivor
+// combine): contributions add, lots concatenate in FIFO
+// order, balances add; the merged 5-year clock is the
+// EARLIER of the two first years (Reg. §1.408A-6 Q&A-7(b) —
+// treats-as-own). A side whose composition was unknown
+// keeps the merged ledger unknown (its dollars cannot be
+// told apart from the known side's).
+function mergeRothOwnerLedgers(
+  a: RothOwnerLedger,
+  b: RothOwnerLedger,
+): RothOwnerLedger {
+  const mergeAccount = (
+    x: RothAccountLedger,
+    y: RothAccountLedger,
+  ): RothAccountLedger => {
+    const firstYear =
+      x.firstYear == null
+        ? y.firstYear
+        : y.firstYear == null
+          ? x.firstYear
+          : Math.min(x.firstYear, y.firstYear);
+    // The BALANCE carries full precision — exactly like the
+    // scalar rothBal it replaces. Rounding it here (r2) while
+    // the scalar path stays unrounded drifts the committed
+    // balance by sub-cents per merge, and the drift crosses a
+    // half-cent boundary on conversion-heavy marches (the
+    // gate caught it: Fill-12% rothEnd −1¢ from year 10).
+    // Composition (contributions, lots) stays r2'd — the
+    // sub-cent slop flows into the residual earnings by
+    // construction, so rounding it is harmless.
+    return {
+      balance: x.balance + y.balance,
+      contributions: r2(x.contributions + y.contributions),
+      lots: [...x.lots, ...y.lots]
+        .map((l) => ({ ...l }))
+        .sort((m, n) => m.year - n.year),
+      firstYear,
+      known: x.known && y.known,
+    };
+  };
+  return {
+    ira: mergeAccount(a.ira, b.ira),
+    employer: mergeAccount(a.employer, b.employer),
+  };
+}
+
+// Rollover of a designated Roth account into a Roth IRA:
+// the employer ledger merges into the IRA ledger under the
+// rollover clock rule (see the header note): the designated
+// Roth account's own first year does NOT carry over — the
+// merged IRA clock is the earlier of the IRA's own first
+// year and the rollover year, or the rollover year when no
+// IRA clock exists yet. Conversion lots keep their own
+// years (each lot's 5-year recapture period is per lot and
+// is not re-dated by the rollover).
+export function mergeRothLedgersForRollover(
+  ira: RothAccountLedger,
+  employer: RothAccountLedger,
+  rolloverYear: number,
+): RothAccountLedger {
+  const firstYear =
+    ira.firstYear == null
+      ? rolloverYear
+      : Math.min(ira.firstYear, rolloverYear);
+  // Balance at full precision (see mergeRothOwnerLedgers
+  // above): rounding it would drift the merged balance by
+  // sub-cents against the scalar path. Composition stays r2'd.
+  return {
+    balance: ira.balance + employer.balance,
+    contributions: r2(ira.contributions + employer.contributions),
+    lots: [...ira.lots, ...employer.lots]
+      .map((l) => ({ ...l }))
+      .sort((m, n) => m.year - n.year),
+    firstYear,
+    known: ira.known && employer.known,
+  };
+}
+
 export type RothPlanInputs = {
   startYear: number;
   birthYearPrimary: number;
@@ -2644,6 +3071,82 @@ export type RothPlanInputs = {
   firstRmdAlreadyPricedPrimary?: boolean;
   firstRmdAlreadyPricedSpouse?: boolean;
   rothStart: number;
+  // ROTH IRA vs DESIGNATED ROTH SPLIT (Engine Review C9,
+  // Build 2 — W3): the household's Roth balance split
+  // between a Roth IRA and a designated Roth employer plan
+  // (401(k) / 403(b) / 457(b)). Dollars, like rothStart.
+  // Optional so every pre-existing constructor keeps its
+  // meaning: absent = the whole pool is a Roth IRA
+  // (rothIraStart ?? rothStart, employer $0). When only the
+  // employer share is entered, the IRA share is the pool
+  // less the employer share. The two accounts carry
+  // SEPARATE ledgers (see the header note): each has its
+  // own 5-taxable-year clock, and a rollover merges the
+  // employer ledger into the IRA ledger under the rollover
+  // clock rule — never by taking the earlier of the two
+  // start dates.
+  rothIraStart?: number | null;
+  rothEmployerStart?: number | null;
+  // The SPOUSE's share of each account (dollars). Optional:
+  // absent = $0 — the primary holds the whole account. The
+  // primary's share is the account total less the spouse's
+  // share, floored at $0. The record layer carries no
+  // per-owner Roth split (its single rothCents follows the
+  // snapshot), so a saved plan always lands the split on
+  // the primary; per-owner splits are engine / adapter
+  // inputs for direct callers.
+  rothIraStartSpouse?: number | null;
+  rothEmployerStartSpouse?: number | null;
+  // ROTH CONTRIBUTION BASIS (Engine Review C9, Build 2 —
+  // W3): per owner, the regular contributions still sitting
+  // in that owner's Roth accounts — the first ordering
+  // tier (Pub. 590-B ordering rule 1). Dollars. Optional:
+  // absent / null = NOT ESTABLISHED — the engine prices
+  // the plan exactly as before ($0 income, $0 penalty on
+  // Roth draws) and the year's rothBasisUnknown flag says
+  // the $0 is unknown, not computed. An entered 0 is a
+  // real answer (none of this owner's Roth is contribution
+  // basis). The one entered basis per owner splits across
+  // the owner's two accounts in proportion to their
+  // starting balances (see splitRothBasisAcrossAccounts);
+  // it is clamped to the owner's balance, never larger.
+  // NEVER defaulted to the full balance.
+  rothContributionBasisPrimary?: number | null;
+  rothContributionBasisSpouse?: number | null;
+  // ROTH CONVERSION LOTS (Engine Review C9, Build 2 — W3):
+  // per owner, the prior conversions / rollovers still
+  // sitting in the Roth IRA — one lot per conversion year,
+  // FIFO (Pub. 590-B ordering rule 2). Dollars. Optional:
+  // absent / null = NOT ESTABLISHED — see the basis note
+  // above. An entered empty list is a real answer (no
+  // prior conversions). The taxable portion is what the
+  // §72(t) 5-year penalty keys on; the nontaxable portion
+  // is basis converted (penalty-free on withdrawal).
+  // Conversions the march itself makes append a lot
+  // automatically (amount reaching Roth after withholding,
+  // all taxable) — entered lots are the OPENING lots only.
+  rothConversionLotsPrimary?: RothConversionLotInput[] | null;
+  rothConversionLotsSpouse?: RothConversionLotInput[] | null;
+  // FIRST ROTH YEAR (Engine Review C9, Build 2 — W3): per
+  // owner, the first taxable year for which a contribution
+  // was made to any Roth IRA of the owner — the start of
+  // the qualified-distribution 5-taxable-year period
+  // (§408A(d)(2)). Optional: absent / null = NOT
+  // ESTABLISHED — earnings reached by a draw then price
+  // as ordinary income (the non-qualified direction) with
+  // the unknown flag set, never as a silent $0.
+  firstRothYearPrimary?: number | null;
+  firstRothYearSpouse?: number | null;
+  // FIRST DESIGNATED ROTH YEAR (Engine Review C9, Build 2
+  // — W3): per owner, the first taxable year of designated
+  // Roth contributions to the employer plan — the start of
+  // that plan's own 5-taxable-year period of participation
+  // (§402A(d)(2)). Optional, same unknown rule as the Roth
+  // IRA clock above. It governs ONLY the employer ledger's
+  // earnings; it never carries into a Roth IRA on rollover
+  // (see the rollover clock rule in the header note).
+  firstDesignatedRothYearPrimary?: number | null;
+  firstDesignatedRothYearSpouse?: number | null;
   taxableStart: number;
   hsaStart: number;
   taxableBasisPct: number; // % of the taxable balance that is cost basis
@@ -3543,6 +4046,17 @@ export type RothYearDetail = {
   //   pretaxDrawCents, which adds it to the spending draw.
   pretaxSpendingDraw: number;
   pretaxTaxDebit: number;
+  // ROTH EARNINGS INCOME (Engine Review C9, Build 2 — W3):
+  // the non-qualified earnings portion of the year's Roth
+  // draws, priced as ordinary income — the Roth part of
+  // the income the priced AGI carries. It is NOT inside
+  // extraPreTaxDraw above (that line is the pre-tax split
+  // only, S-10): the detail's income pieces sum to AGI as
+  // extraPreTaxDraw + rothEarningsIncome + the other
+  // ordinary lines (interest, dividends, RMD, conversion,
+  // SS taxable, gains). $0 in a qualified or basis-covered
+  // year. Display only — no priced total is derived from it.
+  rothEarningsIncome: number;
   ltcg: number;
   // The PRICED long-term result and §1211(b) allowance
   // (display only, like everything in this detail; P-S9,
@@ -4101,6 +4615,36 @@ export type RothYear = {
   // It never sets this flag — the flag is about the spending
   // draw only.
   earlyWithdrawalEligibilityUnknown: boolean;
+  // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+  // true exactly when this year priced a Roth draw while
+  // the drawing owner's Roth composition was unentered
+  // (contributions and/or lots absent) — so the $0 income
+  // and $0 penalty the year shows on that draw are UNKNOWN,
+  // not computed. False when every Roth draw this year was
+  // priced with the composition answered (income + penalty
+  // priced on the dollars the ledger could attribute, $0
+  // only where the ledger's contributions / mature lots /
+  // qualified earnings sheltered them), and false in every
+  // year with no Roth draw. A conversion lot the march
+  // itself created is always known, so a same-year
+  // conversion withdrawn the same year prices its penalty
+  // (never flagged). Distinct from
+  // earlyWithdrawalEligibilityUnknown, which is about the
+  // pre-tax draw's Rule-of-55 eligibility.
+  rothBasisUnknown: boolean;
+  // ROTH EARNINGS INCOME (Engine Review C9, Build 2 —
+  // W3): the dollars of Roth earnings this year priced as
+  // ordinary income — the non-qualified earnings portion of
+  // the year's Roth draws, including the earnings priced by
+  // the harvest's tax-debit legs and the settlement's
+  // feedback rounds. $0 in a qualified or basis-covered
+  // year. It is already INSIDE the year's AGI / MAGI /
+  // ACA MAGI (it rides the extra-income channel through the
+  // settlement's reprice rounds, exactly like a pre-tax
+  // draw's income); this field only NAMES the Roth part so
+  // the detail's income pieces still sum to AGI. Display
+  // only — no priced total is derived from it.
+  rothEarningsIncome: number;
   pretaxEnd: number;
   // Per-spouse pre-tax ending balances (Part 1). Their sum is
   // pretaxEnd. From the year AFTER a death the deceased's side
@@ -4118,6 +4662,22 @@ export type RothYear = {
   rothEnd: number;
   taxableEnd: number;
   hsaEnd: number;
+  // FIVE-YEAR CLOCK YEAR (Engine Review C9, Build 2 — W3):
+  // the calendar year the earliest conversion lot's
+  // 5-taxable-year period ends (lot year + 5) — the year
+  // after which a withdrawal of that lot is no longer
+  // subject to the §72(t) 10% recapture — derived from the
+  // ledger, per owner (the earlier of the two owners'
+  // earliest lots the kept settlement's ledgers held before
+  // any debit, so a lot converted and withdrawn in the same
+  // year still names its clock year). Null when no
+  // conversion lot was held this year. When the opening
+  // lots were never entered (basis unknown), the legacy
+  // derivation stands in — a year with a conversion prices
+  // year + 5, otherwise null — so the landing stays
+  // bit-identical on unknown-basis plans and this display
+  // field never changes a priced figure. Display only — no
+  // total anywhere is derived from it.
   fiveYearClockYear: number | null;
   warnings: RothYearWarning[];
   // "Show the math" drill-down: the engine's own intermediates
@@ -4180,7 +4740,7 @@ export type RothYear = {
   // ("converged", "repeated-assumption" for a repeated
   // assumed value — a cycle — or "iteration-limit").
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -4226,6 +4786,15 @@ export type RothPlanResult = {
   // answered for every drawing owner. Display only — no
   // score or ranking reads it.
   earlyWithdrawalUnknownYears: number[];
+  // ROTH BASIS UNKNOWN YEARS (Engine Review C9, Build 2 —
+  // W3): the years whose Roth draw was priced while the
+  // drawing owner's Roth composition was unentered — the $0
+  // income and $0 penalty in those years are unknown, not
+  // computed (see RothYear .rothBasisUnknown). Empty on a
+  // plan with no Roth draw, or with the composition
+  // answered for every drawing owner. Display only — no
+  // score or ranking reads it.
+  rothBasisUnknownYears: number[];
   // Lifetime education credits (T6): the sum of the years'
   // refundable AOTC portions (see RothYear
   // .educationRefundable). The nonrefundable portions are
@@ -4538,6 +5107,84 @@ export function simulateRothPlan(
   const survWho = inputs.survivorWho ?? "primary";
   let survCombined = false;
   let roth = inputs.rothStart;
+  // ROTH LEDGERS (Engine Review C9, Build 2 — W3): per owner
+  // (primary / spouse) and per account (Roth IRA / designated
+  // Roth employer plan), each with its own ordering ledger
+  // (contributions, conversion lots FIFO, residual earnings)
+  // and its own 5-year clock. The account split resolves
+  // from the new inputs with the rothStart fallback (see the
+  // input fields' notes): iraTotal = rothIraStart ?? max(0,
+  // rothStart − employerTotal); employerTotal =
+  // rothEmployerStart ?? 0. The spouse's share of each
+  // account is her entered share; the primary holds the
+  // remainder, floored at $0. The entered contribution basis
+  // per owner splits across that owner's two accounts in
+  // proportion to their starting balances. The ledgers'
+  // balances always sum to `roth` (the household total) —
+  // every Roth debit in the year goes through the ledgers,
+  // and the growth/commit step at year end grows the ledger
+  // balances, never a separate scalar.
+  const rothIraTotal =
+    inputs.rothIraStart ?? Math.max(0, inputs.rothStart - (inputs.rothEmployerStart ?? 0));
+  const rothEmployerTotal = inputs.rothEmployerStart ?? 0;
+  const rothIraSpouse = Math.min(
+    Math.max(0, inputs.rothIraStartSpouse ?? 0),
+    Math.max(0, rothIraTotal),
+  );
+  const rothEmployerSpouse = Math.min(
+    Math.max(0, inputs.rothEmployerStartSpouse ?? 0),
+    Math.max(0, rothEmployerTotal),
+  );
+  const rothBasisSplitP = splitRothBasisAcrossAccounts(
+    inputs.rothContributionBasisPrimary,
+    Math.max(0, rothIraTotal - rothIraSpouse),
+    Math.max(0, rothEmployerTotal - rothEmployerSpouse),
+  );
+  const rothBasisSplitS = splitRothBasisAcrossAccounts(
+    inputs.rothContributionBasisSpouse,
+    rothIraSpouse,
+    rothEmployerSpouse,
+  );
+  let rothLedP: RothOwnerLedger = {
+    ira: initRothAccountLedger(
+      Math.max(0, rothIraTotal - rothIraSpouse),
+      rothBasisSplitP.ira,
+      inputs.rothConversionLotsPrimary,
+      inputs.firstRothYearPrimary,
+    ),
+    employer: initRothAccountLedger(
+      Math.max(0, rothEmployerTotal - rothEmployerSpouse),
+      rothBasisSplitP.employer,
+      // The employer ledger holds NO conversion lots (entered
+      // lots attach to the Roth IRA ledger — conversions land
+      // there), so its lot list is entered-empty, never
+      // unentered: with the contributions entered, the ledger
+      // is known and its earnings price on the designated
+      // clock. Passing null here would leave the ledger
+      // permanently unknown whatever the caller entered.
+      [],
+      inputs.firstDesignatedRothYearPrimary,
+    ),
+  };
+  let rothLedS: RothOwnerLedger = {
+    ira: initRothAccountLedger(
+      rothIraSpouse,
+      rothBasisSplitS.ira,
+      inputs.rothConversionLotsSpouse,
+      inputs.firstRothYearSpouse,
+    ),
+    employer: initRothAccountLedger(
+      rothEmployerSpouse,
+      rothBasisSplitS.employer,
+      // As above: the employer ledger's lot list is
+      // entered-empty, never unentered.
+      [],
+      inputs.firstDesignatedRothYearSpouse,
+    ),
+  };
+  // The employer ledger holds NO conversion lots (entered
+  // lots attach to the Roth IRA ledger — conversions land
+  // there); its own first year is the designated Roth clock.
   let taxable = inputs.taxableStart;
   let hsa = inputs.hsaStart;
   // IRMAA LOOKBACK RECORD (Build E): each priced year's
@@ -4716,6 +5363,10 @@ export function simulateRothPlan(
   // the years whose pre-59½ pre-tax spending draw was priced
   // while the drawing owner's eligibility was unanswered.
   const earlyWithdrawalUnknownYears: number[] = [];
+  // ROTH BASIS UNKNOWN YEARS (Engine Review C9, Build 2 —
+  // W3): the years whose Roth draw was priced while the
+  // drawing owner's Roth composition was unentered.
+  const rothBasisUnknownYears: number[] = [];
   let lifetimeEducationRefundable = 0;
   // EDUCATION REFUND DEPOSIT (Build D): the refundable AOTC
   // portion a year prices is cash the household receives when
@@ -4878,6 +5529,32 @@ export function simulateRothPlan(
           ? null
           : (eligP ?? 0) + (eligS ?? 0);
         eligS = null;
+      }
+      // ROTH LEDGERS (C9 Build 2 — W3): the two owners'
+      // ledgers merge onto the survivor's side (treats-as-own)
+      // — contributions add, lots concatenate FIFO, and the
+      // merged 5-year clock is the EARLIER of the two first
+      // years (Reg. §1.408A-6 Q&A-7(b)); a side whose
+      // composition was unknown keeps the merged ledger
+      // unknown (its dollars cannot be told apart from the
+      // known side's). The combined balance sits on the
+      // survivor's side; the deceased's side is $0. Once the
+      // account is the survivor's own, the death event no
+      // longer qualifies a distribution — the survivor's own
+      // age governs every later draw, and no death waiver is
+      // priced.
+      if (survWho === "primary") {
+        rothLedS = mergeRothOwnerLedgers(rothLedS, rothLedP);
+        rothLedP = {
+          ira: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+          employer: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+        };
+      } else {
+        rothLedP = mergeRothOwnerLedgers(rothLedP, rothLedS);
+        rothLedS = {
+          ira: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+          employer: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+        };
       }
       survCombined = true;
     }
@@ -5932,6 +6609,14 @@ export function simulateRothPlan(
       pretaxDrawCapArg: number | undefined,
       fbGainsIn: number,
       fbPretaxIn: number,
+      // ROTH EARNINGS FEEDBACK (Engine Review C9, Build 2 —
+      // W3): the Roth earnings income the previous round's
+      // TAX-DEBIT legs created (debitUnpaid's Roth leg) —
+      // the feedback the settlement iteration prices, exactly
+      // like fbPretaxIn. The SPENDING draws' Roth earnings
+      // are NOT feedback: they are this round's own draws,
+      // priced directly in the reprice below (like extraDraw).
+      fbRothIn: number,
       // ACA premium reconciliation (build v135): the
       // premium credit this round ASSUMES when it sizes the
       // year's spending need (the year-level settleYear driver
@@ -5951,7 +6636,7 @@ export function simulateRothPlan(
       // the rate is the flat gainPct, bit-identically.
       const startRatio = taxable > 0 ? basisYearStart / taxable : 0;
       const drawGainRate = driftOn ? 1 - startRatio : gainPct;
-      let priced = priceWith(fbGainsIn, fbPretaxIn, conv);
+      let priced = priceWith(fbGainsIn, fbPretaxIn + fbRothIn, conv);
       let federalTax = priced.federalTax;
       let stateTax = priced.stateTax;
 
@@ -6194,6 +6879,129 @@ export function simulateRothPlan(
         debitEligS(additionalArg - fromP);
       }
       let rothBal = roth + rothIn;
+      // ROTH LEDGERS (Engine Review C9, Build 2 — W3): this
+      // settlement's own copies of the year-start ledgers
+      // (the settlement is pure and re-run, so each candidate
+      // works on a fresh copy and only the kept settlement's
+      // copies are committed below — probing settlements can
+      // never move the ledger, exactly like the eligible
+      // ledger above). The conversion appends a lot to each
+      // converting owner's IRA ledger: lot amount = the
+      // amount actually reaching Roth after withholding
+      // (rothIn), split primary-first by the conversion's
+      // per-owner shares (convFromP / convFromS); a lot for
+      // the same year as an opening lot merges into it. All
+      // taxable (the conversion was pre-tax money; no
+      // non-deductible-basis input exists yet). The
+      // `already`-conversion creates NO lot — its money is
+      // already in Roth at year start. A lot appended here is
+      // known by construction — its amount and year are the
+      // march's own — so on a ledger whose opening
+      // composition was entered, a same-year conversion
+      // withdrawn the same year prices its penalty (never
+      // flagged unknown). On a ledger whose opening
+      // composition was NOT entered, the new lot sits
+      // FIFO-behind unknown opening dollars and no draw can
+      // be shown to have reached it (see the note at the
+      // append below). The appended lots are kept as
+      // references (appendedLotP / appendedLotS) so the
+      // top-up below can shrink them: the top-up is a
+      // withholding OUT OF the conversion, so it reduces the
+      // new lot, never an older lot.
+      let sRothLedP = cloneRothOwnerLedger(rothLedP);
+      let sRothLedS = cloneRothOwnerLedger(rothLedS);
+      let appendedLotP: { year: number; taxable: number; nontaxable: number } | null = null;
+      let appendedLotS: { year: number; taxable: number; nontaxable: number } | null = null;
+      if (rothIn > 0) {
+        const shareP = additionalArg > 0 ? (rothIn * convFromP) / additionalArg : rothIn;
+        const shareS = Math.max(0, rothIn - shareP);
+        const appendLot = (
+          led: RothOwnerLedger,
+          share: number,
+        ): { year: number; taxable: number; nontaxable: number } | null => {
+          if (share <= 0) return null;
+          const existing = led.ira.lots.find((l) => l.year === year);
+          if (existing) {
+            // Full precision, like the balance beside it: the
+            // lot's dollars and the balance's dollars are the
+            // SAME dollars, so a draw that consumes the lot
+            // leaves exactly $0 — and a $0 balance reads as
+            // known (the $0-known test) instead of leaving
+            // sub-cent dust that flags the next year unknown.
+            // The debit r2's the penalty and income it prices,
+            // so the lot's internal precision never leaks into
+            // a priced figure.
+            existing.taxable = existing.taxable + share;
+            return existing;
+          }
+          const lot = { year, taxable: share, nontaxable: 0 };
+          led.ira.lots.push(lot);
+          led.ira.lots.sort((a, b) => a.year - b.year);
+          return lot;
+        };
+        appendedLotP = appendLot(sRothLedP, shareP);
+        appendedLotS = appendLot(sRothLedS, shareS);
+        // The BALANCE carries full precision — exactly like
+        // the scalar rothBal beside it (roth + rothIn,
+        // unrounded). Rounding the ledger balance here while
+        // the scalar stays unrounded drifts the committed
+        // balance by sub-cents per conversion year, and the
+        // drift crosses a half-cent boundary on
+        // conversion-heavy marches (the gate caught it:
+        // Fill-12% rothEnd −1¢ from year 10, compare
+        // endingRoth +1¢). The lot's taxable stays r2'd —
+        // composition, not balance; the sub-cent slop flows
+        // into the residual earnings by construction.
+        sRothLedP.ira.balance = sRothLedP.ira.balance + shareP;
+        sRothLedS.ira.balance = sRothLedS.ira.balance + shareS;
+        // The appended lot does NOT make its ledger known:
+        // the lot sits FIFO-BEHIND any opening lots, whose
+        // amounts are unentered, so a draw cannot be shown
+        // to have reached it — the debit's unknown path
+        // returns before consuming any lot (see
+        // debitRothAccountLedger). Only a ledger whose
+        // opening composition was entered consumes its lots.
+        // The lot's dollars still count in the balance and
+        // in the residual, and a later year with the same
+        // unknown opening prices the same way — the flag,
+        // never a silent $0.
+      }
+      // EARLIEST LOT YEAR (for fiveYearClockYear below): the
+      // earliest conversion-lot year this settlement's
+      // ledgers hold — opening lots plus any lot appended
+      // above — captured BEFORE any debit consumes them: a
+      // lot converted and withdrawn in the same year is gone
+      // by year end, but its 5-year period still runs to
+      // year + 5, and the display names it (the P2 case:
+      // converted 2026, withdrawn 2026, clock 2031).
+      const earliestRothLotYear = (() => {
+        const yrs = [...sRothLedP.ira.lots, ...sRothLedS.ira.lots].map(
+          (l) => l.year,
+        );
+        return yrs.length > 0 ? Math.min(...yrs) : null;
+      })();
+      // ROTH DRAW AGES (Engine Review C9, Build 2 — W3): the
+      // age each ledger side draws on. While both spouses
+      // are alive, each owner's own whole-year age. In a
+      // survivor year the combined ledger sits on the
+      // survivor's side and the SURVIVOR's age governs it;
+      // the deceased's side is $0, so its age is null (the
+      // debit skips a null-aged side — it holds nothing).
+      // survWho names the DECEASED: "primary" died → the
+      // spouse survives (side S); "spouse" died → the
+      // primary survives (side P). In the death year itself
+      // the balances are still separate and each owner's own
+      // age governs (isSurvivorYear is false there).
+      const rothAgeP = isSurvivorYear
+        ? survWho === "spouse"
+          ? survivorAge
+          : null
+        : age;
+      const rothAgeS = isSurvivorYear
+        ? survWho === "primary"
+          ? survivorAge
+          : null
+        : spouseAge;
       let taxableBal = taxable - fromTaxable;
       // YEAR FUNDING capture (display only — no priced figure
       // reads these trackers): the settlement's own funding
@@ -6217,6 +7025,20 @@ export function simulateRothPlan(
       // fbPretaxIn) and re-runs the round until they agree.
       let createdFbGains = 0;
       let createdFbPretax = 0;
+      // ROTH EARNINGS FEEDBACK (Engine Review C9, Build 2 —
+      // W3): createdFbRoth is the Roth earnings income the
+      // TAX-DEBIT legs create (debitUnpaid's Roth leg) —
+      // feedback for the settlement iteration, exactly like
+      // createdFbPretax. rothSpendEarnings is the Roth
+      // earnings income the SPENDING draws create — priced
+      // directly in the reprice below, like extraDraw, never
+      // feedback. spendRothUnknown is whether any Roth draw
+      // this round priced on unentered composition. The
+      // top-up below shrinks the appended conversion lots
+      // (see appendedLotP / appendedLotS above).
+      let createdFbRoth = 0;
+      let rothSpendEarnings = 0;
+      let spendRothUnknown = false;
 
       // BASIS-DRIFT mirror (drift runs only; every helper is a
       // no-op on the legacy path): basisBal tracks the basis
@@ -6352,8 +7174,11 @@ export function simulateRothPlan(
         const fromT = Math.min(rest, Math.max(0, taxableBal));
         // The Taxable leg's sale gains and the pre-tax legs'
         // amounts are income this debit creates: created
-        // feedback for the settlement iteration (the Roth leg
-        // creates no income).
+        // feedback for the settlement iteration. The Roth
+        // leg's EARNINGS portion is income too (Engine Review
+        // C9, Build 2 — W3): the contribution / conversion
+        // portions create none, but non-qualified earnings
+        // do — they feed back as createdFbRoth below.
         createdFbGains += basisOut(fromT);
         taxableBal -= fromT;
         rest -= fromT;
@@ -6377,10 +7202,36 @@ export function simulateRothPlan(
         // settlement iteration was not designed for. See the
         // builder report / DATA-PLAN entry.
         if (rest > 0) {
-          const fromR = Math.min(rest, Math.max(0, rothBal));
-          rothBal = Math.max(0, rothBal - rest);
+          // ROTH ORDERING (Engine Review C9, Build 2 — W3):
+          // the Roth leg is a distribution too, so it goes
+          // through the ordering function (contributions →
+          // conversion lots FIFO → earnings, primary first)
+          // on this settlement's ledger copies — the "Roth
+          // leg creates no income" comment above stays true
+          // only for the contribution / conversion portions:
+          // the earnings portion IS ordinary income, fed
+          // back as created feedback (createdFbRoth) so the
+          // next settlement round prices it and the year's
+          // ACA / MAGI / IRMAA all see it. NO penalty is
+          // priced on this leg — the same scope decision as
+          // the pre-tax legs above (penalizing a tax payment
+          // makes the penalty generate further distributions).
+          // The unknown flag is set on the debit, not the
+          // year: a tax-debit leg priced on unknown
+          // composition is disclosed through the year's
+          // rothBasisUnknown flag via the settlement's
+          // return (see below).
+          const out = debitRothLedgers(sRothLedP, sRothLedS, rest, {
+            year,
+            agePrimary: rothAgeP ?? age,
+            ageSpouse: rothAgeS,
+          });
+          const fromR = out.drawn;
+          rothBal = Math.max(0, rothBal - fromR);
           fundTaxRoth += fromR;
           rest -= fromR;
+          createdFbRoth = r2(createdFbRoth + out.income);
+          if (out.unknown) spendRothUnknown = true;
         }
         return Math.max(0, rest);
       };
@@ -6509,7 +7360,7 @@ export function simulateRothPlan(
                 (sTiers
                   ? r2(pricedGains)
                   : r2(taxableDrawn * drawGainRate)) + fbGainsIn;
-              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn, 0).acaMagi;
+              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn + fbRothIn, 0).acaMagi;
               drawCap = Math.max(0, acaTargetDollars - baseAcaMagi);
             }
             if (pretaxDrawCapArg != null) {
@@ -6586,10 +7437,39 @@ export function simulateRothPlan(
           debitEligP(fromP);
           debitEligS(fromS);
         } else {
-          const drawR = Math.min(Math.max(0, rothBal), spendDeficit);
-          rothBal -= drawR;
+          // ROTH ORDERING (Engine Review C9, Build 2 — W3):
+          // the Roth spending draw is a distribution, so it
+          // goes through the ordering function on this
+          // settlement's ledger copies (contributions →
+          // conversion lots FIFO → earnings, primary first,
+          // each owner on their own age — the survivor's age
+          // once combined). The earnings portion is ordinary
+          // income for the year (rothSpendEarnings, priced
+          // directly in the reprice below — the draw's own
+          // income, like extraDraw — so ACA / MAGI / IRMAA
+          // all see it); the penalty prices on the taxable
+          // portion of conversion lots inside their 5-year
+          // period and on non-qualified earnings, both under
+          // 59½, and joins spendPenalty — paid after the
+          // reprice below, exactly like the pre-tax draw's
+          // penalty beside it. A draw priced while the
+          // composition was unentered prices $0 and sets the
+          // unknown flag (the bit-identical landing default).
+          const out = debitRothLedgers(sRothLedP, sRothLedS, spendDeficit, {
+            year,
+            agePrimary: rothAgeP ?? age,
+            ageSpouse: rothAgeS,
+          });
+          const drawR = out.drawn;
+          rothBal = Math.max(0, rothBal - drawR);
           fundSpendRoth += drawR;
           spendDeficit -= drawR;
+          rothSpendEarnings = r2(rothSpendEarnings + out.income);
+          if (out.penalty > 0) {
+            spendPenalty = r2(spendPenalty + out.penalty);
+            penalty = r2(penalty + out.penalty);
+          }
+          if (out.unknown) spendRothUnknown = true;
         }
       }
       // Priced gains: single-pool, the year's drawn total at
@@ -6600,9 +7480,12 @@ export function simulateRothPlan(
         ? r2(pricedGains)
         : r2(taxableDrawn * drawGainRate);
       // The reprice prices the round's FULL income: the priced
-      // channels' gains and spending draw, plus the assumed
-      // feedback the round opened with. (In round 1 the
-      // feedback is $0 and this is the pre-fix reprice.)
+      // channels' gains and spending draw, the Roth spending
+      // draws' earnings income (this round's own draws —
+      // priced directly, like extraDraw), plus the assumed
+      // feedback (pre-tax and Roth tax-debit legs) the round
+      // opened with. (In round 1 the feedback is $0 and this
+      // is the pre-fix reprice.)
       // FOLLOW-UP #3: the gate fires on a NONZERO gains total,
       // not only a positive one — a loss-only taxable
       // withdrawal (an underwater pool's sales realize a
@@ -6614,7 +7497,8 @@ export function simulateRothPlan(
       // still skips: the opening pricing already IS the
       // round's pricing at $0 of draw income.
       const pricedGainsTotal = realizedGains + fbGainsIn;
-      const pricedExtraTotal = extraDraw + fbPretaxIn;
+      const pricedExtraTotal =
+        extraDraw + fbPretaxIn + rothSpendEarnings + fbRothIn;
       if (pricedGainsTotal !== 0 || pricedExtraTotal > 0) {
         const repriced = priceWith(pricedGainsTotal, pricedExtraTotal, conv);
         const delta = r2(
@@ -6725,6 +7609,46 @@ export function simulateRothPlan(
                 // rounding dust, never a real shortfall.
                 rothBal = Math.max(0, rothBal - topUpTotal);
                 fundTaxPretax = r2(fundTaxPretax + topUpTotal);
+                // ROTH ORDERING (Engine Review C9, Build 2 —
+                // W3): the top-up is a withholding OUT OF
+                // this conversion, so it shrinks the lots
+                // this round appended — primary first (the
+                // conversion sourced primary-first), never
+                // an older lot. The spending draw above may
+                // already have spent part of the new lot, so
+                // a remainder the lots cannot cover comes
+                // out of the IRA ledger's residual (the
+                // balance invariant — ledger balances sum to
+                // rothBal — is kept exact; the composition
+                // effect is second-order and confined to
+                // this payTaxFrom=conversion corner).
+                let shrinkLeft = topUpTotal;
+                for (const [led, lot] of [
+                  [sRothLedP, appendedLotP],
+                  [sRothLedS, appendedLotS],
+                ] as const) {
+                  if (shrinkLeft <= 0) break;
+                  if (lot != null) {
+                    const s = Math.min(shrinkLeft, lot.taxable);
+                    lot.taxable = r2(lot.taxable - s);
+                    led.ira.balance = Math.max(0, led.ira.balance - s);
+                    shrinkLeft = r2(shrinkLeft - s);
+                  }
+                }
+                if (shrinkLeft > 0) {
+                  const sP = Math.min(shrinkLeft, sRothLedP.ira.balance);
+                  sRothLedP.ira.balance = Math.max(
+                    0,
+                    sRothLedP.ira.balance - sP,
+                  );
+                  shrinkLeft = r2(shrinkLeft - sP);
+                  if (shrinkLeft > 0) {
+                    sRothLedS.ira.balance = Math.max(
+                      0,
+                      sRothLedS.ira.balance - shrinkLeft,
+                    );
+                  }
+                }
               }
             }
           }
@@ -6853,6 +7777,24 @@ export function simulateRothPlan(
         // drives the iteration off the created pair.
         feedbackGains: fbGainsIn,
         feedbackPretax: fbPretaxIn,
+        // ROTH EARNINGS FEEDBACK (Engine Review C9, Build 2
+        // — W3): the Roth tax-debit-leg feedback this round's
+        // pricing assumed and the feedback its debits
+        // created — the third leg of the settlement fixed
+        // point, iterated exactly like gains / pre-tax.
+        feedbackRoth: fbRothIn,
+        createdFbRoth: r2(createdFbRoth),
+        // ROTH EARNINGS INCOME (Engine Review C9, Build 2 —
+        // W3): the year's Roth earnings income this
+        // settlement priced — the spending draws' earnings
+        // plus the assumed tax-debit-leg feedback — the
+        // figure the year assembly carries into the row's
+        // rothEarningsIncome and the detail's income pieces.
+        rothEarningsIncome: r2(rothSpendEarnings + fbRothIn),
+        // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 —
+        // W3): whether this settlement priced a Roth draw on
+        // unentered composition (spending or tax-debit leg).
+        rothBasisUnknown: spendRothUnknown,
         createdFbGains: r2(createdFbGains),
         createdFbPretax: r2(createdFbPretax),
         // Total drawn from Taxable this settlement (tax paid
@@ -6879,6 +7821,17 @@ export function simulateRothPlan(
         eligBalP,
         eligBalS,
         earlyWithdrawalEligibilityUnknown: spendEligUnknown,
+        // ROTH LEDGERS (Engine Review C9, Build 2 — W3): the
+        // kept settlement's ledger copies — committed by the
+        // year below, exactly like the balances and the
+        // eligible remainders beside them.
+        rothLedP: sRothLedP,
+        rothLedS: sRothLedS,
+        // EARLIEST LOT YEAR (Engine Review C9, Build 2 —
+        // W3): the earliest conversion-lot year this
+        // settlement's ledgers held before any debit — the
+        // figure the year's fiveYearClockYear derives from.
+        earliestRothLotYear,
         rothBal,
         taxableBal,
         // YEAR FUNDING capture (see the trackers above): this
@@ -6950,11 +7903,17 @@ export function simulateRothPlan(
     ) => {
       let fbGains = 0;
       let fbPretax = 0;
+      // ROTH EARNINGS FEEDBACK (Engine Review C9, Build 2 —
+      // W3): the third leg of the fixed point — the Roth
+      // tax-debit legs' earnings income — iterated exactly
+      // like gains / pre-tax.
+      let fbRoth = 0;
       let best: ReturnType<typeof settleRound> | null = null;
       let bestMismatch = Infinity;
       let bestConverged = false;
       let bestMismatchGainsCents = 0;
       let bestMismatchPretaxCents = 0;
+      let bestMismatchRothCents = 0;
       // (Engine Review C3, C3-S1 diagnostics): how many rounds
       // the kept settlement took and why the iteration stopped.
       let roundsUsed = 0;
@@ -6962,7 +7921,7 @@ export function simulateRothPlan(
         "iteration-limit";
       const seenAssumed = new Set<string>();
       for (let round = 0; round < SETTLEMENT_MAX_ROUNDS; round++) {
-        const key = `${r2(fbGains)}|${r2(fbPretax)}`;
+        const key = `${r2(fbGains)}|${r2(fbPretax)}|${r2(fbRoth)}`;
         if (seenAssumed.has(key)) {
           // A repeated assumed pair — the iteration cycles.
           innerStop = "repeated-assumption";
@@ -6975,18 +7934,21 @@ export function simulateRothPlan(
           pretaxDrawCapArg,
           fbGains,
           fbPretax,
+          fbRoth,
           fbCreditIn,
         );
         const mismatchGains = Math.abs(s.createdFbGains - fbGains);
         const mismatchPretax = Math.abs(s.createdFbPretax - fbPretax);
-        const mismatch = mismatchGains + mismatchPretax;
-        if (s.createdFbGains === r2(fbGains) && s.createdFbPretax === r2(fbPretax)) {
+        const mismatchRoth = Math.abs(s.createdFbRoth - fbRoth);
+        const mismatch = mismatchGains + mismatchPretax + mismatchRoth;
+        if (s.createdFbGains === r2(fbGains) && s.createdFbPretax === r2(fbPretax) && s.createdFbRoth === r2(fbRoth)) {
           // Exact fixed point: the assumed feedback pair IS
           // the pair this round's debits created.
           best = s;
           bestConverged = true;
           bestMismatchGainsCents = 0;
           bestMismatchPretaxCents = 0;
+          bestMismatchRothCents = 0;
           innerStop = "converged";
           break;
         }
@@ -6995,19 +7957,21 @@ export function simulateRothPlan(
           best = s;
           bestMismatchGainsCents = Math.round(mismatchGains * 100);
           bestMismatchPretaxCents = Math.round(mismatchPretax * 100);
+          bestMismatchRothCents = Math.round(mismatchRoth * 100);
         }
         fbGains = s.createdFbGains;
         fbPretax = s.createdFbPretax;
+        fbRoth = s.createdFbRoth;
       }
       // The loop always runs at least one round, so `best` is
       // always set; the fallback only satisfies the type.
       const kept =
-        best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, fbCreditIn);
+        best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, 0, fbCreditIn);
       const fallbackRounds = best != null ? roundsUsed : 1;
       const fallbackStop =
         best != null
           ? innerStop
-          : kept.createdFbGains === 0 && kept.createdFbPretax === 0
+          : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0
             ? "converged"
             : "iteration-limit";
       return {
@@ -7015,19 +7979,20 @@ export function simulateRothPlan(
         settlementConverged:
           best != null
             ? bestConverged
-            : kept.createdFbGains === 0 && kept.createdFbPretax === 0,
+            : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0,
         settlementMismatchCents:
           best != null
-            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, acaCredit: 0 }
+            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, roth: bestMismatchRothCents, acaCredit: 0 }
             : {
                 gains: Math.round(Math.abs(kept.createdFbGains) * 100),
                 pretax: Math.round(Math.abs(kept.createdFbPretax) * 100),
+                roth: Math.round(Math.abs(kept.createdFbRoth) * 100),
                 acaCredit: 0,
               },
         // (Engine Review C3, C3-S1): the inner iteration's own
         // diagnostics. The ACA component is 0 here by
         // construction — this driver iterates gains / pre-tax
-        // only, at a FIXED assumed credit; the outer driver
+        // / Roth only, at a FIXED assumed credit; the outer driver
         // (settleYear) overwrites acaCredit with the kept
         // pass's own credit residual.
         settlementRounds: fallbackRounds,
@@ -7226,7 +8191,17 @@ export function simulateRothPlan(
           base: {
             ...fillBase,
             ...ledgerFields(settled.realizedGains + injectedLtcg),
-            extraPreTaxDraw: settled.extraDraw + settled.feedbackPretax,
+            // ROTH EARNINGS INCOME (Engine Review C9, Build 2
+            // — W3): the settled year's Roth earnings income
+            // rides the base's ordinary-income dial beside the
+            // pre-tax draw — the re-solve prices the year as
+            // settled, Roth earnings included. (The base
+            // carries no §72(t) eligibility facts, so the
+            // fold prices income only, never a penalty.)
+            extraPreTaxDraw:
+              settled.extraDraw +
+              settled.feedbackPretax +
+              settled.rothEarningsIncome,
           },
           ceilings: yearCeilings,
           maxConversion: pretaxAfterRmd + already,
@@ -7338,7 +8313,9 @@ export function simulateRothPlan(
       const stepStart = Math.max(0, candidateTotal - 100);
       const below = priceWith(
         candidate.realizedGains,
-        candidate.extraDraw + candidate.feedbackPretax,
+        candidate.extraDraw +
+          candidate.feedbackPretax +
+          candidate.rothEarningsIncome,
         stepStart,
       );
       const stepRate =
@@ -7735,6 +8712,20 @@ export function simulateRothPlan(
     let eligEndP = settled.eligBalP;
     let eligEndS = settled.eligBalS;
     let rothBal = settled.rothBal;
+    // ROTH LEDGERS (Engine Review C9, Build 2 — W3): the kept
+    // settlement's ledger copies become the year's ledgers —
+    // committed exactly like the balances beside them (the
+    // settlement's copies are fresh clones, so the assignment
+    // aliases nothing live). The year's Roth earnings income
+    // starts at the settlement's priced figure — the spending
+    // draws' earnings plus the assumed tax-debit-leg feedback
+    // — and the harvest below adds its own legs' earnings to
+    // it. The year's unknown flag starts at the settlement's
+    // and the harvest OR-s its own legs' flag into it below.
+    rothLedP = settled.rothLedP;
+    rothLedS = settled.rothLedS;
+    let rothEarningsIncome = settled.rothEarningsIncome;
+    let rothBasisUnknownYear = settled.rothBasisUnknown;
     let taxableBal = settled.taxableBal;
 
     // Gain harvesting (the strategy's gainsHarvest toggle):
@@ -7893,7 +8884,13 @@ export function simulateRothPlan(
         const settledAt15 = priced.gainsAt15;
         const settledAt20 = priced.gainsAt20;
         const harvestFits = (h: number): boolean => {
-          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax, conversion);
+          // ROTH EARNINGS INCOME (Engine Review C9, Build 2
+          // — W3): the settled year's Roth earnings ride the
+          // ordinary-income dial beside the pre-tax draw, so
+          // the harvest's ceiling checks price the year as
+          // settled (no §72(t) facts ride this dial — income
+          // only, never a penalty).
+          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax + rothEarningsIncome, conversion);
           return (
             p.gainsAt15 <= settledAt15 + 0.005 &&
             p.gainsAt20 <= settledAt20 + 0.005 &&
@@ -7917,7 +8914,7 @@ export function simulateRothPlan(
             gainsHarvested = lo / 100;
             const hp = priceWith(
               realizedGains + gainsHarvested,
-              extraDraw + feedbackPretax,
+              extraDraw + feedbackPretax + rothEarningsIncome,
               conversion,
             );
             // The settled (pre-harvest) tax — the baseline every
@@ -7974,6 +8971,28 @@ export function simulateRothPlan(
               const pretaxPPre = pretaxBalP;
               const pretaxSPre = pretaxBalS;
               const rothPre = rothBal;
+              // ROTH ORDERING (Engine Review C9, Build 2 —
+              // W3): the harvest's Roth leg is a distribution
+              // too — each trial legsFor call debits a FRESH
+              // CLONE of the committed ledgers (the function
+              // stays pure, snapshot-based like the pre-tax
+              // legs above), so the trial's earnings income
+              // and unknown flag describe exactly the leg the
+              // committed round will take. The ages are the
+              // ledger-side ages (see settleRound's rothAgeP
+              // / rothAgeS): the survivor's age once combined.
+              const rothLedPreP = cloneRothOwnerLedger(rothLedP);
+              const rothLedPreS = cloneRothOwnerLedger(rothLedS);
+              const harvestRothAgeP = isSurvivorYear
+                ? survWho === "spouse"
+                  ? survivorAge
+                  : null
+                : age;
+              const harvestRothAgeS = isSurvivorYear
+                ? survWho === "primary"
+                  ? survivorAge
+                  : null
+                : spouseAge;
               const legsFor = (delta: number) => {
                 const pay = Math.min(delta, Math.max(0, balPre));
                 let paySaleGains = 0;
@@ -8003,6 +9022,23 @@ export function simulateRothPlan(
                 const preTaxLeg = fromP + fromS;
                 const fromR = Math.min(rest, Math.max(0, rothPre));
                 const unpaid = Math.max(0, rest - fromR);
+                // The Roth leg's earnings income (ordinary
+                // income, priced in the iteration below) and
+                // whether it priced on unknown composition.
+                // NO penalty on this leg — the same scope
+                // decision as the pre-tax legs above (a tax
+                // payment's penalty would feed back into
+                // further distributions).
+                const rothTrial = debitRothLedgers(
+                  cloneRothOwnerLedger(rothLedPreP),
+                  cloneRothOwnerLedger(rothLedPreS),
+                  fromR,
+                  {
+                    year,
+                    agePrimary: harvestRothAgeP ?? age,
+                    ageSpouse: harvestRothAgeS,
+                  },
+                );
                 return {
                   pay,
                   paySaleGains,
@@ -8013,6 +9049,8 @@ export function simulateRothPlan(
                   fromR,
                   unpaid,
                   rest,
+                  rothEarningsIncome: rothTrial.income,
+                  rothUnknown: rothTrial.unknown,
                 };
               };
               let delta = delta0;
@@ -8025,7 +9063,11 @@ export function simulateRothPlan(
               for (let iter = 0; iter < 100; iter++) {
                 const p = priceWith(
                   realizedGains + gainsHarvested + legs.paySaleGains,
-                  extraDraw + feedbackPretax + legs.preTaxLeg,
+                  extraDraw +
+                    feedbackPretax +
+                    rothEarningsIncome +
+                    legs.preTaxLeg +
+                    legs.rothEarningsIncome,
                   conversion,
                 );
                 const newDelta = r2(
@@ -8132,7 +9174,29 @@ export function simulateRothPlan(
               if (eligEndS != null) eligEndS = Math.max(0, eligEndS - bestLegs.fromS);
               if (restAfterPretax > 0) {
                 fundHarvestTaxRoth += bestLegs.fromR;
-                rothBal = Math.max(0, rothBal - restAfterPretax);
+                // ROTH ORDERING (Engine Review C9, Build 2 —
+                // W3): the committed Roth leg debits the
+                // year's ledgers for real — the same amount
+                // the trial legs priced, so the committed
+                // income is the trial's income. Its earnings
+                // join the year's Roth earnings income; an
+                // unknown-composition leg sets the year's flag.
+                // NO penalty on this leg (see legsFor above).
+                const harvestRothOut = debitRothLedgers(
+                  rothLedP,
+                  rothLedS,
+                  restAfterPretax,
+                  {
+                    year,
+                    agePrimary: harvestRothAgeP ?? age,
+                    ageSpouse: harvestRothAgeS,
+                  },
+                );
+                rothBal = Math.max(0, rothBal - harvestRothOut.drawn);
+                rothEarningsIncome = r2(
+                  rothEarningsIncome + harvestRothOut.income,
+                );
+                if (harvestRothOut.unknown) rothBasisUnknownYear = true;
                 // UNPAID TAX (round-5 fix 1): whatever even the
                 // Roth leg could not cover is still owed — it
                 // joins the year's unpaid tax rather than
@@ -8318,6 +9382,12 @@ export function simulateRothPlan(
       settled.earlyWithdrawalEligibilityUnknown === true;
     if (earlyWithdrawalEligibilityUnknown)
       earlyWithdrawalUnknownYears.push(year);
+    // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+    // the year's flag — the settlement's plus the harvest's
+    // own legs — read off the year-level accumulator exactly
+    // like the flag above. The year row and the plan summary
+    // list carry the same figure.
+    if (rothBasisUnknownYear) rothBasisUnknownYears.push(year);
 
     // HEALTH PREMIUM TERM (build v208): the year's funded
     // health premium, read off the KEPT settlement exactly
@@ -8429,7 +9499,7 @@ export function simulateRothPlan(
     // final year at conversion + $100.
     let effectiveMarginalPct: number | null = null;
     if (conversion > 0) {
-      const plus = priceWith(realizedGains, extraDraw + feedbackPretax, conversion + 100);
+      const plus = priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome, conversion + 100);
       effectiveMarginalPct = r2(
         plus.federalTax + plus.stateTax - (federalTax + stateTax),
       );
@@ -8465,7 +9535,26 @@ export function simulateRothPlan(
     eligP = eligEndP == null ? null : Math.max(0, eligEndP) * yearGrowth;
     eligS = eligEndS == null ? null : Math.max(0, eligEndS) * yearGrowth;
     const pretax = pretaxP + pretaxS;
-    roth = Math.max(0, rothBal) * yearGrowth;
+    // ROTH LEDGERS (Engine Review C9, Build 2 — W3): the
+    // ledgers grow with the pool — each account's balance
+    // grows at the year's rate while its contributions and
+    // lots stand (basis dollars do not grow, exactly like
+    // the taxable basis below), so the growth accrues to the
+    // residual earnings automatically. The household total
+    // is the grown ledgers' sum — identical to the scalar
+    // growth to float dust, and r2 rounds the row to cents.
+    const growRothAccount = (led: RothAccountLedger) => {
+      led.balance = Math.max(0, led.balance) * yearGrowth;
+    };
+    growRothAccount(rothLedP.ira);
+    growRothAccount(rothLedP.employer);
+    growRothAccount(rothLedS.ira);
+    growRothAccount(rothLedS.employer);
+    roth =
+      rothLedP.ira.balance +
+      rothLedP.employer.balance +
+      rothLedS.ira.balance +
+      rothLedS.employer.balance;
     taxable = Math.max(0, taxableBal) * yearGrowth;
     hsa = Math.max(0, hsa) * yearGrowth;
     // Basis dollars do NOT grow with the balance — and they do
@@ -8689,7 +9778,7 @@ export function simulateRothPlan(
       const lawY = lawForYear(year);
       const fsY = effFilingStatus;
       const nextPriced =
-        conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax, conversion + 100) : null;
+        conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome, conversion + 100) : null;
       const addCap = (
         kind: RothFillCap["kind"],
         label: string,
@@ -8880,6 +9969,17 @@ export function simulateRothPlan(
       extraPreTaxDraw: r2(extraDraw + feedbackPretax),
       pretaxSpendingDraw: r2(extraDraw),
       pretaxTaxDebit: r2(feedbackPretax),
+      // ROTH EARNINGS INCOME (Engine Review C9, Build 2 —
+      // W3): the non-qualified earnings portion of the year's
+      // Roth draws — the settlement's spending-draw earnings
+      // plus its tax-debit-leg feedback plus the harvest's
+      // tax-payment legs' earnings — priced as ordinary
+      // income, already inside the year's AGI / MAGI / ACA
+      // MAGI. The detail's income pieces sum to AGI as
+      // extraPreTaxDraw + rothEarningsIncome + the other
+      // ordinary lines (interest, dividends, RMD, conversion,
+      // SS taxable, gains).
+      rothEarningsIncome: r2(rothEarningsIncome),
       // Total gains priced this year: the draws' realized gains
       // plus any injected counterfactual sale gain plus the
       // harvested gain plus the gain the harvest's own
@@ -9063,6 +10163,11 @@ export function simulateRothPlan(
       acaUnder138,
       acaBelow100Fpl,
       earlyWithdrawalEligibilityUnknown,
+      // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+      // the year's flag (settlement + harvest legs) and the
+      // Roth earnings income the year's priced AGI carries.
+      rothBasisUnknown: rothBasisUnknownYear,
+      rothEarningsIncome: r2(rothEarningsIncome),
       healthPremiumGross: r2(healthPremiumGrossYear),
       healthPremiumNet: r2(healthPremiumNetYear),
       pretaxEnd: r2(pretax),
@@ -9074,7 +10179,29 @@ export function simulateRothPlan(
       rothEnd: r2(roth),
       taxableEnd: r2(taxable),
       hsaEnd: r2(hsa),
-      fiveYearClockYear: conversion > 0 ? year + 5 : null,
+      // FIVE-YEAR CLOCK YEAR (Engine Review C9, Build 2 —
+      // W3): derived from the ledger — the earliest
+      // conversion-lot year the kept settlement's ledgers
+      // held before any debit, + 5 — the earlier of the two
+      // owners' — but ONLY when both owners' IRA ledgers are
+      // known (their opening lots entered, or a $0 opening
+      // balance fixing them by construction). With basis
+      // unknown, the legacy derivation stands in — a year
+      // with a conversion prices year + 5, otherwise null —
+      // so the landing stays bit-identical on unknown-basis
+      // plans. A lot the march itself created this year is
+      // in the settlement's earliest year either way, so a
+      // same-year conversion withdrawn the same year still
+      // shows the clock year its lot implies (2026 → 2031),
+      // exactly as before.
+      fiveYearClockYear: (() => {
+        if (rothLedP.ira.known && rothLedS.ira.known) {
+          return settled.earliestRothLotYear != null
+            ? settled.earliestRothLotYear + 5
+            : null;
+        }
+        return conversion > 0 ? year + 5 : null;
+      })(),
       warnings,
       detail,
       funding,
@@ -9120,6 +10247,7 @@ export function simulateRothPlan(
     irmaaLookbackMissingYears,
     acaBelow100FplYears,
     earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears,
     lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
     lifetimeAmt: r2(lifetimeAmt),
     lifetimeSsCollected: r2(lifetimeSsCollected),

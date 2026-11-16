@@ -85,6 +85,21 @@ export type RothSeedInputs = {
   firstRmdDeferralPrimary: null;
   firstRmdDeferralSpouse: null;
   rothCents: null;
+  // Roth IRA vs designated Roth split + Roth basis / clock
+  // (Engine Review C9, Build 2 — W3) seed blank (null = not
+  // established), like every optional pricing input the seed
+  // does not presume — the seed never invents a split, a
+  // basis, a lot, or a clock.
+  rothIraCents: null;
+  rothEmployerCents: null;
+  rothContributionBasisPrimaryCents: null;
+  rothContributionBasisSpouseCents: null;
+  rothConversionLotsPrimary: null;
+  rothConversionLotsSpouse: null;
+  firstRothYearPrimary: null;
+  firstRothYearSpouse: null;
+  firstDesignatedRothYearPrimary: null;
+  firstDesignatedRothYearSpouse: null;
   taxableCents: null;
   // Exclude-from-plan seeds blank (null = no exclusion), like
   // every optional pricing input the seed does not presume.
@@ -228,6 +243,16 @@ export function seedRothInputs(derived: {
     firstRmdDeferralPrimary: null,
     firstRmdDeferralSpouse: null,
     rothCents: null,
+    rothIraCents: null,
+    rothEmployerCents: null,
+    rothContributionBasisPrimaryCents: null,
+    rothContributionBasisSpouseCents: null,
+    rothConversionLotsPrimary: null,
+    rothConversionLotsSpouse: null,
+    firstRothYearPrimary: null,
+    firstRothYearSpouse: null,
+    firstDesignatedRothYearPrimary: null,
+    firstDesignatedRothYearSpouse: null,
     taxableCents: null,
     taxableExcludeCents: null,
     cashSetAsideCents: null,

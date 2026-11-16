@@ -103,6 +103,22 @@ export interface NormalizedScenario {
   pretaxDollars: number;
   taxableDollars: number;
   rothDollars: number;
+  // Roth composition (Engine Review C9, Build 2 — W3;
+  // primary owner only — the adapter models a single Roth
+  // pool with no per-owner split, so the spouse's
+  // composition is not representable here): null = not
+  // entered. The split divides rothDollars (IRA = entered
+  // rothIra, else the total less the employer share;
+  // employer = entered rothEmployer, else $0). An entered
+  // empty lot list is a real answer (no prior conversions).
+  rothIraDollars: number | null;
+  rothEmployerDollars: number | null;
+  rothContributionBasisDollars: number | null;
+  rothConversionLots:
+    | { year: number; taxableAmount: number; nontaxableAmount: number }[]
+    | null;
+  firstRothYear: number | null;
+  firstDesignatedRothYear: number | null;
   hsaDollars: number;
   taxableBasisPct: number;
   taxableBasisBlank: boolean;
@@ -165,6 +181,21 @@ export interface NormalizedScenario {
     spendingDraw: number;
     cashDraw: number;
     rothDraw: number;
+    // Roth composition (Engine Review C9, Build 2 — W3):
+    // the scenario's own composition, carried into the
+    // single-year pricer so a rothDraw prices on the same
+    // facts as the plan march (null = not entered — the
+    // draw prices under the assumed-qualified default with
+    // the flag set).
+    rothBalance: number | null;
+    rothIraBalance: number | null;
+    rothEmployerBalance: number | null;
+    rothContributionBasis: number | null;
+    rothConversionLots:
+      | { year: number; taxableAmount: number; nontaxableAmount: number }[]
+      | null;
+    firstRothYear: number | null;
+    firstDesignatedRothYear: number | null;
     // R6-S1/R6-S2: null = omitted (never a defaulted 0), so the
     // adapter can tell "not entered" from an explicit $0 / false.
     // stockSold/stockBasis price only when a sale is entered;
@@ -551,6 +582,26 @@ export function normalizeInputs(
   record("taxable", taxableDollars, "user", "Provided by caller.");
   record("roth", rothDollars, "user", "Provided by caller.");
   record("hsa", hsaDollars, "user", "Provided by caller.");
+  // --- Roth composition (Engine Review C9, Build 2 — W3;
+  // primary owner only — the adapter models a single Roth
+  // pool with no per-owner split). Null = not entered
+  // (assumed-qualified default + unknown flag on any Roth
+  // draw). The split divides rothDollars; the lots are
+  // copied whole (dollars — the adapter boundary converts
+  // to cents).
+  const rothIraDollars = input.rothIra ?? null;
+  const rothEmployerDollars = input.rothEmployer ?? null;
+  const rothContributionBasisDollars = input.rothContributionBasis ?? null;
+  const rothConversionLots =
+    input.rothConversionLots == null
+      ? null
+      : input.rothConversionLots.map((l) => ({
+          year: l.year,
+          taxableAmount: l.taxableAmount,
+          nontaxableAmount: l.nontaxableAmount,
+        }));
+  const firstRothYear = input.firstRothYear ?? null;
+  const firstDesignatedRothYear = input.firstDesignatedRothYear ?? null;
   const portfolioCents =
     dollarsToCents(pretaxDollars) +
     dollarsToCents(taxableDollars) +
@@ -1381,6 +1432,16 @@ export function normalizeInputs(
     spendingDraw: input.spendingDrawAnnual ?? 0,
     cashDraw: input.cashDrawAnnual ?? 0,
     rothDraw: input.rothDrawAnnual ?? 0,
+    // Roth composition (Engine Review C9, Build 2 — W3):
+    // the scenario's own composition, so the single-year
+    // rothDraw prices on the same facts as the plan march.
+    rothBalance: rothDollars,
+    rothIraBalance: rothIraDollars,
+    rothEmployerBalance: rothEmployerDollars,
+    rothContributionBasis: rothContributionBasisDollars,
+    rothConversionLots,
+    firstRothYear,
+    firstDesignatedRothYear,
     // R6-S1/R6-S2: null when omitted — the adapter must tell
     // "not entered" from an explicit $0 (a $0 sale prices no
     // gain/loss; no balance entered prices no RMD; a $0 balance
@@ -1650,6 +1711,12 @@ export function normalizeInputs(
     pretaxDollars,
     taxableDollars,
     rothDollars,
+    rothIraDollars,
+    rothEmployerDollars,
+    rothContributionBasisDollars,
+    rothConversionLots,
+    firstRothYear,
+    firstDesignatedRothYear,
     hsaDollars,
     taxableBasisPct,
     taxableBasisBlank,

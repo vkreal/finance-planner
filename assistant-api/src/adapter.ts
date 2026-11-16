@@ -527,6 +527,41 @@ export function buildRothCompareBase(
     firstRmdDeferralPrimary: scenario.firstRmdDeferralPrimary,
     firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse,
     rothCents: dollarsToCents(scenario.rothDollars),
+    // Engine Review C9, Build 2 (W3): the Roth split +
+    // primary-owner composition ride the scenario the caller
+    // entered (default: all absent — every existing call
+    // prices bit-identically). The adapter models a single
+    // Roth pool with no per-owner split, so the spouse's
+    // composition is NOT represented: the spouse's basis,
+    // lots, and clocks stay null, and any Roth draw priced
+    // on the spouse's side while its composition is
+    // unentered is flagged unknown on the outputs.
+    rothIraCents:
+      scenario.rothIraDollars == null
+        ? null
+        : dollarsToCents(scenario.rothIraDollars),
+    rothEmployerCents:
+      scenario.rothEmployerDollars == null
+        ? null
+        : dollarsToCents(scenario.rothEmployerDollars),
+    rothContributionBasisPrimaryCents:
+      scenario.rothContributionBasisDollars == null
+        ? null
+        : dollarsToCents(scenario.rothContributionBasisDollars),
+    rothContributionBasisSpouseCents: null,
+    rothConversionLotsPrimary:
+      scenario.rothConversionLots == null
+        ? null
+        : scenario.rothConversionLots.map((l) => ({
+            year: l.year,
+            taxableAmountCents: dollarsToCents(l.taxableAmount),
+            nontaxableAmountCents: dollarsToCents(l.nontaxableAmount),
+          })),
+    rothConversionLotsSpouse: null,
+    firstRothYearPrimary: scenario.firstRothYear,
+    firstRothYearSpouse: null,
+    firstDesignatedRothYearPrimary: scenario.firstDesignatedRothYear,
+    firstDesignatedRothYearSpouse: null,
     taxableCents: dollarsToCents(scenario.taxableDollars),
     taxableExcludeCents: null,
     hsaCents: dollarsToCents(scenario.hsaDollars),
@@ -694,6 +729,20 @@ export function buildRothPlanInputs(
       scenario.firstRmdDeferralPrimary ?? undefined,
     firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse ?? undefined,
     rothStart: scenario.rothDollars,
+    // Engine Review C9, Build 2 (W3): the Roth split +
+    // primary-owner composition, same mapping as
+    // buildRothCompareBase (spouse unrepresentable — the
+    // adapter models a single Roth pool).
+    rothIraStart: scenario.rothIraDollars,
+    rothEmployerStart: scenario.rothEmployerDollars,
+    rothContributionBasisPrimary: scenario.rothContributionBasisDollars,
+    rothContributionBasisSpouse: null,
+    rothConversionLotsPrimary: scenario.rothConversionLots,
+    rothConversionLotsSpouse: null,
+    firstRothYearPrimary: scenario.firstRothYear,
+    firstRothYearSpouse: null,
+    firstDesignatedRothYearPrimary: scenario.firstDesignatedRothYear,
+    firstDesignatedRothYearSpouse: null,
     taxableStart: scenario.taxableDollars,
     hsaStart: scenario.hsaDollars,
     taxableBasisPct: scenario.taxableBasisBlank
@@ -839,6 +888,14 @@ type MappedCompareScenario = {
   // with no pre-59½ pre-tax draw, or with eligibility
   // answered for every drawing owner.
   earlyWithdrawalUnknownYears: number[];
+  // ROTH BASIS UNKNOWN YEARS (Engine Review C9,
+  // Build 2 — W3): the years whose Roth spending draw was
+  // priced while the drawing owner's Roth basis / clocks
+  // were unentered — the $0 income and $0 penalty in
+  // those years are unknown, not computed. Empty on a
+  // scenario with no Roth draw, or with the composition
+  // entered for every drawing owner.
+  rothBasisUnknownYears: number[];
   // Lifetime health premiums (Review 3 R3-S1; $0 when the v208
   // term is not entered): the GROSS premium the score identity
   // adds beside acaCreditKept, and the NET premium actually
@@ -939,6 +996,7 @@ function mapCompareScenario(
     irmaaLookbackMissingYears: s.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.acaBelow100FplYears,
     earlyWithdrawalUnknownYears: s.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: s.rothBasisUnknownYears,
     lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
     lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
@@ -990,6 +1048,12 @@ type YearlyCompareRow = {
   // eligibility was unanswered — so the $0 penalty the year
   // shows on that draw is UNKNOWN, not a computed $0.
   earlyWithdrawalEligibilityUnknown: boolean;
+  // ROTH BASIS UNKNOWN (Engine Review C9, Build 2 — W3):
+  // true exactly when this year priced a Roth spending
+  // draw while the drawing owner's Roth basis / clocks
+  // were unentered — so the $0 income and $0 penalty the
+  // year shows on that draw are UNKNOWN, not computed $0s.
+  rothBasisUnknown: boolean;
   // The year's health premiums (Review 3 R3-S1): GROSS premium
   // (marketplace gross + Medicare base for the year's persons
   // on Medicare) and NET premium actually funded (gross less
@@ -1050,6 +1114,7 @@ function yearlyTable(
     irmaaSurchargeKnown: y.irmaaSurchargeKnown,
     acaBelow100Fpl: y.acaBelow100Fpl,
     earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
     healthPremiumGross: centsToDollars(y.healthPremiumGrossCents),
     healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
@@ -1290,6 +1355,7 @@ function mapScoredCandidate(
     irmaaLookbackMissingYears: s.result.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.result.acaBelow100FplYears,
     earlyWithdrawalUnknownYears: s.result.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: s.result.rothBasisUnknownYears,
     lifetimeHealthPremiumGross: r2(s.result.lifetimeHealthPremiumGross),
     lifetimeHealthPremiumNet: r2(s.result.lifetimeHealthPremiumNet),
     endingPretax: r2(s.result.endingPretax),
@@ -1348,6 +1414,7 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     irmaaSurchargeKnown: y.irmaaSurchargeKnown,
     acaBelow100Fpl: y.acaBelow100Fpl,
     earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
     healthPremiumGross: r2(y.healthPremiumGross),
     healthPremiumNet: r2(y.healthPremiumNet),
     conversion: r2(y.conversion),
@@ -1406,6 +1473,7 @@ function irmaaAcaCompareWarnings(
     irmaaLookbackMissingYears: number[];
     acaBelow100FplYears: number[];
     earlyWithdrawalUnknownYears: number[];
+    rothBasisUnknownYears: number[];
   }>,
 ): string[] {
   const out: string[] = [];
@@ -1442,6 +1510,12 @@ function irmaaAcaCompareWarnings(
       // never read as if the year's whole penalty were $0.
       out.push(
         `Early-withdrawal penalty on the pre-tax spending draw is $0 but UNKNOWN for ${m.name} in ${years}: a pre-59½ pre-tax spending draw was priced while that owner's Rule-of-55 eligibility was not entered, so the $0 on that draw is an unanswered question, not a computed $0 — the real §72(t) penalty on the draw depends on how much of it came from an eligible employer plan. A conversion-withholding penalty in the same year, if any, is priced separately and is NOT part of this $0. Enter the eligible balance and separation age to price it.`,
+      );
+    }
+    if (m.rothBasisUnknownYears.length > 0) {
+      const years = m.rothBasisUnknownYears.join(", ");
+      out.push(
+        `Roth income and penalty are $0 but UNKNOWN for ${m.name} in ${years}: a Roth spending draw was priced while that owner's Roth basis / clocks were not entered, so the $0 income and $0 penalty on that draw are unanswered questions, not computed $0s — the real tax depends on how much of the draw came from contributions (free), prior conversions (10% §72(t) penalty when under 59½ and inside 5 years), and earnings (ordinary income, plus 10% when under 59½, unless the distribution is qualified). Enter the Roth contribution basis, conversion lots, and first Roth year to price it.`,
       );
     }
   }
@@ -1937,6 +2011,11 @@ export type RothConversionResults = {
       // pre-tax spending draw was priced while the drawing
       // owner's Rule-of-55 eligibility was unanswered.
       earlyWithdrawalUnknownYears: number[];
+      // ROTH BASIS UNKNOWN YEARS (Engine Review C9,
+      // Build 2 — W3): the winner march's years whose Roth
+      // spending draw was priced while the drawing owner's
+      // Roth basis / clocks were unentered.
+      rothBasisUnknownYears: number[];
       yearlyConversions: Array<{
         year: number;
         agePrimary: number;
@@ -1961,6 +2040,9 @@ export type RothConversionResults = {
       // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
       // Build 1): the do-nothing march's years, as above.
       earlyWithdrawalUnknownYears: number[];
+      // ROTH BASIS UNKNOWN YEARS (Engine Review C9,
+      // Build 2 — W3): the do-nothing march's years, as above.
+      rothBasisUnknownYears: number[];
     };
     candidateFamiliesEvaluated: string[];
     excludedCandidateFamilies: string[];
@@ -2209,6 +2291,7 @@ function compareRothConversionsFull(
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
             earlyWithdrawalUnknownYears:
               winner.result.earlyWithdrawalUnknownYears,
+            rothBasisUnknownYears: winner.result.rothBasisUnknownYears,
             yearlyConversions: winnerConversions,
             rmdDeferral: rmdSurvivorSummary(
               winner.result.years.map((y) => ({
@@ -2239,6 +2322,8 @@ function compareRothConversionsFull(
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
             earlyWithdrawalUnknownYears:
               doNothing.result.earlyWithdrawalUnknownYears,
+            rothBasisUnknownYears:
+              doNothing.result.rothBasisUnknownYears,
             rmdDeferral: rmdSurvivorSummary(
               doNothing.result.years.map((y) => ({
                 year: y.year,
@@ -2292,6 +2377,8 @@ function compareRothConversionsFull(
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
             earlyWithdrawalUnknownYears:
               winner.result.earlyWithdrawalUnknownYears,
+            rothBasisUnknownYears:
+              winner.result.rothBasisUnknownYears,
           },
           {
             name: "do-nothing",
@@ -2300,6 +2387,8 @@ function compareRothConversionsFull(
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
             earlyWithdrawalUnknownYears:
               doNothing.result.earlyWithdrawalUnknownYears,
+            rothBasisUnknownYears:
+              doNothing.result.rothBasisUnknownYears,
           },
         ]),
         "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
@@ -2436,6 +2525,11 @@ export function compareRetirementAges(
       // pre-tax spending draw was priced while the drawing
       // owner's Rule-of-55 eligibility was unanswered.
       earlyWithdrawalUnknownYears: number[];
+      // ROTH BASIS UNKNOWN YEARS (Engine Review C9,
+      // Build 2 — W3): the winner march's years whose Roth
+      // spending draw was priced while the drawing owner's
+      // Roth basis / clocks were unentered.
+      rothBasisUnknownYears: number[];
       assumptions: string[];
     }> = [];
     let workYearsWinnerByAllInTax: string | null = null;
@@ -2489,6 +2583,9 @@ export function compareRetirementAges(
           // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review
           // C9, Build 1): as above, for the winner march.
           earlyWithdrawalUnknownYears: row.earlyWithdrawalUnknownYears,
+          // ROTH BASIS UNKNOWN YEARS (Engine Review C9,
+          // Build 2 — W3): as above, for the winner march.
+          rothBasisUnknownYears: row.rothBasisUnknownYears,
           assumptions: row.assumptions,
         })),
       );
@@ -2564,6 +2661,7 @@ export function compareRetirementAges(
             irmaaLookbackMissingYears: w.irmaaLookbackMissingYears,
             acaBelow100FplYears: w.acaBelow100FplYears,
             earlyWithdrawalUnknownYears: w.earlyWithdrawalUnknownYears,
+            rothBasisUnknownYears: w.rothBasisUnknownYears,
           })),
         ),
         ...workYearsWarnings,
@@ -2843,6 +2941,23 @@ export function calculateSingleYearTax(
       spendingDraw: scenario.singleYear.spendingDraw,
       cashDraw: scenario.singleYear.cashDraw,
       rothDraw: scenario.singleYear.rothDraw,
+      // Engine Review C9, Build 2 (W3): the scenario's own
+      // Roth composition, so the single-year rothDraw prices
+      // on the same facts as the plan march. Null = not
+      // entered — the draw prices under the assumed-qualified
+      // default with the result's rothBasisUnknown /
+      // rothAssumedQualified flags saying so.
+      rothBalance: scenario.singleYear.rothBalance ?? undefined,
+      rothIraBalance: scenario.singleYear.rothIraBalance ?? undefined,
+      rothEmployerBalance:
+        scenario.singleYear.rothEmployerBalance ?? undefined,
+      rothContributionBasis:
+        scenario.singleYear.rothContributionBasis ?? undefined,
+      rothConversionLots:
+        scenario.singleYear.rothConversionLots ?? undefined,
+      firstRothYear: scenario.singleYear.firstRothYear ?? undefined,
+      firstDesignatedRothYear:
+        scenario.singleYear.firstDesignatedRothYear ?? undefined,
       inflationPct: scenario.inflationPct,
       stockSold,
       stockBasis,
@@ -2877,6 +2992,17 @@ export function calculateSingleYearTax(
     // the included case is warned by normalize at the scenario level.
     warnings.push(...healthPremiumWarnings(scenario));
     const priced: PlaygroundYearResult = pricePlaygroundYear(inputs);
+    // Engine Review C9, Build 2 (W3): a Roth draw priced
+    // while the composition is unentered reads $0 income
+    // and $0 penalty under the assumed-qualified default —
+    // the result carries the flags, and the warning makes
+    // the unknown visible here too instead of letting the
+    // $0 pass silently.
+    if (priced.rothBasisUnknown && scenario.singleYear.rothDraw > 0) {
+      warnings.push(
+        `Roth income and penalty are $0 but UNKNOWN for ${scenario.taxYear}: the Roth draw of ${fmtMoney(scenario.singleYear.rothDraw)} was priced while the Roth contribution basis, conversion lots, and first Roth year were not entered, so the $0 income and $0 penalty on it are unanswered questions, not computed $0s — the real tax depends on how much of the draw came from contributions (free), prior conversions (10% §72(t) penalty when under 59½ and inside 5 years), and earnings (ordinary income, plus 10% when under 59½, unless the distribution is qualified). Enter rothContributionBasis, rothConversionLots, and firstRothYear to price it.`,
+      );
+    }
     // Engine Review 6 (E6-S2): a priced year whose ACA MAGI
     // is under 100% FPL reads $0 credit under the standard
     // §36B income test — the aca block carries the flag and

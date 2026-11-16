@@ -129,6 +129,15 @@ export const FIELD_ORDER: string[] = [
   "pretax",
   "taxable",
   "roth",
+  // Engine Review C9 Build 2: the primary owner's Roth
+  // composition (zod declaration order — after roth, before
+  // hsa, as in schema.ts).
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear",
   "hsa",
   "monthlySpending",
   "currentAge",

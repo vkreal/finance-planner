@@ -163,6 +163,17 @@ const COMPARE_OPTIONAL_INPUTS: string[] = [
   "survivorWho",
   "survivorDeathYear",
   "survivorClaimAge",
+  // Engine Review C9, Build 2 (W3): the Roth split +
+  // primary-owner composition price in the march (and, for
+  // the split, in the work-years roll that feeds it). The
+  // spouse's composition is NOT a plan-tool input — the
+  // adapter models a single Roth pool.
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear",
 ];
 
 const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
@@ -192,6 +203,17 @@ const TAX_YEAR_OPTIONAL_INPUTS: string[] = [
   "spendingDrawAnnual",
   "cashDrawAnnual",
   "rothDrawAnnual",
+  // Engine Review C9, Build 2 (W3): the Roth split +
+  // primary-owner composition price in the single-year
+  // pricer, on the rothDraw dial. The spouse's composition
+  // is NOT a tax-year input — the adapter models a single
+  // Roth pool.
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear",
   "stockSoldAnnual",
   "stockBasisAnnual",
   "pretaxPriorYearEndAnnual",
@@ -299,6 +321,16 @@ const FIELD_BLURBS: Record<string, string> = {
   spendingDrawAnnual: "the draw for spending for one tax year",
   cashDrawAnnual: "the draw from cash for one tax year",
   rothDrawAnnual: "the draw from Roth for one tax year",
+  rothIra: "the Roth IRA share of the Roth balance",
+  rothEmployer: "the designated Roth employer-plan share of the Roth balance",
+  rothContributionBasis:
+    "the primary owner's regular-contribution basis still sitting in Roth (free to withdraw at any age)",
+  rothConversionLots:
+    "the primary owner's prior conversions still sitting in the Roth IRA, one lot per conversion year (taxable part keys the 5-year §72(t) penalty)",
+  firstRothYear:
+    "the primary owner's first taxable year of any Roth IRA contribution (the qualified-distribution 5-year clock)",
+  firstDesignatedRothYear:
+    "the primary owner's first taxable year of designated Roth contributions to the employer plan (that plan's own 5-year clock)",
   stockSoldAnnual: "taxable shares sold in one tax year",
   stockBasisAnnual: "the cost basis of the shares sold",
   pretaxPriorYearEndAnnual: "the primary's pre-tax balance at Dec 31 of the year before the priced year",

@@ -1887,6 +1887,13 @@ export type WorkYearRoll = {
     pretaxPrimary: number;
     pretaxSpouse: number;
     roth: number;
+    // The Roth balance split at the quit age (Engine Review
+    // C9, Build 2 — W3): the Roth IRA share and the
+    // designated Roth employer-plan share, grown and
+    // contributed separately through the roll. Exposed for
+    // fixture pinning, like taxableBasis.
+    rothIra: number;
+    rothEmployer: number;
     taxable: number;
     // The Taxable balance's basis dollars at the quit age
     // (build v58, F2) — the dollars the rolled plan's
@@ -1922,11 +1929,24 @@ export function rollWorkYears(
   const count =
     job.salary > 0 ? Math.max(0, Math.floor(quitAge) - effectiveStart) : 0;
   const startLedger = initTaxableLedger(plan);
+  // The Roth split at the roll's start (Engine Review C9,
+  // Build 2 — W3): the same resolution the march applies —
+  // an entered IRA share wins; otherwise the IRA holds the
+  // total less any entered employer share, and the employer
+  // share defaults to $0. The roll grows and contributes
+  // each side separately (catch-up Roth → employer,
+  // mega-backdoor → IRA), so the rolled march prices the
+  // same two ledgers the plan entered.
+  const startRothIra =
+    plan.rothIraStart ?? Math.max(0, plan.rothStart - (plan.rothEmployerStart ?? 0));
+  const startRothEmployer = plan.rothEmployerStart ?? 0;
   const startBalances = {
     pretax: r2(plan.pretaxStart + (plan.pretaxSpouseStart ?? 0)),
     pretaxPrimary: plan.pretaxStart,
     pretaxSpouse: plan.pretaxSpouseStart ?? 0,
     roth: plan.rothStart,
+    rothIra: startRothIra,
+    rothEmployer: startRothEmployer,
     taxable: plan.taxableStart,
     taxableBasis: r2(startLedger.basis),
     hsa: plan.hsaStart,
@@ -1982,6 +2002,12 @@ export function rollWorkYears(
   let pretaxPrimary = plan.pretaxStart;
   let pretaxSpouse = plan.pretaxSpouseStart ?? 0;
   let roth = plan.rothStart;
+  // The Roth split, carried beside the total through the
+  // roll (Engine Review C9, Build 2 — W3): catch-up Roth
+  // contributions land in the employer plan, mega-backdoor
+  // contributions in the IRA; each side grows on its own.
+  let rothIra = startRothIra;
+  let rothEmployer = startRothEmployer;
   let taxable = plan.taxableStart;
   let hsa = plan.hsaStart;
   const lines: WorkYearLine[] = [];
@@ -2016,6 +2042,16 @@ export function rollWorkYears(
   // The taxable basis ledger (F2), carried in dollars beside
   // the balance through every rolled year.
   const ledger = initTaxableLedger(plan);
+  // FIRST ROTH-CLOCK YEARS (Engine Review C9, Build 2 —
+  // W3): the first priced work year that actually makes a
+  // mega-backdoor contribution (a Roth IRA contribution)
+  // and the first that actually makes a catch-up Roth
+  // contribution (a designated Roth contribution) — each
+  // establishes its own 5-year clock when the plan entered
+  // none. Null when the roll makes no contribution of that
+  // kind.
+  let firstMegaYear: number | null = null;
+  let firstCatchUpRothYear: number | null = null;
   // PENDING EDUCATION REFUND (build v96): the refundable
   // §25A credit the previous work year priced, carried here
   // undeposited — the plan march's pendingEduRefund shape.
@@ -2206,7 +2242,25 @@ export function rollWorkYears(
       Math.max(0, pretaxPrimary - pricedLine.rmdPrimary) * growth + pretaxIn;
     pretaxSpouse =
       Math.max(0, pretaxSpouse - pricedLine.rmdSpouse) * growth;
-    roth = roth * growth + rothIn;
+    // Roth, split (Engine Review C9, Build 2 — W3): the
+    // catch-up Roth contribution lands in the employer plan
+    // and the mega-backdoor contribution in the IRA — each
+    // side grows on its own and the total is their sum, so
+    // the rolled total is identical to the old single-pool
+    // roll (growth + rothIn) to the cent.
+    rothIra = rothIra * growth + s.mega;
+    rothEmployer = rothEmployer * growth + catchUpRoth;
+    roth = rothIra + rothEmployer;
+    // The clock years: a mega-backdoor contribution is a
+    // Roth IRA contribution, a catch-up Roth contribution a
+    // designated Roth contribution — the first year of each
+    // kind establishes its own clock.
+    if (s.mega > 0 && firstMegaYear == null) {
+      firstMegaYear = plan.birthYearPrimary + age;
+    }
+    if (catchUpRoth > 0 && firstCatchUpRothYear == null) {
+      firstCatchUpRothYear = plan.birthYearPrimary + age;
+    }
     // DEFICIT FLOOR (round-7 fix 1.1): a work year's surplus
     // can be negative — outgo past the salary — but the
     // Taxable balance is an asset and cannot go below $0. The
@@ -2309,6 +2363,8 @@ export function rollWorkYears(
     pretaxPrimary: r2(pretaxPrimary),
     pretaxSpouse: r2(pretaxSpouse),
     roth: r2(roth),
+    rothIra: r2(rothIra),
+    rothEmployer: r2(rothEmployer),
     taxable: r2(taxable),
     taxableBasis: r2(ledger.basis),
     hsa: r2(hsa),
@@ -2395,6 +2451,41 @@ export function rollWorkYears(
     pretaxStart: Math.max(0, balances.pretaxPrimary),
     pretaxSpouseStart: Math.max(0, balances.pretaxSpouse),
     rothStart: Math.max(0, balances.roth),
+    // ROTH SPLIT + BASIS + CLOCK HANDOFF (Engine Review C9,
+    // Build 2 — W3): the rolled march prices the same two
+    // ledgers the roll just grew — the IRA share and the
+    // employer share, each floored at $0 like the total.
+    // The primary's contribution basis carries forward with
+    // the work-year Roth contributions ADDED (every work-year
+    // Roth dollar is a contribution, so it is basis); an
+    // unentered basis stays unentered — unknown stays
+    // unknown, never defaulted to the balance. The entering
+    // conversion lots ride the spread above (the roll makes
+    // no conversions, so nothing changes them), and the
+    // spouse's basis rides it too (the roll prices the
+    // primary's salary only). The first-clock years the roll
+    // established fill in only when the plan entered none.
+    rothIraStart: Math.max(0, balances.rothIra),
+    // The employer share is the RESIDUAL of the r2'd total
+    // (not r2 of the employer balance): r2(ira) + r2(employer)
+    // can differ from r2(total) by a cent, and the march's
+    // opening total is the two parts' sum — the residual keeps
+    // it exactly equal to the rolled total. When the parts
+    // round cleanly (the usual case) this is identical to
+    // r2(employer). The outer r2 cleans the float dust of
+    // subtracting two cent values, so the handoff stays a
+    // cent-clean dollar figure like every other rolled input.
+    rothEmployerStart: Math.max(
+      0,
+      r2(balances.roth - Math.max(0, balances.rothIra)),
+    ),
+    rothContributionBasisPrimary:
+      plan.rothContributionBasisPrimary == null
+        ? null
+        : r2(plan.rothContributionBasisPrimary + totals.rothContributions),
+    firstRothYearPrimary: plan.firstRothYearPrimary ?? firstMegaYear,
+    firstDesignatedRothYearPrimary:
+      plan.firstDesignatedRothYearPrimary ?? firstCatchUpRothYear,
     taxableStart: Math.max(0, balances.taxable),
     hsaStart: Math.max(0, balances.hsa),
     convertedAlreadyThisYear: 0,
@@ -2490,6 +2581,12 @@ export type WorkYearsCompareRow = {
   // drawing owner's Rule-of-55 eligibility was unanswered.
   // Read off the winner's own priced march, never re-derived.
   earlyWithdrawalUnknownYears: number[];
+  // ROTH BASIS UNKNOWN YEARS (Engine Review C9, Build 2 —
+  // W3, display only): the winner march's years whose Roth
+  // spending draw was priced while the drawing owner's Roth
+  // basis / clocks were unentered. Read off the winner's
+  // own priced march, never re-derived.
+  rothBasisUnknownYears: number[];
 };
 
 // Cache key for one priced compare row: the FULL rolled inputs
@@ -2570,6 +2667,7 @@ export function runWorkYearsCompare(
       acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
       earlyWithdrawalUnknownYears:
         opt.winner.result.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears,
     };
   });
 }

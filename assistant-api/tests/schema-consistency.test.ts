@@ -145,6 +145,16 @@ describe("advertised schema == accepting schema", () => {
       // Engine Review 6: explicitly supplied prior-year filed
       // returns price the IRMAA lookback.
       "priorYearMagi",
+      // Engine Review C9 Build 2: the primary owner's Roth
+      // composition prices Roth draws (contributions free,
+      // conversions inside 5 years penalized, earnings income
+      // unless qualified); absent prices $0 + the unknown flag.
+      "rothIra",
+      "rothEmployer",
+      "rothContributionBasis",
+      "rothConversionLots",
+      "firstRothYear",
+      "firstDesignatedRothYear",
     ];
     const taxYear = [
       "spouseAge",
@@ -185,6 +195,15 @@ describe("advertised schema == accepting schema", () => {
       "firstRmdDeferralSpouse",
       "firstRmdDeferredCarryPrimaryAnnual",
       "firstRmdDeferredCarrySpouseAnnual",
+      // Engine Review C9 Build 2: the primary owner's Roth
+      // composition prices the rothDrawAnnual (same ordering
+      // as the march); absent prices $0 + the unknown flag.
+      "rothIra",
+      "rothEmployer",
+      "rothContributionBasis",
+      "rothConversionLots",
+      "firstRothYear",
+      "firstDesignatedRothYear",
     ];
     const expected: Record<string, string[]> = {
       retirement_calculate: sim.filter((f) => f !== "volatilityPct"),
@@ -279,6 +298,17 @@ describe("canonical names land; old names are rejected", () => {
       spendingDraw: 114000,
       cashDraw: 0,
       rothDraw: 0,
+      // Engine Review C9, Build 2 (W3): the scenario's own
+      // Roth composition — the fixture enters none, so the
+      // balance rides through and every composition field
+      // is null (not entered).
+      rothBalance: 375000,
+      rothIraBalance: null,
+      rothEmployerBalance: null,
+      rothContributionBasis: null,
+      rothConversionLots: null,
+      firstRothYear: null,
+      firstDesignatedRothYear: null,
       stockSold: null,
       stockBasis: null,
       pretaxPriorYearEnd: null,
