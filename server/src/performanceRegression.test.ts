@@ -1,13 +1,33 @@
 // Engine Review C7 (§8) — performance regression harness.
 //
 // Repeatable benchmarks as committed tests. Every budget below is a
-// CPU-time budget (process.cpuUsage, user+sys) — NEVER wall time:
-// on this shared VM wall time inflates 5–10× with sibling load
-// while CPU time is stable to a few percent (audit-blocking.md:
-// three runOptimizer runs 21,480 / 22,060 / 21,628 ms CPU against
-// wall times 139,875 / 213,814 / 197,088 ms). Each budget cites the
-// measured baseline it derives from, with a wide margin; a budget
-// without a cited measurement is not acceptable.
+// CPU-time budget — NEVER wall time: on this shared VM wall time
+// inflates several-fold with sibling load while the leg's own CPU
+// time is what the audit measured as stable across runs
+// (audit-blocking.md: three runOptimizer runs 21,480 / 22,060 /
+// 21,628 ms CPU against wall times 139,875 / 213,814 / 197,088 ms).
+// Each budget cites the measured baseline it derives from, with a
+// wide margin; a budget without a cited measurement is not
+// acceptable.
+//
+// HOW A BUDGET IS MEASURED (SHOULD-2): each benchmark leg runs in
+// a FRESH child process (performanceLegRunner.ts, one leg per
+// invocation), twice, and the budget asserts the MINIMUM CPU over
+// the two attempts. The harness used to measure in the test
+// process, where process.cpuUsage() is process-wide, so
+// garbage-collection / JIT CPU from OTHER legs' retained results
+// landed inside a leg's window — idle windows with zero leg work
+// read tens to hundreds of milliseconds of CPU, and two full-file
+// runs failed untouched budgets with ~13 s readings on legs whose
+// own CPU is ~50 ms–1.5 s. A fresh process per attempt means no
+// other leg's retained graph exists to be collected during the
+// window; the minimum over two attempts discards a one-off burst
+// in one of them. Ambient CPU only ever inflates a reading, never
+// deflates it, so the minimum is the leg's own CPU — and a real
+// regression inflates both attempts, so the guard still bites.
+// Heap is measured in the same fresh process with NO forced GC
+// (Bun.gc(true) corrupts Bun's heapUsed reading), exactly as the
+// SHOULD-1 fresh-process probes did.
 //
 // All households are the fictional sample household
 // (server/src/sampleHousehold.ts) or small derived variants —
@@ -18,249 +38,86 @@
 // which is why the harness pins small shapes, not full ones.
 //
 // Each benchmark asserts: completion, determinism (same inputs →
-// identical outputs on re-run), structural counts, and a CPU
-// budget. Heap is asserted only as a loose upper bound on the
-// measured delta (Bun's heapUsed is a high-water mark, so only
-// the growth delta at the call is meaningful — audit-cache.md).
+// identical outputs on re-run, here across two fresh processes),
+// structural counts, and a CPU budget. Heap is asserted only as
+// a loose upper bound on the measured delta (Bun's heapUsed is a
+// high-water mark, so only the growth delta at the call is
+// meaningful — audit-cache.md).
 //
 // Run per-file (whole-suite bun test in one process OOMs on
 // this VM): bun test server/src/performanceRegression.test.ts
 
 import { describe, test, expect } from "bun:test";
-import {
-  jointInputsKey,
-  runJointOptimizer,
-  runOptimizer,
-  runRothCompare,
-  type JointOptimizerResult,
-  type OptimizerResult,
-} from "./rothOptimizer";
-import {
-  samplePlanInputs,
-  SAMPLE_ACA_BENCHMARK_COUPLE_CENTS,
-  SAMPLE_ACA_BENCHMARK_FAMILY_CENTS,
-  SAMPLE_ACA_BENCHMARK_SINGLE_CENTS,
-  SAMPLE_ANNUAL_SPENDING_CENTS,
-  SAMPLE_BIRTH_YEAR_PRIMARY,
-  SAMPLE_BIRTH_YEAR_SPOUSE,
-  SAMPLE_DIVIDEND_YIELD_PCT,
-  SAMPLE_EXPECTED_RETURN_PCT,
-  SAMPLE_FILING_STATUS,
-  SAMPLE_HEIR_RATE_PCT,
-  SAMPLE_HOUSEHOLD_SIZE,
-  SAMPLE_HSA_CENTS,
-  SAMPLE_INFLATION_PCT,
-  SAMPLE_INTEREST_YIELD_PCT,
-  SAMPLE_PRETAX_CENTS,
-  SAMPLE_PRESERVE_PRETAX_CENTS,
-  SAMPLE_PROTECT_MIN_TAXABLE_CENTS,
-  SAMPLE_QUALIFIED_SHARE_PCT,
-  SAMPLE_ROTH_CENTS,
-  SAMPLE_SS_PRIMARY_CENTS,
-  SAMPLE_SS_PRIMARY_START_AGE,
-  SAMPLE_SS_SPOUSE_CENTS,
-  SAMPLE_SS_SPOUSE_START_AGE,
-  SAMPLE_TAXABLE_BASIS_PCT,
-  SAMPLE_TAXABLE_CENTS,
-} from "./sampleHousehold";
-import type { RothPlanInputs } from "./taxEngine";
-import {
-  buildSimInputs,
-  runMonteCarlo,
-  solveMaxSpending,
-} from "./retirementEngines";
-import { runWorkYearsCompare } from "./workYears";
+import { join } from "node:path";
+import { jointInputsKey, runJointOptimizer } from "./rothOptimizer";
+import { jointSmall } from "./performanceShapes";
+import type { LegName, LegOutput } from "./performanceLegRunner";
 
-// --- Measurement helpers ---------------------------------------------
-// CPU milliseconds (user+sys) spent inside fn, plus the heapUsed
-// growth across it. Callers assert on cpuMs; heapDeltaMb is only
-// ever asserted against a loose upper bound.
-function measure<T>(fn: () => T): {
-  out: T;
-  cpuMs: number;
-  heapDeltaMb: number;
-} {
-  const cpu0 = process.cpuUsage();
-  const heap0 = process.memoryUsage().heapUsed;
-  const out = fn();
-  const cpu1 = process.cpuUsage(cpu0);
-  return {
-    out,
-    cpuMs: (cpu1.user + cpu1.system) / 1000,
-    heapDeltaMb: (process.memoryUsage().heapUsed - heap0) / 1048576,
-  };
-}
+// --- Fresh-process leg runs ------------------------------------------
+// Runs one benchmark leg in a fresh child process
+// (performanceLegRunner.ts) and returns the JSON it prints. A leg
+// that fails, times out, or prints unparseable stdout fails the
+// calling test with the child's stderr attached, so a broken
+// runner can never silently pass a budget.
+const LEG_RUNNER = join(import.meta.dir, "performanceLegRunner.ts");
+// Per-child wall timeout: each test spawns twice inside a 600 s
+// test timeout, so 280 s per child leaves room for both attempts.
+const LEG_TIMEOUT_MS = 280_000;
 
-// --- Small shapes (sample household, short horizons) -----------------
-// 5-year plan (ages 58→63), conversion window 62–63. One draw
-// order prices 505 candidates; all six orders price 3,025 — the
-// all-orders shape is deliberately NOT harnessed: it measured
-// 6,595 ms CPU in one fresh process and 18,899 ms in another
-// (probe B vs probe A), a ~3× spread that would flake a budget.
-// The 1-order shape measured 1,453 / 1,348 ms CPU across two
-// runs (probe A) and is the stable fixed-age benchmark.
-const small5y = (overrides: Partial<RothPlanInputs> = {}): RothPlanInputs =>
-  samplePlanInputs({
-    endAgePrimary: 63,
-    windowStartAge: 62,
-    windowStopAge: 63,
-    retirementAge: 62,
-    ...overrides,
+function spawnLeg<L extends LegName>(
+  leg: L,
+): Extract<LegOutput, { leg: L }> {
+  const proc = Bun.spawnSync([process.execPath, LEG_RUNNER, leg], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: LEG_TIMEOUT_MS,
   });
-
-// 5-year plan with both claiming ages locked (already claiming at
-// the entered ages 58/56), so the joint search has exactly 1
-// combo. Precedent: the A4 cache probe (cache3.ts) and the A3
-// 3-year cold run (0.47 s CPU).
-const jointSmall = (overrides: Record<string, unknown> = {}): RothPlanInputs =>
-  samplePlanInputs({
-    endAgePrimary: 63,
-    windowStartAge: 62,
-    windowStopAge: 63,
-    retirementAge: 62,
-    ssPrimaryStartAge: 58,
-    ssSpouseStartAge: 56,
-    ...overrides,
-  }) as RothPlanInputs;
-
-// The regression gate's compare base (same construction as
-// gate-probe.ts): the sample household with the preserve reserve
-// priced on the compare path.
-function sampleCompareBase(): Record<string, unknown> {
-  return {
-    birthYearPrimary: SAMPLE_BIRTH_YEAR_PRIMARY,
-    birthYearSpouse: SAMPLE_BIRTH_YEAR_SPOUSE,
-    filingStatus: SAMPLE_FILING_STATUS,
-    pretaxCents: SAMPLE_PRETAX_CENTS,
-    pretaxSpouseCents: null,
-    survivorEnabled: false,
-    survivorWho: null,
-    survivorDeathYear: null,
-    rothCents: SAMPLE_ROTH_CENTS,
-    taxableCents: SAMPLE_TAXABLE_CENTS,
-    taxableExcludeCents: 0,
-    hsaCents: SAMPLE_HSA_CENTS,
-    taxableBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
-    taxableTiers: null,
-    taxableDividendYieldPct: SAMPLE_DIVIDEND_YIELD_PCT,
-    taxableInterestYieldPct: SAMPLE_INTEREST_YIELD_PCT,
-    qualifiedDividendSharePct: SAMPLE_QUALIFIED_SHARE_PCT,
-    spendFromCashPct: null,
-    spendFromCashSleeveCents: null,
-    flexCutPct: null,
-    flexFloorPct: null,
-    annualSpendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
-    retirementAge: 62,
-    endAge: 95,
-    expectedReturnPct: SAMPLE_EXPECTED_RETURN_PCT,
-    ssPrimaryAnnualCents: SAMPLE_SS_PRIMARY_CENTS,
-    ssPrimaryStartAge: SAMPLE_SS_PRIMARY_START_AGE,
-    ssPrimaryNoBenefit: false,
-    ssSpouseAnnualCents: SAMPLE_SS_SPOUSE_CENTS,
-    ssSpouseStartAge: SAMPLE_SS_SPOUSE_START_AGE,
-    ssSpouseNoBenefit: false,
-    otherOrdinaryCents: null,
-    taxExemptInterestCents: null,
-    convertedAlreadyCents: null,
-    windowStartAge: 62,
-    windowStopAge: 73,
-    payTaxFrom: "taxable",
-    protectMinTaxableCents: SAMPLE_PROTECT_MIN_TAXABLE_CENTS,
-    preservePretaxCents: SAMPLE_PRESERVE_PRETAX_CENTS,
-    preserveExitRatePct: 10,
-    claimAgeFloor: null,
-    spouseSoleBeneficiary: true,
-    primarySoleBeneficiaryOfSpouse: null,
-    acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
-    acaHouseholdSchedule: null,
-    collegeFallFromYear: null,
-    collegeFallThroughYear: null,
-    acaBenchmarkCoupleCents: SAMPLE_ACA_BENCHMARK_COUPLE_CENTS,
-    acaBenchmarkSingleCents: SAMPLE_ACA_BENCHMARK_SINGLE_CENTS,
-    acaBenchmarkFamilyCents: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS,
-    acaSpouseEndAge: null,
-    inflationPct: SAMPLE_INFLATION_PCT,
-    stateRatePct: 0,
-    heirRatePct: SAMPLE_HEIR_RATE_PCT,
-    ceilings: null,
-    optimizerGuardrail: null,
-    optimizerBunching: null,
-    gainsHarvest: null,
-    drawOrder: null,
-    drawOrderAfter: null,
-    drawOrderSwitchAge: null,
-    yearlySalaryCents: null,
-    employer401kCents: null,
-    employerHsaCents: null,
-    fafsaReportableAssetsCents: null,
-  };
+  const stderr = proc.stderr.toString("utf8");
+  if (proc.exitCode !== 0) {
+    throw new Error(
+      `leg runner ${leg} failed (exit ${proc.exitCode}, signal ${proc.signalCode}): ${stderr}`,
+    );
+  }
+  const stdout = proc.stdout.toString("utf8").trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(
+      `leg runner ${leg} printed unparseable stdout: ${stdout}\nstderr: ${stderr}`,
+    );
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as { leg?: unknown }).leg !== leg ||
+    !Array.isArray((parsed as { runs?: unknown }).runs) ||
+    (parsed as { runs: unknown[] }).runs.length === 0
+  ) {
+    throw new Error(
+      `leg runner ${leg} printed an unexpected shape: ${stdout}\nstderr: ${stderr}`,
+    );
+  }
+  for (const run of (parsed as { runs: Record<string, unknown>[] }).runs) {
+    if (
+      typeof run.cpuMs !== "number" ||
+      !Number.isFinite(run.cpuMs) ||
+      typeof run.heapDeltaMb !== "number" ||
+      !Number.isFinite(run.heapDeltaMb)
+    ) {
+      throw new Error(
+        `leg runner ${leg} printed a run without numeric cpuMs/heapDeltaMb: ${stdout}`,
+      );
+    }
+  }
+  return parsed as Extract<LegOutput, { leg: L }>;
 }
 
-const ceil = (bracketTopPct: number) => ({
-  bracketTopPct,
-  irmaaTierCap: null,
-  ltcgZeroCap: false,
-  acaCliffCap: false,
-  acaCliffCapFamilyOnly: false,
-  magiCapCents: null,
-  acaCliffBufferCents: null,
-});
-
-// Retirement small shape: the sample household's balances
-// ($3,975,000 start: pre-tax + taxable + Roth + HSA), $180,000/yr
-// spending, both SS streams from 67, 60% stocks, 5% expected /
-// 12% vol — the corrected-input shape of audit-stress.md (P4d),
-// which prices at 97.5% never-runs-out over 1,000 runs.
-function sampleRetirement() {
-  const built = buildSimInputs(
-    {
-      portfolioCents:
-        SAMPLE_PRETAX_CENTS +
-        SAMPLE_TAXABLE_CENTS +
-        SAMPLE_ROTH_CENTS +
-        SAMPLE_HSA_CENTS,
-      spendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
-      currentAge: 58,
-      retirementAge: 62,
-      endAge: 95,
-      stocksPct: 60,
-      extraIncomeCents: SAMPLE_SS_PRIMARY_CENTS + SAMPLE_SS_SPOUSE_CENTS,
-      extraIncomeStartAge: 67,
-      expectedReturnPct: 5,
-      volatilityPct: 12,
-      strategy: "constant",
-      percentOfPortfolio: null,
-      guardrailsCutPct: null,
-      guardrailsRaisePct: null,
-      guardrailsAdjustmentPct: null,
-    },
-    { portfolioCents: 0, spendingCents: 0 },
-  );
-  if (!built) throw new Error("sample retirement inputs refused");
-  return built;
-}
-
-// Canonical digests for the determinism pins: the figures that
-// identify a pricing, without serializing multi-megabyte results.
-function optimizerDigest(r: OptimizerResult): string {
-  return JSON.stringify({
-    candidatesTested: r.candidatesTested,
-    valid: r.validCandidatesTested,
-    invalid: r.invalidCandidatesTested,
-    winnerKey: r.selectedWinner?.spec.key,
-    winnerNetCost: r.selectedWinner?.cost.netCost,
-    winnerEndingWealth: r.selectedWinner?.result.endingAfterTaxWealth,
-    doNothingNetCost: r.doNothing.cost.netCost,
-  });
-}
-function jointDigest(r: JointOptimizerResult): string {
-  return JSON.stringify({
-    combosTested: r.jointSearch?.combosTested,
-    candidatesTested: r.candidatesTested,
-    winnerKey: r.selectedWinner?.spec.key,
-    winnerNetCost: r.selectedWinner?.cost.netCost,
-    winnerEndingWealth: r.selectedWinner?.result.endingAfterTaxWealth,
-  });
+// The budget asserts the MINIMUM CPU over the two fresh-process
+// attempts: ambient CPU only ever inflates a reading, so the
+// minimum is the leg's own CPU.
+function minCpu(runs: readonly { cpuMs: number }[]): number {
+  return Math.min(...runs.map((r) => r.cpuMs));
 }
 
 // ---------------------------------------------------------------------------
@@ -358,88 +215,82 @@ describe("joint cache key distinguishes non-finite values from null (C7 A4)", ()
 
 // ---------------------------------------------------------------------------
 // §8 performance regression harness
+//
+// Each test below spawns its leg twice, each time in a fresh child
+// process, and asserts the MINIMUM CPU over the two attempts
+// against the unchanged budget (see the header: the fresh process
+// removes other legs' retained work from the window, and the
+// minimum discards a one-off ambient burst in one attempt).
+// Determinism is asserted across the two fresh processes.
 // ---------------------------------------------------------------------------
 describe("C7 §8 performance regression harness (CPU budgets, small shapes)", () => {
   test("fixed-age runOptimizer, 1 draw order, 5y: completes, deterministic, 505 candidates", () => {
-    const first = measure(() => runOptimizer(small5y(), { searchOrders: false }));
-    expect(first.out.candidatesTested).toBe(505);
-    expect(first.out.selectedWinner).toBeDefined();
-    expect(Number.isFinite(first.out.selectedWinner?.cost.netCost)).toBe(true);
-    const second = measure(() => runOptimizer(small5y(), { searchOrders: false }));
-    expect(second.out.candidatesTested).toBe(505);
-    expect(optimizerDigest(second.out)).toBe(optimizerDigest(first.out));
+    const a = spawnLeg("fixedAge");
+    const b = spawnLeg("fixedAge");
+    const [first, second] = [a.runs[0], b.runs[0]];
+    expect(first.candidatesTested).toBe(505);
+    expect(second.candidatesTested).toBe(505);
+    expect(Number.isFinite(first.winnerNetCost)).toBe(true);
+    expect(Number.isFinite(second.winnerNetCost)).toBe(true);
+    expect(second.digest).toBe(first.digest);
     // Baseline: probe A measured 1,453 / 1,348 ms CPU on this
     // 5y shape; audit-blocking.md measured 4,838 ms CPU for the
     // same 1-order search on the 38y sample plan. Budget 10,000
     // ms CPU is ~7× the 5y baseline and ~2× the 38y figure.
-    expect(first.cpuMs).toBeLessThanOrEqual(10_000);
+    expect(minCpu([first, second])).toBeLessThanOrEqual(10_000);
     // Heap growth at the call: probe A measured +8.3 MB.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
-  }, 300_000);
+    expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+  }, 600_000);
 
   test("joint optimizer, 1 combo, 5y: cold completes, hit is identical, counts hold", () => {
-    const cold = measure(() => runJointOptimizer(jointSmall()));
-    expect(cold.out.jointSearch?.combosTested).toBe(1);
-    expect(cold.out.candidatesTested).toBe(3025);
-    expect(Number.isFinite(cold.out.selectedWinner?.cost.netCost)).toBe(true);
-    const hit = measure(() => runJointOptimizer(jointSmall()));
-    expect(jointDigest(hit.out)).toBe(jointDigest(cold.out));
-    expect(hit.out.jointSearch?.combosTested).toBe(1);
+    const a = spawnLeg("joint");
+    const b = spawnLeg("joint");
+    const [coldA, hitA] = a.runs;
+    const [coldB, hitB] = b.runs;
+    expect(coldA.combosTested).toBe(1);
+    expect(coldA.candidatesTested).toBe(3025);
+    expect(Number.isFinite(coldA.winnerNetCost)).toBe(true);
+    expect(hitA.combosTested).toBe(1);
+    expect(coldB.combosTested).toBe(1);
+    expect(coldB.candidatesTested).toBe(3025);
+    expect(hitB.combosTested).toBe(1);
+    expect(hitA.digest).toBe(coldA.digest);
+    expect(coldB.digest).toBe(coldA.digest);
+    expect(hitB.digest).toBe(coldA.digest);
     // Baselines: probe A measured 3,558 ms CPU cold and 892 ms
     // CPU for the hit on this 5y shape; audit-cache.md measured
     // 470 ms CPU cold (3y, 1 combo) and 941 ms CPU for a hit
     // (5y clone). Budgets are ~5× the 5y baselines.
-    expect(cold.cpuMs).toBeLessThanOrEqual(20_000);
-    expect(hit.cpuMs).toBeLessThanOrEqual(5_000);
+    expect(minCpu([coldA, coldB])).toBeLessThanOrEqual(20_000);
+    expect(minCpu([hitA, hitB])).toBeLessThanOrEqual(5_000);
     // Heap growth at the call: probe A measured +62.8 MB cold,
     // +43.6 MB on the hit (result + stored clone on a miss;
     // cached + returned clone on a hit).
-    expect(cold.heapDeltaMb).toBeLessThanOrEqual(256);
-    expect(hit.heapDeltaMb).toBeLessThanOrEqual(256);
-  }, 300_000);
+    expect(coldA.heapDeltaMb).toBeLessThanOrEqual(256);
+    expect(hitA.heapDeltaMb).toBeLessThanOrEqual(256);
+    expect(coldB.heapDeltaMb).toBeLessThanOrEqual(256);
+    expect(hitB.heapDeltaMb).toBeLessThanOrEqual(256);
+  }, 600_000);
 
   test("runRothCompare, 3 scenarios, 38y: completes, deterministic, 3 priced", () => {
-    const run = () =>
-      runRothCompare(
-        sampleCompareBase() as never,
-        [
-          { name: "Do Nothing", overrides: {} },
-          { name: "Fill 12%", overrides: { ceilings: ceil(12) } },
-          { name: "Fill 22%", overrides: { ceilings: ceil(22) } },
-        ] as never,
-        2026,
-        "Do Nothing",
-      );
-    const first = measure(run);
-    expect(first.out.ok).toBe(true);
-    if (!first.out.ok) return;
-    expect(first.out.scenarios.length).toBe(3);
-    const cents = first.out.scenarios.map((s) => ({
-      name: s.name,
-      netCostCents: s.netCostCents,
-      totalTaxCents: s.totalTaxCents,
-      years: s.years.length,
-    }));
-    for (const s of first.out.scenarios) {
+    const a = spawnLeg("compare");
+    const b = spawnLeg("compare");
+    const [first, second] = [a.runs[0], b.runs[0]];
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(first.scenarios.length).toBe(3);
+    expect(second.scenarios.length).toBe(3);
+    for (const s of first.scenarios) {
       expect(Number.isFinite(s.netCostCents)).toBe(true);
-      expect(s.years.length).toBe(38);
+      expect(s.years).toBe(38);
     }
-    const second = measure(run);
-    expect(second.out.ok).toBe(true);
-    if (!second.out.ok) return;
-    expect(
-      second.out.scenarios.map((s) => ({
-        name: s.name,
-        netCostCents: s.netCostCents,
-        totalTaxCents: s.totalTaxCents,
-        years: s.years.length,
-      })),
-    ).toEqual(cents);
+    expect(second.scenarios).toEqual(first.scenarios);
     // Baseline: probe A measured 16 ms CPU for 3 scenarios;
     // audit-blocking.md measured 146 ms CPU for 4 scenarios
     // (620 ms for 50). Budget 5,000 ms CPU is ~30× the
     // 4-scenario baseline.
-    expect(first.cpuMs).toBeLessThanOrEqual(5_000);
+    expect(minCpu([first, second])).toBeLessThanOrEqual(5_000);
     // Heap growth at the call: a fresh-process probe measured
     // +4.1 MB (two runs agreeing; heap-probe.ts). The 0.0 MB
     // delta in measure.log is a high-water artifact — the
@@ -447,25 +298,24 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // — not a baseline, so it is not cited. Budget 128 MB
     // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
-  }, 300_000);
+    expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+  }, 600_000);
 
   test("retirement Monte Carlo, 1,000 runs: completes, deterministic, 1,000 runs", () => {
-    const built = sampleRetirement();
-    const first = measure(() =>
-      runMonteCarlo(built.inputs, built.expected, built.vol, 12345, 1000),
-    );
-    expect(first.out).not.toBeNull();
-    expect(first.out?.successRate).toBe(97.5);
-    expect(first.out?.neverOutSuccessRate).toBe(97.5);
-    expect(Number.isFinite(first.out?.p50)).toBe(true);
-    const second = measure(() =>
-      runMonteCarlo(built.inputs, built.expected, built.vol, 12345, 1000),
-    );
-    expect(JSON.stringify(second.out)).toBe(JSON.stringify(first.out));
+    const a = spawnLeg("mc");
+    const b = spawnLeg("mc");
+    const [first, second] = [a.runs[0], b.runs[0]];
+    expect(first.successRate).toBe(97.5);
+    expect(first.neverOutSuccessRate).toBe(97.5);
+    expect(Number.isFinite(first.p50)).toBe(true);
+    expect(second.successRate).toBe(97.5);
+    expect(second.neverOutSuccessRate).toBe(97.5);
+    expect(Number.isFinite(second.p50)).toBe(true);
+    expect(second.resultJson).toBe(first.resultJson);
     // Baseline: probe A measured 49 / 24 ms CPU;
     // audit-blocking.md measured 45 ms CPU for 1,000 runs.
     // Budget 2,000 ms CPU is ~40× the baseline.
-    expect(first.cpuMs).toBeLessThanOrEqual(2_000);
+    expect(minCpu([first, second])).toBeLessThanOrEqual(2_000);
     // Heap growth at the call: a fresh-process probe measured
     // +3.8 / +3.9 MB (two runs; heap-probe.ts). The 0.0 MB
     // delta in measure.log is a high-water artifact — the
@@ -473,28 +323,27 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // — not a baseline, so it is not cited. Budget 128 MB
     // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
-  }, 300_000);
+    expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+  }, 600_000);
 
   test("solveMaxSpending constant/Monte Carlo 85%: completes, deterministic, feasible", () => {
-    const built = sampleRetirement();
-    const first = measure(() =>
-      solveMaxSpending(built.inputs, built.stocks, built.expected, built.vol, "montecarlo", 85, 12345),
-    );
-    expect(first.out).not.toBeNull();
-    expect(first.out?.solutionStatus).toBe("feasible");
-    expect(first.out?.maxSpendingCents).toBe(22_710_000);
-    expect(first.out?.successRate).toBe(85.1);
-    const second = measure(() =>
-      solveMaxSpending(built.inputs, built.stocks, built.expected, built.vol, "montecarlo", 85, 12345),
-    );
-    expect(JSON.stringify(second.out)).toBe(JSON.stringify(first.out));
+    const a = spawnLeg("solver");
+    const b = spawnLeg("solver");
+    const [first, second] = [a.runs[0], b.runs[0]];
+    expect(first.solutionStatus).toBe("feasible");
+    expect(first.maxSpendingCents).toBe(22_710_000);
+    expect(first.successRate).toBe(85.1);
+    expect(second.solutionStatus).toBe("feasible");
+    expect(second.maxSpendingCents).toBe(22_710_000);
+    expect(second.successRate).toBe(85.1);
+    expect(second.resultJson).toBe(first.resultJson);
     // Baseline: probe A measured 316 / 274 ms CPU;
     // audit-stress.md measured 202 ms CPU for this solver path
     // (the guardrails/MC path, 9,745 ms CPU, is deliberately
     // not harnessed — it is the priciest solver path and would
     // dominate the file's wall time under load).
     // Budget 5,000 ms CPU is ~15× the baseline.
-    expect(first.cpuMs).toBeLessThanOrEqual(5_000);
+    expect(minCpu([first, second])).toBeLessThanOrEqual(5_000);
     // Heap growth at the call: a fresh-process probe measured
     // +5.6 / +4.6 MB on the first call (two runs; heap-probe.ts),
     // and a second call in the same fresh process adds ~6.5 MB
@@ -504,46 +353,26 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // baseline, so it is not cited. Budget 256 MB is ~45× the
     // first-call growth and ~20× the two-call cumulative.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(256);
-  }, 300_000);
+    expect(second.heapDeltaMb).toBeLessThanOrEqual(256);
+  }, 600_000);
 
   test("work-years, 1 quit age, small shape: completes, deterministic, 1 row", () => {
-    // Small shape: 4-year horizon (ages 62→66) with both SS
-    // benefits already claiming (start ages 58/56), so the
-    // rolled joint search is 1 combo. The unlocked-SS variant
-    // of this shape searches ~72 claiming-age combos and was
-    // still running after 10+ minutes in probe B — that is the
-    // precedent test's shape (workYearsReview7Hsa.test.ts §4,
-    // 900 s timeout), not a harness shape.
-    const plan = samplePlanInputs({
-      endAgePrimary: 66,
-      windowStartAge: 62,
-      windowStopAge: 64,
-      retirementAge: 62,
-      ssPrimaryStartAge: 58,
-      ssSpouseStartAge: 56,
-    });
-    const job = {
-      salary: 100000,
-      employer401k: 0,
-      employerHsa: 0,
-      hsaCoverage: "family" as const,
-      hsaEligible: true,
-      priorYearWages: 90000,
-    };
-    const run = () => runWorkYearsCompare(plan, job, [63]);
-    const first = measure(run);
-    expect(first.out.length).toBe(1);
-    const row = first.out[0]!;
+    const a = spawnLeg("workYears");
+    const b = spawnLeg("workYears");
+    const [first, second] = [a.runs[0], b.runs[0]];
+    expect(first.rows.length).toBe(1);
+    expect(second.rows.length).toBe(1);
+    const row = first.rows[0]!;
     expect(row.quitAge).toBe(63);
     expect(row.workYears).toBe(1);
     expect(Number.isFinite(row.allInTax)).toBe(true);
     expect(Number.isFinite(row.endingAfterTax)).toBe(true);
-    const second = measure(run);
-    expect(second.out.length).toBe(1);
-    const secondRow = second.out[0]!;
-    expect(secondRow.allInTax).toBe(row.allInTax);
-    expect(secondRow.endingAfterTax).toBe(row.endingAfterTax);
-    expect(secondRow.totalTax).toBe(row.totalTax);
+    const secondRow = second.rows[0]!;
+    expect(secondRow.quitAge).toBe(63);
+    expect(secondRow.workYears).toBe(1);
+    expect(Number.isFinite(secondRow.allInTax)).toBe(true);
+    expect(Number.isFinite(secondRow.endingAfterTax)).toBe(true);
+    expect(second.rows).toEqual(first.rows);
     // Baseline: probe E measured 5,869 ms CPU cold (551 ms on
     // the repeat — the rolled joint hits the module cache) and
     // +49.3 MB heap on this SS-locked 1-age shape;
@@ -552,7 +381,8 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // this small shape searches ~72 claiming-age combos (probe B:
     // still running after 10+ minutes). Budget 30,000 ms CPU is
     // ~5× the locked-shape baseline.
-    expect(first.cpuMs).toBeLessThanOrEqual(30_000);
+    expect(minCpu([first, second])).toBeLessThanOrEqual(30_000);
     expect(first.heapDeltaMb).toBeLessThanOrEqual(256);
-  }, 300_000);
+    expect(second.heapDeltaMb).toBeLessThanOrEqual(256);
+  }, 600_000);
 });
