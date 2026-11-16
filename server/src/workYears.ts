@@ -186,8 +186,9 @@ import {
   type YearLaw,
 } from "./taxLaw";
 import {
-runJointOptimizer,
-type JointOptimizerResult,
+  jointInputsKey,
+  runJointOptimizer,
+  type JointOptimizerResult,
 } from "./rothOptimizer";
 
 function r2(n: number): number {
@@ -292,7 +293,29 @@ export type ContributionStack = {
   // The household's own HSA contribution through payroll (the
   // year's HSA limit minus the employer's part, floored at $0).
   ownHsa: number;
+  // The employer's HSA contribution that actually LANDS in the
+  // bucket (Engine Review C6, C6-S1): the typed figure capped
+  // at the room the limit leaves after the employee's own
+  // contribution — min(requested, limit − ownHsa), $0 when
+  // ineligible or at a $0 limit. Before this fix the field
+  // carried the REQUESTED figure uncapped, so an over-limit
+  // typed employer HSA ($12,000 against a $9,750 limit) read
+  // $12,000 here while the bucket received $9,750 — a caller
+  // summing this field over years over-counted the deposit by
+  // the excess. The roll totals were already correct (they add
+  // hsaBucket − ownHsa); this field now agrees with them, so
+  // employerHsa + ownHsa === hsaBucket on every stack.
   employerHsa: number;
+  // The employer's HSA contribution as TYPED (requested),
+  // before the limit caps it: the figure the employer would
+  // send, whether or not the year's limit accepts it all.
+  // employerHsaRequested − employerHsa is the amount NOT
+  // accepted (the excess over the limit, $0 when the typed
+  // figure fits). Gated to $0 with eligibility exactly like
+  // employerHsa, so a Medicare-gated or ineligible year
+  // requests $0 here too — the typed figure is reported only
+  // where a contribution could land.
+  employerHsaRequested: number;
   // What the HSA bucket receives: own + employer, capped at
   // the year's limit.
   hsaBucket: number;
@@ -370,6 +393,7 @@ export function contributionStack(
     employer401k: 0,
     ownHsa: 0,
     employerHsa: 0,
+    employerHsaRequested: 0,
     hsaBucket: 0,
     hsaLimit: 0,
     hsaCoverage: "self-only",
@@ -452,6 +476,12 @@ export function contributionStack(
       hsaCoverage,
       hsaEligible,
       assumptions,
+      // The typed employer HSA is still reported as requested
+      // (eligibility-gated, like a priced year) even though
+      // nothing lands on a $0 salary — so a zero-salary year
+      // distinguishes "asked for $X, accepted $0" from
+      // "nothing was asked for".
+      employerHsaRequested: r2(hsaEligible ? employerHsa : 0),
     };
   const elective = law.elective401kLimit / 100;
   const deferral = Math.min(elective, salary);
@@ -546,6 +576,17 @@ export function contributionStack(
     Math.min(megaRoom, salary - deferral - catchUp - ownHsa),
   );
   const hsaBucket = Math.min(hsaLimit, ownHsa + employerHsaLanded);
+  // ACCEPTED employer HSA (Engine Review C6, C6-S1): the typed
+  // figure capped at the room the limit leaves after the
+  // employee's own contribution. ownHsa already filled
+  // min(limit − requested, salary room), so this is the
+  // requested figure when it fits and the limit itself when it
+  // does not — and hsaBucket − ownHsa, the figure the roll
+  // totals already counted, equals it exactly.
+  const employerHsaAccepted = Math.max(
+    0,
+    Math.min(employerHsaLanded, hsaLimit - ownHsa),
+  );
   return {
     deferral: r2(deferral),
     catchUp: r2(catchUp),
@@ -553,7 +594,8 @@ export function contributionStack(
     mega: r2(mega),
     employer401k: r2(employerLanded),
     ownHsa: r2(ownHsa),
-    employerHsa: r2(employerHsaLanded),
+    employerHsa: r2(employerHsaAccepted),
+    employerHsaRequested: r2(employerHsaLanded),
     hsaBucket: r2(hsaBucket),
     hsaLimit: r2(hsaLimit),
     hsaCoverage,
@@ -2465,6 +2507,21 @@ export type WorkYearsCompareRow = {
   acaBelow100FplYears: number[];
 };
 
+// Cache key for one priced compare row: the FULL rolled inputs
+// (Engine Review C6, §7 — see runWorkYearsCompare). Exported so
+// the keying itself is directly testable without pricing the
+// optimizer: two rolls whose balances and carry-ins agree but
+// whose settled basis, RMD-deferral handoff, or IRMAA lookback
+// seed differ must key differently.
+export function workYearsCompareCacheKey(
+  quitAge: number,
+  roll: WorkYearRoll,
+): string {
+  return roll.totals.years === 0
+    ? `no-work:${quitAge}`
+    : `roll:${jointInputsKey(roll.rolledInputs)}`;
+}
+
 export function runWorkYearsCompare(
   plan: RothPlanInputs,
   job: WorkYearJob,
@@ -2477,13 +2534,23 @@ export function runWorkYearsCompare(
   // its own quit age as the retirement age, so two zero-year
   // rows at different quit ages are different plans and must
   // not share one optimizer run.
+  //
+  // (Engine Review C6, §7): a priced row keys on the FULL
+  // rolled inputs, not just its balances. The old key
+  // (quit age + four balances + four loss carry-ins) omitted
+  // everything else the roll settles into the rolled plan —
+  // the rebuilt taxable basis (taxableBasisPct / taxableTiers,
+  // a function of the sale history, not the ending balance),
+  // the first-RMD deferral handoff, and the IRMAA lookback
+  // seed — so two quit ages landing on identical balances
+  // with different basis, deferral, or lookback state would
+  // have shared one optimizer result. Keying on the full
+  // rolled inputs (the exact plan the optimizer prices) makes
+  // a shared result possible only for identical plans.
   const cache = new Map<string, { roll: WorkYearRoll; optimizer: JointOptimizerResult }>();
   return quitAges.map((quitAge) => {
     const roll = rollWorkYears(plan, job, quitAge);
-    const key =
-      roll.totals.years === 0
-        ? `no-work:${quitAge}`
-        : `${quitAge}:${roll.balances.pretax}:${roll.balances.roth}:${roll.balances.taxable}:${roll.balances.hsa}:${roll.rolledInputs.capitalLossCarryInSt ?? 0}:${roll.rolledInputs.capitalLossCarryInLt ?? 0}:${roll.rolledInputs.capitalLossCarryInStWa ?? 0}:${roll.rolledInputs.capitalLossCarryInLtWa ?? 0}`;
+    const key = workYearsCompareCacheKey(quitAge, roll);
     let entry = cache.get(key);
     if (!entry) {
       entry = { roll, optimizer: runJointOptimizer(roll.rolledInputs) };

@@ -162,14 +162,43 @@ import {
 // Money + envelope helpers
 // ---------------------------------------------------------------------------
 
-/** Engine cents -> API dollars, rounded to 2dp. */
+/** Engine cents -> API dollars, rounded to 2dp.
+ * (Engine Review C6, C6-S2): rejects a non-finite cent amount
+ * and any amount whose rounded cents are not a safe integer —
+ * a silent NaN / Infinity / off-by-a-cent dollar figure must
+ * never reach a caller. Every schema-valid input converts to
+ * safe-integer cents, so no valid figure changes. */
 export function centsToDollars(cents: number): number {
-  return Math.round(cents) / 100;
+  if (!Number.isFinite(cents)) {
+    throw new Error("centsToDollars: non-finite cent amount");
+  }
+  const rounded = Math.round(cents);
+  if (!Number.isSafeInteger(rounded)) {
+    throw new Error(
+      "centsToDollars: amount cannot be represented exactly in integer cents",
+    );
+  }
+  return rounded / 100;
 }
 
-/** API dollars -> engine cents. */
+/** API dollars -> engine cents.
+ * (Engine Review C6, C6-S2): rejects a non-finite dollar
+ * amount and any amount whose cents are not a safe integer —
+ * dollarsToCents(90071992547409.93) previously returned
+ * 9007199254740994, one cent above the exact 9007199254740993,
+ * with no error. Every schema-valid input converts exactly,
+ * so no valid figure changes. */
 export function dollarsToCents(dollars: number): number {
-  return Math.round(dollars * 100);
+  if (!Number.isFinite(dollars)) {
+    throw new Error("dollarsToCents: non-finite dollar amount");
+  }
+  const cents = Math.round(dollars * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error(
+      "dollarsToCents: amount cannot be represented exactly in integer cents",
+    );
+  }
+  return cents;
 }
 
 /** Dollar-native engine figures -> API dollars, rounded to 2dp. */

@@ -508,6 +508,17 @@ async function decryptNum(key: CryptoKey, raw: unknown, context: string): Promis
   return Number.isFinite(n) ? n : 0;
 }
 async function encryptNum(key: CryptoKey, cents: number, context: string): Promise<string> {
+  // (Engine Review C6, C6-S2): the single write guard for every
+  // encrypted money field — a non-finite or non-safe-integer
+  // cent amount is refused here, never stored as truncated or
+  // imprecise text (Number.parseInt on read-back would silently
+  // return a neighbouring value, off by cents). Every writer
+  // passes integer cents, so no valid write changes.
+  if (!Number.isFinite(cents) || !Number.isSafeInteger(cents)) {
+    throw new Error(
+      `encryptNum: refusing to store a cent amount that cannot be represented exactly (${context})`,
+    );
+  }
   return encryptStr(key, String(Math.trunc(cents)), context);
 }
 async function decryptNullable(
@@ -2654,7 +2665,10 @@ const rothEducationStudents = z
   .array(rothEducationStudent)
   .max(24)
   .nullable();
-const rothInputFields = {
+// Exported for the input-validation tests (the saved-shape
+// fields are the single source the writers, the compute
+// variant, and the compare overrides all share).
+export const rothInputFields = {
   birthYearPrimary: z.number().int().min(1900).max(2100).nullable(),
   birthYearSpouse: z.number().int().min(1900).max(2100).nullable(),
   filingStatus: rothFilingStatus.nullable(),
@@ -3018,9 +3032,21 @@ const rothInputFields = {
   // Null on records written before this build = blank = no
   // salary entered, so no work years are priced and every
   // other figure is exactly as before.
-  yearlySalaryCents: z.number().int().nullable(),
-  employer401kCents: z.number().int().nullable(),
-  employerHsaCents: z.number().int().nullable(),
+  // Unsigned money (Engine Review C6, review Pass 1 SHOULD-1):
+  // a negative salary / employer 401(k) / employer HSA was
+  // previously accepted here and then priced as a negative
+  // contribution, breaking the HSA stack identity the review
+  // pins (accepted employer + accepted employee === bucket).
+  // int≥0, like annualSpendingCents (build v66, same failure
+  // mode) and extraIncomeCents — the save boundary and every
+  // compute path refuse a negative together, because the
+  // compute variant and the compare overrides both wrap these
+  // same field schemas (see rothComputeFields /
+  // rothOverridesStrict below). Deliberately signed fields
+  // elsewhere stay signed.
+  yearlySalaryCents: z.number().int().min(0).nullable(),
+  employer401kCents: z.number().int().min(0).nullable(),
+  employerHsaCents: z.number().int().min(0).nullable(),
 };
 /* Compute-request variant of the plan-input shape: the SAME
    properties, in the same order, with the same constraints —
@@ -3036,7 +3062,7 @@ const rothInputFields = {
    compare action's nested scenarios[].overrides object needs
    no variant — it is already .partial(), so neither switch
    key is required at that level. */
-const rothComputeFields = {
+export const rothComputeFields = {
   ...rothInputFields,
   drawOrderSwitchAge: rothInputFields.drawOrderSwitchAge.optional(),
   drawOrderAfter: rothInputFields.drawOrderAfter.optional(),

@@ -1871,7 +1871,10 @@ const jointOptimizerCache = new Map<string, JointOptimizerResult>();
 // prices finite). The tokens are objects, not bare strings, so a
 // genuine string field can never collide with one; every finite
 // value serializes exactly as before, so valid inputs hit the cache
-// bit-identically to the pre-fix key.
+// bit-identically to the pre-fix key. (Engine Review C6, §7 addressed
+// the same collision with string sentinels; the object tokens here
+// supersede them — a literal string field could have collided with a
+// sentinel — which also closes C6's NICE-2.)
 export function jointInputsKey(inputs: RothPlanInputs): string {
   const sortValue = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(sortValue);

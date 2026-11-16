@@ -246,12 +246,24 @@ export function questionsForFields(
   }));
 }
 
-/** Convert dollars to integer cents. Rejects non-finite input. */
+/** Convert dollars to integer cents. Rejects non-finite input.
+ * (Engine Review C6, C6-S2): also rejects any amount whose
+ * cents are not a safe integer — the same guard as the
+ * adapter's twin, so the two converters can never disagree
+ * about an amount (dollarsToCents(90071992547409.93) is one
+ * cent off exact). Every schema-valid input converts exactly,
+ * so no valid figure changes. */
 export function dollarsToCents(dollars: number): number {
   if (!Number.isFinite(dollars)) {
     throw new Error("dollarsToCents: non-finite dollar amount");
   }
-  return Math.round(dollars * 100);
+  const cents = Math.round(dollars * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error(
+      "dollarsToCents: amount cannot be represented exactly in integer cents",
+    );
+  }
+  return cents;
 }
 
 /**
@@ -544,11 +556,41 @@ export function normalizeInputs(
     dollarsToCents(taxableDollars) +
     dollarsToCents(rothDollars) +
     dollarsToCents(hsaDollars);
+  // (Engine Review C6, C6-S2): the PORTFOLIO sum is checked,
+  // not just each account — four individually safe balances can
+  // still sum past the safe-integer range, and a simulation
+  // pool that cannot be represented exactly in cents must be
+  // refused, never priced approximately. At the schema's
+  // $100,000,000-per-account cap the sum is $400,000,000
+  // (40,000,000,000 cents, safe), so this rejects nothing
+  // valid today; it is the guard that stays true if the cap
+  // ever moves.
+  if (!Number.isSafeInteger(portfolioCents)) {
+    return {
+      ok: false,
+      error: invalidInputError(
+        "The four account balances together exceed the largest portfolio that can be represented exactly in cents — reduce the balances.",
+        [{ field: "pretax", message: "portfolio total is not a safe integer number of cents" }],
+      ),
+    };
+  }
 
   // --- Spending. ---
   const monthlySpending = input.monthlySpending;
   record("monthlySpending", monthlySpending, "user", "Provided by caller.");
   const annualSpendingCents = Math.round(monthlySpending * 12 * 100);
+  // (Engine Review C6, C6-S2): the derived annual figure is
+  // checked too — a monthly figure the schema accepts can
+  // still annualize past the safe-integer range.
+  if (!Number.isSafeInteger(annualSpendingCents)) {
+    return {
+      ok: false,
+      error: invalidInputError(
+        "Monthly spending annualizes past the largest amount that can be represented exactly in cents — reduce the monthly spending.",
+        [{ field: "monthlySpending", message: "annualized spending is not a safe integer number of cents" }],
+      ),
+    };
+  }
 
   // --- Minimum annual spending floor (Engine Review 1, E1-S1). ---
   // Optional dollars/yr; omitted (or $0) = no floor, and the
@@ -563,7 +605,7 @@ export function normalizeInputs(
     input.minimumAnnualSpending == null ||
     input.minimumAnnualSpending === 0
       ? null
-      : Math.round(input.minimumAnnualSpending * 100);
+      : dollarsToCents(input.minimumAnnualSpending); // (C6-S2) safe-integer guard rides along
   if (
     input.minimumAnnualSpending === undefined ||
     input.minimumAnnualSpending === 0
