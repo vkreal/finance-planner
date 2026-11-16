@@ -4705,11 +4705,13 @@ export type PlaygroundYearResult = {
 // The sale-after-tax line's figures: the cash a typed stock
 // sale brought in, netted against the year's TOTAL tax as
 // priced (total federal tax — ordinary + gains, NIIT included —
-// plus the state tax whenever a state rate is typed and priced;
-// the sentence therefore never calls the figure federal).
+// plus the state tax whenever a state rate is typed and priced,
+// plus the §72(t) early-withdrawal penalty on the pre-tax
+// spending draw when one is priced — C9 fix 2; the sentence
+// therefore never calls the figure federal).
 export type PlaygroundSaleAfterTax = {
   proceeds: number; // the typed sale amount, whole dollars as printed
-  totalTax: number; // displayed federal + displayed state, whole dollars as printed
+  totalTax: number; // displayed federal + displayed state + displayed penalty, whole dollars as printed
   // proceeds − totalTax at the printed (whole-dollar) precision;
   // negative when the year's tax exceeds the sale's cash.
   leftover: number;
@@ -5748,19 +5750,28 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // (proceeds are the sale's cash, whatever the gain or loss —
   // a loss sale still brought its proceeds in). The tax netted
   // against it is the year's total tax as priced: federal
-  // (ordinary + gains, NIIT included) plus state when priced.
-  // Figures are rounded to the whole dollars the readout
+  // (ordinary + gains, NIIT included) plus state when priced,
+  // PLUS the §72(t) early-withdrawal penalty on the pre-tax
+  // spending draw (C9 fix 2) — the same penalty the result's
+  // netTaxBill carries, so the leftover agrees with
+  // cashLeftAfterTax on the sale's share of the year's cash:
+  // before fix 2 the line netted federal+state only and
+  // overstated the penalty-inclusive cash by exactly the
+  // penalty. Figures are rounded to the whole dollars the readout
   // prints, and the leftover is computed from those rounded
   // figures so the three printed numbers foot exactly. The
-  // total tax is the SUM OF THE TWO DISPLAYED COMPONENTS —
-  // Math.round(federal) + Math.round(state), exactly as the
-  // Tax block's own rows print them — not the rounding of the
-  // raw sum, which can differ by $1 when both carry cents.
+  // total tax is the SUM OF THE DISPLAYED COMPONENTS —
+  // Math.round(federal) + Math.round(state) +
+  // Math.round(penalty), exactly as the Tax block's own rows
+  // print them — not the rounding of the raw sum, which can
+  // differ by $1 when both carry cents.
   let saleAfterTax: PlaygroundSaleAfterTax | null = null;
   if (inp.stockSold > 0) {
     const proceeds = Math.round(inp.stockSold);
     const totalTax =
-      Math.round(priced.federalTax) + Math.round(priced.stateTax);
+      Math.round(priced.federalTax) +
+      Math.round(priced.stateTax) +
+      Math.round(priced.earlyWithdrawalPenalty);
     const leftover = proceeds - totalTax;
     saleAfterTax = {
       proceeds,
