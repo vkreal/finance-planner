@@ -2681,6 +2681,48 @@ export const rothInputFields = {
   // as before. The first save after this build writes these
   // fields at those same defaults.
   pretaxSpouseCents: rothBalanceField,
+  // Rule-of-55-eligible pre-tax + separation age (Engine
+  // Review C9, Build 1): per owner, the portion of that
+  // owner's pre-tax balance held in an employer plan from
+  // which the owner separated from service in or after the
+  // year they turn 55 — the dollars a pre-59½ distribution
+  // from that plan shelters from the §72(t) 10% penalty —
+  // and the whole-year age the owner separated from that
+  // plan (the audit trail for the balance). Required keys
+  // like every field here: null accepted, omission
+  // rejected. Null on records written before this build =
+  // eligibility NOT ESTABLISHED for that owner: the engine
+  // prices the plan exactly as before ($0 penalty on
+  // pre-59½ pre-tax spending draws) and the year's
+  // earlyWithdrawalEligibilityUnknown flag says the $0 is
+  // unknown, not computed. An entered 0 eligible balance is
+  // a real answer (none of this owner's pre-tax is in an
+  // eligible plan) and prices the penalty on the whole
+  // ineligible share. The complement (IRA +
+  // ineligible-employer-plan money) is COMPUTED — owner
+  // balance minus eligible balance — never entered, so no
+  // two entered numbers can disagree about the split. The
+  // separation age GATES the shelter: under 55 never
+  // shelters, 55+ shelters only from that age on; a null
+  // separation age leaves the entered balance to shelter at
+  // face value. NEVER inferred: not from the Net Worth
+  // "401(k)" account label (display only), not from
+  // employer401kCents (a work-years contribution flow, not
+  // a balance), not from retirement age. The first save
+  // after this build writes these fields null. Other §72(t)
+  // exceptions are NOT modeled: only the Rule of 55
+  // shelters a pre-59½ pre-tax spending draw. Adding these
+  // four fields grows the saveRothInputs request from 71 to
+  // 75 fields. The fields ride rothInputFields into every
+  // writer and compute action, so a compare scenario can
+  // override them like any other input — but they are NOT
+  // Strategy Lab dials and the adapter does not expose them
+  // (it models a single pre-tax pool with no per-owner
+  // split; see the DATA-PLAN entry).
+  pretax401kEligiblePrimaryCents: z.number().int().min(0).nullable(),
+  pretax401kEligibleSpouseCents: z.number().int().min(0).nullable(),
+  separationAgePrimary: z.number().int().min(0).max(120).nullable(),
+  separationAgeSpouse: z.number().int().min(0).max(120).nullable(),
   survivorEnabled: z.boolean().nullable(),
   survivorWho: z.enum(["primary", "spouse"]).nullable(),
   survivorDeathYear: z.number().int().min(1900).max(2200).nullable(),
@@ -3096,6 +3138,19 @@ export const rothComputeFields = {
   // exactly as null (nothing set aside). The field is
   // display-only and never priced either way.
   cashSetAsideCents: rothInputFields.cashSetAsideCents.optional(),
+  // Compute path only (Engine Review C9, Build 1): a pricing
+  // payload may omit the Rule-of-55 eligibility inputs —
+  // absent prices exactly as null (eligibility not
+  // established for that owner; the $0 penalty on a pre-59½
+  // pre-tax spending draw is flagged unknown, not computed).
+  // An entered 0 eligible balance is a real answer and
+  // prices the penalty on the whole ineligible share.
+  pretax401kEligiblePrimaryCents:
+    rothInputFields.pretax401kEligiblePrimaryCents.optional(),
+  pretax401kEligibleSpouseCents:
+    rothInputFields.pretax401kEligibleSpouseCents.optional(),
+  separationAgePrimary: rothInputFields.separationAgePrimary.optional(),
+  separationAgeSpouse: rothInputFields.separationAgeSpouse.optional(),
   // Compute path only (build v208): a pricing payload may
   // omit the health premium amounts — absent prices exactly
   // as null (that part not entered; all three absent = the
@@ -3552,6 +3607,15 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     filingStatus: fs,
     pretaxCents: num(r.pretaxCents),
     pretaxSpouseCents: num(r.pretaxSpouseCents),
+    // Rule-of-55 eligibility (Engine Review C9, Build 1),
+    // read leniently like every field here: absent on a
+    // pre-build record reads as null = eligibility not
+    // established for that owner, bit-identical pricing
+    // with the unknown flag on any pre-59½ pre-tax draw.
+    pretax401kEligiblePrimaryCents: num(r.pretax401kEligiblePrimaryCents),
+    pretax401kEligibleSpouseCents: num(r.pretax401kEligibleSpouseCents),
+    separationAgePrimary: num(r.separationAgePrimary),
+    separationAgeSpouse: num(r.separationAgeSpouse),
     survivorEnabled: bool(r.survivorEnabled),
     survivorWho:
       r.survivorWho === "primary" || r.survivorWho === "spouse"

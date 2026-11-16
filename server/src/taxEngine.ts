@@ -2358,6 +2358,44 @@ export type RothPlanInputs = {
   // optimizer candidates built by spreading a plan) keeps its
   // meaning: absent = $0, exactly the old single-balance plan.
   pretaxSpouseStart?: number;
+  // RULE-OF-55-ELIGIBLE PRE-TAX (Engine Review C9, Build 1):
+  // per owner, the portion of that owner's pre-tax balance held
+  // in an employer plan from which the owner separated from
+  // service in or after the year they turn 55 — the dollars a
+  // pre-59½ distribution from that plan shelters from the
+  // §72(t) 10% early-withdrawal penalty. Dollars, like
+  // pretaxStart. Optional so every pre-existing constructor
+  // keeps its meaning: absent / null = NOT ESTABLISHED — the
+  // engine prices the plan exactly as before ($0 penalty on
+  // pre-59½ pre-tax spending draws) and the year's
+  // earlyWithdrawalEligibilityUnknown flag says the $0 is
+  // unknown, not computed. An entered 0 is a real answer
+  // (none of this owner's pre-tax is in an eligible plan) and
+  // prices the penalty on the whole ineligible share. The
+  // complement (IRA + ineligible-employer-plan money) is
+  // COMPUTED — owner balance minus eligible balance — never
+  // entered, so no two entered numbers can disagree about the
+  // split. NEVER inferred: not from the Net Worth "401(k)"
+  // account label (display only), not from employer401kCents
+  // (a work-years contribution flow, not a balance), not from
+  // retirement age (retiring at 55 does not prove separation
+  // from THAT employer's plan, and the money may be an IRA
+  // rollover). Clamped at pricing to [0, owner's balance].
+  // SEPARATION AGE (whole years; null = not established): the
+  // age the owner separated from the plan the eligible balance
+  // sits in — the audit trail for the balance. It GATES the
+  // shelter: a separation age under 55 never shelters (the
+  // separation does not qualify under the rule), and a
+  // separation age of 55+ shelters only from that age on (a
+  // distribution before the owner separates is not a
+  // separation distribution). A null separation age leaves
+  // the entered balance to shelter at face value. Other
+  // §72(t) exceptions are NOT modeled: only the Rule of 55
+  // shelters a pre-59½ pre-tax spending draw in this build.
+  pretax401kEligiblePrimary?: number | null;
+  pretax401kEligibleSpouse?: number | null;
+  separationAgePrimary?: number | null;
+  separationAgeSpouse?: number | null;
   // Survivor scenario (Part 2): when enabled with a death year,
   // the plan reprices from that year — MFJ in the death year
   // itself (each spouse's own RMD still taken that year, the
@@ -3884,6 +3922,20 @@ export type RothYear = {
   // §36B income test — see detail.aca.eligibilityNote for the
   // reason. False when the year prices no credit at all.
   acaBelow100Fpl: boolean;
+  // EARLY-WITHDRAWAL ELIGIBILITY UNKNOWN (Engine Review C9,
+  // Build 1): true exactly when this year priced a pre-59½
+  // pre-tax spending draw from an owner whose Rule-of-55
+  // eligibility inputs were unanswered (no eligible balance
+  // entered for that owner) — so the $0 penalty the year shows
+  // on that draw is UNKNOWN, not a computed $0. False when
+  // every pre-59½ pre-tax draw this year was priced with the
+  // eligibility answered (penalty priced on the ineligible
+  // share, $0 only where the eligible balance sheltered it),
+  // and false in every year with no pre-59½ pre-tax draw.
+  // The conversion-withholding penalty does not consult
+  // eligibility (it prices as before, on the conversion
+  // owner's age alone) and never sets this flag.
+  earlyWithdrawalEligibilityUnknown: boolean;
   pretaxEnd: number;
   // Per-spouse pre-tax ending balances (Part 1). Their sum is
   // pretaxEnd. From the year AFTER a death the deceased's side
@@ -3999,6 +4051,16 @@ export type RothPlanResult = {
   // score or ranking reads them.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+  // Build 1): the years whose pre-59½ pre-tax spending draw
+  // was priced while the drawing owner's Rule-of-55
+  // eligibility was unanswered — the $0 penalty in those
+  // years is unknown, not computed (see RothYear
+  // .earlyWithdrawalEligibilityUnknown). Empty on a plan
+  // with no pre-59½ pre-tax draw, or with eligibility
+  // answered for every drawing owner. Display only — no
+  // score or ranking reads it.
+  earlyWithdrawalUnknownYears: number[];
   // Lifetime education credits (T6): the sum of the years'
   // refundable AOTC portions (see RothYear
   // .educationRefundable). The nonrefundable portions are
@@ -4264,6 +4326,30 @@ export function simulateRothPlan(
   // scenario off, every figure is the old engine's, exactly.
   let pretaxP = inputs.pretaxStart;
   let pretaxS = inputs.pretaxSpouseStart ?? 0;
+  // RULE-OF-55-ELIGIBLE SUB-LEDGER (Engine Review C9, Build 1):
+  // per owner, the eligible dollars still sitting in the
+  // pre-tax pool. null = eligibility UNANSWERED for that owner
+  // (no eligible balance entered) — no ledger is tracked and
+  // pre-59½ draws from that owner price $0 penalty with the
+  // unknown flag set. A number (including 0) = answered: the
+  // ledger starts at the entered balance clamped to [0, the
+  // owner's starting balance], drifts with growth/draws exactly
+  // like the pool it sits in (every pre-tax outflow — RMD,
+  // conversion, tax-payment debit, spending draw — consumes the
+  // eligible dollars FIRST within that owner's outflow, so the
+  // ledger is the eligible remainder at every point), and is
+  // never larger than the pool. The separation-age gate is
+  // applied at DRAW time (see shelterEligible below), never by
+  // shrinking the ledger: the ledger tracks the dollars, the
+  // gate decides whether this year's draw may shelter in them.
+  let eligP: number | null =
+    inputs.pretax401kEligiblePrimary == null
+      ? null
+      : Math.min(Math.max(0, inputs.pretax401kEligiblePrimary), Math.max(0, pretaxP));
+  let eligS: number | null =
+    inputs.pretax401kEligibleSpouse == null
+      ? null
+      : Math.min(Math.max(0, inputs.pretax401kEligibleSpouse), Math.max(0, pretaxS));
   // Survivor scenario state: the two balances combine on the
   // survivor's side only once the death year has PASSED (the
   // deceased's side goes to $0 and stays there). Through the
@@ -4451,6 +4537,10 @@ export function simulateRothPlan(
   // and the ACA-priced years under 100% FPL, in year order.
   const irmaaLookbackMissingYears: number[] = [];
   const acaBelow100FplYears: number[] = [];
+  // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9, Build 1):
+  // the years whose pre-59½ pre-tax spending draw was priced
+  // while the drawing owner's eligibility was unanswered.
+  const earlyWithdrawalUnknownYears: number[] = [];
   let lifetimeEducationRefundable = 0;
   // EDUCATION REFUND DEPOSIT (Build D): the refundable AOTC
   // portion a year prices is cash the household receives when
@@ -4581,6 +4671,21 @@ export function simulateRothPlan(
       } else {
         pretaxP += pretaxS;
         pretaxS = 0;
+      }
+      // RULE-OF-55 (C9 Build 1): the eligible dollars combine
+      // with the balances — but only when BOTH owners'
+      // eligibility was answered. If either side was unanswered,
+      // the combined pool's eligibility is unanswered too
+      // (the unknown dollars cannot be told apart from the
+      // known-eligible ones), so the survivor's pre-59½ draws
+      // price $0 penalty with the unknown flag set rather than
+      // sheltering on a partial answer.
+      if (survWho === "primary") {
+        eligS = eligP == null || eligS == null ? null : eligS + eligP;
+        eligP = null;
+      } else {
+        eligP = eligP == null || eligS == null ? null : eligP + eligS;
+        eligS = null;
       }
       survCombined = true;
     }
@@ -4875,6 +4980,15 @@ export function simulateRothPlan(
     const pretaxPAfterRmd = Math.max(0, pretaxP - rmdP);
     const pretaxSAfterRmd = Math.max(0, pretaxS - rmdS);
     const pretaxAfterRmd = pretaxPAfterRmd + pretaxSAfterRmd;
+    // RULE-OF-55 (C9 Build 1): the RMD is a pre-tax outflow
+    // like any other, so it consumes the eligible dollars
+    // first within that owner's pool. RMDs price at 73+ (past
+    // 59½), so no penalty ever attaches here — this only keeps
+    // the ledger true for later years.
+    const eligPAfterRmd =
+      eligP == null ? null : Math.max(0, eligP - rmdP);
+    const eligSAfterRmd =
+      eligS == null ? null : Math.max(0, eligS - rmdS);
 
     // Social Security received this year (per-spouse claim ages).
     // Through the death year both benefits price as entered;
@@ -5778,10 +5892,62 @@ export function simulateRothPlan(
       // primary-then-spouse debit order reaches it there.
       let pretaxBalP = pretaxPAfterRmd;
       let pretaxBalS = pretaxSAfterRmd;
+      // RULE-OF-55 (C9 Build 1): this settlement's own copy of
+      // the year-start eligible ledger (the settlement is pure
+      // and re-run, so each candidate works on a fresh copy and
+      // only the kept settlement's copy is committed below —
+      // probing settlements can never move the ledger, exactly
+      // like the basis mirror above). null = that owner's
+      // eligibility is unanswered — no ledger, no shelter.
+      let eligBalP = eligPAfterRmd;
+      let eligBalS = eligSAfterRmd;
+      // Every pre-tax outflow consumes the eligible dollars
+      // FIRST within that owner's pool (eligible-first, mirroring
+      // the primary-first sourcing): the RMD already did so
+      // above (eligPAfterRmd / eligSAfterRmd), and the
+      // conversion, the tax-payment debits, and the spending
+      // draw below do the same. The ledger tracks the dollars;
+      // whether a draw may SHELTER in them is the gate below,
+      // not the debit order.
+      const debitEligP = (amount: number) => {
+        if (eligBalP != null) eligBalP = Math.max(0, eligBalP - amount);
+      };
+      const debitEligS = (amount: number) => {
+        if (eligBalS != null) eligBalS = Math.max(0, eligBalS - amount);
+      };
+      // The eligible dollars a draw from this owner may shelter
+      // in THIS year — 0 when the separation gate fails: a
+      // separation age under 55 never shelters (the separation
+      // does not qualify under the Rule of 55), and a separation
+      // age of 55+ shelters only from that age on (a
+      // distribution before the owner separates is not a
+      // separation distribution). A null separation age leaves
+      // the entered balance to shelter at face value. The
+      // caller passes the owner's own whole-year age.
+      const shelterP = (ownerAge: number): number => {
+        if (eligBalP == null) return 0;
+        const sep = inputs.separationAgePrimary;
+        if (sep != null && (sep < 55 || ownerAge < sep)) return 0;
+        return eligBalP;
+      };
+      const shelterS = (ownerAge: number): number => {
+        if (eligBalS == null) return 0;
+        const sep = inputs.separationAgeSpouse;
+        if (sep != null && (sep < 55 || ownerAge < sep)) return 0;
+        return eligBalS;
+      };
+      // The spending-draw penalty this round prices, and
+      // whether it priced a draw on unanswered eligibility —
+      // accumulated in the draw loop below, paid after the
+      // reprice (the penalty is a tax liability, not spending).
+      let spendPenalty = 0;
+      let spendEligUnknown = false;
       {
         const fromP = Math.min(additionalArg, Math.max(0, pretaxBalP));
         pretaxBalP -= fromP;
         pretaxBalS -= additionalArg - fromP;
+        debitEligP(fromP);
+        debitEligS(additionalArg - fromP);
       }
       let rothBal = roth + rothIn;
       let taxableBal = taxable - fromTaxable;
@@ -5956,6 +6122,16 @@ export function simulateRothPlan(
         rest -= fromS;
         fundTaxPretax += fromP + fromS;
         createdFbPretax += fromP + fromS;
+        debitEligP(fromP);
+        debitEligS(fromS);
+        // RULE-OF-55 (C9 Build 1): the ledger moves (eligible-
+        // first, like every pre-tax outflow) but NO penalty
+        // attaches to these legs — a deliberate scope decision,
+        // not an omission: they are tax-payment debits, and
+        // penalizing them makes the penalty itself generate
+        // further pre-tax distributions, a feedback the
+        // settlement iteration was not designed for. See the
+        // builder report / DATA-PLAN entry.
         if (rest > 0) {
           const fromR = Math.min(rest, Math.max(0, rothBal));
           rothBal = Math.max(0, rothBal - rest);
@@ -6094,9 +6270,62 @@ export function simulateRothPlan(
             extraDraw = Math.min(balanceAvail, spendDeficit);
           }
           const fromP = Math.min(extraDraw, Math.max(0, pretaxBalP));
+          const fromS = extraDraw - fromP;
           pretaxBalP -= fromP;
-          pretaxBalS -= extraDraw - fromP;
+          pretaxBalS -= fromS;
           spendDeficit -= extraDraw;
+          // RULE-OF-55 §72(t) PENALTY (Engine Review C9, Build 1):
+          // a pre-tax SPENDING draw before 59½ is an early
+          // distribution on its ineligible share — 10% of the
+          // share that the owner's eligible balance does not
+          // shelter, tested on EACH drawing owner's OWN
+          // whole-year age (the spouse's share on spouseAge,
+          // never the primary's age for both). The penalty adds
+          // to the SAME penalty variable the conversion-
+          // withholding penalty uses, so the year row, the
+          // lifetime penalty, the plan score, and the funding
+          // row's federal tax all carry it with no new total —
+          // and it is PAID after the reprice below (from
+          // Taxable, then down the debit chain), so the funding
+          // identity stays exact. When an owner's eligibility
+          // is UNANSWERED (no eligible balance entered), the
+          // draw prices $0 penalty — the bit-identical landing
+          // default — and sets the unknown flag instead of
+          // silently presenting a $0. The conversion-
+          // withholding penalty above does NOT consult
+          // eligibility and is unchanged by this branch.
+          // The ledger moves on every draw (eligible-first),
+          // whatever the penalty answer: the dollars left the
+          // pool either way. The penalty is measured FIRST,
+          // against the pre-debit ledger — the shelter is the
+          // eligible balance the draw ARRIVES with, not what
+          // is left after it.
+          if (fromP > 0 && age < 59.5) {
+            if (eligBalP == null) {
+              spendEligUnknown = true;
+            } else {
+              const ineligibleP = Math.max(0, fromP - shelterP(age));
+              if (ineligibleP > 0) {
+                const p = r2(ineligibleP * 0.1);
+                spendPenalty = r2(spendPenalty + p);
+                penalty = r2(penalty + p);
+              }
+            }
+          }
+          if (fromS > 0 && spouseAge != null && spouseAge < 59.5) {
+            if (eligBalS == null) {
+              spendEligUnknown = true;
+            } else {
+              const ineligibleS = Math.max(0, fromS - shelterS(spouseAge));
+              if (ineligibleS > 0) {
+                const p = r2(ineligibleS * 0.1);
+                spendPenalty = r2(spendPenalty + p);
+                penalty = r2(penalty + p);
+              }
+            }
+          }
+          debitEligP(fromP);
+          debitEligS(fromS);
         } else {
           const drawR = Math.min(Math.max(0, rothBal), spendDeficit);
           rothBal -= drawR;
@@ -6136,13 +6365,95 @@ export function simulateRothPlan(
         federalTax = repriced.federalTax;
         stateTax = repriced.stateTax;
         if (delta > 0) {
-          const pay = Math.min(delta, Math.max(0, taxableBal));
+          // CONVERSION-WITHHOLDING TOP-UP (Engine Review C9,
+          // Build 1 — W1-B2): the opening withholding above was
+          // computed on the round's OPENING tax, priced before
+          // the spending draw's income was repriced in — so a
+          // pretax-first plan whose draw fills the bracket
+          // withheld $0 on a real bill (opening ordinary income
+          // under the standard deduction) and the conversion's
+          // penalty vanished with it. FIX, chosen here over
+          // re-running the whole tax channel on the final bill:
+          // carry the conversion's share of the reprice-delta
+          // tax into the withholding — the delta tax the
+          // conversion channel should have borne, grossed up
+          // for its penalty exactly like the opening
+          // withholding, capped at the conversion headroom
+          // left after the opening withholding. Rationale: the
+          // delta tax itself was already fully paid (from
+          // Taxable below); what the opening-tax shortcut
+          // under-charged is the §72(t) penalty on the early
+          // distribution the conversion channel represents, so
+          // only the top-up's tax + penalty move — out of the
+          // conversion (Roth receives that much less) and off
+          // the Taxable delta payment, dollar for dollar — and
+          // no priced tax is created or destroyed. The top-up
+          // runs ONLY when payTaxFrom is "conversion" (the
+          // conversion IS the tax channel there) AND the
+          // conversion owner is pre-59½ (it exists to fix the
+          // penalty, not to re-route tax payments generally —
+          // post-59½ the delta stays on Taxable by design, and
+          // the gate's post-59½ conversion years are untouched
+          // by it). With payTaxFrom "taxable" the delta stays
+          // on Taxable by design too (the reprice-delta payment
+          // below never was a pre-tax distribution). The top-up
+          // creates no income (the withholding is part of the
+          // conversion, already priced) and no gains (the
+          // Taxable payment it displaces never happens), so the
+          // settlement iteration converges on it like any other
+          // round-local figure.
+          let topUpTax = 0;
+          let topUpTotal = 0;
+          if (
+            inputs.payTaxFrom === "conversion" &&
+            convOwnerAge < 59.5 &&
+            additionalArg > 0
+          ) {
+            const headroom = Math.max(
+              0,
+              additionalArg - withheldFromConversion,
+            );
+            if (headroom > 0) {
+              const wantTax = Math.min(delta, r2(headroom * 0.9));
+              const wantPenalty = r2(wantTax / 9);
+              let topUpPenalty = 0;
+              if (wantTax + wantPenalty <= headroom + 0.005) {
+                topUpTax = wantTax;
+                topUpPenalty = wantPenalty;
+              } else {
+                // Rounding dust would over-distribute the
+                // conversion by a cent: the whole headroom is
+                // the distribution instead (mirror of the
+                // opening overflow branch above) — penalty 10%
+                // of it, the other 90% tax.
+                topUpPenalty = r2(headroom * 0.1);
+                topUpTax = r2(headroom - topUpPenalty);
+              }
+              if (topUpTax > 0) {
+                topUpTotal = r2(topUpTax + topUpPenalty);
+                penalty = r2(penalty + topUpPenalty);
+                withheldFromConversion = r2(
+                  withheldFromConversion + topUpTotal,
+                );
+                // The top-up leaves the conversion (Roth
+                // receives that much less) and joins the
+                // pre-tax tax funding — the funding row's
+                // pre-tax leg for this bill.
+                rothBal = Math.max(0, rothBal - topUpTotal);
+                fundTaxPretax = r2(fundTaxPretax + topUpTotal);
+              }
+            }
+          }
+          const pay = Math.min(
+            delta - topUpTax,
+            Math.max(0, taxableBal),
+          );
           // The delta payment's own sale gains are created
           // feedback, priced by the next round.
           createdFbGains += basisOut(pay);
           taxableBal -= pay;
           fundTaxTaxable += pay;
-          const rest = delta - pay;
+          const rest = delta - topUpTax - pay;
           if (rest > 0) unpaidTaxAmt += debitUnpaid(rest);
         } else if (delta < 0) {
           // A settlement credit back into Taxable is after-tax
@@ -6151,6 +6462,30 @@ export function simulateRothPlan(
           basisIn(-delta);
           fundTaxTaxable += delta;
         }
+      }
+      // SPENDING-DRAW PENALTY PAYMENT (Engine Review C9, Build 1
+      // — W2-D3, the "fund it" leg): the §72(t) penalty the draw
+      // loop priced is an additional tax liability, and the
+      // settlement pays it exactly like the reprice delta above
+      // — from Taxable first, the remainder down the debit
+      // chain — so the funding row's federal tax (federal +
+      // penalty) is fully funded and the funding identity stays
+      // exact. The payment's own Taxable-sale gains are created
+      // feedback, priced by the next round, exactly like the
+      // delta payment's; the debit chain's pre-tax legs create
+      // pre-tax feedback the same way and carry NO penalty of
+      // their own (the coordinator's scope decision — see the
+      // debitUnpaid note). The withholding penalty needs no
+      // payment here: it was already funded inside the
+      // conversion (the gross-up), and the B2 top-up above was
+      // funded out of the conversion too.
+      if (spendPenalty > 0) {
+        const payPen = Math.min(spendPenalty, Math.max(0, taxableBal));
+        createdFbGains += basisOut(payPen);
+        taxableBal -= payPen;
+        fundTaxTaxable += payPen;
+        const restPen = r2(spendPenalty - payPen);
+        if (restPen > 0) unpaidTaxAmt += debitUnpaid(restPen);
       }
       // Leftover surplus cash (income beyond spending + taxes) is
       // saved into Taxable — after-tax money, so on the drift
@@ -6252,6 +6587,14 @@ export function simulateRothPlan(
         extraDraw,
         pretaxBalP,
         pretaxBalS,
+        // RULE-OF-55 (C9 Build 1): the kept settlement's
+        // eligible remainders — committed by the year below,
+        // exactly like the balances beside them — and whether
+        // this settlement priced a pre-59½ pre-tax draw on
+        // unanswered eligibility.
+        eligBalP,
+        eligBalS,
+        earlyWithdrawalEligibilityUnknown: spendEligUnknown,
         rothBal,
         taxableBal,
         // YEAR FUNDING capture (see the trackers above): this
@@ -7084,6 +7427,13 @@ export function simulateRothPlan(
     const feedbackPretax = settled.feedbackPretax;
     let pretaxBalP = settled.pretaxBalP;
     let pretaxBalS = settled.pretaxBalS;
+    // RULE-OF-55 (C9 Build 1): the kept settlement's eligible
+    // remainders — the year's eligible ledger from here on.
+    // null stays null (unanswered); a number drifts with the
+    // balances below. The harvest's pre-tax legs debit it
+    // eligible-first, like every other pre-tax outflow.
+    let eligEndP = settled.eligBalP;
+    let eligEndS = settled.eligBalS;
     let rothBal = settled.rothBal;
     let taxableBal = settled.taxableBal;
 
@@ -7472,6 +7822,12 @@ export function simulateRothPlan(
               pretaxBalP -= bestLegs.fromP;
               pretaxBalS -= bestLegs.fromS;
               fundHarvestTaxPretax += bestLegs.fromP + bestLegs.fromS;
+              // RULE-OF-55 (C9 Build 1): the harvest's pre-tax
+              // tax-payment legs move the ledger (eligible-
+              // first) and carry NO penalty — the same scope
+              // decision as the settlement's debitUnpaid legs.
+              if (eligEndP != null) eligEndP = Math.max(0, eligEndP - bestLegs.fromP);
+              if (eligEndS != null) eligEndS = Math.max(0, eligEndS - bestLegs.fromS);
               if (restAfterPretax > 0) {
                 fundHarvestTaxRoth += bestLegs.fromR;
                 rothBal = Math.max(0, rothBal - restAfterPretax);
@@ -7652,6 +8008,14 @@ export function simulateRothPlan(
     const acaBelow100Fpl =
       acaPriced && acaResult != null && acaResult.below100Fpl;
     if (acaBelow100Fpl) acaBelow100FplYears.push(year);
+    // EARLY-WITHDRAWAL UNKNOWN (Engine Review C9, Build 1):
+    // the kept settlement's flag, read off the settlement
+    // exactly like the ACA flag above — the year row and the
+    // plan summary list carry the same figure.
+    const earlyWithdrawalEligibilityUnknown =
+      settled.earlyWithdrawalEligibilityUnknown === true;
+    if (earlyWithdrawalEligibilityUnknown)
+      earlyWithdrawalUnknownYears.push(year);
 
     // HEALTH PREMIUM TERM (build v208): the year's funded
     // health premium, read off the KEPT settlement exactly
@@ -7793,6 +8157,11 @@ export function simulateRothPlan(
     priorYearReturnPct = seriesPct != null ? seriesPct : inputs.expectedReturnPct;
     pretaxP = Math.max(0, pretaxBalP) * yearGrowth;
     pretaxS = Math.max(0, pretaxBalS) * yearGrowth;
+    // RULE-OF-55 (C9 Build 1): the eligible dollars grow at the
+    // same rate as the pool they sit in — an eligible share of
+    // a growing pool grows with it. null stays null.
+    eligP = eligEndP == null ? null : Math.max(0, eligEndP) * yearGrowth;
+    eligS = eligEndS == null ? null : Math.max(0, eligEndS) * yearGrowth;
     const pretax = pretaxP + pretaxS;
     roth = Math.max(0, rothBal) * yearGrowth;
     taxable = Math.max(0, taxableBal) * yearGrowth;
@@ -8391,6 +8760,7 @@ export function simulateRothPlan(
       acaPriced,
       acaUnder138,
       acaBelow100Fpl,
+      earlyWithdrawalEligibilityUnknown,
       healthPremiumGross: r2(healthPremiumGrossYear),
       healthPremiumNet: r2(healthPremiumNetYear),
       pretaxEnd: r2(pretax),
@@ -8447,6 +8817,7 @@ export function simulateRothPlan(
     lifetimeAcaKept: r2(lifetimeAcaKept),
     irmaaLookbackMissingYears,
     acaBelow100FplYears,
+    earlyWithdrawalUnknownYears,
     lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
     lifetimeAmt: r2(lifetimeAmt),
     lifetimeSsCollected: r2(lifetimeSsCollected),

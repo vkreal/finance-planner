@@ -2798,6 +2798,24 @@ export type RothSavedLike = {
   // written before that build has none of them, which prices
   // exactly as before (spouse $0, scenario off).
   pretaxSpouseCents?: number | null;
+  // Rule-of-55-eligible pre-tax + separation age (Engine
+  // Review C9, Build 1). Optional: a saved record written
+  // before this build has none of them, which reads as
+  // eligibility NOT ESTABLISHED for that owner — the engine
+  // prices $0 penalty on pre-59½ pre-tax spending draws
+  // exactly as before, with the year's
+  // earlyWithdrawalEligibilityUnknown flag saying the $0 is
+  // unknown, not computed. Cents for the eligible balances
+  // (like pretaxCents); whole years for the separation ages.
+  // An entered 0 eligible balance is a real answer (none of
+  // that owner's pre-tax is in an eligible plan). The
+  // complement is computed, never entered; nothing here is
+  // ever inferred from a label, a contribution flow, or a
+  // retirement age.
+  pretax401kEligiblePrimaryCents?: number | null;
+  pretax401kEligibleSpouseCents?: number | null;
+  separationAgePrimary?: number | null;
+  separationAgeSpouse?: number | null;
   survivorEnabled?: boolean | null;
   survivorWho?: "primary" | "spouse" | null;
   survivorDeathYear?: number | null;
@@ -8228,6 +8246,13 @@ export type RothFundingRow = {
   // test). Read off the engine's RothYear.
   irmaaSurchargeKnown: boolean;
   acaBelow100Fpl: boolean;
+  // EARLY-WITHDRAWAL ELIGIBILITY UNKNOWN (Engine Review C9,
+  // Build 1): true exactly when this year priced a pre-59½
+  // pre-tax spending draw while the drawing owner's Rule-of-55
+  // eligibility was unanswered — so the $0 penalty the row's
+  // federal tax carries on that draw is UNKNOWN, not a
+  // computed $0. Read off the engine's RothYear. Display only.
+  earlyWithdrawalEligibilityUnknown: boolean;
   totalNeedCents: number;
   // Sources (integer cents, applied amounts — see the
   // RothYearFunding waterfall).
@@ -8402,6 +8427,7 @@ export function buildRothFunding(
       healthPremiumCents: cents(f.healthPremium),
       irmaaSurchargeKnown: y.irmaaSurchargeKnown,
       acaBelow100Fpl: y.acaBelow100Fpl,
+      earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
       totalNeedCents: 0,
       ssCents: cents(f.ss),
       rmdCents: cents(f.rmd),
@@ -8520,6 +8546,21 @@ export function planInputsFromSaved(
     endAgePrimary: saved.endAge ?? 95,
     pretaxStart: dollars(saved.pretaxCents),
     pretaxSpouseStart: dollars(saved.pretaxSpouseCents ?? null),
+    // Rule-of-55 eligibility (Engine Review C9, Build 1):
+    // the saved cents map to engine dollars; absent / null =
+    // not established (the engine's null), never $0 — an
+    // entered 0 stays 0 through dollars() and is a real
+    // answer. Separation ages pass through as whole years.
+    pretax401kEligiblePrimary:
+      saved.pretax401kEligiblePrimaryCents == null
+        ? null
+        : dollars(saved.pretax401kEligiblePrimaryCents),
+    pretax401kEligibleSpouse:
+      saved.pretax401kEligibleSpouseCents == null
+        ? null
+        : dollars(saved.pretax401kEligibleSpouseCents),
+    separationAgePrimary: saved.separationAgePrimary ?? null,
+    separationAgeSpouse: saved.separationAgeSpouse ?? null,
     survivorEnabled: saved.survivorEnabled ?? false,
     survivorWho: saved.survivorWho ?? "primary",
     survivorDeathYear: saved.survivorDeathYear ?? null,
@@ -9232,6 +9273,13 @@ export type RothCompareScenarioYear = {
   // is under 100% FPL, so the credit is $0 under the standard
   // §36B income test. Display only.
   acaBelow100Fpl: boolean;
+  // EARLY-WITHDRAWAL ELIGIBILITY UNKNOWN (Engine Review C9,
+  // Build 1): true exactly when this year priced a pre-59½
+  // pre-tax spending draw while the drawing owner's Rule-of-55
+  // eligibility was unanswered — so the $0 penalty the year
+  // shows on that draw is UNKNOWN, not a computed $0. Display
+  // only — no score, ranking, or delta reads it.
+  earlyWithdrawalEligibilityUnknown: boolean;
   // Health premium (build v208): the year's NET health
   // premium funded (the engine's RothYear.healthPremiumNet).
   // $0 in every year of a plan that does not enter the
@@ -9327,6 +9375,14 @@ export type RothCompareScenarioResult = {
   // with complete lookbacks and no below-100% year.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+  // Build 1, display only): the years whose pre-59½ pre-tax
+  // spending draw was priced while the drawing owner's
+  // Rule-of-55 eligibility was unanswered — the $0 penalty
+  // in those years is unknown, not computed. Empty on a
+  // scenario with no pre-59½ pre-tax draw, or with
+  // eligibility answered for every drawing owner.
+  earlyWithdrawalUnknownYears: number[];
   // Lifetime health premiums (build v208): the GROSS
   // premium the score identity adds beside acaCreditCents,
   // and the NET premium (gross less the funded credits) for
@@ -9454,6 +9510,7 @@ export function runRothCompare(
         irmaaCents: toCents(y.irmaaPaid),
         irmaaSurchargeKnown: y.irmaaSurchargeKnown,
         acaBelow100Fpl: y.acaBelow100Fpl,
+        earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
         healthPremiumCents: toCents(y.healthPremiumNet),
         healthPremiumGrossCents: toCents(y.healthPremiumGross),
         conversionCents: toCents(y.conversion),
@@ -9509,6 +9566,7 @@ export function runRothCompare(
       // march's own lists, never re-derived.
       irmaaLookbackMissingYears: result.irmaaLookbackMissingYears,
       acaBelow100FplYears: result.acaBelow100FplYears,
+      earlyWithdrawalUnknownYears: result.earlyWithdrawalUnknownYears,
       healthPremiumCents: toCents(cost.healthPremium),
       healthPremiumNetCents: toCents(cost.healthPremiumNet),
       educationRefundableCents: toCents(cost.educationRefundable),
@@ -9542,6 +9600,7 @@ export function runRothCompare(
       acaCreditCents: p.acaCreditCents,
       irmaaLookbackMissingYears: p.irmaaLookbackMissingYears,
       acaBelow100FplYears: p.acaBelow100FplYears,
+      earlyWithdrawalUnknownYears: p.earlyWithdrawalUnknownYears,
       healthPremiumCents: p.healthPremiumCents,
       healthPremiumNetCents: p.healthPremiumNetCents,
       educationRefundableCents: p.educationRefundableCents,

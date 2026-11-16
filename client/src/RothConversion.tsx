@@ -593,6 +593,16 @@ export function RothConversion({
   // defer a first RMD year to April 1 of the following year.
   const [firstRmdDeferralPrimary, setFirstRmdDeferralPrimary] = useState(false);
   const [firstRmdDeferralSpouse, setFirstRmdDeferralSpouse] = useState(false);
+  // Rule-of-55 eligibility (Engine Review C9, Build 1): the
+  // saved record's entered values, held as cents / whole
+  // years (null = not established) so the client round-trips
+  // them — local pricing and the save payload carry what the
+  // record holds. No UI field edits them yet; a later UI
+  // writes these setters.
+  const [elig401kPrimaryCents, setElig401kPrimaryCents] = useState<number | null>(null);
+  const [elig401kSpouseCents, setElig401kSpouseCents] = useState<number | null>(null);
+  const [separationAgePrimaryState, setSeparationAgePrimaryState] = useState<number | null>(null);
+  const [separationAgeSpouseState, setSeparationAgeSpouseState] = useState<number | null>(null);
   const [rothBal, setRothBal] = useState("");
   const [taxableBal, setTaxableBal] = useState("");
   // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
@@ -1476,6 +1486,12 @@ export function RothConversion({
     filingStatus: FilingStatus | null;
     pretaxCents: number | null;
     pretaxSpouseCents?: number | null;
+    // Rule-of-55 eligibility (Engine Review C9, Build 1):
+    // cents / whole years, null = not established.
+    pretax401kEligiblePrimaryCents?: number | null;
+    pretax401kEligibleSpouseCents?: number | null;
+    separationAgePrimary?: number | null;
+    separationAgeSpouse?: number | null;
     survivorEnabled?: boolean | null;
     survivorWho?: "primary" | "spouse" | null;
     survivorDeathYear?: number | null;
@@ -1589,6 +1605,10 @@ export function RothConversion({
     const resolvedHsa = src.hsaCents ?? snap?.hsaCents ?? null;
     setPretax(money(resolvedPretax));
     setPretaxSpouse(money(wifeCents));
+    setElig401kPrimaryCents(src.pretax401kEligiblePrimaryCents ?? null);
+    setElig401kSpouseCents(src.pretax401kEligibleSpouseCents ?? null);
+    setSeparationAgePrimaryState(src.separationAgePrimary ?? null);
+    setSeparationAgeSpouseState(src.separationAgeSpouse ?? null);
     setSurvivorOn(src.survivorEnabled ?? false);
     setSurvivorWho(src.survivorWho ?? "primary");
     setSurvivorDeathYear(num(src.survivorDeathYear ?? null));
@@ -2519,6 +2539,17 @@ export function RothConversion({
       filingStatus,
       pretaxCents: parseMoney(pretax),
       pretaxSpouseCents: parseMoney(pretaxSpouse),
+      // Rule-of-55 eligibility (Engine Review C9, Build 1):
+      // no UI field enters these yet, so the payload carries
+      // the loaded saved values (null = not established for
+      // both owners — the engine prices $0 penalty on
+      // pre-59½ pre-tax draws exactly as before, with the
+      // unknown flag saying so). A later UI that enters them
+      // writes the state these read.
+      pretax401kEligiblePrimaryCents: elig401kPrimaryCents,
+      pretax401kEligibleSpouseCents: elig401kSpouseCents,
+      separationAgePrimary: separationAgePrimaryState,
+      separationAgeSpouse: separationAgeSpouseState,
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: year(survivorDeathYear),
@@ -3584,6 +3615,14 @@ export function RothConversion({
       filingStatus: sc.filingStatus ?? "mfj",
       pretaxCents: sc.pretaxCents ?? null,
       pretaxSpouseCents: sc.pretaxSpouseCents ?? null,
+      // Rule-of-55 eligibility (Engine Review C9, Build 1):
+      // carried like every other saved field, so a scenario
+      // keeps the base plan's eligibility answers (null =
+      // not established) instead of dropping them.
+      pretax401kEligiblePrimaryCents: sc.pretax401kEligiblePrimaryCents ?? null,
+      pretax401kEligibleSpouseCents: sc.pretax401kEligibleSpouseCents ?? null,
+      separationAgePrimary: sc.separationAgePrimary ?? null,
+      separationAgeSpouse: sc.separationAgeSpouse ?? null,
       survivorEnabled: sc.survivorEnabled ?? false,
       survivorWho: sc.survivorWho ?? "primary",
       survivorDeathYear: clampYear(sc.survivorDeathYear ?? null),
@@ -4344,6 +4383,16 @@ export function RothConversion({
       endAgePrimary: end,
       pretaxStart: parseDollars(pretax) ?? 0,
       pretaxSpouseStart: parseDollars(pretaxSpouse) ?? 0,
+      // Rule-of-55 eligibility (Engine Review C9, Build 1):
+      // the loaded saved values in dollars (null = not
+      // established) — the local march prices the same
+      // eligibility the server paths price from the record.
+      pretax401kEligiblePrimary:
+        elig401kPrimaryCents == null ? null : elig401kPrimaryCents / 100,
+      pretax401kEligibleSpouse:
+        elig401kSpouseCents == null ? null : elig401kSpouseCents / 100,
+      separationAgePrimary: separationAgePrimaryState,
+      separationAgeSpouse: separationAgeSpouseState,
       survivorEnabled: survivorOn,
       survivorWho,
       survivorDeathYear: parseIntField(survivorDeathYear),

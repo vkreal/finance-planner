@@ -1120,6 +1120,11 @@ export const ROTH_COMPARE_EXAMPLE = {
         // no ACA year falls under 100% FPL on this plan.
         irmaaLookbackMissingYears: [],
         acaBelow100FplYears: [],
+        // Engine Review C9, Build 1: no pre-59½ pre-tax
+        // spending draw is priced on this plan (the default
+        // draw order spends Taxable first), so no year prices
+        // a draw on unanswered eligibility.
+        earlyWithdrawalUnknownYears: [],
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,
@@ -1149,6 +1154,9 @@ export const ROTH_COMPARE_EXAMPLE = {
         // no ACA year falls under 100% FPL on this plan.
         irmaaLookbackMissingYears: [],
         acaBelow100FplYears: [],
+        // Engine Review C9, Build 1: as above — no pre-59½
+        // pre-tax spending draw, so no unknown-eligibility year.
+        earlyWithdrawalUnknownYears: [],
         educationRefundableCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,

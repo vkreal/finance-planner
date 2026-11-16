@@ -831,6 +831,14 @@ type MappedCompareScenario = {
   // with complete lookbacks and no below-100% year.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+  // Build 1): the years whose pre-59½ pre-tax spending draw
+  // was priced while the drawing owner's Rule-of-55
+  // eligibility was unanswered — the $0 penalty in those
+  // years is unknown, not computed. Empty on a scenario
+  // with no pre-59½ pre-tax draw, or with eligibility
+  // answered for every drawing owner.
+  earlyWithdrawalUnknownYears: number[];
   // Lifetime health premiums (Review 3 R3-S1; $0 when the v208
   // term is not entered): the GROSS premium the score identity
   // adds beside acaCreditKept, and the NET premium actually
@@ -930,6 +938,7 @@ function mapCompareScenario(
     irmaaTotal: centsToDollars(s.irmaaCents),
     irmaaLookbackMissingYears: s.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.acaBelow100FplYears,
+    earlyWithdrawalUnknownYears: s.earlyWithdrawalUnknownYears,
     lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
     lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
@@ -975,6 +984,12 @@ type YearlyCompareRow = {
   // standard §36B income test).
   irmaaSurchargeKnown: boolean;
   acaBelow100Fpl: boolean;
+  // EARLY-WITHDRAWAL ELIGIBILITY UNKNOWN (Engine Review C9,
+  // Build 1): true exactly when this year priced a pre-59½
+  // pre-tax spending draw while the drawing owner's Rule-of-55
+  // eligibility was unanswered — so the $0 penalty the year
+  // shows on that draw is UNKNOWN, not a computed $0.
+  earlyWithdrawalEligibilityUnknown: boolean;
   // The year's health premiums (Review 3 R3-S1): GROSS premium
   // (marketplace gross + Medicare base for the year's persons
   // on Medicare) and NET premium actually funded (gross less
@@ -1034,6 +1049,7 @@ function yearlyTable(
     irmaa: centsToDollars(y.irmaaCents),
     irmaaSurchargeKnown: y.irmaaSurchargeKnown,
     acaBelow100Fpl: y.acaBelow100Fpl,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
     healthPremiumGross: centsToDollars(y.healthPremiumGrossCents),
     healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
@@ -1273,6 +1289,7 @@ function mapScoredCandidate(
     irmaaTotal: r2(s.cost.irmaa),
     irmaaLookbackMissingYears: s.result.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.result.acaBelow100FplYears,
+    earlyWithdrawalUnknownYears: s.result.earlyWithdrawalUnknownYears,
     lifetimeHealthPremiumGross: r2(s.result.lifetimeHealthPremiumGross),
     lifetimeHealthPremiumNet: r2(s.result.lifetimeHealthPremiumNet),
     endingPretax: r2(s.result.endingPretax),
@@ -1330,6 +1347,7 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     irmaa: r2(y.irmaaPaid),
     irmaaSurchargeKnown: y.irmaaSurchargeKnown,
     acaBelow100Fpl: y.acaBelow100Fpl,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
     healthPremiumGross: r2(y.healthPremiumGross),
     healthPremiumNet: r2(y.healthPremiumNet),
     conversion: r2(y.conversion),
@@ -1387,6 +1405,7 @@ function irmaaAcaCompareWarnings(
     name: string;
     irmaaLookbackMissingYears: number[];
     acaBelow100FplYears: number[];
+    earlyWithdrawalUnknownYears: number[];
   }>,
 ): string[] {
   const out: string[] = [];
@@ -1411,6 +1430,12 @@ function irmaaAcaCompareWarnings(
       // fixed to say "would be $0" when the credit is null.
       out.push(
         `ACA credit is $0 for ${m.name} in ${years} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
+      );
+    }
+    if (m.earlyWithdrawalUnknownYears.length > 0) {
+      const years = m.earlyWithdrawalUnknownYears.join(", ");
+      out.push(
+        `Early-withdrawal penalty is $0 but UNKNOWN for ${m.name} in ${years}: a pre-59½ pre-tax spending draw was priced while that owner's Rule-of-55 eligibility was not entered, so the $0 is an unanswered question, not a computed $0 — the real §72(t) penalty depends on how much of the draw came from an eligible employer plan. Enter the eligible balance and separation age to price it.`,
       );
     }
   }
@@ -1901,6 +1926,11 @@ export type RothConversionResults = {
       // the winner's own priced march, never re-derived.
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+      // Build 1): the winner march's years whose pre-59½
+      // pre-tax spending draw was priced while the drawing
+      // owner's Rule-of-55 eligibility was unanswered.
+      earlyWithdrawalUnknownYears: number[];
       yearlyConversions: Array<{
         year: number;
         agePrimary: number;
@@ -1922,6 +1952,9 @@ export type RothConversionResults = {
       // UNKNOWN and its ACA years under 100% FPL.
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+      // Build 1): the do-nothing march's years, as above.
+      earlyWithdrawalUnknownYears: number[];
     };
     candidateFamiliesEvaluated: string[];
     excludedCandidateFamilies: string[];
@@ -2168,6 +2201,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               winner.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
+            earlyWithdrawalUnknownYears:
+              winner.result.earlyWithdrawalUnknownYears,
             yearlyConversions: winnerConversions,
             rmdDeferral: rmdSurvivorSummary(
               winner.result.years.map((y) => ({
@@ -2196,6 +2231,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               doNothing.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+            earlyWithdrawalUnknownYears:
+              doNothing.result.earlyWithdrawalUnknownYears,
             rmdDeferral: rmdSurvivorSummary(
               doNothing.result.years.map((y) => ({
                 year: y.year,
@@ -2247,12 +2284,16 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               winner.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
+            earlyWithdrawalUnknownYears:
+              winner.result.earlyWithdrawalUnknownYears,
           },
           {
             name: "do-nothing",
             irmaaLookbackMissingYears:
               doNothing.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+            earlyWithdrawalUnknownYears:
+              doNothing.result.earlyWithdrawalUnknownYears,
           },
         ]),
         "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
@@ -2384,6 +2425,11 @@ export function compareRetirementAges(
       winnerClaimSpouseAge: number | null;
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
+      // Build 1): the winner march's years whose pre-59½
+      // pre-tax spending draw was priced while the drawing
+      // owner's Rule-of-55 eligibility was unanswered.
+      earlyWithdrawalUnknownYears: number[];
       assumptions: string[];
     }> = [];
     let workYearsWinnerByAllInTax: string | null = null;
@@ -2434,6 +2480,9 @@ export function compareRetirementAges(
           // (see the row type in workYears.ts).
           irmaaLookbackMissingYears: row.irmaaLookbackMissingYears,
           acaBelow100FplYears: row.acaBelow100FplYears,
+          // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review
+          // C9, Build 1): as above, for the winner march.
+          earlyWithdrawalUnknownYears: row.earlyWithdrawalUnknownYears,
           assumptions: row.assumptions,
         })),
       );
@@ -2508,6 +2557,7 @@ export function compareRetirementAges(
             name: `retire-${w.quitAge}`,
             irmaaLookbackMissingYears: w.irmaaLookbackMissingYears,
             acaBelow100FplYears: w.acaBelow100FplYears,
+            earlyWithdrawalUnknownYears: w.earlyWithdrawalUnknownYears,
           })),
         ),
         ...workYearsWarnings,

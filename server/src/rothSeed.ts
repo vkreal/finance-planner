@@ -66,6 +66,14 @@ export type RothSeedInputs = {
   filingStatus: "mfj";
   pretaxCents: null;
   pretaxSpouseCents: null;
+  // Rule-of-55 eligibility (Engine Review C9, Build 1)
+  // seeds blank (null = not established for that owner),
+  // like every optional pricing input the seed does not
+  // presume — the seed never invents an eligibility split.
+  pretax401kEligiblePrimaryCents: null;
+  pretax401kEligibleSpouseCents: null;
+  separationAgePrimary: null;
+  separationAgeSpouse: null;
   survivorEnabled: boolean;
   survivorWho: "primary";
   survivorDeathYear: null;
@@ -209,6 +217,10 @@ export function seedRothInputs(derived: {
     filingStatus: "mfj",
     pretaxCents: null,
     pretaxSpouseCents: null,
+    pretax401kEligiblePrimaryCents: null,
+    pretax401kEligibleSpouseCents: null,
+    separationAgePrimary: null,
+    separationAgeSpouse: null,
     survivorEnabled: false,
     survivorWho: "primary",
     survivorDeathYear: null,
