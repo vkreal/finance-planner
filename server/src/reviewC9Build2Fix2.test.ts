@@ -18,10 +18,12 @@
 //       price a penalty on dollars that do not exist. A guard
 //       on `known` alone would be WORSE than the poison, so
 //       (1) and (2) ride together. Its contributions are
-//       already $0 whenever its balance is $0 (contributions
-//       are consumed before lots/earnings on every reachable
-//       path — verified from the source; see the merge
-//       comment), so the plain contributions sum stays exact;
+//       already $0 whenever its balance is $0 — guaranteed by
+//       mechanism on every balance-reducing path (debits
+//       consume contributions first, the top-up residual
+//       consumes composition, growth clears a wiped ledger;
+//       see the merge comment) — so the plain contributions
+//       sum stays exact;
 //   (3) a $0 side's firstYear must not pull the merged
 //       5-year clock earlier (it contributed no dollars).
 //

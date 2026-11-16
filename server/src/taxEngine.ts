@@ -2757,6 +2757,10 @@ function debitRothAccountLedger(
       remaining -= fromContrib;
     }
     if (remaining > 0) unknown = true;
+    // Backstop (C9 Build 2 fix 3): a take that exhausts the
+    // balance clears any composition left standing (the
+    // post-decline case — see clearEmptyRothAccountLedger).
+    clearEmptyRothAccountLedger(led);
     return { drawn: take, income: 0, penalty: 0, unknown };
   }
   // 1. Regular contributions — always free.
@@ -2821,7 +2825,93 @@ function debitRothAccountLedger(
       remaining -= fromEarnings;
     }
   }
+  // Backstop (C9 Build 2 fix 3): see the unknown branch above.
+  clearEmptyRothAccountLedger(led);
   return { drawn: take, income: r2(income), penalty: r2(penalty), unknown };
+}
+
+// Silently reduce one account ledger's balance by `amount`,
+// consuming composition in the SAME order as
+// debitRothAccountLedger — regular contributions first,
+// then conversion lots FIFO (taxable portion first within
+// a lot), then earnings (the residual, implicit in the
+// balance: the balance was already reduced by the whole
+// take, so whatever remains after contributions and lots
+// is earnings consumed). Unlike debitRothAccountLedger
+// this prices NOTHING — no income, no penalty, no unknown
+// flag. Its only caller is the top-up shrink in
+// settleRound, whose penalty was already priced once by
+// the gross-up, so pricing here would double-count it.
+// Lots are consumed regardless of `known`: the shrink
+// reconciles dollars that have already left (the lot step
+// beside it already shrinks the appended lot on an unknown
+// ledger too) — the Fix 1 no-consume rule governs priced
+// debits, not this reconciliation. Returns the amount left
+// unconsumed (the ledger held less than the request).
+// INVARIANT: after this call, balance $0 ⟹ contributions $0
+// and no lot stands against a $0 balance — the take
+// consumes contributions first, and a take equal to the
+// whole balance consumes all of them. (Contributions never
+// exceed the balance on entry — init clamps them and the
+// lot step preserves the composition identity — so a full
+// take always clears them; the backstop below covers the
+// post-decline case, where the balance already sits below
+// the standing basis.)
+export function shrinkRothAccountLedgerBalance(
+  led: RothAccountLedger,
+  amount: number,
+): number {
+  const left = Math.max(0, amount);
+  const take = Math.min(left, Math.max(0, led.balance));
+  if (take <= 0) return left;
+  led.balance = Math.max(0, led.balance - take);
+  let remaining = take;
+  if (remaining > 0 && led.contributions > 0) {
+    const fromContrib = Math.min(remaining, led.contributions);
+    led.contributions -= fromContrib;
+    remaining -= fromContrib;
+  }
+  for (const lot of led.lots) {
+    if (remaining <= 0) break;
+    const lotTotal = lot.taxable + lot.nontaxable;
+    if (lotTotal <= 0) continue;
+    const fromLot = Math.min(remaining, lotTotal);
+    const fromTaxable = Math.min(fromLot, lot.taxable);
+    lot.taxable = Math.max(0, lot.taxable - fromTaxable);
+    lot.nontaxable = Math.max(0, lot.nontaxable - (fromLot - fromTaxable));
+    remaining -= fromLot;
+  }
+  led.lots = led.lots.filter((l) => l.taxable + l.nontaxable > 0);
+  // Earnings are the residual — nothing to do: the balance
+  // was already reduced by the whole take, so any remaining
+  // after contributions and lots is earnings consumed.
+  return left - take;
+}
+
+// Backstop for the balance/contributions invariant (see
+// shrinkRothAccountLedgerBalance): whenever a ledger's
+// balance reaches $0 by a path that does not itself consume
+// composition, clear the composition that no longer has
+// dollars behind it. The two such paths are the year-end
+// growth — a −100% return zeroes the balance while basis
+// stands (the schema allows −100 at the save boundary, and
+// it "prices a wipeout") — and a debit that exhausts a
+// balance whose basis exceeds it (a negative-return year
+// can shrink the balance below the standing basis — basis
+// deliberately survives declines, exactly like the taxable
+// basis beside it, so only the exhaustion clears it). On a
+// KNOWN ledger the lots go too (a lot standing against $0
+// would price on a later draw); on an UNKNOWN ledger the
+// lots stay — the Fix 1 landing default (unknown draws
+// never consume lots; the phantom is inert — `known` is
+// never recomputed from the balance mid-march, and the
+// merge drops a $0 side's lots). A no-op whenever the
+// balance is positive, and whenever the balance is $0
+// with composition already clear.
+export function clearEmptyRothAccountLedger(led: RothAccountLedger): void {
+  if (led.balance > 0) return;
+  led.contributions = 0;
+  if (led.known) led.lots = [];
 }
 
 // Debit across one owner's two accounts — IRA first, then
@@ -2887,19 +2977,37 @@ function debitRothLedgers(
 // phantom — and carrying them into a now-known merged
 // ledger would price a penalty on dollars that do not
 // exist), and its first year must not pull the merged
-// 5-year clock earlier. Its contributions are already $0
-// whenever its balance is $0 (contributions are consumed
-// before lots/earnings on every reachable path —
-// debitRothAccountLedger, in both the known and the
-// unknown branch; the top-up shrink's lot step reduces
-// balance and lot together, so balance $0 implies
-// contributions $0 there too, and its residual step is
-// unreachable inside one settleRound — the top-up is
-// capped by the post-draw Roth balance while the lots
-// still standing cover the remainder — and rounds start
-// from fresh ledger copies, so no cross-round
-// accumulation; init clamps contributions to the balance),
-// so the plain contributions sum below is exact.
+// 5-year clock earlier. A $0 side's contributions are $0
+// — and the plain contributions sum below is exact —
+// because balance $0 ⟹ contributions $0 is GUARANTEED by
+// mechanism on every path that reduces a balance, not
+// assumed: init clamps contributions to the balance; every
+// debit consumes contributions before lots/earnings
+// (debitRothAccountLedger, in both the known and the
+// unknown branch) and clearEmptyRothAccountLedger zeroes
+// any composition left standing when a debit exhausts the
+// balance (the post-decline case, where a negative-return
+// year shrank the balance below the standing basis — basis
+// deliberately survives declines, so only the exhaustion
+// clears it); the top-up shrink's lot step reduces balance
+// and lot together, preserving the composition identity,
+// and its residual step consumes composition via
+// shrinkRothAccountLedgerBalance (C9 Build 2 fix 3 —
+// Pass 4 SHOULD-1: the residual IS reachable inside one
+// settleRound — the top-up cap is on TOTAL Roth balance
+// while the lot step covers only IRA lots, so a remainder
+// the lots cannot cover reaches the IRA ledgers whenever
+// the spending draw has already consumed most of the new
+// lot — and before Fix 3 it touched `.balance` only, which
+// zeroed ledgers while their contributions stood); and
+// year-end growth clears composition when a return zeroes
+// a balance (−100% prices a wipeout; the schema allows
+// −100 at the save boundary). The one composition the
+// guarantee does NOT cover is lots on an UNKNOWN ledger:
+// the unknown branch never consumes lots (the Fix 1
+// phantom, inert — `known` is never recomputed from the
+// balance mid-march), which is why the $0 side's lots are
+// dropped at the merge rather than trusted.
 function mergeRothOwnerLedgers(
   a: RothOwnerLedger,
   b: RothOwnerLedger,
@@ -7685,11 +7793,34 @@ export function simulateRothPlan(
                 // an older lot. The spending draw above may
                 // already have spent part of the new lot, so
                 // a remainder the lots cannot cover comes
-                // out of the IRA ledger's residual (the
-                // balance invariant — ledger balances sum to
-                // rothBal — is kept exact; the composition
-                // effect is second-order and confined to
-                // this payTaxFrom=conversion corner).
+                // out of the IRA ledger's residual — and the
+                // residual consumes COMPOSITION, not just
+                // the balance (C9 Build 2 fix 3 — Pass 4
+                // SHOULD-1): contributions first, then
+                // conversion lots FIFO, then earnings, via
+                // shrinkRothAccountLedgerBalance, mirroring
+                // debitRothAccountLedger's order. Before
+                // Fix 3 the residual touched `.balance`
+                // only, so a top-up the lots could not cover
+                // zeroed an IRA ledger while its
+                // contributions stood — a $0 balance with
+                // standing contributions, the phantom the
+                // merge guard's premise relied on never
+                // existing. The residual IS reachable: the
+                // top-up cap is on TOTAL Roth balance while
+                // the lot step covers only IRA lots, so a
+                // remainder reaches the IRA ledgers whenever
+                // the spending draw has already consumed
+                // most of the new lot. The residual never
+                // touches the employer legs, so a remainder
+                // the IRA ledgers cannot cover stays in the
+                // employer legs (the year-end Roth is read
+                // off the ledgers, so those dollars stay in
+                // Roth) — the scalar/ledger gap is
+                // pre-existing and unchanged by this fix:
+                // the balance reduction here is identical
+                // to before, only the composition it
+                // consumes is now honest.
                 let shrinkLeft = topUpTotal;
                 for (const [led, lot] of [
                   [sRothLedP, appendedLotP],
@@ -7704,16 +7835,18 @@ export function simulateRothPlan(
                   }
                 }
                 if (shrinkLeft > 0) {
-                  const sP = Math.min(shrinkLeft, sRothLedP.ira.balance);
-                  sRothLedP.ira.balance = Math.max(
-                    0,
-                    sRothLedP.ira.balance - sP,
+                  shrinkLeft = r2(
+                    shrinkRothAccountLedgerBalance(
+                      sRothLedP.ira,
+                      shrinkLeft,
+                    ),
                   );
-                  shrinkLeft = r2(shrinkLeft - sP);
                   if (shrinkLeft > 0) {
-                    sRothLedS.ira.balance = Math.max(
-                      0,
-                      sRothLedS.ira.balance - shrinkLeft,
+                    shrinkLeft = r2(
+                      shrinkRothAccountLedgerBalance(
+                        sRothLedS.ira,
+                        shrinkLeft,
+                      ),
                     );
                   }
                 }
@@ -9613,6 +9746,12 @@ export function simulateRothPlan(
     // growth to float dust, and r2 rounds the row to cents.
     const growRothAccount = (led: RothAccountLedger) => {
       led.balance = Math.max(0, led.balance) * yearGrowth;
+      // Backstop (C9 Build 2 fix 3): a −100% return zeroes
+      // the balance while basis stands — clear the
+      // composition that no longer has dollars behind it
+      // (see clearEmptyRothAccountLedger). A no-op on every
+      // positive balance, so ordinary growth is untouched.
+      clearEmptyRothAccountLedger(led);
     };
     growRothAccount(rothLedP.ira);
     growRothAccount(rothLedP.employer);
