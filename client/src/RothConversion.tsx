@@ -10709,6 +10709,9 @@ export function RothConversion({
                     <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — spending</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — tax bill</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Roth draw</th>
+                    {yfResult.years.some((y) => y.hsaDrawCents > 0) && (
+                      <th scope="col" className="px-2 py-2 text-right font-medium">HSA — tax bill</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -10718,7 +10721,7 @@ export function RothConversion({
                     const fundedTotal =
                       r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
                       r.dividendYieldCents + r.cashSpendCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
-                      r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+                      r.taxableSoldForTaxCents + r.rothDrawCents + r.hsaDrawCents + r.salarySurplusCents;
                     const isShort = fundedTotal < r.totalNeedCents;
                     return (
                       <tr
@@ -10758,6 +10761,9 @@ export function RothConversion({
                         <td className="tnum px-2 py-2 text-right">{cell(r.taxableSoldForSpendingCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.taxableSoldForTaxCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.rothDrawCents)}</td>
+                        {yfResult.years.some((y) => y.hsaDrawCents > 0) && (
+                          <td className="tnum px-2 py-2 text-right">{cell(r.hsaDrawCents)}</td>
+                        )}
                       </tr>
                     );
                   })}
@@ -10771,7 +10777,7 @@ export function RothConversion({
             const sourcesTotal =
               r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
               r.dividendYieldCents + r.cashSpendCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
-              r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+              r.taxableSoldForTaxCents + r.rothDrawCents + r.hsaDrawCents + r.salarySurplusCents;
             const needRow = (label: string, v: number) => (
               <div className="flex items-baseline justify-between gap-3 py-1">
                 <span>{label}</span>
@@ -10824,6 +10830,8 @@ export function RothConversion({
                     {needRow("Taxable sold — for spending", r.taxableSoldForSpendingCents)}
                     {needRow("Taxable sold — for the tax bill", r.taxableSoldForTaxCents)}
                     {needRow("Roth draw", r.rothDrawCents)}
+                    {r.hsaDrawCents > 0 &&
+                      needRow("HSA draw — for the tax bill", r.hsaDrawCents)}
                     <div className="flex items-baseline justify-between gap-3 border-t border-[var(--border)] py-1 font-medium">
                       <span>Total funded</span>
                       <span className="tnum">{fmtCents(sourcesTotal)}</span>

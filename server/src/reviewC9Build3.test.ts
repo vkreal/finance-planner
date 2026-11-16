@@ -70,23 +70,29 @@ const UNFUNDED_REASON =
 
 describe("C9 Build 3 — W2-D2: unpaid tax nets out of ending wealth", () => {
   test("forced unpaid tax (W2 F2): wealth falls by exactly the unpaid amount", () => {
-    // An injected $20M non-cash gain at 62 creates a $5,352,419.35
+    // An injected $20M non-cash gain at 62 creates a $5,386,149.65
     // federal bill against ~$4.8M of reachable balances. The
     // debit chain empties every bucket it can reach (pre-tax,
-    // taxable, Roth all $0 at the end; only the untouched HSA
-    // survives at $478,910.80) and $611,944.97 of assessed tax
-    // stays unpaid. Before this build ending wealth reported
-    // $478,910.80 — the balances alone, the debt ignored. After
-    // it, wealth is $478,910.80 − $611,944.97 = −$133,034.17.
+    // taxable, Roth all $0 at the end). Build 4 (W2-D1) added
+    // the HSA as the last-resort leg, so the HSA no longer
+    // survives untouched: the 2030 leg distributes the whole
+    // $91,162.97 HSA, of which $18,232.59 is the §223(f)(4) 20%
+    // additional tax and the rest pays the bill, and the HSA
+    // ends at $0. $572,744.90 of assessed tax still stays
+    // unpaid. Before Build 3, ending wealth reported the
+    // balances alone ($478,910.80 — the untouched HSA, the debt
+    // ignored). After Build 3 it was $478,910.80 − $611,944.97
+    // = −$133,034.17. After Build 4 it is $0 − $572,744.90 =
+    // −$572,744.90.
     const inputs = samplePlanInputs({ saleGainAge: 62, saleGainAmount: 20_000_000 });
     const res = simulateRothPlan(inputs, DO_NOTHING);
-    expect(res.lifetimeUnpaidTax).toBe(611944.97);
-    expect(res.endingAfterTaxWealth).toBe(-133034.17);
-    // The balances alone still sum to the pre-fix figure — the
-    // fix is the subtraction, not a change to any balance.
+    expect(res.lifetimeUnpaidTax).toBe(572744.9);
+    expect(res.endingAfterTaxWealth).toBe(-572744.9);
+    // No balance survives — the HSA was spent on the tax bill
+    // in 2030 (Build 4), the other buckets were already empty.
     expect(
       res.endingPretax + res.endingRoth + res.endingTaxable + res.endingHsa,
-    ).toBe(478910.8);
+    ).toBe(0);
     // The corrected wealth identity, in the march's own terms:
     // balances net of terminal tax, less the unpaid tax.
     const cost = planNetCost(res, inputs);

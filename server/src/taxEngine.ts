@@ -4284,15 +4284,29 @@ export type RothYearDetail = {
   //   pretaxDrawCents, which adds it to the spending draw.
   pretaxSpendingDraw: number;
   pretaxTaxDebit: number;
+  // HSA TAX DEBIT (Engine Review C9, Build 4 — W2-D1): the
+  // HSA debits that paid the tax bill alone — the settlement
+  // feedback for the HSA leg (the whole distribution is
+  // ordinary income, so this is the amount the priced AGI
+  // carries from the HSA). It is NOT money out by choice;
+  // it belongs to runRothFunding's hsaDrawCents, which
+  // carries the same distribution as a funding source. The
+  // detail's income pieces sum to AGI as extraPreTaxDraw +
+  // rothEarningsIncome + hsaTaxDebit + the other ordinary
+  // lines (interest, dividends, RMD, conversion, SS
+  // taxable, gains). $0 in every year whose earlier debit
+  // legs cover the bill. Display only — no priced total is
+  // derived from it.
+  hsaTaxDebit: number;
   // ROTH EARNINGS INCOME (Engine Review C9, Build 2 — W3):
   // the non-qualified earnings portion of the year's Roth
   // draws, priced as ordinary income — the Roth part of
   // the income the priced AGI carries. It is NOT inside
   // extraPreTaxDraw above (that line is the pre-tax split
   // only, S-10): the detail's income pieces sum to AGI as
-  // extraPreTaxDraw + rothEarningsIncome + the other
-  // ordinary lines (interest, dividends, RMD, conversion,
-  // SS taxable, gains). $0 in a qualified or basis-covered
+  // extraPreTaxDraw + rothEarningsIncome + hsaTaxDebit + the
+  // other ordinary lines (interest, dividends, RMD,
+  // conversion, SS taxable, gains). $0 in a qualified or basis-covered
   // year. Display only — no priced total is derived from it.
   rothEarningsIncome: number;
   ltcg: number;
@@ -4705,21 +4719,36 @@ export type RothYearFunding = {
   taxableSoldForSpending: number;
   taxableSoldForTax: number;
   // Spend-from-cash: the part of the year's spending need the
-  // cash sleeve paid (one of the twelve funding sources; see the
+  // cash sleeve paid (one of the thirteen funding sources; see the
   // RothPlanInputs note). It is NOT part of
   // taxableSoldForSpending — that field stays the gain-priced
   // Taxable sales for spending — the cash share sold nothing
   // and realized no gain.
   cashSpend: number;
   rothDraw: number;
+  // HSA DRAW (Engine Review C9, Build 4 — W2-D1): the HSA
+  // amount applied to the year's tax bill — the last-resort
+  // leg of the settlement's tax-payment debit chain
+  // (Taxable → Pre-tax → Roth → HSA). A source: it is money
+  // actually applied to the bill. $0 in every year whose
+  // earlier legs cover the bill (every solvent year). The
+  // distribution is ordinary income (see the detail's
+  // hsaTaxDebit) and, before 65, carries the §223(f)(4)
+  // 20% additional tax — priced by the gross-up inside the
+  // leg, scored inside the federalTax need beside it
+  // (federalTax carries federal + penalty, penalty carrying
+  // the additional tax), so the funding identity still foots
+  // exactly. The HSA is never drawn for spending — this
+  // field is tax-bill debits only.
+  hsaDraw: number;
   salarySurplus: number;
   conversion: number;
   harvestSold: number;
   // UNPAID TAX (round-5 fix 1): the part of the year's priced
   // tax bill (federal + state + penalty + IRMAA, as settled)
   // that no balance could pay — the debit chain (Taxable →
-  // Pre-tax → Roth) ran out of money with a remainder still
-  // owed. It is NOT a source and NOT a need: the needs above
+  // Pre-tax → Roth → HSA, Engine Review C9 Build 4) ran out
+  // of money with a remainder still owed. It is NOT a source and NOT a need: the needs above
   // carry the full assessed tax, the sources carry only what
   // was actually applied, and this line reconciles them:
   // sources + spendShortfall + unpaidTax = needs. $0 in every
@@ -4978,7 +5007,7 @@ export type RothYear = {
   // ("converged", "repeated-assumption" for a repeated
   // assumed value — a cycle — or "iteration-limit").
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; hsa: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -6855,6 +6884,17 @@ export function simulateRothPlan(
       // are NOT feedback: they are this round's own draws,
       // priced directly in the reprice below (like extraDraw).
       fbRothIn: number,
+      // HSA FEEDBACK (Engine Review C9, Build 4 — W2-D1):
+      // the HSA distribution income the previous round's
+      // TAX-DEBIT legs created (debitUnpaid's HSA leg) —
+      // the feedback the settlement iteration prices,
+      // exactly like fbPretaxIn / fbRothIn. A non-qualified
+      // HSA distribution is ordinary income in full, so the
+      // whole distribution feeds back (not only the part
+      // that paid the bill). The SPENDING draws never touch
+      // the HSA, so there is no spending-draw HSA income
+      // priced directly in the reprice below.
+      fbHsaIn: number,
       // ACA premium reconciliation (build v135): the
       // premium credit this round ASSUMES when it sizes the
       // year's spending need (the year-level settleYear driver
@@ -6874,7 +6914,7 @@ export function simulateRothPlan(
       // the rate is the flat gainPct, bit-identically.
       const startRatio = taxable > 0 ? basisYearStart / taxable : 0;
       const drawGainRate = driftOn ? 1 - startRatio : gainPct;
-      let priced = priceWith(fbGainsIn, fbPretaxIn + fbRothIn, conv);
+      let priced = priceWith(fbGainsIn, fbPretaxIn + fbRothIn + fbHsaIn, conv);
       let federalTax = priced.federalTax;
       let stateTax = priced.stateTax;
 
@@ -6979,6 +7019,19 @@ export function simulateRothPlan(
       // (conversions draw his balance first), the survivor's
       // once the balances are combined.
       const convOwnerAge = survCombined ? (survivorAge ?? age) : age;
+      // HSA OWNER AGE (Engine Review C9, Build 4 — W2-D1):
+      // the age the §223(f)(4) additional-tax gate reads.
+      // The engine carries a SINGLE HSA balance (hsaStart)
+      // with no owner split — no record field attributes it
+      // to one spouse — so the gate uses the same owner-age
+      // convention as the conversion above: the primary's age
+      // while both spouses are alive, the survivor's once the
+      // balances are combined. A spouse-owned HSA in a year
+      // the two ages straddle 65 would price the gate on the
+      // wrong age; that is a disclosed limitation of the
+      // single-balance model, not a silent assumption (see
+      // the debitUnpaid HSA leg and the builder report).
+      const hsaOwnerAge = survCombined ? (survivorAge ?? age) : age;
       // RULE-OF-55 SHELTER (C9 Build 1 fix 1 — MUST 2): the
       // withheld part of a conversion is a distribution from
       // the distributing plan, so §72(t)(2)(A)(v) shelters it
@@ -7252,6 +7305,14 @@ export function simulateRothPlan(
           : null
         : spouseAge;
       let taxableBal = taxable - fromTaxable;
+      // HSA (Engine Review C9, Build 4 — W2-D1): this
+      // settlement's own copy of the year-start HSA balance
+      // (the settlement is pure and re-run, so each candidate
+      // works on a fresh copy and only the kept settlement's
+      // copy is committed below — probing settlements can
+      // never drain it, exactly like the balances beside
+      // it). debitUnpaid's HSA leg debits this copy.
+      let hsaBal = hsa;
       // YEAR FUNDING capture (display only — no priced figure
       // reads these trackers): the settlement's own funding
       // splits, accumulated as the debits below happen. The tax
@@ -7263,6 +7324,11 @@ export function simulateRothPlan(
       let fundTaxTaxable = fromTaxable;
       let fundTaxPretax = withheldFromConversion;
       let fundTaxRoth = 0;
+      // HSA (Engine Review C9, Build 4 — W2-D1): the HSA
+      // amount this settlement applied to the tax bill (the
+      // last-resort leg of debitUnpaid below). $0 unless the
+      // earlier legs run out.
+      let fundTaxHsa = 0;
       let fundSpendTaxable = 0;
       let fundSpendRoth = 0;
       // SETTLEMENT ITERATION: the income THIS round's
@@ -7286,6 +7352,18 @@ export function simulateRothPlan(
       // top-up below shrinks the appended conversion lots
       // (see appendedLotP / appendedLotS above).
       let createdFbRoth = 0;
+      // HSA FEEDBACK (Engine Review C9, Build 4 — W2-D1):
+      // createdFbHsa is the HSA distribution income the
+      // TAX-DEBIT legs create (debitUnpaid's HSA leg) — the
+      // whole distribution, ordinary income in full —
+      // feedback for the settlement iteration, exactly like
+      // createdFbPretax. hsaAddlTax is the §223(f)(4) 20%
+      // additional tax the HSA leg's distributions carry
+      // before 65 — accumulated per leg, scored into
+      // `penalty` at the round's return (funded by the
+      // leg's own gross-up, never paid a second time).
+      let createdFbHsa = 0;
+      let hsaAddlTax = 0;
       let rothSpendEarnings = 0;
       let spendRothUnknown = false;
 
@@ -7410,8 +7488,9 @@ export function simulateRothPlan(
       // the protect-minimum was "withheld" above; the part of it
       // the year's (additional) conversion cannot absorb is debited
       // from Taxable below the protect-minimum floor, then from
-      // Pre-tax, then Roth. UNPAID TAX (round-5 fix 1): when even
-      // the Roth leg runs out, a remainder is still owed — the
+      // Pre-tax, then Roth, then HSA (Engine Review C9,
+      // Build 4 — W2-D1). UNPAID TAX (round-5 fix 1): when even
+      // the HSA leg runs out, a remainder is still owed — the
       // debit returns it and the settlement accumulates it as
       // unpaidTax, reported on the year (funding.unpaidTax /
       // RothYear.unpaidTax) instead of being discarded. Before
@@ -7427,7 +7506,10 @@ export function simulateRothPlan(
         // leg's EARNINGS portion is income too (Engine Review
         // C9, Build 2 — W3): the contribution / conversion
         // portions create none, but non-qualified earnings
-        // do — they feed back as createdFbRoth below.
+        // do — they feed back as createdFbRoth below. The
+        // HSA leg's WHOLE distribution is income (Engine
+        // Review C9, Build 4 — W2-D1) — it feeds back as
+        // createdFbHsa below.
         createdFbGains += basisOut(fromT);
         taxableBal -= fromT;
         rest -= fromT;
@@ -7481,6 +7563,75 @@ export function simulateRothPlan(
           rest -= fromR;
           createdFbRoth = r2(createdFbRoth + out.income);
           if (out.unknown) spendRothUnknown = true;
+        }
+        if (rest > 0) {
+          // HSA (Engine Review C9, Build 4 — W2-D1): the
+          // LAST-RESORT leg — after surplus cash, the
+          // payTaxFrom channel, and Taxable, Pre-tax, and
+          // Roth are exhausted. Before this leg the HSA was
+          // never in the debit chain: the audit's forced-
+          // exhaustion march left $611,944.97 of tax unpaid
+          // while the HSA held $95,721.12 and kept growing.
+          // A distribution to pay tax is NOT a qualified
+          // medical expense, so it is ordinary income in
+          // full — the whole distribution feeds back as
+          // createdFbHsa, priced by the next settlement
+          // round (the feedback channel, not a gross-up:
+          // the income-tax rate on the distribution is
+          // bracket-dependent, so no closed-form gross-up
+          // is exact — the fixed point is). NO penalty is
+          // priced on the income-tax part beyond the
+          // additional tax below, and no HSA leg exists for
+          // SPENDING draws (out of scope — the draw-order
+          // question, qualified-medical-expense semantics).
+          // §223(f)(4) ADDITIONAL TAX: a non-qualified
+          // distribution before 65 carries 20% additional
+          // tax on the distribution. It is grossed up HERE
+          // — the distribution covers the bill it pays PLUS
+          // its own additional tax (D = rest / 0.8, exact:
+          // the rate is flat, unlike the income-tax rate) —
+          // on the precedent of the conversion-withholding
+          // gross-up (penalty = withheld / 9): the
+          // additional tax joins `penalty` for scoring
+          // (lifetime penalty, net cost, the funding row's
+          // federal need) and is funded by the distribution
+          // itself, never paid a second time. At 65+ the
+          // additional tax does not apply (the §223(f)(4)
+          // age-65 exception) and the leg distributes
+          // exactly the bill. The gross-up converges
+          // whenever the year's marginal rate is under 80%
+          // (each round's extra distribution is the marginal
+          // rate / 0.8 of the last — the same shape as the
+          // pre-tax legs' under-100% condition); past that
+          // the iteration keeps its best state and reports
+          // non-convergence, exactly as the other legs do.
+          // The owner age is hsaOwnerAge (the primary's
+          // while both spouses are alive, the survivor's
+          // once combined — the engine carries one HSA
+          // balance with no owner split).
+          const hsaAvail = Math.max(0, hsaBal);
+          if (hsaAvail > 0) {
+            const addlRate = hsaOwnerAge < 65 ? 0.2 : 0;
+            const want = addlRate > 0 ? rest / (1 - addlRate) : rest;
+            const fromH = Math.min(want, hsaAvail);
+            hsaBal -= fromH;
+            // The bill this distribution covers is the
+            // distribution less its own additional tax, in
+            // FULL precision: rounding the additional tax
+            // before this subtraction would leave sub-cent
+            // dust in the bill coverage and the year's
+            // funding identity would foot a cent off. The
+            // scored additional tax below is rounded per leg
+            // (the penalty's own rounding, like every other
+            // penalty this settlement prices) — the sub-cent
+            // gap between the scored figure and the exact
+            // figure never enters a balance.
+            const addl = r2(fromH * addlRate);
+            hsaAddlTax = r2(hsaAddlTax + addl);
+            fundTaxHsa += fromH;
+            createdFbHsa = r2(createdFbHsa + fromH);
+            rest -= fromH - fromH * addlRate;
+          }
         }
         return Math.max(0, rest);
       };
@@ -7609,7 +7760,7 @@ export function simulateRothPlan(
                 (sTiers
                   ? r2(pricedGains)
                   : r2(taxableDrawn * drawGainRate)) + fbGainsIn;
-              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn + fbRothIn, 0).acaMagi;
+              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn + fbRothIn + fbHsaIn, 0).acaMagi;
               drawCap = Math.max(0, acaTargetDollars - baseAcaMagi);
             }
             if (pretaxDrawCapArg != null) {
@@ -7747,7 +7898,7 @@ export function simulateRothPlan(
       // round's pricing at $0 of draw income.
       const pricedGainsTotal = realizedGains + fbGainsIn;
       const pricedExtraTotal =
-        extraDraw + fbPretaxIn + rothSpendEarnings + fbRothIn;
+        extraDraw + fbPretaxIn + rothSpendEarnings + fbRothIn + fbHsaIn;
       if (pricedGainsTotal !== 0 || pricedExtraTotal > 0) {
         const repriced = priceWith(pricedGainsTotal, pricedExtraTotal, conv);
         const delta = r2(
@@ -8046,6 +8197,18 @@ export function simulateRothPlan(
               projected: true,
             }).credit
           : 0;
+      // HSA ADDITIONAL TAX (Engine Review C9, Build 4 —
+      // W2-D1): the §223(f)(4) 20% additional tax the HSA
+      // leg's distributions carried joins `penalty` here —
+      // the same variable the §72(t) penalties use — so the
+      // year row, the lifetime penalty, the plan score, and
+      // the funding row's federal tax all carry it with no
+      // new total. It is scored, NOT paid, here: the leg's
+      // gross-up already funded it out of the distribution
+      // itself (see debitUnpaid), and the spendPenalty
+      // payment above pays only spendPenalty — adding it
+      // there would pay it twice.
+      penalty = r2(penalty + hsaAddlTax);
       return {
         priced,
         federalTax,
@@ -8061,12 +8224,13 @@ export function simulateRothPlan(
         // every gain the year's priced figures recognize.
         realizedGains: r2(realizedGains + fbGainsIn),
         // SETTLEMENT ITERATION surfacing: the feedback this
-        // round's pricing assumed (fbGainsIn / fbPretaxIn —
-        // at the fixed point, the income the tax channels
-        // actually created) and the feedback this round's
-        // debits created. The year assembly adds feedbackPretax
-        // wherever it re-prices the settled year; settleYear
-        // drives the iteration off the created pair.
+        // round's pricing assumed (fbGainsIn / fbPretaxIn /
+        // fbRothIn / fbHsaIn — at the fixed point, the income
+        // the tax channels actually created) and the feedback
+        // this round's debits created. The year assembly adds
+        // feedbackPretax wherever it re-prices the settled
+        // year; settleYear drives the iteration off the
+        // created legs.
         feedbackGains: fbGainsIn,
         feedbackPretax: fbPretaxIn,
         // ROTH EARNINGS FEEDBACK (Engine Review C9, Build 2
@@ -8076,6 +8240,13 @@ export function simulateRothPlan(
         // point, iterated exactly like gains / pre-tax.
         feedbackRoth: fbRothIn,
         createdFbRoth: r2(createdFbRoth),
+        // HSA FEEDBACK (Engine Review C9, Build 4 — W2-D1):
+        // the HSA tax-debit-leg feedback this round's
+        // pricing assumed and the feedback its debits created
+        // — the fourth leg of the settlement fixed point,
+        // iterated exactly like gains / pre-tax / Roth.
+        feedbackHsa: fbHsaIn,
+        createdFbHsa: r2(createdFbHsa),
         // ROTH EARNINGS INCOME (Engine Review C9, Build 2 —
         // W3): the year's Roth earnings income this
         // settlement priced — the spending draws' earnings
@@ -8126,6 +8297,11 @@ export function simulateRothPlan(
         earliestRothLotYear,
         rothBal,
         taxableBal,
+        // HSA (Engine Review C9, Build 4 — W2-D1): the kept
+        // settlement's HSA balance after the leg's debits —
+        // committed by the year below, exactly like the
+        // balances beside it, then grown at the year's rate.
+        hsaBal,
         // YEAR FUNDING capture (see the trackers above): this
         // settlement's gross funding flows, before the yield
         // attribution the year assembly applies. taxFromCash is
@@ -8147,6 +8323,7 @@ export function simulateRothPlan(
         fundTaxTaxable,
         fundTaxPretax,
         fundTaxRoth,
+        fundTaxHsa,
         fundSpendTaxable,
         fundSpendRoth,
         // Spend-from-cash (see the step above): this
@@ -8160,10 +8337,10 @@ export function simulateRothPlan(
 
     // SETTLEMENT ITERATION driver: re-run the round with the
     // previous round's created feedback as the assumed
-    // feedback until the two agree to the cent on BOTH
+    // feedback until the two agree to the cent on ALL FOUR
     // components (the fixed point). Bounded: at most
     // SETTLEMENT_MAX_ROUNDS rounds, and a repeated assumed
-    // pair (a cycle — bracket-boundary jumps can in principle
+    // set (a cycle — bracket-boundary jumps can in principle
     // alternate two states) stops the iteration at once. If
     // no round is an exact fixed point, the round whose
     // created feedback came CLOSEST to its assumed feedback
@@ -8200,12 +8377,18 @@ export function simulateRothPlan(
       // tax-debit legs' earnings income — iterated exactly
       // like gains / pre-tax.
       let fbRoth = 0;
+      // HSA FEEDBACK (Engine Review C9, Build 4 — W2-D1):
+      // the fourth leg of the fixed point — the HSA
+      // tax-debit leg's distribution income — iterated
+      // exactly like gains / pre-tax / Roth.
+      let fbHsa = 0;
       let best: ReturnType<typeof settleRound> | null = null;
       let bestMismatch = Infinity;
       let bestConverged = false;
       let bestMismatchGainsCents = 0;
       let bestMismatchPretaxCents = 0;
       let bestMismatchRothCents = 0;
+      let bestMismatchHsaCents = 0;
       // (Engine Review C3, C3-S1 diagnostics): how many rounds
       // the kept settlement took and why the iteration stopped.
       let roundsUsed = 0;
@@ -8213,9 +8396,9 @@ export function simulateRothPlan(
         "iteration-limit";
       const seenAssumed = new Set<string>();
       for (let round = 0; round < SETTLEMENT_MAX_ROUNDS; round++) {
-        const key = `${r2(fbGains)}|${r2(fbPretax)}|${r2(fbRoth)}`;
+        const key = `${r2(fbGains)}|${r2(fbPretax)}|${r2(fbRoth)}|${r2(fbHsa)}`;
         if (seenAssumed.has(key)) {
-          // A repeated assumed pair — the iteration cycles.
+          // A repeated assumed set — the iteration cycles.
           innerStop = "repeated-assumption";
           break;
         }
@@ -8227,20 +8410,23 @@ export function simulateRothPlan(
           fbGains,
           fbPretax,
           fbRoth,
+          fbHsa,
           fbCreditIn,
         );
         const mismatchGains = Math.abs(s.createdFbGains - fbGains);
         const mismatchPretax = Math.abs(s.createdFbPretax - fbPretax);
         const mismatchRoth = Math.abs(s.createdFbRoth - fbRoth);
-        const mismatch = mismatchGains + mismatchPretax + mismatchRoth;
-        if (s.createdFbGains === r2(fbGains) && s.createdFbPretax === r2(fbPretax) && s.createdFbRoth === r2(fbRoth)) {
-          // Exact fixed point: the assumed feedback pair IS
-          // the pair this round's debits created.
+        const mismatchHsa = Math.abs(s.createdFbHsa - fbHsa);
+        const mismatch = mismatchGains + mismatchPretax + mismatchRoth + mismatchHsa;
+        if (s.createdFbGains === r2(fbGains) && s.createdFbPretax === r2(fbPretax) && s.createdFbRoth === r2(fbRoth) && s.createdFbHsa === r2(fbHsa)) {
+          // Exact fixed point: the assumed feedback IS
+          // the feedback this round's debits created.
           best = s;
           bestConverged = true;
           bestMismatchGainsCents = 0;
           bestMismatchPretaxCents = 0;
           bestMismatchRothCents = 0;
+          bestMismatchHsaCents = 0;
           innerStop = "converged";
           break;
         }
@@ -8250,20 +8436,22 @@ export function simulateRothPlan(
           bestMismatchGainsCents = Math.round(mismatchGains * 100);
           bestMismatchPretaxCents = Math.round(mismatchPretax * 100);
           bestMismatchRothCents = Math.round(mismatchRoth * 100);
+          bestMismatchHsaCents = Math.round(mismatchHsa * 100);
         }
         fbGains = s.createdFbGains;
         fbPretax = s.createdFbPretax;
         fbRoth = s.createdFbRoth;
+        fbHsa = s.createdFbHsa;
       }
       // The loop always runs at least one round, so `best` is
       // always set; the fallback only satisfies the type.
       const kept =
-        best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, 0, fbCreditIn);
+        best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, 0, 0, fbCreditIn);
       const fallbackRounds = best != null ? roundsUsed : 1;
       const fallbackStop =
         best != null
           ? innerStop
-          : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0
+          : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0 && kept.createdFbHsa === 0
             ? "converged"
             : "iteration-limit";
       return {
@@ -8271,20 +8459,21 @@ export function simulateRothPlan(
         settlementConverged:
           best != null
             ? bestConverged
-            : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0,
+            : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0 && kept.createdFbHsa === 0,
         settlementMismatchCents:
           best != null
-            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, roth: bestMismatchRothCents, acaCredit: 0 }
+            ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, roth: bestMismatchRothCents, hsa: bestMismatchHsaCents, acaCredit: 0 }
             : {
                 gains: Math.round(Math.abs(kept.createdFbGains) * 100),
                 pretax: Math.round(Math.abs(kept.createdFbPretax) * 100),
                 roth: Math.round(Math.abs(kept.createdFbRoth) * 100),
+                hsa: Math.round(Math.abs(kept.createdFbHsa) * 100),
                 acaCredit: 0,
               },
         // (Engine Review C3, C3-S1): the inner iteration's own
         // diagnostics. The ACA component is 0 here by
         // construction — this driver iterates gains / pre-tax
-        // / Roth only, at a FIXED assumed credit; the outer driver
+        // / Roth / HSA only, at a FIXED assumed credit; the outer driver
         // (settleYear) overwrites acaCredit with the kept
         // pass's own credit residual.
         settlementRounds: fallbackRounds,
@@ -8490,10 +8679,14 @@ export function simulateRothPlan(
             // settled, Roth earnings included. (The base
             // carries no §72(t) eligibility facts, so the
             // fold prices income only, never a penalty.)
+            // HSA (Engine Review C9, Build 4 — W2-D1): the
+            // settled year's HSA distribution income rides
+            // the same dial beside them, for the same reason.
             extraPreTaxDraw:
               settled.extraDraw +
               settled.feedbackPretax +
-              settled.rothEarningsIncome,
+              settled.rothEarningsIncome +
+              settled.feedbackHsa,
           },
           ceilings: yearCeilings,
           maxConversion: pretaxAfterRmd + already,
@@ -8607,7 +8800,8 @@ export function simulateRothPlan(
         candidate.realizedGains,
         candidate.extraDraw +
           candidate.feedbackPretax +
-          candidate.rothEarningsIncome,
+          candidate.rothEarningsIncome +
+          candidate.feedbackHsa,
         stepStart,
       );
       const stepRate =
@@ -8994,6 +9188,14 @@ export function simulateRothPlan(
     // marginal reprice, the fill caps) includes it, so those
     // pricings describe the same year the settlement settled.
     const feedbackPretax = settled.feedbackPretax;
+    // HSA (Engine Review C9, Build 4 — W2-D1): the settled
+    // year's priced HSA distribution income — the HSA
+    // debits that paid the year's tax (the settlement
+    // iteration's feedback, like feedbackPretax above).
+    // Every re-pricing below includes it beside
+    // feedbackPretax, so those pricings describe the same
+    // year the settlement settled.
+    const feedbackHsa = settled.feedbackHsa;
     let pretaxBalP = settled.pretaxBalP;
     let pretaxBalS = settled.pretaxBalS;
     // RULE-OF-55 (C9 Build 1): the kept settlement's eligible
@@ -9019,6 +9221,13 @@ export function simulateRothPlan(
     let rothEarningsIncome = settled.rothEarningsIncome;
     let rothBasisUnknownYear = settled.rothBasisUnknown;
     let taxableBal = settled.taxableBal;
+    // HSA (Engine Review C9, Build 4 — W2-D1): the kept
+    // settlement's HSA balance — committed exactly like the
+    // balances beside it, then grown at the year's rate
+    // below. Before this build the year-level HSA was never
+    // reduced by any settlement, so it grew untouched even
+    // while tax went unpaid.
+    hsa = settled.hsaBal;
 
     // Gain harvesting (the strategy's gainsHarvest toggle):
     // AFTER the year's draws and conversions have settled,
@@ -9181,8 +9390,11 @@ export function simulateRothPlan(
           // ordinary-income dial beside the pre-tax draw, so
           // the harvest's ceiling checks price the year as
           // settled (no §72(t) facts ride this dial — income
-          // only, never a penalty).
-          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax + rothEarningsIncome, conversion);
+          // only, never a penalty). HSA (Engine Review C9,
+          // Build 4 — W2-D1): the settled year's HSA
+          // distribution income rides the same dial beside
+          // them, for the same reason.
+          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion);
           return (
             p.gainsAt15 <= settledAt15 + 0.005 &&
             p.gainsAt20 <= settledAt20 + 0.005 &&
@@ -9206,7 +9418,7 @@ export function simulateRothPlan(
             gainsHarvested = lo / 100;
             const hp = priceWith(
               realizedGains + gainsHarvested,
-              extraDraw + feedbackPretax + rothEarningsIncome,
+              extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa,
               conversion,
             );
             // The settled (pre-harvest) tax — the baseline every
@@ -9321,6 +9533,20 @@ export function simulateRothPlan(
                 // decision as the pre-tax legs above (a tax
                 // payment's penalty would feed back into
                 // further distributions).
+                // NO HSA LEG (Engine Review C9, Build 4 —
+                // W2-D1, deliberate scope): the harvest's
+                // chain stops at Roth, like the settlement's
+                // chain did before this build — the harvest
+                // prices its delta through its own trial
+                // fixed point, and an HSA leg there would
+                // need its distribution income and its
+                // §223(f)(4) additional tax folded into that
+                // delta iteration, a second design, not this
+                // build's debitUnpaid leg. A harvest delta
+                // the chain cannot cover still lands in the
+                // year's unpaid tax honestly; the forced-
+                // exhaustion march's harvest is $0, so the
+                // audit's defect is entirely in debitUnpaid.
                 const rothTrial = debitRothLedgers(
                   cloneRothOwnerLedger(rothLedPreP),
                   cloneRothOwnerLedger(rothLedPreS),
@@ -9358,6 +9584,7 @@ export function simulateRothPlan(
                   extraDraw +
                     feedbackPretax +
                     rothEarningsIncome +
+                    feedbackHsa +
                     legs.preTaxLeg +
                     legs.rothEarningsIncome,
                   conversion,
@@ -9762,6 +9989,12 @@ export function simulateRothPlan(
       const taxableTaxY = settled.fundTaxTaxable + fundHarvestTaxTaxable;
       const rothDrawY =
         settled.fundSpendRoth + settled.fundTaxRoth + fundHarvestTaxRoth;
+      // HSA (Engine Review C9, Build 4 — W2-D1): the HSA
+      // amount applied to the tax bill — the last-resort
+      // leg. The harvest has no HSA leg (see legsFor), so
+      // the settlement's figure is the year's whole HSA tax
+      // debit.
+      const hsaDrawY = settled.fundTaxHsa;
       return {
         spending: r2(spendNeedY - healthPremiumNetYear),
         federalTax: r2(federalTax + penalty),
@@ -9779,6 +10012,7 @@ export function simulateRothPlan(
         taxableSoldForTax: r2(taxableTaxY),
         cashSpend: r2(settled.cashSpend),
         rothDraw: r2(rothDrawY),
+        hsaDraw: r2(hsaDrawY),
         salarySurplus: 0,
         conversion: r2(conversion),
         harvestSold: r2(gainsHarvested),
@@ -9791,7 +10025,7 @@ export function simulateRothPlan(
     // final year at conversion + $100.
     let effectiveMarginalPct: number | null = null;
     if (conversion > 0) {
-      const plus = priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome, conversion + 100);
+      const plus = priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion + 100);
       effectiveMarginalPct = r2(
         plus.federalTax + plus.stateTax - (federalTax + stateTax),
       );
@@ -10076,7 +10310,7 @@ export function simulateRothPlan(
       const lawY = lawForYear(year);
       const fsY = effFilingStatus;
       const nextPriced =
-        conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome, conversion + 100) : null;
+        conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion + 100) : null;
       const addCap = (
         kind: RothFillCap["kind"],
         label: string,
@@ -10267,6 +10501,12 @@ export function simulateRothPlan(
       extraPreTaxDraw: r2(extraDraw + feedbackPretax),
       pretaxSpendingDraw: r2(extraDraw),
       pretaxTaxDebit: r2(feedbackPretax),
+      // HSA TAX DEBIT (Engine Review C9, Build 4 — W2-D1):
+      // the HSA debits that paid the tax bill — the
+      // settlement feedback, the amount the priced AGI
+      // carries from the HSA. $0 unless the earlier debit
+      // legs ran out.
+      hsaTaxDebit: r2(feedbackHsa),
       // ROTH EARNINGS INCOME (Engine Review C9, Build 2 —
       // W3): the non-qualified earnings portion of the year's
       // Roth draws — the settlement's spending-draw earnings
@@ -10274,9 +10514,9 @@ export function simulateRothPlan(
       // tax-payment legs' earnings — priced as ordinary
       // income, already inside the year's AGI / MAGI / ACA
       // MAGI. The detail's income pieces sum to AGI as
-      // extraPreTaxDraw + rothEarningsIncome + the other
-      // ordinary lines (interest, dividends, RMD, conversion,
-      // SS taxable, gains).
+      // extraPreTaxDraw + rothEarningsIncome + hsaTaxDebit +
+      // the other ordinary lines (interest, dividends, RMD,
+      // conversion, SS taxable, gains).
       rothEarningsIncome: r2(rothEarningsIncome),
       // Total gains priced this year: the draws' realized gains
       // plus any injected counterfactual sale gain plus the

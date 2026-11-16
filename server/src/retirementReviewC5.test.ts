@@ -473,6 +473,24 @@ describe("C5-M1-f/g: runRothMonteCarloCheck validation", () => {
   }, 300_000);
 
   test("valid seeded check output is unchanged by the fix (Phase 1 after-probe pins)", () => {
+    // RE-PIN (Engine Review C9, Build 4): the median advantage
+    // and winner median below are the engine's current
+    // deterministic output, verified by execution on the
+    // landing tree and on the Build 4 tree — NOT the values
+    // C5 pinned. The C5 pins (median advantage 388,839.38,
+    // winner median 473,853.51) reproduce exactly at the C5
+    // landing commit, and the move happened in C9 Build 1
+    // (the withholding-penalty rework): the values are already
+    // the current ones at the post-Build-1 commit, and the
+    // movement is winner-only — the Do Nothing median never
+    // moved, and only the converting winner's path costs rose,
+    // on five of the eight paths — exactly what a conversion
+    // withholding change does. Build 4 does not move them:
+    // a per-path probe prices all eight paths on the Build 3
+    // landing tree and on the Build 4 tree byte-identically,
+    // with no HSA leg engaged and no unpaid tax on any path
+    // of either candidate. The Do Nothing median below is
+    // the original C5 pin, unchanged.
     const opt = getOpt();
     const winner = { spec: opt.winner.spec, claimAges: opt.winner.claimAges };
     const dn = { spec: opt.doNothing.spec, claimAges: opt.doNothing.claimAges };
@@ -483,8 +501,8 @@ describe("C5-M1-f/g: runRothMonteCarloCheck validation", () => {
     expect(r.paths.length).toBe(8);
     expect(r.wins).toBe(7);
     expect(r.winRatePct).toBe(87.5);
-    expect(r.medianAdvantage).toBe(388839.38);
-    expect(r.winnerMedianNetCost).toBe(473853.51);
+    expect(r.medianAdvantage).toBe(388441.45);
+    expect(r.winnerMedianNetCost).toBe(473965.57);
     expect(r.doNothingMedianNetCost).toBe(944804.46);
   }, 300_000);
 

@@ -403,7 +403,7 @@ export function assessCandidateIntegrity(
     // Defensive reads (?? 0 / ?? false): the engine always sets
     // these fields, but a caller assessing a mapped row (e.g. a
     // compare-path readout) must never NaN-poison the totals.
-    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, roth: 0, acaCredit: 0 };
+    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, roth: 0, hsa: 0, acaCredit: 0 };
     const conversion = y.conversion ?? 0;
     if (!y.settlementConverged) nonConvergedYearList.push(y.year);
     maxMismatchGainsCents = Math.max(maxMismatchGainsCents, mismatch.gains ?? 0);
@@ -8751,7 +8751,7 @@ export function pricePlanYearDetail(
    pieces the detail priced). It prices nothing of its own:
    the rows come from ONE simulateRothPlan run of the plan
    exactly as given, with the given fixed strategy.
-   CASH IDENTITY: for every row, the twelve source fields plus
+   CASH IDENTITY: for every row, the thirteen source fields plus
    spendShortfallCents plus unpaidTaxCents sum to the four
    need fields (totalNeedCents) — totalNeedCents includes the
    full assessed tax, spendShortfallCents is spending-only,
@@ -8842,11 +8842,32 @@ export type RothFundingRow = {
   taxableSoldForSpendingCents: number;
   taxableSoldForTaxCents: number;
   // Spend-from-cash: the part of the year's spending need the
-  // pool's cash sleeve paid (one of the twelve sources — see the
+  // pool's cash sleeve paid (one of the thirteen sources — see the
   // RothYearFunding waterfall in taxEngine.ts). $0 in every
   // year unless the plan sets spendFromCashPct.
   cashSpendCents: number;
   rothDrawCents: number;
+  // HSA DRAW (Engine Review C9, Build 4 — W2-D1): the HSA
+  // amount applied to the year's tax bill, in integer cents
+  // (the engine's RothYearFunding.hsaDraw) — the
+  // last-resort leg of the settlement's tax-payment debit
+  // chain. A source: it is money actually applied to the
+  // bill. $0 in every year whose earlier legs cover the
+  // bill. The distribution is ordinary income (see
+  // hsaTaxDebitCents below) and, before 65, carries the
+  // §223(f)(4) 20% additional tax — priced by the leg's
+  // gross-up and scored inside federalTaxCents beside it,
+  // so the cash identity still foots exactly.
+  hsaDrawCents: number;
+  // HSA TAX DEBIT (Engine Review C9, Build 4 — W2-D1): the
+  // HSA debits that paid the tax bill alone, in integer
+  // cents (the detail's hsaTaxDebit — the same distribution
+  // hsaDrawCents carries as a source). Display only — not
+  // a second source and not part of the cash identity; the
+  // HSA has no spending draw, so the two are equal by
+  // construction (if an HSA spending draw is ever added,
+  // they diverge: the draw would carry the spending part).
+  hsaTaxDebitCents: number;
   salarySurplusCents: number;
   // SPEND SHORTFALL (FIX 3): the year's unfunded spending in
   // integer cents — the spending need left after cash income,
@@ -8893,7 +8914,7 @@ export type RothFundingRow = {
   // plus how many rounds / passes the kept settlement took
   // and why each level stopped.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; hsa: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -9003,6 +9024,8 @@ export function buildRothFunding(
       taxableSoldForTaxCents: cents(f.taxableSoldForTax),
       cashSpendCents: cents(f.cashSpend),
       rothDrawCents: cents(f.rothDraw),
+      hsaDrawCents: cents(f.hsaDraw),
+      hsaTaxDebitCents: cents(y.detail.hsaTaxDebit),
       salarySurplusCents: cents(f.salarySurplus),
       spendShortfallCents: cents(f.spendShortfall),
       unpaidTaxCents: cents(f.unpaidTax),
@@ -9063,6 +9086,7 @@ export function buildRothFunding(
       "taxableSoldForTaxCents",
       "cashSpendCents",
       "rothDrawCents",
+      "hsaDrawCents",
       "salarySurplusCents",
     ] as const;
     const sourcesTotal = sourceKeys.reduce((s, k) => s + row[k], 0);
@@ -9934,7 +9958,7 @@ export type RothCompareScenarioYear = {
   // stopped. Display only — no score, ranking, or delta is
   // derived from them, and no pricing changed.
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; roth: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; hsa: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";

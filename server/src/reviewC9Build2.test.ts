@@ -388,13 +388,19 @@ describe("C9 Build 2 — Roth ledgers + distribution ordering", () => {
     // tax-bill debit and the $5,000 penalty payment, neither of
     // which is itself penalized (tax-debit legs price income,
     // never penalty — the Build 2 scope decision, same as Build
-    // 1's pre-tax legs). Lifetime: $5,000 + $15,000 + $15,000 +
-    // $15,000.01 = $50,000.01 (2029's cent is per-component r2
-    // round-up in the spending-draw penalty legs: 10% ×
-    // $113,203.75 = $11,320.375 → $11,320.38 on the lot
-    // portion, plus 10% × $36,796.25 = $3,679.625 → $3,679.63
-    // on the earnings portion — $15,000.01 against the exact
-    // 10% × $150,000 = $15,000.00).
+    // 1's pre-tax legs). 2029 is the exhaustion year: the Roth
+    // is drawn to $0 ($150,000 spending + $4,998.25 of federal
+    // tax on the $44,697.49 of Roth earnings income in the draw
+    // + $2,902.99 of the §72(t) penalty), and the remaining
+    // $12,097.01 of the $15,000 penalty is paid by Build 4's
+    // HSA last-resort leg (W2-D1) — the distribution is
+    // $15,121.26 ($12,097.01 of bill + $3,024.25 of §223(f)(4)
+    // 20% additional tax at 58), so the 2029 penalty reads
+    // $15,000 + $3,024.25 = $18,024.25 and nothing goes unpaid.
+    // Before Build 4 the HSA was never in the chain, so part of
+    // the 2029 penalty went unpaid and lifetime read
+    // $50,000.01. Lifetime now: $5,000 + $15,000 + $15,000 +
+    // $18,024.25 = $53,024.25.
     const res = simulateRothPlan(
       fixture({
         taxableStart: 50_000,
@@ -419,7 +425,10 @@ describe("C9 Build 2 — Roth ledgers + distribution ordering", () => {
     expect(yearOf(res, 2027).penalty).toBe(15_000);
     expect(yearOf(res, 2028).penalty).toBe(15_000);
     expect(yearOf(res, 2028).rothBasisUnknown).toBe(false);
-    expect(res.lifetimePenalty).toBe(50_000.01);
+    expect(yearOf(res, 2029).penalty).toBe(18_024.25);
+    expect(yearOf(res, 2029).funding.hsaDraw).toBe(15_121.26);
+    expect(yearOf(res, 2029).unpaidTax).toBe(0);
+    expect(res.lifetimePenalty).toBe(53_024.25);
   });
 
   test("rollover clock rule: the designated Roth's own start year does not carry over", () => {
