@@ -159,6 +159,19 @@ export type PriceYearInput = {
   // loop's own. Without the per-owner split the draw cannot be
   // attributed, so it prices $0 penalty with the flag set when
   // it is pre-59½ (unknown, not a computed $0).
+  // MUST-SUM CONTRACT (C9 fix 4 — SHOULD 1): the per-owner
+  // split MUST sum to extraPreTaxDraw. The attributed total is
+  // clamped to the draw, primary-first, so an over-split never
+  // prices a penalty on money never drawn; any unattributed
+  // remainder of the draw is treated as unanswered — the flag
+  // is set on a pre-59½ year, exactly as in the no-split case
+  // — rather than silently pricing $0 on it. A $0/$0 split on
+  // a pre-59½ draw therefore collapses onto the no-split case
+  // (flag true). priceYear takes the eligible balances at face
+  // value: it has no pre-tax balance input, so an eligible
+  // balance larger than the pool it came from cannot be
+  // clamped here (the march and the Playground clamp at their
+  // own ledgers); the caller passes the draw-time remainders.
   pretax401kEligiblePrimary?: number | null;
   pretax401kEligibleSpouse?: number | null;
   separationAgePrimary?: number | null;
@@ -1591,14 +1604,24 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // (the march's priceWith calls), a pre-59½ draw prices $0
   // with the flag set — the unknown, not a computed $0 — and
   // the march's own draw loop remains the penalty's home.
+  // MUST-SUM CONTRACT (C9 fix 4 — SHOULD 1): the split must
+  // sum to the draw. The attributed total is clamped to the
+  // draw, primary-first (the march's sourcing order), so an
+  // over-split never prices a penalty on money never drawn;
+  // any unattributed remainder is treated as unanswered (the
+  // flag, below), never silently priced at $0.
   const drawSplitSupplied =
     input.extraPreTaxDrawPrimary != null ||
     input.extraPreTaxDrawSpouse != null;
+  const drawHeadroom = Math.max(0, input.extraPreTaxDraw);
   const drawP = drawSplitSupplied
-    ? Math.max(0, input.extraPreTaxDrawPrimary ?? 0)
+    ? Math.min(Math.max(0, input.extraPreTaxDrawPrimary ?? 0), drawHeadroom)
     : 0;
   const drawS = drawSplitSupplied
-    ? Math.max(0, input.extraPreTaxDrawSpouse ?? 0)
+    ? Math.min(
+        Math.max(0, input.extraPreTaxDrawSpouse ?? 0),
+        Math.max(0, drawHeadroom - drawP),
+      )
     : 0;
   const shelterForDraw = (
     elig: number | null | undefined,
@@ -1663,6 +1686,25 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
               earlyWithdrawalPenalty + r2(ineligibleS * 0.1),
             );
           }
+        }
+      }
+      // MUST-SUM CONTRACT (C9 fix 4 — SHOULD 1): drawP + drawS
+      // are clamped to the draw above, so any shortfall is an
+      // unattributed remainder — dollars priced as income whose
+      // owner (and therefore whose penalty) is unknown. Treat
+      // it as unanswered, exactly as the no-split case does:
+      // the flag is set when a pre-59½ owner exists, rather
+      // than silently pricing $0 on it. A $0/$0 split on a
+      // pre-59½ draw therefore collapses onto the no-split
+      // case (flag true). The remainder itself prices no
+      // penalty — the landing default is $0 + flag when the
+      // penalty is unknown, never a guessed penalty.
+      if (drawP + drawS < input.extraPreTaxDraw) {
+        if (
+          input.agePrimary < 59.5 ||
+          (input.ageSpouse != null && input.ageSpouse < 59.5)
+        ) {
+          earlyWithdrawalEligibilityUnknown = true;
         }
       }
     }
@@ -4856,6 +4898,12 @@ export function simulateRothPlan(
     const isDeathYear = survOn && year === survDeathYear;
     const isSurvivorYear = survOn && survDeathYear != null && year > survDeathYear;
     if (survOn && survDeathYear != null && year > survDeathYear && !survCombined) {
+      // The balances each side brings to the combine — read
+      // BEFORE the balances combine below, so the eligibility
+      // rule can tell a $0 side (no dollars, so no unknown
+      // dollars) from a nonzero one.
+      const pretaxPBeforeCombine = pretaxP;
+      const pretaxSBeforeCombine = pretaxS;
       if (survWho === "primary") {
         pretaxS += pretaxP;
         pretaxP = 0;
@@ -4863,19 +4911,30 @@ export function simulateRothPlan(
         pretaxP += pretaxS;
         pretaxS = 0;
       }
-      // RULE-OF-55 (C9 Build 1): the eligible dollars combine
-      // with the balances — but only when BOTH owners'
-      // eligibility was answered. If either side was unanswered,
-      // the combined pool's eligibility is unanswered too
-      // (the unknown dollars cannot be told apart from the
-      // known-eligible ones), so the survivor's pre-59½ draws
-      // price $0 penalty with the unknown flag set rather than
-      // sheltering on a partial answer.
+      // RULE-OF-55 (C9 Build 1; fix 4 — SHOULD 3): the eligible
+      // dollars combine with the balances — but an unanswered
+      // side nulls the combined pool ONLY when it holds nonzero
+      // dollars. A $0 side contributed no dollars, so its null
+      // contributes no unknown dollars and the combined pool
+      // keeps the other side's ledger (the $0 side's null counts
+      // as $0 eligible, never as unknown). Only when the
+      // unanswered side's balance is > $0 can its unknown
+      // dollars not be told apart from the known-eligible ones,
+      // so only then does the survivor's pre-59½ draws price $0
+      // penalty with the unknown flag set rather than sheltering
+      // on a partial answer.
+      const combinedEligibilityUnknown =
+        (eligP == null && pretaxPBeforeCombine > 0) ||
+        (eligS == null && pretaxSBeforeCombine > 0);
       if (survWho === "primary") {
-        eligS = eligP == null || eligS == null ? null : eligS + eligP;
+        eligS = combinedEligibilityUnknown
+          ? null
+          : (eligS ?? 0) + (eligP ?? 0);
         eligP = null;
       } else {
-        eligP = eligP == null || eligS == null ? null : eligP + eligS;
+        eligP = combinedEligibilityUnknown
+          ? null
+          : (eligP ?? 0) + (eligS ?? 0);
         eligS = null;
       }
       survCombined = true;

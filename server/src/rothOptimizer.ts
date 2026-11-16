@@ -5214,6 +5214,29 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     totalPretaxBalance == null
       ? undefined
       : Math.min(Math.max(0, spendingDraw - (pgDrawP ?? 0)), pgDrawAvailS);
+  // C9 fix 4 — SHOULD 2: when the pools cannot distribute the
+  // whole draw, the split attributes only part of it and the
+  // unattributed remainder is unanswered — its penalty is
+  // unknown, not a computed $0. The flag is set on this side
+  // (the surface that builds the split), OR-ed into the result
+  // below, so the shape holds on the Playground path itself:
+  // priceYear (fix 4, SHOULD 1) flags the same remainder
+  // through its must-sum contract, and the two agree by
+  // construction. The split itself is still passed — the
+  // penalty on the dollars the pools COULD distribute stays
+  // priced (a partial draw keeps its attributed penalty);
+  // only the unattributed remainder is flagged, never
+  // re-priced. With no balance entered there is no split at
+  // all, so priceYear's no-split path already flags — this
+  // term is $0 there by construction.
+  const pgSplitShort =
+    totalPretaxBalance == null
+      ? 0
+      : Math.max(0, spendingDraw - (pgDrawP ?? 0) - (pgDrawS ?? 0));
+  const pgSplitShortUnknown =
+    pgSplitShort > 0 &&
+    (inp.agePrimary < 59.5 ||
+      (ageSpouse != null && ageSpouse < 59.5));
 
   const base: PriceYearInput = {
     calendarYear: inp.taxYear,
@@ -6153,7 +6176,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     totalTax: r2(priced.federalTax + priced.stateTax),
     earlyWithdrawalPenalty,
     earlyWithdrawalEligibilityUnknown:
-      priced.earlyWithdrawalEligibilityUnknown,
+      priced.earlyWithdrawalEligibilityUnknown || pgSplitShortUnknown,
     netTaxBill,
     cashIn,
     cashLeftAfterTax,
