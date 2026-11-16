@@ -2966,7 +2966,7 @@ export function debitRothOwnerLedger(
       ? debitRothAccountLedger(owner.employer, amount - first.drawn, ctx)
       : { drawn: 0, income: 0, penalty: 0, unknown: false };
   return {
-    drawn: r2(first.drawn + second.drawn),
+    drawn: first.drawn + second.drawn,
     income: r2(first.income + second.income),
     penalty: r2(first.penalty + second.penalty),
     unknown: first.unknown || second.unknown,
@@ -2994,7 +2994,7 @@ function debitRothLedgers(
         })
       : { drawn: 0, income: 0, penalty: 0, unknown: false };
   return {
-    drawn: r2(first.drawn + second.drawn),
+    drawn: first.drawn + second.drawn,
     income: r2(first.income + second.income),
     penalty: r2(first.penalty + second.penalty),
     unknown: first.unknown || second.unknown,
