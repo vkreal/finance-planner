@@ -2849,14 +2849,18 @@ function debitRothAccountLedger(
 // debits, not this reconciliation. Returns the amount left
 // unconsumed (the ledger held less than the request).
 // INVARIANT: after this call, balance $0 ⟹ contributions $0
-// and no lot stands against a $0 balance — the take
-// consumes contributions first, and a take equal to the
-// whole balance consumes all of them. (Contributions never
-// exceed the balance on entry — init clamps them and the
-// lot step preserves the composition identity — so a full
-// take always clears them; the backstop below covers the
-// post-decline case, where the balance already sits below
-// the standing basis.)
+// and no lot stands against a $0 balance on a KNOWN ledger
+// (lots stay on an UNKNOWN ledger, per the Fix 1 design).
+// The take alone cannot guarantee it: a post-decline ledger
+// can enter with contributions ABOVE the balance (a
+// negative-return year shrank the balance while basis
+// deliberately survived, exactly like the taxable basis
+// beside it), so exhausting the balance leaves composition
+// standing. The clearEmptyRothAccountLedger call below is
+// the guarantee — it zeroes whatever the take could not
+// consume whenever the balance reaches $0, and is a no-op
+// whenever the balance is positive or composition is
+// already clear.
 export function shrinkRothAccountLedgerBalance(
   led: RothAccountLedger,
   amount: number,
@@ -2885,6 +2889,10 @@ export function shrinkRothAccountLedgerBalance(
   // Earnings are the residual — nothing to do: the balance
   // was already reduced by the whole take, so any remaining
   // after contributions and lots is earnings consumed.
+  // The backstop (C9 Build 2 fix 4 — Pass 5 SHOULD-1): the
+  // take alone cannot clear a post-decline ledger, so a
+  // shrink to $0 clears whatever composition stands.
+  clearEmptyRothAccountLedger(led);
   return left - take;
 }
 
@@ -2892,14 +2900,18 @@ export function shrinkRothAccountLedgerBalance(
 // shrinkRothAccountLedgerBalance): whenever a ledger's
 // balance reaches $0 by a path that does not itself consume
 // composition, clear the composition that no longer has
-// dollars behind it. The two such paths are the year-end
+// dollars behind it. The paths that call it are the year-end
 // growth — a −100% return zeroes the balance while basis
 // stands (the schema allows −100 at the save boundary, and
-// it "prices a wipeout") — and a debit that exhausts a
+// it "prices a wipeout") — a debit that exhausts a
 // balance whose basis exceeds it (a negative-return year
 // can shrink the balance below the standing basis — basis
 // deliberately survives declines, exactly like the taxable
-// basis beside it, so only the exhaustion clears it). On a
+// basis beside it, so only the exhaustion clears it) — and
+// the top-up residual shrink, whose take consumes
+// composition first but cannot clear a post-decline ledger
+// whose balance sits below its standing basis (C9 Build 2
+// fix 4 — Pass 5 SHOULD-1). On a
 // KNOWN ledger the lots go too (a lot standing against $0
 // would price on a later draw); on an UNKNOWN ledger the
 // lots stay — the Fix 1 landing default (unknown draws
@@ -2999,7 +3011,12 @@ function debitRothLedgers(
 // the lots cannot cover reaches the IRA ledgers whenever
 // the spending draw has already consumed most of the new
 // lot — and before Fix 3 it touched `.balance` only, which
-// zeroed ledgers while their contributions stood); and
+// zeroed ledgers while their contributions stood), which
+// then calls clearEmptyRothAccountLedger whenever the
+// balance reaches $0 (C9 Build 2 fix 4 — Pass 5 SHOULD-1:
+// the take alone cannot clear a post-decline ledger whose
+// balance sits below its standing basis, so the backstop
+// zeroes whatever the take could not consume); and
 // year-end growth clears composition when a return zeroes
 // a balance (−100% prices a wipeout; the schema allows
 // −100 at the save boundary). The one composition the

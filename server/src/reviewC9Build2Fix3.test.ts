@@ -27,7 +27,11 @@
 // consume contributions first AND clearEmptyRothAccountLedger
 // zeroes any composition left standing when a debit exhausts
 // the balance (the post-decline case, where a negative-return
-// year shrank the balance below the standing basis); year-end
+// year shrank the balance below the standing basis); the
+// residual shrink consumes composition first AND calls
+// clearEmptyRothAccountLedger when the balance reaches $0
+// (Fix 4 — the take alone cannot clear a post-decline ledger
+// whose balance sits below its standing basis); year-end
 // growth clears composition when a return zeroes a balance
 // (−100% prices a wipeout; the schema allows −100 at the save
 // boundary). The merge comment states the mechanism now — the

@@ -20,8 +20,10 @@
 //       (1) and (2) ride together. Its contributions are
 //       already $0 whenever its balance is $0 — guaranteed by
 //       mechanism on every balance-reducing path (debits
-//       consume contributions first, the top-up residual
-//       consumes composition, growth clears a wiped ledger;
+//       consume contributions first and clear a wiped ledger
+//       via the backstop, the top-up residual consumes
+//       composition and clears a wiped ledger via the
+//       backstop, growth clears a wiped ledger;
 //       see the merge comment) — so the plain contributions
 //       sum stays exact;
 //   (3) a $0 side's firstYear must not pull the merged
