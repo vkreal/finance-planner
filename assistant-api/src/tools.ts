@@ -29,6 +29,7 @@ import {
   compareRetirementAges,
   compareRothConversions,
   compareWithdrawalStrategies,
+  dynamicWithdrawal,
   runRetirementMonteCarlo,
 } from "./adapter";
 import { latestTaxLawYear, normalizeInputs } from "./normalize";
@@ -699,6 +700,18 @@ export const TOOLS: McpToolDef[] = [
     handler: (args) => normalized(args, compareRothConversions),
   },
   {
+    name: "retirement_dynamic_withdrawal",
+    description:
+      `Use when the user asks for a year-by-year withdrawal plan — which account to draw from and how much to convert in each year — rather than one fixed order or one fixed conversion ceiling for the whole horizon. ` +
+      `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` +
+      `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` +
+      `Each year the engine re-prices the remaining horizon from that year's actual balances over 114 fixed-fill policies (Do Nothing, Fill 12% / 22% with and without the marginal-rate guardrail, Fill 22% capped at IRMAA Tier 1, Fill capped at the ACA cliff, × windows stopping at 65 / the year before RMDs begin / the end age, × all six draw orders) and commits the best valid policy's first year — so the draw order and the conversion can change year to year as balances, ages, Social Security, RMDs, and the ACA / Medicare boundary change. The result is floored at the best valid fixed policy over the same set (floorBound says whether the floor bound, with the raw greedy figures beside it), and no global optimum is claimed — the set holds no bunching, gain-harvest, or claiming-age search, and the choice is greedy one year at a time. ` +
+      `Example call: ${JSON.stringify(EXAMPLE_ROTH)}. ` +
+      `Returns: the annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, federal and state tax, penalty, IRMAA, ACA credit kept, MAGI and ACA MAGI against the cliff, RMD with the primary / spouse split, and ending balances with the taxable basis), lifetime totals (net cost, tax, penalty, IRMAA, ACA credit, RMDs, conversions), the terminal block (terminal tax on the standing pre-tax balance and the step-up in basis on the taxable balance, with wealth with and without the step-up), and the best fixed policy for comparison.`,
+    inputSchema: BASE_INPUT_SCHEMA,
+    handler: (args) => normalized(args, dynamicWithdrawal),
+  },
+  {
     name: "retirement_work_years",
     description:
       `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` +
@@ -763,14 +776,14 @@ const CAPABILITY_ASSUMPTIONS: Assumption[] = [
 const CAPABILITY_LIMITATIONS: string[] = [
   "Stateless and read-only: every call carries its complete scenario; nothing is saved.",
   `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
-  "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
+  "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
   "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
   "Funding success is not spending adequacy: the Monte Carlo and calculate success rates count runs where every year's withdrawal was funded, but under the percent, guardrails, or phased strategies yearly spending can shrink far below the household's desired level while every year still funds. Pass minimumAnnualSpending (dollars per year) to retirement_calculate or retirement_monte_carlo to also get the adequacy rate (`historicalSpendingAdequacyRate` on calculate, `spendingAdequacyRate` on monte_carlo) — the share of runs where every retired year's GROSS spending stayed at or above that floor — and read the two rates together; a high funding-success rate is not proof the household can maintain its desired spending. Adequacy is measured on gross spending, so for the constant strategy, whose gross never varies, a floor at or below yearly spending reads adequacy 100% even in runs where withdrawals went unfunded.",
   "Pre-retirement income is not accumulated: the simulation prices no pre-retirement spending, salary, or tax, so a Social Security benefit (or other fixed income) starting before retirement is not banked in the pre-retirement years — it counts only once retired. Benefits already being collected while still working belong to retirement_work_years, which prices those years with tax and lands the surplus in Taxable.",
-  "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years) price tax and account order instead.",
+  "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years) price tax and account order instead.",
   "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
-  "Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, and a full optimizer search (retirement_roth_conversion with comparisonScope \"full\") can take over a minute too. A long call stalls the whole server — including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.",
+  "Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, a dynamic withdrawal call can take a minute or more on a full horizon (it re-prices the remaining horizon at every year), and a full optimizer search (retirement_roth_conversion with comparisonScope \"full\") can take over a minute too. A long call stalls the whole server — including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.",
   "Limited comparisons never claim a global optimum: the default 3-order withdrawal comparison and 4-strategy Roth comparison crown the best of those few only. The full optimizer search is optimal only within the engine's searched candidate space at the entered claiming ages — it does not search claiming ages and prices no Monte Carlo success check. Every comparison response carries a comparisonScope block saying exactly what was evaluated; lowest lifetime net cost and highest ending after-tax wealth are different objectives and often crown different winners.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
 ];
@@ -837,6 +850,16 @@ const TOOL_GUIDE: ToolGuideEntry[] = [
     exampleCall: EXAMPLE_ROTH,
     resultSummary:
       "A tax-aware comparison of four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — with federal tax, ACA credit, IRMAA and ending wealth for each.",
+  },
+  {
+    name: "retirement_dynamic_withdrawal",
+    whenToUse:
+      "Use when the user asks for a year-by-year withdrawal plan — which account to draw from and how much to convert in each year — rather than one fixed order or one fixed conversion ceiling for the whole horizon.",
+    required: REQUIRED_INPUTS_GLOBAL,
+    optional: [...PRICED_OPTIONAL.retirement_dynamic_withdrawal],
+    exampleCall: EXAMPLE_ROTH,
+    resultSummary:
+      "The annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, tax, MAGI and ACA position, RMD, ending balances) with lifetime totals, the terminal / step-up block, and the best valid fixed policy for comparison. No global optimum is claimed.",
   },
   {
     name: "retirement_work_years",

@@ -78,8 +78,9 @@ export function expectEnvelope<T>(
   expect(result.source).toBe("finance-planner-engine");
   expect(result.adapterVersion).toBe("assistant-api 0.1.0");
   // Review 8: 164 (R8-S2 dividend rejection is the contract change;
-  // actions.ts stays 163 — see types.ts).
-  expect(result.apiContractVersion).toBe(164);
+  // actions.ts stays 163 — see types.ts). Engine Review C10: 165
+  // (new retirement_dynamic_withdrawal tool).
+  expect(result.apiContractVersion).toBe(165);
   expect(result.taxLawYear).toBe(2026);
   return result;
 }

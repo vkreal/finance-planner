@@ -51,6 +51,7 @@ const EXPENSIVE_TOOLS: ReadonlySet<string> = new Set([
   "retirement_compare_strategies",
   "retirement_roth_conversion",
   "retirement_work_years",
+  "retirement_dynamic_withdrawal",
 ]);
 const EXPENSIVE_LIMIT_PER_MIN = 20;
 const LIGHT_LIMIT_PER_MIN = 120;

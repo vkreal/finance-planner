@@ -106,9 +106,13 @@ export const ADAPTER_VERSION = "assistant-api 0.1.0";
  * reports 164. Copied as a literal on purpose — actions.ts must NOT
  * be imported here (it pulls in drizzle / @space/privileged/schema).
  * The additive ignoredInputFields metadata (R8-S1) is not a contract
- * change and did not move the version on its own.
+ * change and did not move the version on its own. Engine Review C10
+ * (2026-11-17) adds the retirement_dynamic_withdrawal tool — a new
+ * MCP tool and a new entry in the capabilities guide — so the
+ * adapter reports 165; actions.ts stays 163 (no engine pricing
+ * behaviour changed).
  */
-export const API_CONTRACT_VERSION_REPORTED = 164;
+export const API_CONTRACT_VERSION_REPORTED = 165;
 
 /**
  * Canonical field order (Engine Review C1: moved verbatim from

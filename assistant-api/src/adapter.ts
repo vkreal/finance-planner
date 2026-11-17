@@ -114,10 +114,12 @@ import {
 } from "../../server/src/retirementEngines";
 import {
   pricePlaygroundYear,
+  runDynamicOptimizer,
   runOptimizer,
   runRothCompare,
   harvestGatePasses,
   DO_NOTHING_SPEC,
+  type DynamicOptimizerResult,
   type OptimizerCandidateSpec,
   type PlaygroundYearInputs,
   type PlaygroundYearResult,
@@ -2503,6 +2505,46 @@ function compareRothConversionsFull(
       taxAwareAssumptions(scenario),
       null,
       "retirement_roth_conversion",
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Dynamic withdrawal optimizer (Engine Review C10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Year-by-year withdrawal optimization, priced entirely by the
+ * shared engine (runDynamicOptimizer in rothOptimizer.ts): at
+ * each year the 114-policy fixed-fill set is priced over the
+ * remaining horizon from that year's actual balances and the
+ * best valid policy's first year becomes the schedule's row.
+ * The response carries the annual schedule table (per-year
+ * draw per bucket, conversion, tax, MAGI, ACA position, RMD,
+ * balances), the lifetime totals, the terminal / step-up
+ * block, and the best valid fixed policy the result is floored
+ * at — so the adapter surface and the engine surface agree by
+ * construction (the adapter maps the engine result, it never
+ * re-prices a year). No global-optimality claim: see the
+ * result's searchLimits.
+ */
+export function dynamicWithdrawal(
+  scenario: NormalizedScenario,
+): AdapterResult<DynamicOptimizerResult> {
+  return guard(() => {
+    const planInputs = buildRothPlanInputs(scenario);
+    const result = runDynamicOptimizer(planInputs);
+    if (!result.ok) return engineError(result.reason ?? "The dynamic optimizer could not price this scenario.");
+    return respond(
+      scenario,
+      result,
+      [
+        ...healthPremiumWarnings(scenario),
+        "Dynamic schedule: each year's policy (draw order + conversion fill + window) was chosen by re-pricing the remaining horizon from that year's actual balances. The greedy choice is floored at the best valid fixed policy over the same 114-policy set — see floorBound and searchLimits in the results.",
+      ],
+      taxAwareAssumptions(scenario),
+      null,
+      "retirement_dynamic_withdrawal",
     );
   });
 }

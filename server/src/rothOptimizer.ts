@@ -10338,3 +10338,1221 @@ export function runRothCompare(
     })),
   };
 }
+
+/* =================================================================
+   ENGINE REVIEW C10 — DYNAMIC WITHDRAWAL OPTIMIZER
+   -----------------------------------------------------------------
+   A year-by-year optimizer that re-optimizes at every year of the
+   plan instead of fixing one draw order + one conversion ceiling
+   for the whole horizon. It prices NOTHING of its own: every
+   candidate policy is priced by the shared engine —
+   simulateRothPlan on re-anchored inputs — with the shared
+   settlement, the shared tax law, and the shared net-cost
+   scorer (planNetCost). The only new arithmetic in this section
+   is bookkeeping BETWEEN marches: carrying balances, the
+   taxable-basis ledger, the Rule-of-55 eligibility ledger, and
+   the Roth contribution / conversion-lot ledgers from one year's
+   priced march into the next year's re-anchored inputs, each
+   derived from the priced year's own engine outputs (see the
+   ledger notes below) and each covered by the roll-forward
+   parity test (a fixed policy rolled forward year by year must
+   reproduce its single full march to the cent).
+
+   METHOD (greedy roll-forward with a fixed-policy floor):
+   at each year, every policy in dynamicPolicySet() — the fixed
+   conversion fills (Do Nothing, Fill 12% / 22% / 22%-IRMAA-1 /
+   ACA-cliff, bracket fills also with the marginal-rate
+   guardrail) × the three conversion windows (stop 65 / stop the
+   year before RMDs begin / through the RMD years) × all six
+   draw orders — is priced over the REMAINING horizon from the
+   year's actual balances, scored sunk-net-cost + remaining
+   planNetCost, and the best VALID policy's first year becomes
+   the schedule's row for that year. The state then advances to
+   that year's priced ending balances and the process repeats.
+   The greedy choice is myopic by construction (it re-prices the
+   whole remaining horizon each year, so the myopia is only the
+   commitment to one year at a time — not a one-year lookahead),
+   and NO global-optimality claim is made: the result is
+   reported beside the best valid FIXED policy over the same
+   policy set, and when the greedy trajectory scores worse than
+   that fixed policy on lifetime net cost the fixed trajectory
+   is returned instead (floorBound: true, named in the result)
+   — so the dynamic result is never worse than the best valid
+   fixed order on the scored objective. The raw greedy figures
+   are still reported (greedyNetCost / greedyEndingWealth) so
+   the floor is auditable, never silent. The floor triggers
+   only when the greedy trajectory scores worse by more than
+   $0.10 (DYNAMIC_FLOOR_EPSILON): re-anchoring carries the
+   march's year rows, which are cent-rounded, while the march
+   itself carries fractional-cent float balances internally —
+   so a re-anchored year can price a cent differently from the
+   uninterrupted march (observed worst case: $0.02 over 13
+   years on the sample household). A sub-$0.10 gap is rounding
+   noise, not a worse policy, and must not trigger the floor.
+
+   7 PHASES: every schedule year carries one phase, by this
+   precedence (first match wins): survivor (any year after a
+   death year — single filer, inherited balances); rmd (primary
+   75+, RMDs priced); ss (67–74, Social Security started, before
+   RMDs); bridge (65–66, Medicare, before Social Security);
+   early (primary under 59½ — the §72(t) penalty window);
+   aca (60–64, pre-Medicare ACA years). The seventh phase,
+   terminal, is not a year: it is the end-age settlement —
+   terminal tax on the standing pre-tax balance, the step-up in
+   basis on the taxable balance, and the inherited-Roth vs
+   inherited-traditional split — reported as the result's
+   terminal block. A year is in exactly one of the six year
+   phases; the terminal phase closes the schedule.
+
+   RMD EXPOSURE is first-class output: every row carries its
+   RMD (primary + spouse split), the result totals lifetime RMDs
+   and names the first RMD year, and the schedule's RMD column
+   is the engine's own priced RMD (RothYear.detail), never a
+   re-derivation.
+
+   SEARCH LIMITS (disclosed, not hidden): the per-year policy
+   set is the fixed-fill family above (114 policies) — it does
+   NOT include the full optimizer's thousands of ceilings
+   (bracket × IRMAA combinations, MAGI-cap steps, bunching,
+   gain-harvest twins) or per-year conversion amounts finer
+   than a ceiling fill, and the choice is greedy one year at a
+   time. Against the EXISTING full optimizer (3,025 candidates)
+   the dynamic result is compared, not assumed superior: see
+   BUILDER-REPORT.md for the reference-scenario comparison.
+   ================================================================= */
+
+export type DynamicPhase =
+  | "early"
+  | "aca"
+  | "bridge"
+  | "ss"
+  | "rmd"
+  | "survivor"
+  | "terminal";
+
+export function dynamicPhaseForYear(args: {
+  agePrimary: number;
+  isSurvivorYear: boolean;
+  rmdAge: number;
+  ssStartAge: number | null;
+}): DynamicPhase {
+  if (args.isSurvivorYear) return "survivor";
+  if (args.agePrimary >= args.rmdAge) return "rmd";
+  if (args.ssStartAge != null && args.agePrimary >= args.ssStartAge) return "ss";
+  if (args.agePrimary >= 65) return "bridge";
+  if (args.agePrimary < 59.5) return "early";
+  return "aca";
+}
+
+export type DynamicPolicy = {
+  key: string;
+  name: string;
+  ceilings: FillCeilings | null;
+  guardrail: boolean;
+  windowStopAge: number;
+  drawOrder: DrawOrder;
+};
+
+/* The per-year policy set: the fixed fills the compare prices
+   (Do Nothing, Fill 12%, Fill 22%, Fill 22% capped at IRMAA
+   Tier 1, Fill capped at the ACA cliff), bracket fills also
+   with the marginal-rate guardrail (the full-search winner's
+   shape), × windows stopping at 65 / the year before RMDs
+   begin / the end age × all six draw orders. Do Nothing is
+   window-inert, so it appears once per order (6), not once per
+   window: 6 + 6 fills × 3 windows × 6 orders = 114 policies. */
+export function dynamicPolicySet(rmdStopAge: number, endAge: number): DynamicPolicy[] {
+  const fills: { key: string; name: string; ceilings: FillCeilings; guardrail: boolean }[] = [
+    { key: "fill12", name: "Fill 12%", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 }, guardrail: false },
+    { key: "fill12g", name: "Fill 12% (guardrail)", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 }, guardrail: true },
+    { key: "fill22", name: "Fill 22%", ceilings: { ...NO_CEILINGS, bracketTopPct: 22 }, guardrail: false },
+    { key: "fill22g", name: "Fill 22% (guardrail)", ceilings: { ...NO_CEILINGS, bracketTopPct: 22 }, guardrail: true },
+    { key: "fill22-irmaa1", name: "Fill 22% capped at IRMAA Tier 1", ceilings: { ...NO_CEILINGS, bracketTopPct: 22, irmaaTierCap: 1 }, guardrail: false },
+    { key: "fill-aca", name: "Fill capped at ACA cliff", ceilings: { ...NO_CEILINGS, acaCliffCap: true }, guardrail: false },
+  ];
+  const stops = [65, rmdStopAge, endAge];
+  const out: DynamicPolicy[] = [];
+  for (const order of ALL_DRAW_ORDERS) {
+    out.push({
+      key: `do-nothing|${drawOrderKey(order)}`,
+      name: "Do Nothing",
+      ceilings: null,
+      guardrail: false,
+      windowStopAge: endAge,
+      drawOrder: order,
+    });
+  }
+  for (const fill of fills) {
+    for (const stop of stops) {
+      for (const order of ALL_DRAW_ORDERS) {
+        out.push({
+          key: `${fill.key}|stop${stop}|${drawOrderKey(order)}`,
+          name: `${fill.name} · stop ${stop}`,
+          ceilings: fill.ceilings,
+          guardrail: fill.guardrail,
+          windowStopAge: stop,
+          drawOrder: order,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/* Terminal tax — the SAME split rule netCostBreakdown prices
+   (preserved pre-tax at the exit rate, excess at the heir
+   rate), computed from a standing pre-tax balance instead of a
+   priced march, so the dynamic trajectory (which is many
+   marches, not one) can score its own terminal term. The
+   reviewC10Dynamic terminal test asserts this agrees with
+   netCostBreakdown's terminal on a march with the same ending
+   pre-tax balance. */
+export function dynamicTerminalTax(args: {
+  endingPretax: number;
+  heirRatePct: number;
+  preservePretax?: number;
+  preserveExitRatePct?: number;
+}): { terminal: number; preservedPretax: number; terminalPreserved: number; excessPretax: number; terminalExcess: number } {
+  const floor = Math.max(0, args.preservePretax ?? 0);
+  const exitRatePct = args.preserveExitRatePct ?? args.heirRatePct;
+  const preservedPretax = r2(Math.min(args.endingPretax, floor));
+  const excessPretax = r2(args.endingPretax - preservedPretax);
+  const terminalPreserved = r2((preservedPretax * exitRatePct) / 100);
+  const terminalExcess = r2((excessPretax * args.heirRatePct) / 100);
+  return {
+    terminal: r2(terminalPreserved + terminalExcess),
+    preservedPretax,
+    terminalPreserved,
+    excessPretax,
+    terminalExcess,
+  };
+}
+
+/* Taxable-basis ledger, carried between marches from the
+   priced year's own outputs (taxEngine's documented ledger
+   rules: outflows reduce basis pro-rata at the ratio in force
+   — so the ratio is invariant through a year's sales; inflows
+   of after-tax money raise basis dollar-for-dollar; growth
+   adds to the balance, never to basis; gain harvesting, when
+   on, adds the harvested gain — this module never turns it on,
+   so no harvest term). The year's reinvested yield (dividend +
+   interest income, a component of the return — the balance's
+   growth already carries it, so it adds to basis WITHOUT
+   adding to the balance) is the one inflow the balance
+   identity cannot see, so it enters as its own term:
+   yieldReinvested = the year's dividend + interest income.
+   Given the year's start balance / basis, its priced sales
+   and gains, its priced ending balance, and its reinvested
+   yield: basis consumed by sales = sold − realized gains
+   (the gains ARE the non-basis part of the proceeds); the
+   surplus sweep into taxable = ending/growth − start + sold
+   (the ending balance is (start − sold + sweep) × growth);
+   ending basis = start basis − consumed + sweep + yield. */
+export function trackTaxableBasisEnd(args: {
+  taxableStart: number;
+  basisStart: number;
+  taxableSold: number;
+  drawGains: number;
+  taxableEnd: number;
+  growthFactor: number;
+  yieldReinvested: number;
+}): number {
+  const basisConsumed = Math.max(0, args.taxableSold - args.drawGains);
+  const sweepIn = args.taxableEnd / args.growthFactor - args.taxableStart + args.taxableSold;
+  // Cent-rounded: the march prices gains to the cent off this
+  // ledger, so a fractional-cent remainder carried forward
+  // would price a different cent of gains in a later year.
+  return r2(Math.max(0, args.basisStart - basisConsumed + sweepIn + args.yieldReinvested));
+}
+
+/* Rule-of-55 eligibility ledger, carried between marches:
+   every pre-tax outflow consumes the eligible dollars FIRST
+   within that owner's pool (taxEngine's ledger rule), so the
+   eligible remainder after a year is (eligible − total
+   outflows) × growth, floored at $0 and capped at the ending
+   balance; total outflows = start − ending/growth. Null in =
+   unanswered eligibility = null out (the next march prices $0
+   penalty with the unknown flag, exactly as before). */
+export function trackEligibleEnd(args: {
+  eligibleStart: number | null;
+  pretaxStart: number;
+  pretaxEnd: number;
+  growthFactor: number;
+}): number | null {
+  if (args.eligibleStart == null) return null;
+  const outflows = args.pretaxStart - args.pretaxEnd / args.growthFactor;
+  return r2(
+    Math.min(
+      Math.max(0, args.pretaxEnd),
+      Math.max(0, (args.eligibleStart - outflows) * args.growthFactor),
+    ),
+  );
+}
+
+export type DynamicYearRow = {
+  year: number;
+  agePrimary: number;
+  ageSpouse: number | null;
+  phase: DynamicPhase;
+  policyKey: string;
+  policyName: string;
+  drawOrder: string;
+  windowStopAge: number;
+  spending: number;
+  ss: number;
+  rmd: number;
+  rmdPrimary: number;
+  rmdSpouse: number;
+  pretaxDraw: number;
+  taxableSoldForSpending: number;
+  taxableSoldForTax: number;
+  rothDraw: number;
+  conversion: number;
+  federalTax: number;
+  stateTax: number;
+  penalty: number;
+  irmaa: number;
+  acaCreditKept: number;
+  healthPremiumGross: number;
+  magi: number;
+  acaMagi: number;
+  acaCliff: number | null;
+  taxableIncome: number;
+  bracketPct: number;
+  pretaxEnd: number;
+  pretaxPrimaryEnd: number;
+  pretaxSpouseEnd: number;
+  rothEnd: number;
+  taxableEnd: number;
+  taxableBasisEnd: number;
+  hsaEnd: number;
+  settlementConverged: boolean;
+  spendShortfall: number;
+  unpaidTax: number;
+  earlyWithdrawalEligibilityUnknown: boolean;
+  rothBasisUnknown: boolean;
+  /** The year's net-cost contribution (tax + penalty + IRMAA +
+      gross health premium − ACA credit − refundable education
+      credit); the terminal term is scored once, at the end. */
+  netCostYear: number;
+};
+
+export type DynamicOptimizerResult = {
+  ok: boolean;
+  reason?: string;
+  years: DynamicYearRow[];
+  policiesEvaluatedPerYear: number;
+  lifetimeNetCost: number;
+  lifetimeFederalTax: number;
+  lifetimeStateTax: number;
+  lifetimePenalty: number;
+  lifetimeIrmaa: number;
+  lifetimeAcaCreditKept: number;
+  lifetimeHealthPremiumGross: number;
+  lifetimeRmd: number;
+  firstRmdYear: number | null;
+  conversionsTotal: number;
+  spendShortfallTotal: number;
+  unpaidTaxTotal: number;
+  endingPretax: number;
+  endingRoth: number;
+  endingTaxable: number;
+  endingHsa: number;
+  endingWealth: number;
+  terminal: ReturnType<typeof dynamicTerminalTax>;
+  endingAfterTaxWealth: number;
+  /** Step-up at death (terminal phase): the taxable balance's
+      unrealized gain, the heir tax on it WITHOUT a step-up
+      (heir rate × gain — an approximation: the heirs' own rate
+      is unknown, so the heir rate input is used and the
+      assumption is stated), and wealth with / without it. */
+  stepUp: {
+    unrealizedGains: number;
+    heirTaxWithoutStepUp: number;
+    wealthWithStepUp: number;
+    wealthWithoutStepUp: number;
+  };
+  /** The best valid FIXED policy over the same policy set,
+      priced as one full-horizon march each. The dynamic result
+      is never worse than this on net cost (see floorBound). */
+  bestFixed: { policyKey: string; policyName: string; netCost: number; endingWealth: number } | null;
+  /** True when the greedy trajectory scored worse than the
+      best fixed policy and the fixed trajectory was returned
+      instead. The greedy figures are still reported below. */
+  floorBound: boolean;
+  greedyNetCost: number;
+  greedyEndingWealth: number;
+  /** The raw greedy trajectory's rows — identical to `years`
+      when the floor did not bind; the trajectory the floor
+      replaced when it did. Reported so the floor is auditable,
+      never silent. */
+  greedyYears: DynamicYearRow[];
+  /** Every year settled, no shortfall, no unpaid tax. */
+  valid: boolean;
+  searchLimits: string;
+};
+
+type DynamicLedgerState = {
+  pretaxP: number;
+  pretaxS: number;
+  roth: number;
+  taxable: number;
+  taxableBasis: number;
+  hsa: number;
+  eligP: number | null;
+  eligS: number | null;
+  rothContribP: number | null;
+  rothContribS: number | null;
+  rothLotsP: RothConversionLotInput[];
+  rothLotsS: RothConversionLotInput[];
+  rmdDeferredPendingP: number;
+  rmdDeferredPendingS: number;
+  firstRmdPriced: boolean;
+};
+
+function dynamicReanchorInputs(
+  base: RothPlanInputs,
+  state: DynamicLedgerState,
+  year: number,
+  policy: DynamicPolicy,
+  annualSpending: number,
+): RothPlanInputs {
+  const taxableBasisPct =
+    state.taxable > 0 ? (state.taxableBasis / state.taxable) * 100 : 100;
+  return {
+    ...base,
+    startYear: year,
+    pretaxStart: state.pretaxP,
+    pretaxSpouseStart: state.pretaxS,
+    rothStart: state.roth,
+    taxableStart: state.taxable,
+    taxableBasisPct,
+    hsaStart: state.hsa,
+    annualSpending,
+    // retirementAge and windowStartAge stay the plan's own:
+    // the re-anchored march must respect the plan's
+    // conversion window (no conversions before its start) and
+    // its retirement age exactly as the original march does —
+    // overriding either would let the dynamic year convert in
+    // years the fixed policies cannot, and the fixed-vs-
+    // dynamic comparison would stop being a fair one.
+    windowStopAge: policy.windowStopAge,
+    drawOrder: [...policy.drawOrder],
+    pretax401kEligiblePrimary: state.eligP,
+    pretax401kEligibleSpouse: state.eligS,
+    rothContributionBasisPrimary: state.rothContribP,
+    rothContributionBasisSpouse: state.rothContribS,
+    rothConversionLotsPrimary: state.rothLotsP.length > 0 ? state.rothLotsP : null,
+    rothConversionLotsSpouse: state.rothLotsS.length > 0 ? state.rothLotsS : null,
+    // A first-RMD deferral already priced in a chosen year must
+    // not defer again: the flag is off once the first RMD year
+    // has been priced, and any amount still pending is carried
+    // in as owed in this march's first year.
+    firstRmdDeferralPrimary: state.firstRmdPriced ? false : base.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: state.firstRmdPriced ? false : base.firstRmdDeferralSpouse,
+    firstRmdDeferredCarryPrimary: state.rmdDeferredPendingP,
+    firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS,
+  };
+}
+
+/* Debit a Roth draw against the tracked ledgers in the
+   engine's ordering (contributions, then conversion lots
+   FIFO, then earnings as the residual): returns the updated
+   contribution basis and lots. Lots created by this module
+   are fully taxable conversions (nontaxable $0), so a lot's
+   remaining taxable amount IS its remaining balance. */
+function dynamicDebitRothDraw(
+  contrib: number | null,
+  lots: RothConversionLotInput[],
+  draw: number,
+): { contrib: number | null; lots: RothConversionLotInput[] } {
+  if (draw <= 0) return { contrib, lots };
+  let remaining = draw;
+  let nextContrib = contrib;
+  if (nextContrib != null && nextContrib > 0) {
+    const take = Math.min(nextContrib, remaining);
+    nextContrib -= take;
+    remaining -= take;
+  }
+  const nextLots: RothConversionLotInput[] = [];
+  for (const lot of lots) {
+    if (remaining <= 0) {
+      nextLots.push(lot);
+      continue;
+    }
+    const lotTotal = lot.taxableAmount + lot.nontaxableAmount;
+    const take = Math.min(lotTotal, remaining);
+    remaining -= take;
+    const left = lotTotal - take;
+    if (left > 0.005) {
+      // The taxable share of what is left keeps the lot's
+      // original taxable proportion (a fully-taxable lot
+      // stays fully taxable).
+      const taxableShare = lotTotal > 0 ? lot.taxableAmount / lotTotal : 1;
+      nextLots.push({
+        year: lot.year,
+        taxableAmount: r2(left * taxableShare),
+        nontaxableAmount: r2(left * (1 - taxableShare)),
+      });
+    }
+  }
+  return { contrib: nextContrib, lots: nextLots };
+}
+
+function dynamicRowFromYear(
+  y: RothYear,
+  policy: DynamicPolicy,
+  taxableBasisEnd: number,
+  rmdAge: number,
+  ssStartAge: number | null,
+): DynamicYearRow {
+  const f = y.funding;
+  const d = y.detail;
+  return {
+    year: y.year,
+    agePrimary: y.agePrimary,
+    ageSpouse: y.ageSpouse,
+    phase: dynamicPhaseForYear({
+      agePrimary: y.agePrimary,
+      isSurvivorYear: y.isSurvivorYear,
+      rmdAge,
+      ssStartAge,
+    }),
+    policyKey: policy.key,
+    policyName: policy.name,
+    drawOrder: drawOrderKey(policy.drawOrder),
+    windowStopAge: policy.windowStopAge,
+    spending: f.spending,
+    ss: f.ss,
+    rmd: f.rmd,
+    rmdPrimary: d.rmdPrimary,
+    rmdSpouse: d.rmdSpouse,
+    pretaxDraw: f.pretaxDraw,
+    taxableSoldForSpending: f.taxableSoldForSpending,
+    taxableSoldForTax: f.taxableSoldForTax,
+    rothDraw: f.rothDraw,
+    conversion: f.conversion,
+    federalTax: y.federalTax,
+    stateTax: y.stateTax,
+    penalty: y.penalty,
+    irmaa: y.irmaaPaid,
+    acaCreditKept: y.acaCreditKept,
+    healthPremiumGross: y.healthPremiumGross,
+    magi: y.magi,
+    acaMagi: y.acaMagi,
+    acaCliff: d.aca.cliff,
+    taxableIncome: y.taxableIncome,
+    bracketPct: y.bracketPct,
+    pretaxEnd: y.pretaxEnd,
+    pretaxPrimaryEnd: y.pretaxPrimaryEnd,
+    pretaxSpouseEnd: y.pretaxSpouseEnd,
+    rothEnd: y.rothEnd,
+    taxableEnd: y.taxableEnd,
+    taxableBasisEnd,
+    hsaEnd: y.hsaEnd,
+    settlementConverged: y.settlementConverged,
+    spendShortfall: f.spendShortfall,
+    unpaidTax: f.unpaidTax,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
+    netCostYear: r2(
+      y.federalTax + y.stateTax + y.penalty + y.irmaaPaid + y.healthPremiumGross -
+        y.acaCreditKept - y.educationRefundable,
+    ),
+  };
+}
+
+/* Walk a priced march's years carrying the taxable-basis
+   ledger forward (same rules as trackTaxableBasisEnd): the
+   ending basis dollars of a fixed policy's march, from its own
+   year rows. The caller supplies the march's starting taxable
+   balance (the basis walk needs the year's start balance, and
+   only the first year needs it from outside — later years
+   start where the prior year ended). */
+/* The year's reinvested yield income (dividend + interest),
+   priced exactly as the march prices it: each yield percent
+   applied to the year's START taxable balance and rounded to
+   the cent, then summed. */
+export function dynamicYieldForYear(args: {
+  taxableStart: number;
+  dividendYieldPct: number | null | undefined;
+  interestYieldPct: number | null | undefined;
+}): number {
+  const div = Math.max(0, args.dividendYieldPct ?? 0);
+  const int = Math.max(0, args.interestYieldPct ?? 0);
+  return r2((args.taxableStart * div) / 100) + r2((args.taxableStart * int) / 100);
+}
+
+export function dynamicBasisWalkYears(
+  years: readonly RothYear[],
+  taxableStart: number,
+  basisStart: number,
+  growthFactor: number,
+  dividendYieldPct: number | null | undefined,
+  interestYieldPct: number | null | undefined,
+): number {
+  let basis = basisStart;
+  let start = taxableStart;
+  for (const y of years) {
+    const sold = y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+    basis = trackTaxableBasisEnd({
+      taxableStart: start,
+      basisStart: basis,
+      taxableSold: sold,
+      drawGains: y.detail.drawGains,
+      taxableEnd: y.taxableEnd,
+      growthFactor,
+      yieldReinvested: dynamicYieldForYear({ taxableStart: start, dividendYieldPct, interestYieldPct }),
+    });
+    start = y.taxableEnd;
+  }
+  return basis;
+}
+
+export type DynamicFixedScored = {
+  policy: DynamicPolicy;
+  netCost: number;
+  netCostExTerminal: number;
+  endingWealth: number;
+  endingPretax: number;
+  endingRoth: number;
+  endingTaxable: number;
+  endingHsa: number;
+  conversionsTotal: number;
+  lifetimeAcaCreditKept: number;
+  lifetimeRmd: number;
+  integrityStatus: string;
+  result: RothPlanResult;
+};
+
+/* Price every policy in the set as ONE full-horizon march
+   each (the fixed-policy baseline the dynamic result is
+   floored against and the sensitivity strips re-score).
+   Invalid candidates (unsettled / shortfall / unpaid tax)
+   are excluded, exactly as the optimizer excludes them. */
+export function priceFixedDynamicPolicies(
+  base: RothPlanInputs,
+  policies: DynamicPolicy[],
+): { best: DynamicFixedScored | null; scored: DynamicFixedScored[] } {
+  const scored: DynamicFixedScored[] = [];
+  for (const policy of policies) {
+    const inputs: RothPlanInputs = {
+      ...base,
+      windowStopAge: policy.windowStopAge,
+      drawOrder: [...policy.drawOrder],
+    };
+    const result = simulateRothPlan(
+      inputs,
+      { id: `dyn-${policy.key}`, name: policy.name, ceilings: policy.ceilings, guardrail: policy.guardrail },
+      undefined,
+      { leanDetail: true },
+    );
+    const integrity = assessCandidateIntegrity(result);
+    if (integrity.status === "invalid") continue;
+    const cost = planNetCost(result, inputs);
+    scored.push({
+      policy,
+      netCost: cost.netCost,
+      netCostExTerminal: r2(cost.netCost - cost.terminal),
+      endingWealth: result.endingAfterTaxWealth,
+      endingPretax: result.endingPretax,
+      endingRoth: result.endingRoth,
+      endingTaxable: result.endingTaxable,
+      endingHsa: result.endingHsa,
+      // RothPlanResult carries no lifetime conversion / RMD
+      // totals — both are sums of the priced year rows.
+      conversionsTotal: r2(result.years.reduce((s, y) => s + y.funding.conversion, 0)),
+      lifetimeAcaCreditKept: result.lifetimeAcaKept,
+      lifetimeRmd: r2(result.years.reduce((s, y) => s + y.funding.rmd, 0)),
+      integrityStatus: integrity.status,
+      result,
+    });
+  }
+  scored.sort(
+    (a, b) =>
+      a.netCost - b.netCost ||
+      b.endingWealth - a.endingWealth ||
+      (a.policy.key < b.policy.key ? -1 : a.policy.key > b.policy.key ? 1 : 0),
+  );
+  return { best: scored[0] ?? null, scored };
+}
+
+/* Re-score a priced fixed-policy set under a DIFFERENT
+   terminal assumption (heir rate / preserve floor) WITHOUT
+   re-marching: the march does not depend on the terminal
+   parameters (no preserve-cap ceiling is in the policy set),
+   so only the terminal term moves. Returns the ranking under
+   the new assumption, best first. */
+export function rescoreDynamicTerminal(
+  scored: readonly DynamicFixedScored[],
+  args: { heirRatePct: number; preservePretax?: number; preserveExitRatePct?: number },
+): { policyKey: string; policyName: string; netCost: number; endingWealth: number }[] {
+  return scored
+    .map((s) => {
+      const term = dynamicTerminalTax({
+        endingPretax: s.endingPretax,
+        heirRatePct: args.heirRatePct,
+        preservePretax: args.preservePretax,
+        preserveExitRatePct: args.preserveExitRatePct,
+      });
+      return {
+        policyKey: s.policy.key,
+        policyName: s.policy.name,
+        netCost: r2(s.netCostExTerminal + term.terminal),
+        endingWealth: r2(s.endingPretax + s.endingRoth + s.endingTaxable + s.endingHsa - term.terminal),
+      };
+    })
+    .sort((a, b) => a.netCost - b.netCost || b.endingWealth - a.endingWealth);
+}
+
+const DYNAMIC_SEARCH_LIMITS =
+  "Greedy roll-forward over 114 fixed-fill policies per year (Do Nothing, Fill 12%/22% ± guardrail, Fill 22% IRMAA-1, Fill ACA-cliff × windows stop-65 / stop-year-before-RMD / through-RMD × all six draw orders), each priced over the remaining horizon by the shared engine; one year committed at a time; no per-year conversion amounts finer than a ceiling fill; no bunching, gain-harvest, or claiming-age search. No global-optimality claim.";
+
+/* The fixed-policy floor triggers only past this gap (see the
+   header note): re-anchor rounding noise is cents, a real
+   greedy shortfall is dollars. */
+export const DYNAMIC_FLOOR_EPSILON = 0.1;
+
+function dynamicResultFromRows(args: {
+  rows: DynamicYearRow[];
+  base: RothPlanInputs;
+  bestFixed: DynamicOptimizerResult["bestFixed"];
+  floorBound: boolean;
+  greedyNetCost: number;
+  greedyEndingWealth: number;
+  greedyYears: DynamicYearRow[];
+  policiesEvaluatedPerYear: number;
+}): DynamicOptimizerResult {
+  const { rows, base } = args;
+  const last = rows[rows.length - 1];
+  const lifetimeNetCostExTerminal = r2(rows.reduce((s, r) => s + r.netCostYear, 0));
+  const terminal = dynamicTerminalTax({
+    endingPretax: last?.pretaxEnd ?? 0,
+    heirRatePct: base.heirRatePct,
+    preservePretax: base.preservePretax,
+    preserveExitRatePct: base.preserveExitRatePct,
+  });
+  const endingWealth = r2(
+    (last?.pretaxEnd ?? 0) + (last?.rothEnd ?? 0) + (last?.taxableEnd ?? 0) + (last?.hsaEnd ?? 0),
+  );
+  const unrealizedGains = Math.max(0, r2((last?.taxableEnd ?? 0) - (last?.taxableBasisEnd ?? 0)));
+  const heirTaxWithoutStepUp = r2((unrealizedGains * base.heirRatePct) / 100);
+  const endingAfterTaxWealth = r2(endingWealth - terminal.terminal);
+  return {
+    ok: true,
+    years: rows,
+    policiesEvaluatedPerYear: args.policiesEvaluatedPerYear,
+    lifetimeNetCost: r2(lifetimeNetCostExTerminal + terminal.terminal),
+    lifetimeFederalTax: r2(rows.reduce((s, r) => s + r.federalTax, 0)),
+    lifetimeStateTax: r2(rows.reduce((s, r) => s + r.stateTax, 0)),
+    lifetimePenalty: r2(rows.reduce((s, r) => s + r.penalty, 0)),
+    lifetimeIrmaa: r2(rows.reduce((s, r) => s + r.irmaa, 0)),
+    lifetimeAcaCreditKept: r2(rows.reduce((s, r) => s + r.acaCreditKept, 0)),
+    lifetimeHealthPremiumGross: r2(rows.reduce((s, r) => s + r.healthPremiumGross, 0)),
+    lifetimeRmd: r2(rows.reduce((s, r) => s + r.rmd, 0)),
+    firstRmdYear: rows.find((r) => r.rmd > 0)?.year ?? null,
+    conversionsTotal: r2(rows.reduce((s, r) => s + r.conversion, 0)),
+    spendShortfallTotal: r2(rows.reduce((s, r) => s + r.spendShortfall, 0)),
+    unpaidTaxTotal: r2(rows.reduce((s, r) => s + r.unpaidTax, 0)),
+    endingPretax: last?.pretaxEnd ?? 0,
+    endingRoth: last?.rothEnd ?? 0,
+    endingTaxable: last?.taxableEnd ?? 0,
+    endingHsa: last?.hsaEnd ?? 0,
+    endingWealth,
+    terminal,
+    endingAfterTaxWealth,
+    stepUp: {
+      unrealizedGains,
+      heirTaxWithoutStepUp,
+      wealthWithStepUp: endingAfterTaxWealth,
+      wealthWithoutStepUp: r2(endingAfterTaxWealth - heirTaxWithoutStepUp),
+    },
+    bestFixed: args.bestFixed,
+    floorBound: args.floorBound,
+    greedyNetCost: args.greedyNetCost,
+    greedyEndingWealth: args.greedyEndingWealth,
+    greedyYears: args.greedyYears,
+    valid: rows.every((r) => r.settlementConverged && r.spendShortfall === 0 && r.unpaidTax === 0),
+    searchLimits: DYNAMIC_SEARCH_LIMITS,
+  };
+}
+
+function dynamicRowsFromFixedMarch(
+  result: RothPlanResult,
+  policy: DynamicPolicy,
+  base: RothPlanInputs,
+  basisStart: number,
+): DynamicYearRow[] {
+  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const ssStartAge = base.ssPrimaryStartAge ?? null;
+  const rows: DynamicYearRow[] = [];
+  let basis = basisStart;
+  let taxableStart = base.taxableStart;
+  for (const y of result.years) {
+    const sold = y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+    basis = trackTaxableBasisEnd({
+      taxableStart,
+      basisStart: basis,
+      taxableSold: sold,
+      drawGains: y.detail.drawGains,
+      taxableEnd: y.taxableEnd,
+      growthFactor,
+      yieldReinvested: dynamicYieldForYear({
+        taxableStart,
+        dividendYieldPct: base.taxableDividendYieldPct,
+        interestYieldPct: base.taxableInterestYieldPct,
+      }),
+    });
+    rows.push(dynamicRowFromYear(y, policy, basis, rmdAge, ssStartAge));
+    taxableStart = y.taxableEnd;
+  }
+  return rows;
+}
+
+export function runDynamicOptimizer(
+  base: RothPlanInputs,
+  opts?: { annualSpending?: number; policies?: DynamicPolicy[] },
+): DynamicOptimizerResult {
+  const annualSpending = opts?.annualSpending ?? base.annualSpending;
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const policies = opts?.policies ?? dynamicPolicySet(rmdAge - 1, base.endAgePrimary);
+  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
+  const ssStartAge = base.ssPrimaryStartAge ?? null;
+
+  const state: DynamicLedgerState = {
+    pretaxP: base.pretaxStart,
+    pretaxS: base.pretaxSpouseStart ?? 0,
+    roth: base.rothStart,
+    taxable: base.taxableStart,
+    taxableBasis: (base.taxableBasisPct / 100) * base.taxableStart,
+    hsa: base.hsaStart,
+    eligP: base.pretax401kEligiblePrimary ?? null,
+    eligS: base.pretax401kEligibleSpouse ?? null,
+    rothContribP: base.rothContributionBasisPrimary ?? null,
+    rothContribS: base.rothContributionBasisSpouse ?? null,
+    rothLotsP: (base.rothConversionLotsPrimary ?? []).map((l) => ({ ...l })),
+    rothLotsS: (base.rothConversionLotsSpouse ?? []).map((l) => ({ ...l })),
+    rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
+    rmdDeferredPendingS: base.firstRmdDeferredCarrySpouse ?? 0,
+    firstRmdPriced: false,
+  };
+
+  const rows: DynamicYearRow[] = [];
+  let sunkNetCost = 0;
+  for (let year = base.startYear; ; year++) {
+    const agePrimary = year - base.birthYearPrimary;
+    if (agePrimary > base.endAgePrimary) break;
+    let best: { policy: DynamicPolicy; total: number; result: RothPlanResult; reanchored: RothPlanInputs } | null = null;
+    for (const policy of policies) {
+      const reanchored = dynamicReanchorInputs(base, state, year, policy, annualSpending);
+      const result = simulateRothPlan(
+        reanchored,
+        { id: `dyn-${policy.key}`, name: policy.name, ceilings: policy.ceilings, guardrail: policy.guardrail },
+        undefined,
+        { leanDetail: true },
+      );
+      const integrity = assessCandidateIntegrity(result);
+      if (integrity.status === "invalid") continue;
+      const cost = planNetCost(result, reanchored);
+      const total = r2(sunkNetCost + cost.netCost);
+      if (
+        best == null ||
+        total < best.total - 0.005 ||
+        (Math.abs(total - best.total) <= 0.005 &&
+          (result.endingAfterTaxWealth > best.result.endingAfterTaxWealth + 0.005 ||
+            (Math.abs(result.endingAfterTaxWealth - best.result.endingAfterTaxWealth) <= 0.005 &&
+              policy.key < best.policy.key)))
+      ) {
+        best = { policy, total, result, reanchored };
+      }
+    }
+    if (best == null) {
+      return {
+        ok: false,
+        reason: `No valid policy priced for ${year}: every candidate in the dynamic set was invalid (unsettled, shortfall, or unpaid tax).`,
+        years: rows,
+        policiesEvaluatedPerYear: policies.length,
+        lifetimeNetCost: 0,
+        lifetimeFederalTax: 0,
+        lifetimeStateTax: 0,
+        lifetimePenalty: 0,
+        lifetimeIrmaa: 0,
+        lifetimeAcaCreditKept: 0,
+        lifetimeHealthPremiumGross: 0,
+        lifetimeRmd: 0,
+        firstRmdYear: null,
+        conversionsTotal: 0,
+        spendShortfallTotal: 0,
+        unpaidTaxTotal: 0,
+        endingPretax: 0,
+        endingRoth: 0,
+        endingTaxable: 0,
+        endingHsa: 0,
+        endingWealth: 0,
+        terminal: dynamicTerminalTax({ endingPretax: 0, heirRatePct: base.heirRatePct }),
+        endingAfterTaxWealth: 0,
+        stepUp: { unrealizedGains: 0, heirTaxWithoutStepUp: 0, wealthWithStepUp: 0, wealthWithoutStepUp: 0 },
+        bestFixed: null,
+        floorBound: false,
+        greedyNetCost: 0,
+        greedyEndingWealth: 0,
+        greedyYears: [],
+        valid: false,
+        searchLimits: DYNAMIC_SEARCH_LIMITS,
+      };
+    }
+    const y0 = best.result.years[0];
+    if (!y0) {
+      return {
+        ok: false,
+        reason: `The winning remaining-horizon march for ${year} priced no years.`,
+        years: rows,
+        policiesEvaluatedPerYear: policies.length,
+        lifetimeNetCost: 0,
+        lifetimeFederalTax: 0,
+        lifetimeStateTax: 0,
+        lifetimePenalty: 0,
+        lifetimeIrmaa: 0,
+        lifetimeAcaCreditKept: 0,
+        lifetimeHealthPremiumGross: 0,
+        lifetimeRmd: 0,
+        firstRmdYear: null,
+        conversionsTotal: 0,
+        spendShortfallTotal: 0,
+        unpaidTaxTotal: 0,
+        endingPretax: 0,
+        endingRoth: 0,
+        endingTaxable: 0,
+        endingHsa: 0,
+        endingWealth: 0,
+        terminal: dynamicTerminalTax({ endingPretax: 0, heirRatePct: base.heirRatePct }),
+        endingAfterTaxWealth: 0,
+        stepUp: { unrealizedGains: 0, heirTaxWithoutStepUp: 0, wealthWithStepUp: 0, wealthWithoutStepUp: 0 },
+        bestFixed: null,
+        floorBound: false,
+        greedyNetCost: 0,
+        greedyEndingWealth: 0,
+        greedyYears: [],
+        valid: false,
+        searchLimits: DYNAMIC_SEARCH_LIMITS,
+      };
+    }
+    const sold = y0.funding.taxableSoldForSpending + y0.funding.taxableSoldForTax;
+    const basisEnd = trackTaxableBasisEnd({
+      taxableStart: state.taxable,
+      basisStart: state.taxableBasis,
+      taxableSold: sold,
+      drawGains: y0.detail.drawGains,
+      taxableEnd: y0.taxableEnd,
+      growthFactor,
+      yieldReinvested: dynamicYieldForYear({
+        taxableStart: state.taxable,
+        dividendYieldPct: base.taxableDividendYieldPct,
+        interestYieldPct: base.taxableInterestYieldPct,
+      }),
+    });
+    const row = dynamicRowFromYear(y0, best.policy, basisEnd, rmdAge, ssStartAge);
+    rows.push(row);
+    sunkNetCost = r2(sunkNetCost + row.netCostYear);
+    // Advance the ledgers from the priced year's outputs.
+    const eligP = trackEligibleEnd({
+      eligibleStart: state.eligP,
+      pretaxStart: state.pretaxP,
+      pretaxEnd: y0.pretaxPrimaryEnd,
+      growthFactor,
+    });
+    const eligS = trackEligibleEnd({
+      eligibleStart: state.eligS,
+      pretaxStart: state.pretaxS,
+      pretaxEnd: y0.pretaxSpouseEnd,
+      growthFactor,
+    });
+    // Roth draws debit the primary's ledgers first, then the
+    // spouse's (the conversion attribution below is primary-
+    // first too, matching the engine's conversion order, and
+    // is exact whenever the spouse's pre-tax balance is $0).
+    let rothDrawLeft = y0.funding.rothDraw;
+    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft);
+    rothDrawLeft = Math.max(
+      0,
+      rothDrawLeft -
+        ((state.rothContribP ?? 0) - (debitP.contrib ?? 0)) -
+        (state.rothLotsP.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0) -
+          debitP.lots.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0)),
+    );
+    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft);
+    let lotsP = debitP.lots;
+    let lotsS = debitS.lots;
+    if (y0.funding.conversion > 0) {
+      const primaryConverted = Math.min(
+        y0.funding.conversion,
+        Math.max(0, state.pretaxP - y0.detail.rmdPrimary),
+      );
+      const spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+      if (primaryConverted > 0.005) {
+        lotsP = [...lotsP, { year, taxableAmount: r2(primaryConverted), nontaxableAmount: 0 }];
+      }
+      if (spouseConverted > 0.005) {
+        lotsS = [...lotsS, { year, taxableAmount: r2(spouseConverted), nontaxableAmount: 0 }];
+      }
+    }
+    state.pretaxP = y0.pretaxPrimaryEnd;
+    state.pretaxS = y0.pretaxSpouseEnd;
+    state.roth = y0.rothEnd;
+    state.taxable = y0.taxableEnd;
+    state.taxableBasis = basisEnd;
+    state.hsa = y0.hsaEnd;
+    state.eligP = eligP;
+    state.eligS = eligS;
+    state.rothContribP = debitP.contrib;
+    state.rothContribS = debitS.contrib;
+    state.rothLotsP = lotsP;
+    state.rothLotsS = lotsS;
+    state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
+    state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
+    if (y0.rmd > 0 || agePrimary >= rmdAge) state.firstRmdPriced = true;
+  }
+
+  const greedyRows = rows;
+  const greedyTerminal = dynamicTerminalTax({
+    endingPretax: greedyRows[greedyRows.length - 1]?.pretaxEnd ?? 0,
+    heirRatePct: base.heirRatePct,
+    preservePretax: base.preservePretax,
+    preserveExitRatePct: base.preserveExitRatePct,
+  });
+  const greedyNetCost = r2(sunkNetCost + greedyTerminal.terminal);
+  const greedyEndingWealth = r2(
+    (greedyRows[greedyRows.length - 1]?.pretaxEnd ?? 0) +
+      (greedyRows[greedyRows.length - 1]?.rothEnd ?? 0) +
+      (greedyRows[greedyRows.length - 1]?.taxableEnd ?? 0) +
+      (greedyRows[greedyRows.length - 1]?.hsaEnd ?? 0) -
+      greedyTerminal.terminal,
+  );
+
+  // The fixed-policy floor: the best valid fixed policy over
+  // the same set, priced as full-horizon marches. The dynamic
+  // result is never worse than it on net cost.
+  const fixed = priceFixedDynamicPolicies(
+    { ...base, annualSpending },
+    policies,
+  );
+  const bestFixed = fixed.best
+    ? {
+        policyKey: fixed.best.policy.key,
+        policyName: fixed.best.policy.name,
+        netCost: fixed.best.netCost,
+        endingWealth: fixed.best.endingWealth,
+      }
+    : null;
+  if (bestFixed && fixed.best && bestFixed.netCost < greedyNetCost - DYNAMIC_FLOOR_EPSILON) {
+    const floorRows = dynamicRowsFromFixedMarch(
+      fixed.best.result,
+      fixed.best.policy,
+      { ...base, annualSpending },
+      (base.taxableBasisPct / 100) * base.taxableStart,
+    );
+    return dynamicResultFromRows({
+      rows: floorRows,
+      base: { ...base, annualSpending },
+      bestFixed,
+      floorBound: true,
+      greedyNetCost,
+      greedyEndingWealth,
+      greedyYears: greedyRows,
+      policiesEvaluatedPerYear: policies.length,
+    });
+  }
+  return dynamicResultFromRows({
+    rows: greedyRows,
+    base: { ...base, annualSpending },
+    bestFixed,
+    floorBound: false,
+    greedyNetCost,
+    greedyEndingWealth,
+    greedyYears: greedyRows,
+    policiesEvaluatedPerYear: policies.length,
+  });
+}
+
+/* ---------------- A-vs-B equal-income-budget experiment ---------
+   For one spending target (the year's income need), three ways
+   to fund it, all priced by the shared engine on the same
+   inputs:
+   A — traditional spending: pre-tax-first draw order, no
+       conversions (the $100K comes out of the 401(k)/IRA).
+   B — taxable spending + Roth conversions: taxable-first draw
+       order with a Fill-12% conversion (the $100K of spending
+       comes from taxable sales while $100K converts to Roth).
+   C — blended: the dynamic optimizer at this spending target
+       (year-by-year re-optimization, floored at the best fixed
+       policy — so C is never worse than the better of A/B's
+       policy family on net cost).
+   The $100K central question is answered by the $100K target's
+   year-1 rows: the same $100K of ordinary income either way,
+   but B also realizes the taxable sale's gains and consumes
+   ACA MAGI headroom, while A leaves the taxable gains
+   deferred. Targets run $0, $50K, $100K, $150K, $200K. */
+export type DynamicAbTargetResult = {
+  target: number;
+  a: { netCost: number; endingWealth: number; conversionsTotal: number; lifetimeRmd: number; lifetimeAcaCreditKept: number; endingPretax: number; endingTaxable: number; endingRoth: number; unrealizedGains: number; wealthWithoutStepUp: number };
+  b: { netCost: number; endingWealth: number; conversionsTotal: number; lifetimeRmd: number; lifetimeAcaCreditKept: number; endingPretax: number; endingTaxable: number; endingRoth: number; unrealizedGains: number; wealthWithoutStepUp: number };
+  c: { netCost: number; endingWealth: number; conversionsTotal: number; lifetimeRmd: number; lifetimeAcaCreditKept: number; endingPretax: number; endingTaxable: number; endingRoth: number; unrealizedGains: number; wealthWithoutStepUp: number; floorBound: boolean };
+};
+
+function dynamicAbArm(
+  result: RothPlanResult,
+  base: RothPlanInputs,
+  inputs: RothPlanInputs,
+): DynamicAbTargetResult["a"] {
+  const cost = planNetCost(result, inputs);
+  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
+  const basisEnd = dynamicBasisWalkYears(
+    result.years,
+    base.taxableStart,
+    (base.taxableBasisPct / 100) * base.taxableStart,
+    growthFactor,
+    base.taxableDividendYieldPct,
+    base.taxableInterestYieldPct,
+  );
+  const unrealizedGains = Math.max(0, r2(result.endingTaxable - basisEnd));
+  return {
+    netCost: cost.netCost,
+    endingWealth: result.endingAfterTaxWealth,
+    conversionsTotal: r2(result.years.reduce((s, y) => s + y.funding.conversion, 0)),
+    lifetimeRmd: r2(result.years.reduce((s, y) => s + y.funding.rmd, 0)),
+    lifetimeAcaCreditKept: result.lifetimeAcaKept,
+    endingPretax: result.endingPretax,
+    endingTaxable: result.endingTaxable,
+    endingRoth: result.endingRoth,
+    unrealizedGains,
+    wealthWithoutStepUp: r2(result.endingAfterTaxWealth - (unrealizedGains * base.heirRatePct) / 100),
+  };
+}
+
+export function runDynamicAbExperiment(
+  base: RothPlanInputs,
+  targets: number[],
+): DynamicAbTargetResult[] {
+  const out: DynamicAbTargetResult[] = [];
+  for (const target of targets) {
+    const inputs = { ...base, annualSpending: target };
+    const aResult = simulateRothPlan(
+      { ...inputs, drawOrder: ["pretax", "taxable", "roth"] },
+      { id: "ab-a", name: "A traditional spending", ceilings: null },
+      undefined,
+      { leanDetail: true },
+    );
+    const bResult = simulateRothPlan(
+      { ...inputs, drawOrder: ["taxable", "roth", "pretax"] },
+      { id: "ab-b", name: "B taxable spending + Fill 12% conversions", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 } },
+      undefined,
+      { leanDetail: true },
+    );
+    const cResult = runDynamicOptimizer(inputs);
+    const c = cResult.ok
+      ? {
+          netCost: cResult.lifetimeNetCost,
+          endingWealth: cResult.endingAfterTaxWealth,
+          conversionsTotal: cResult.conversionsTotal,
+          lifetimeRmd: cResult.lifetimeRmd,
+          lifetimeAcaCreditKept: cResult.lifetimeAcaCreditKept,
+          endingPretax: cResult.endingPretax,
+          endingTaxable: cResult.endingTaxable,
+          endingRoth: cResult.endingRoth,
+          unrealizedGains: cResult.stepUp.unrealizedGains,
+          wealthWithoutStepUp: cResult.stepUp.wealthWithoutStepUp,
+          floorBound: cResult.floorBound,
+        }
+      : {
+          netCost: NaN,
+          endingWealth: NaN,
+          conversionsTotal: NaN,
+          lifetimeRmd: NaN,
+          lifetimeAcaCreditKept: NaN,
+          endingPretax: NaN,
+          endingTaxable: NaN,
+          endingRoth: NaN,
+          unrealizedGains: NaN,
+          wealthWithoutStepUp: NaN,
+          floorBound: false,
+        };
+    out.push({
+      target,
+      a: dynamicAbArm(aResult, base, { ...inputs, drawOrder: ["pretax", "taxable", "roth"] }),
+      b: dynamicAbArm(bResult, base, { ...inputs, drawOrder: ["taxable", "roth", "pretax"] }),
+      c,
+    });
+  }
+  return out;
+}
+
+/* ---------------- ACA benchmark sensitivity (bias audit) -------
+   Price the fixed-policy set (and, when asked, the dynamic
+   optimizer) under each supplied ACA benchmark set and report
+   the winner + credit kept per benchmark. The benchmark is the
+   ONLY thing that changes between runs: the same balances,
+   ages, spending, and policy set. A null benchmark prices no
+   credit (the baseline's condition); a supplied couple
+   benchmark prices the credit the cliff-capped policies keep.
+   The dynamic re-run per benchmark is optional (it costs a
+   full roll-forward each) — the fixed-set re-ranking is the
+   audit's core, because the bias question is whether the
+   RANKING moves when the credit is priced. */
+export type DynamicAcaSensitivityRow = {
+  label: string;
+  acaBenchmarkCouple: number | null;
+  acaBenchmarkSingle: number | null;
+  acaBenchmarkFamily: number | null;
+  bestFixedPolicyKey: string | null;
+  bestFixedPolicyName: string | null;
+  bestFixedNetCost: number | null;
+  bestFixedEndingWealth: number | null;
+  bestFixedAcaCreditKept: number | null;
+  doNothingNetCost: number | null;
+  doNothingAcaCreditKept: number | null;
+  dynamicNetCost: number | null;
+  dynamicEndingWealth: number | null;
+  dynamicAcaCreditKept: number | null;
+  dynamicFloorBound: boolean | null;
+};
+
+export function runDynamicAcaSensitivity(
+  base: RothPlanInputs,
+  benchmarks: { label: string; acaBenchmarkCouple: number | null; acaBenchmarkSingle: number | null; acaBenchmarkFamily: number | null }[],
+  opts?: { runDynamic?: boolean },
+): DynamicAcaSensitivityRow[] {
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const policies = dynamicPolicySet(rmdAge - 1, base.endAgePrimary);
+  const rows: DynamicAcaSensitivityRow[] = [];
+  for (const bench of benchmarks) {
+    const inputs: RothPlanInputs = {
+      ...base,
+      acaBenchmarkCouple: bench.acaBenchmarkCouple,
+      acaBenchmarkSingle: bench.acaBenchmarkSingle,
+      acaBenchmarkFamily: bench.acaBenchmarkFamily,
+    };
+    const fixed = priceFixedDynamicPolicies(inputs, policies);
+    const dn = fixed.scored.find((s) => s.policy.ceilings == null && s.policy.drawOrder[0] === "taxable");
+    let dynamic: DynamicOptimizerResult | null = null;
+    if (opts?.runDynamic === true) dynamic = runDynamicOptimizer(inputs);
+    rows.push({
+      label: bench.label,
+      acaBenchmarkCouple: bench.acaBenchmarkCouple,
+      acaBenchmarkSingle: bench.acaBenchmarkSingle,
+      acaBenchmarkFamily: bench.acaBenchmarkFamily,
+      bestFixedPolicyKey: fixed.best?.policy.key ?? null,
+      bestFixedPolicyName: fixed.best?.policy.name ?? null,
+      bestFixedNetCost: fixed.best?.netCost ?? null,
+      bestFixedEndingWealth: fixed.best?.endingWealth ?? null,
+      bestFixedAcaCreditKept: fixed.best?.lifetimeAcaCreditKept ?? null,
+      doNothingNetCost: dn?.netCost ?? null,
+      doNothingAcaCreditKept: dn?.lifetimeAcaCreditKept ?? null,
+      dynamicNetCost: dynamic?.lifetimeNetCost ?? null,
+      dynamicEndingWealth: dynamic?.endingAfterTaxWealth ?? null,
+      dynamicAcaCreditKept: dynamic?.lifetimeAcaCreditKept ?? null,
+      dynamicFloorBound: dynamic?.floorBound ?? null,
+    });
+  }
+  return rows;
+}

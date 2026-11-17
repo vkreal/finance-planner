@@ -58,7 +58,7 @@
 import type { NormalizedScenario } from "./normalize";
 import type { IgnoredInputField } from "./types";
 
-/** The seven financial tools (the capabilities tool takes no inputs). */
+/** The eight financial tools (the capabilities tool takes no inputs). */
 export type FinancialToolName =
   | "retirement_calculate"
   | "retirement_monte_carlo"
@@ -66,7 +66,8 @@ export type FinancialToolName =
   | "retirement_compare_strategies"
   | "retirement_roth_conversion"
   | "retirement_work_years"
-  | "retirement_tax_year";
+  | "retirement_tax_year"
+  | "retirement_dynamic_withdrawal";
 
 /** The six essential keys, required by the shared input contract. */
 export const REQUIRED_INPUTS_GLOBAL: string[] = [
@@ -245,6 +246,15 @@ export const PRICED_OPTIONAL: Record<FinancialToolName, string[]> = {
   ],
   retirement_compare_strategies: COMPARE_OPTIONAL_INPUTS,
   retirement_roth_conversion: COMPARE_OPTIONAL_INPUTS,
+  // Engine Review C10: the dynamic tool prices the same
+  // optionals as the compare tools EXCEPT comparisonScope —
+  // it has no limited/full modes (it always runs its own
+  // 114-policy roll-forward), so a supplied comparisonScope
+  // is reported ignored for this tool instead of silently
+  // meaning nothing.
+  retirement_dynamic_withdrawal: COMPARE_OPTIONAL_INPUTS.filter(
+    (f) => f !== "comparisonScope",
+  ),
   retirement_work_years: [
     ...COMPARE_OPTIONAL_INPUTS,
     "salaryAnnual",

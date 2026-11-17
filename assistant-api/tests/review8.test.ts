@@ -570,7 +570,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.niit).toBeGreaterThan(0);
   });
 
-  test("envelope reports contract 164 on the tax-year tool", () => {
+  test("envelope reports contract 165 on the tax-year tool", () => {
     const res = dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
@@ -579,7 +579,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
       }),
     );
     const env = expectEnvelope(res);
-    expect(env.apiContractVersion).toBe(164);
+    expect(env.apiContractVersion).toBe(165);
     // The dividend fields are priced by this tool, so they are not
     // ignored — but the fictional scenario's retirementAge, endAge
     // and taxableBasisPct are (tax_year prices neither), and are
