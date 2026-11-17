@@ -5890,7 +5890,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-compare-example-executes",
     kind: "apicontract",
-    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. (Engine Review C9, Build 3: the fixture also verifies the response-level crowning — the five winner fields — and each scenario's published integrity verdict — status, reasons, and the unpaid-tax / shortfall totals.) It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both seeded scenarios (netCostIdentityExact counts 2 of the 7: the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent counts 2 of the 7) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2). (Engine Review C9, Build 3 NICEs, N2: the two identity counts run to 7, not 2 — a second compare run on an unpaid-tax-carrying base (the fictional sample household with taxable cut to $200,000 and Roth $0 against $240,000/yr spending) contributes 5 more scenarios, every one carrying unpaid tax, so the wealth identity is now verified with a nonzero unpaid-tax term, not only on the seeded example where unpaid tax is $0 on both scenarios.)",
+    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. (Engine Review C9, Build 3: the fixture also verifies the response-level crowning — the five winner fields — and each scenario's published integrity verdict — status, reasons, and the unpaid-tax / shortfall totals.) It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both seeded scenarios (netCostIdentityExact counts 2 of the 7: the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent counts 2 of the 7) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2). (Engine Review C9, Build 3 NICEs, N2: the two identity counts run to 7, not 2 — a second compare run on an unpaid-tax-carrying base (the fictional sample household with taxable cut to $200,000, Roth $0, and HSA $0 against $240,000/yr spending — HSA is $0 so Build 4's HSA last-resort tax-payment leg cannot pay the bill) contributes 5 more scenarios, every one carrying unpaid tax, so the wealth identity is now verified with a nonzero unpaid-tax term, not only on the seeded example where unpaid tax is $0 on both scenarios.)",
     expected: {
       fieldsCompared: 38,
       fieldsMatched: 38,
@@ -5998,7 +5998,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       // (Engine Review C9, Build 3 NICEs, N2): the second run
       // — the same five conversion shapes on an unpaid-tax-
       // carrying base (the fictional sample household with
-      // taxable cut to $200,000 and Roth $0 against
+      // taxable cut to $200,000, Roth $0, and HSA $0 against
       // $240,000/yr spending). Every scenario carries unpaid
       // tax (Do Nothing / Fill 12% $29,393.13, Fill 22%
       // $12,408.44, Fill 24% $5,110.93, Fill 37% $34,015.34 —
@@ -6030,6 +6030,12 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       const unpaidBase = sampleCompareBase();
       unpaidBase.taxableCents = 20_000_000;
       unpaidBase.rothCents = 0;
+      // HSA $0: Build 4's HSA last-resort tax-payment leg would
+      // otherwise pay every tax bill on this shape (the sample
+      // HSA is $75,000), leaving $0 unpaid and this check
+      // vacuous — the identity must be exercised with unpaid
+      // tax the leg cannot pay.
+      unpaidBase.hsaCents = 0;
       unpaidBase.annualSpendingCents = 24_000_000;
       const unpaidRes = runRothCompare(
         unpaidBase,
