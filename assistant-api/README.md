@@ -50,7 +50,7 @@ $18,000/yr at 67; taxable basis 72%; retire 58; end age 95).
 ```
 
 Result (key figures): `neverRunsOut: true`, ending balance
-$43,901,094.30 at age 95, historical never-out rate 100%.
+$19,889,344.44 at age 95, historical never-out rate 100%.
 
 > **Field names are the validator's names.** The names in this
 > README are the ones the validator accepts (the zod schema in
@@ -103,8 +103,8 @@ AI client ── JSON-RPC 2.0 / Streamable HTTP ──► server.ts (auth, rate 
   the engines; results come back in dollars rounded to 2dp. Percents
   are plain numbers outside (5 means 5%); the adapter divides
   by 100 where an engine takes a decimal, and reports rates back as
-  fractions 0–1 at whole-run precision (a 97.2% success rate over
-  1,000 runs reads `0.972`, never `97` or `0.97`). A success rate is
+  fractions 0–1 at whole-run precision (a 93% success rate over
+  1,000 runs reads `0.93`, never `93`). A success rate is
   never rounded to 2dp: with N runs the finest step is 1/N, and
   `successfulRuns` is the whole-run count behind the rate, derived
   from the engine rate × run count (see "Success-rate precision and
@@ -707,16 +707,16 @@ Tool call:
 ```
 
 Engine result (key figures): `neverRunsOut: true`, ending balance
-$37,459,082.11 at age 95, historical never-out rate 100%
+$16,594,936.46 at age 95, historical never-out rate 100%
 (`historicalNeverOutRate: 1`), historical median ending
-$34,871,176.88.
+$34,450,724.84.
 
 Plain-English answer: "Yes — on these figures, the money lasts to
-95. The flat projection ends with about $37.5M, and in every
+95. The flat projection ends with about $16.6M, and in every
 historical market path since the 1920s it also lasts, with a typical
-ending around $34.9M. That's the projection saying yes, not a
-guarantee: it assumes $9,500 a month of spending and the returns the
-engine blends from your 95% stock mix."
+ending around $34.5M. That's the projection saying yes, not a
+guarantee: it assumes $9,500 a month of spending and the engine's
+default 5% real return."
 
 ### (2) Monte Carlo to 95 → `retirement_monte_carlo`
 
@@ -740,20 +740,21 @@ Tool call: same household, retiring at 58, `mcRuns: 1000`,
 }
 ```
 
-Engine result (key figures): `successRate: 0.972`
-(`successfulRuns: 972` of `runs: 1000`), `endingP10:
-$2,929,179.57`, `endingP50: $21,651,743.88`, `endingP90:
-$100,031,364.32`, deterministic ending balance $43,901,094.30.
+Engine result (key figures): `successRate: 0.93`
+(`successfulRuns: 930` of `runs: 1000`), `endingP10:
+$387,957.01`, `endingP50: $8,797,378.04`, `endingP90:
+$46,564,519.79`, deterministic ending balance $19,889,344.44.
 
-Plain-English answer: "972 out of 1,000 random market paths last to
-95. The middle path ends with about $21.7M; even the weak path
-(the 1-in-10 bad one) ends with about $2.9M. The 28 paths in 1,000 that
+Plain-English answer: "930 out of 1,000 random market paths last to
+95. The middle path ends with about $8.8M; even the weak path
+(the 1-in-10 bad one) ends with about $388,000. The 70 paths in 1,000 that
 fail are the ones where bad returns arrive early, while you're still
 spending $9,500 a month."
 
-(The rate used to read `0.97`: the old 2dp rounding collapsed 97.2%
-to 97%. Rates now convert at whole-run precision — see "Success-rate
-precision and max-spending semantics".)
+(The old 2dp rounding agrees on this case — 93% reads 0.93 either
+way. Rates now convert at whole-run precision — see "Success-rate
+precision and max-spending semantics" for the cases where they
+don't.)
 
 ### (3) "How much can I safely spend?" → `retirement_max_spending`
 
@@ -779,17 +780,17 @@ this tool, and the result reports `runs: 1000` with an
 }
 ```
 
-Engine result (key figures): `maxMonthlySpending: $14,358.33`,
-`maxAnnualSpending: $172,300`, `successRate: 0.85`
+Engine result (key figures): `maxMonthlySpending: $11,125`,
+`maxAnnualSpending: $133,500`, `successRate: 0.85`
 (`successfulRuns: 850` of `runs: 1000`), `targetSuccessRate: 0.85`,
 `feasible: true`, `spendingStrategy: "constant"`,
 `spendingAmountMeaning: "Fixed annual spending: the same dollar
-amount in every retired year."`, `medianEnding: $13,982,528.25`,
-`historicalMaxMonthlySpending: $18,616.67`
-(`historicalMaxAnnualSpending: $223,400`, `historicalRuns: 57`,
+amount in every retired year."`, `medianEnding: $7,167,475.70`,
+`historicalMaxMonthlySpending: $18,466.67`
+(`historicalMaxAnnualSpending: $221,600`, `historicalRuns: 57`,
 `historicalSuccessfulRuns: 49`), and feasibility:
 `targetSuccessRate: 0.85`, `achievedSuccessRate: 0.85`,
-`targetAchieved: true`, `solutionStatus: "feasible"` — the $172,300
+`targetAchieved: true`, `solutionStatus: "feasible"` — the $133,500
 is a positive spending meeting the target, not the search cap.
 A `$0` maximum would need the status read before any claim about
 it: `feasible_at_zero` means $0 is the highest sustainable
@@ -802,12 +803,12 @@ cap (the percent strategy's 30% cap always binds).
 conversion agree. See "Success-rate precision and max-spending
 semantics" for the cases where they don't.)
 
-Plain-English answer: "About $14,358 a month — that's the highest
+Plain-English answer: "About $11,125 a month — that's the highest
 spending that still succeeds in 85 out of 100 random paths. Your
-current $9,500 a month is about two-thirds of that, so there's
-roughly $4,858 a month of headroom on this measure. History is
-kinder than the random paths: on actual historical markets the
-maximum was about $18,617 a month."
+current $9,500 a month is about 85% of that, so there's roughly
+$1,625 a month of headroom on this measure. History is kinder than
+the random paths: on actual historical markets the maximum was about
+$18,467 a month."
 
 ### (4) "Retire at 56 or 60" → `retirement_work_years`
 
@@ -836,21 +837,22 @@ call prices the primary's $36,000 at 67 only.
 ```
 
 Engine result (key figures) — Roth-compare leg: retire-56 ending
-wealth $35,126,287.19, retire-60 ending wealth $40,779,375.57
-(delta +$5,653,088.38); lifetime tax $1,532,899.80 at **both**
-ages (an exact tie — net cost $2,671,227.76 both ways). Work-years
-leg: quit 56 all-in tax $306,904.83 (salary tax $0, payroll tax $0);
-quit 60 all-in tax $530,225.68 (salary tax $53,616.52, payroll tax
+wealth $15,524,955.88, retire-60 ending wealth $18,513,081.03
+(delta +$2,988,125.15); lifetime tax $739,369.67 at **both**
+ages (an exact tie — net cost $1,273,829.35 both ways, so retire-56
+wins on net cost by the tie-break, earliest quit age). Work-years
+leg: quit 56 all-in tax $235,422.38 (salary tax $0, payroll tax $0);
+quit 60 all-in tax $461,150.49 (salary tax $53,616.52, payroll tax
 $33,736.52 over 4 extra working years); winner by all-in tax:
-`retire-56`. Winning strategies: at 56, "Fill to the top of the 24%
-bracket, capped at IRMAA Tier 2 · gain harvesting into the 0%
-bracket", claiming the primary at 66; at 60, "Fill to the top of the
-32% bracket", claiming at 65.
+`retire-56`. Winning strategies: at 56, "Fill to the top of the 22%
+bracket, capped at IRMAA Tier 0 · gain harvesting into the 0%
+bracket", claiming the primary at 70; at 60, "Fill to the top of the
+32% bracket", claiming at 69.
 
-Plain-English answer: "Working to 60 leaves about $5.65M more at
+Plain-English answer: "Working to 60 leaves about $2.99M more at
 95 — four more years of salary and growth, and four fewer years of
 spending. But it isn't free: the work-years measure adds about
-$223,000 of tax for the extra working years ($53,617 of salary tax
+$226,000 of tax for the extra working years ($53,617 of salary tax
 plus $33,737 of payroll tax, plus the tax on the bigger plan), so
 on tax alone, retiring at 56 wins. One caution: the two ending
 balances span different horizons, so compare the tax, not the

@@ -49,14 +49,28 @@ import {
 /** Direct engine inputs for the fictional household, any strategy. */
 function directSimInputs(strategy: SpendingStrategy = "constant"): SimInputs {
   const s = normalizedScenario();
+  // The engine's sim timeline runs on the PRIMARY's ages
+  // (currentAge 54 -> endAge 95). The spouse claims at HER 67,
+  // which is the primary's 69 (spouse born 1974, primary 1972), so
+  // her $18,000/yr starts at 69 on this timeline — not 67. The
+  // legacy single-stream fields carry the earliest stream only
+  // ($36,000 at 67), matching the adapter's toSimInputs; the
+  // schedule carries both streams. Pricing the spouse's benefit
+  // from 67 overstates early income by $36,000 and moves the
+  // max-spending boundary (the adapter's constant max is $133,500,
+  // not the $134,700 the legacy $54,000-from-67 inputs give).
   return {
     startCents: s.portfolioCents,
     spendingCents: s.annualSpendingCents,
     currentAge: s.currentAge,
     retirementAge: s.retirementAge,
     endAge: s.endAge,
-    extraIncomeCents: (36000 + 18000) * 100,
+    extraIncomeCents: 36000 * 100,
     extraIncomeStartAge: 67,
+    incomeSchedule: [
+      { amountCents: 36000 * 100, startAge: 67 },
+      { amountCents: 18000 * 100, startAge: 69 },
+    ],
     strategy,
     percentOfPortfolio: 5,
     guardrailsCutPct: GUARDRAILS_CUT_DEFAULT,
@@ -112,7 +126,7 @@ describe("R7-S1 exact probability conversion", () => {
 });
 
 describe("R7-S1 Monte Carlo adapter parity", () => {
-  test("fictional household, 1,000 runs, seed 42: 97.2% reads 0.972, not 0.97", () => {
+  test("fictional household, 1,000 runs, seed 42: 93% reads 0.93 with 930 successful runs", () => {
     const s = normalizedScenario({ mcRuns: 1000, mcSeed: 42 });
     const res = expectOk(runRetirementMonteCarlo(s));
     const mc = runMonteCarlo(
@@ -123,21 +137,21 @@ describe("R7-S1 Monte Carlo adapter parity", () => {
       s.mcRuns,
     );
     expect(mc).not.toBeNull();
-    expect(mc!.neverOutSuccessRate).toBe(97.2);
+    expect(mc!.neverOutSuccessRate).toBe(93);
     expect(res.successRate).toBe(
       Math.round((mc!.neverOutSuccessRate * s.mcRuns) / 100) / s.mcRuns,
     );
-    expect(res.successRate).toBe(0.972);
-    expect(res.successfulRuns).toBe(972);
+    expect(res.successRate).toBe(0.93);
+    expect(res.successfulRuns).toBe(930);
     expect(res.runs).toBe(1000);
     expect(res.seed).toBe(42);
   }, 30_000);
 
-  test("fictional household, 200 runs, seed 42: 99% reads 0.99 with 198 successful runs", () => {
+  test("fictional household, 200 runs, seed 42: 94% reads 0.94 with 188 successful runs", () => {
     const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
     const res = expectOk(runRetirementMonteCarlo(s));
-    expect(res.successRate).toBe(0.99);
-    expect(res.successfulRuns).toBe(198);
+    expect(res.successRate).toBe(0.94);
+    expect(res.successfulRuns).toBe(188);
     expect(res.runs).toBe(200);
   }, 30_000);
 
@@ -202,7 +216,7 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(res.maxAnnualSpending).toBe(
       centsToDollars(solved.maxSpendingCents),
     );
-    expect(res.maxAnnualSpending).toBe(172300);
+    expect(res.maxAnnualSpending).toBe(133500);
     expect(res.maxMonthlySpending).toBe(
       Math.round((res.maxAnnualSpending / 12) * 100) / 100,
     );
@@ -230,7 +244,7 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
         ? null
         : centsToDollars(histSolved.maxSpendingCents),
     );
-    expect(res.historicalMaxAnnualSpending).toBe(223400);
+    expect(res.historicalMaxAnnualSpending).toBe(221600);
     expect(res.historicalRuns).toBe(57);
     expect(res.historicalSuccessfulRuns).toBe(49);
     expect(res.historicalSolvedPortfolioWithdrawalPct).toBeNull();
@@ -354,7 +368,7 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
         ? null
         : centsToDollars(histSolved.maxSpendingCents),
     );
-    expect(res.historicalMaxAnnualSpending).toBe(226300);
+    expect(res.historicalMaxAnnualSpending).toBe(224400);
     expect(res.historicalRuns).toBe(57);
     expect(res.historicalSuccessfulRuns).toBe(49);
     expect(res.historicalSolvedPortfolioWithdrawalPct).toBeNull();
@@ -402,7 +416,7 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
         ? null
         : centsToDollars(histSolved.maxSpendingCents),
     );
-    expect(res.historicalMaxAnnualSpending).toBe(435300);
+    expect(res.historicalMaxAnnualSpending).toBe(432800);
     expect(res.historicalRuns).toBe(57);
     expect(res.historicalSuccessfulRuns).toBe(49);
     expect(res.historicalSolvedPortfolioWithdrawalPct).toBeNull();
