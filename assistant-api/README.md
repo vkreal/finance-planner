@@ -4,7 +4,7 @@
 > server over the Finance Planner's own retirement engines. An AI
 > asks a retirement question — "can I retire?", "how likely is my plan
 > to succeed?", "how much can I spend?", "should I convert to Roth?",
-> "what if I retire later?" — by calling one of 8 tools with the
+> "what if I retire later?" — by calling one of 9 tools with the
 > household's figures. Every call carries its complete scenario in
 > dollars; nothing is saved, nothing is read from a database, and
 > nothing is remembered between calls. Pricing uses the 2026 tax-law
@@ -16,13 +16,14 @@
 > `Authorization: Bearer <token>` — **no public endpoint is live yet;
 > deployment is the reader's step** (see "Remote MCP deployment").
 
-## The 8 tools (one line each)
+## The 9 tools (one line each)
 
 - `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
 - `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes.
 - `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success, with the feasibility of that maximum (`targetAchieved`, `solutionStatus`).
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware (limited default); all six draw-order permutations with `comparisonScope: "full"`.
 - `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 (limited default); the engine's full optimizer search with `comparisonScope: "full"`.
+- `retirement_dynamic_withdrawal` — year-by-year withdrawal plan: which account to draw from and how much to convert each year, re-priced annually instead of one fixed order or ceiling for the whole horizon.
 - `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
 - `retirement_tax_year` — one year's federal/state tax, ACA credit, IRMAA, and health premiums (gross and net, when premium fields are supplied) for a published law year (2025 or 2026 today).
 - `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.
@@ -75,7 +76,7 @@ AI client ── JSON-RPC 2.0 / Streamable HTTP ──► server.ts (auth, rate 
                                                     │ dispatchTool(name, args)
                                                     ▼
                                               tools.ts ──► normalize.ts ──► adapter.ts
-                                              (8 tools)    (validate,       (map scenario
+                                              (9 tools)    (validate,       (map scenario
                                                              dollars→cents,  onto engines,
                                                              defaults +      shape envelope)
                                                              provenance)
@@ -143,7 +144,7 @@ reach it, so this is safe by construction. Health check (no auth):
 
 ```sh
 curl -s http://localhost:8080/health
-# {"ok":true,"service":"finance-planner-assistant-api","version":"0.1.0","tools":8,"auth":"none-localhost","warning":"..."}
+# {"ok":true,"service":"finance-planner-assistant-api","version":"0.1.0","tools":9,"auth":"none-localhost","warning":"..."}
 ```
 
 ### CLI usage
@@ -151,7 +152,7 @@ curl -s http://localhost:8080/health
 No server needed — call a tool from the command line:
 
 ```sh
-bun src/cli.ts --list                        # the 8 tools, one line each
+bun src/cli.ts --list                        # the 9 tools, one line each
 bun src/cli.ts retirement_calculate input.json
 bun src/cli.ts retirement_calculate --stdin < input.json
 bun src/cli.ts serve --port 8080             # start the MCP server
@@ -231,9 +232,10 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | `retirement_max_spending` | — (`monthlySpending` is still required, as the starting point) | Same as calculate, plus `volatilityPct`, `mcSeed` (default 12345). `mcRuns` is NOT used — the solver always runs the engine's fixed 1,000 simulations; results report `runs: 1000` and an `mcRunsEffective` assumption. | `maxMonthlySpending` / `maxAnnualSpending` at 85% MC success (1,000 simulations), `successRate`, `medianEnding`, `runs`, `historicalMaxMonthlySpending` / `historicalMaxAnnualSpending`, plus feasibility: `targetSuccessRate` (0.85), `achievedSuccessRate`, `targetAchieved`, `solutionStatus` (`feasible` / `feasible_at_zero` / `infeasible_at_zero` / `capped` — a $0 maximum with `infeasible_at_zero` means no spending level reaches the target) and the historical leg's `historicalTargetAchieved` / `historicalSolutionStatus` |
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`), `comparisonScope`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — the default compares three orders; `comparisonScope: "full"` compares all six permutations. | `scenarios` (3 by default — taxable-first / pre-tax-first / roth-first — 6 in full mode) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `comparisonScope` block, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1 by default; Do Nothing + winner + runners-up + ending-wealth winner in full mode) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `comparisonScope` block; in full mode an `optimizer` block (candidates evaluated, winning policy, yearly conversions); `yearly` table |
+| `retirement_dynamic_withdrawal` | — | Same as compare_strategies, except `comparisonScope` — the dynamic tool has no limited/full modes; a supplied `comparisonScope` is reported ignored. | Annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, federal and state tax, penalty, IRMAA, ACA credit kept, MAGI and ACA MAGI against the cliff, RMD, ending balances with taxable basis), lifetime totals (net cost, tax, penalty, IRMAA, ACA credit, RMDs, conversions), terminal block (terminal tax on the standing pre-tax balance and the step-up in basis on the taxable balance), and the best fixed policy for comparison |
 | `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
 | `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, health premiums (gross and net, when supplied), cash left vs spending, sale gain/loss, RMD |
-| `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (8 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
+| `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (9 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
 
 ## Limited vs full comparisons — read this before trusting a "winner"
 
@@ -558,7 +560,7 @@ it, including the direct-engine parity behind these figures.
   localhost) boots with auth **disabled** and a loud stderr warning
   — zero-config local use only. Never bind that mode to a
   non-loopback address.
-- **Allowlist of 8 tools only.** `tools/list` returns exactly the 8
+- **Allowlist of 9 tools only.** `tools/list` returns exactly the 9
   tools in this README. There are no storage, deletion, import, or
   reset tools: `tools/call` of anything else (e.g.
   `delete_backup`, `reset_planner`, `import_transactions`) is
@@ -614,7 +616,7 @@ the corrected ending-wealth identity
 (`endingWealth = endingPretax + endingTaxable + endingRoth +
 endingHsa − terminalTax`); Roth deltas as (scenario − baseline);
 both work-years branches (salary / no salary); auth 401s; the exact
-8-tool allowlist; `-32602` for non-existent tools; the 413 body cap;
+9-tool allowlist; `-32602` for non-existent tools; the 413 body cap;
 log hygiene; error hygiene (no stacks, no paths).
 
 Notes:
@@ -992,7 +994,7 @@ eligibility circumstance.
 assistant-api/
   src/
     server.ts    Streamable HTTP MCP server (Bun.serve, auth, rate limits)
-    tools.ts     the 8 tool definitions + dispatchTool
+    tools.ts     the 9 tool definitions + dispatchTool
     adapter.ts   NormalizedScenario → engine calls → AdapterResponse
     normalize.ts validation, dollars→cents, defaults, provenance
     schema.ts    zod input schema (the accepting schema)

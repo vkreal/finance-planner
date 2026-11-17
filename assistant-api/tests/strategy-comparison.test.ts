@@ -9,8 +9,8 @@
 // directly); the Do Nothing benchmark; ACA-sensitive households;
 // repeated-call determinism; sample isolation; backward
 // compatibility of the default (limited) calls; the tool count
-// staying at 8 (no new tool was added — full mode is a scope, not
-// a tool).
+// staying at 9 (C10 added retirement_dynamic_withdrawal; full mode
+// is a scope, not a tool).
 //
 // (15) MCP vs standalone bundle agreement: COVERED (Review 4 NICEs
 // fix, 2026-11-14) — the aa65684 bundle

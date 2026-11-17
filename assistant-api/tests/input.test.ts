@@ -322,7 +322,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     ]);
   });
 
-  test("all eight tools still accept the valid fictional scenario", () => {
+  test("all nine tools still accept the valid fictional scenario", () => {
     const valid = fictionalScenario();
     for (const tool of [
       "retirement_calculate",
@@ -330,6 +330,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
       "retirement_max_spending",
       "retirement_compare_strategies",
       "retirement_roth_conversion",
+      "retirement_dynamic_withdrawal",
       "retirement_work_years",
       "retirement_tax_year",
     ]) {
@@ -338,7 +339,11 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(dispatchTool("retirement_describe_capabilities", {}).ok).toBe(
       true,
     );
-  });
+    // The dynamic-withdrawal leg re-prices the remaining horizon at
+    // every year (~19s on this VM), so the default 5s test timeout
+    // cannot hold this test; 300s matches the premiums and
+    // review-c9-build3 precedent for slow legs.
+  }, 300000);
 });
 
 describe("missing ages and Social Security details", () => {

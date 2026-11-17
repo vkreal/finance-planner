@@ -83,7 +83,7 @@ describe("advertised schema == accepting schema", () => {
       required: string[];
       optional: string[];
     }>;
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     for (const t of tools) {
       for (const field of [...t.required, ...t.optional]) {
         expect(zodKeys).toContain(field);
@@ -214,6 +214,13 @@ describe("advertised schema == accepting schema", () => {
       ],
       retirement_compare_strategies: compare,
       retirement_roth_conversion: compare,
+      // The dynamic tool prices the compare optionals EXCEPT
+      // comparisonScope — it has no limited/full modes (it always
+      // runs its own 114-policy roll-forward), so a supplied
+      // comparisonScope is reported ignored (pricedInputs.ts).
+      retirement_dynamic_withdrawal: compare.filter(
+        (f) => f !== "comparisonScope",
+      ),
       retirement_work_years: [
         ...compare,
         "salaryAnnual",

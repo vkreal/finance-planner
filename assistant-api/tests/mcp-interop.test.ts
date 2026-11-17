@@ -157,7 +157,7 @@ describe("MCP interop via the official SDK", () => {
     expect(typeof SDK === "object" || SDK === null).toBe(true);
   });
 
-  it("tools/list discovers exactly 8 tools with valid JSON Schemas", async () => {
+  it("tools/list discovers exactly 9 tools with valid JSON Schemas", async () => {
     const { tools } = await client!.listTools();
     expect(tools.map((t) => t.name as string).sort()).toEqual(
       [
@@ -166,6 +166,7 @@ describe("MCP interop via the official SDK", () => {
         "retirement_max_spending",
         "retirement_compare_strategies",
         "retirement_roth_conversion",
+        "retirement_dynamic_withdrawal",
         "retirement_work_years",
         "retirement_tax_year",
         "retirement_describe_capabilities",
@@ -211,7 +212,7 @@ describe("MCP interop via the official SDK", () => {
     const results = res.structuredContent!.results as {
       tools: Array<{ name: string }>;
     };
-    expect(results.tools.map((t) => t.name)).toHaveLength(8);
+    expect(results.tools.map((t) => t.name)).toHaveLength(9);
   });
 
   it("retirement_calculate returns an ok envelope with structuredContent", async () => {

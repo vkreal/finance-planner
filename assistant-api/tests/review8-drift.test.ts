@@ -38,6 +38,7 @@ const FINANCIAL_TOOLS: FinancialToolName[] = [
   "retirement_max_spending",
   "retirement_compare_strategies",
   "retirement_roth_conversion",
+  "retirement_dynamic_withdrawal",
   "retirement_work_years",
   "retirement_tax_year",
 ];

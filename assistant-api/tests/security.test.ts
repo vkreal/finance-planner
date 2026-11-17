@@ -3,7 +3,7 @@
 // Boots the real server in-process (createServer, port 0, test token)
 // and exercises it over HTTP with fetch:
 //   (a) bearer auth: no token / wrong token / right token
-//   (b) tools/list returns exactly the 8 allowlisted tools
+//   (b) tools/list returns exactly the 9 allowlisted tools
 //   (c) tools/call of a non-existent tool is -32602 — and the
 //       storage-flavoured names below MUST NOT exist
 //   (d) a body over the 256KB cap is 413
@@ -25,6 +25,7 @@ const TOOL_NAMES = [
   "retirement_max_spending",
   "retirement_compare_strategies",
   "retirement_roth_conversion",
+  "retirement_dynamic_withdrawal",
   "retirement_work_years",
   "retirement_tax_year",
   "retirement_describe_capabilities",
@@ -107,12 +108,12 @@ describe("bearer auth", () => {
     const body = (await res.json()) as {
       result: { tools: Array<{ name: string }> };
     };
-    expect(body.result.tools).toHaveLength(8);
+    expect(body.result.tools).toHaveLength(9);
   });
 });
 
 describe("tool allowlist", () => {
-  test("tools/list returns exactly the 8 allowlisted tools, no others", async () => {
+  test("tools/list returns exactly the 9 allowlisted tools, no others", async () => {
     const res = await rpcCall("tools/list", {});
     const body = (await res.json()) as {
       result: { tools: Array<{ name: string }> };
