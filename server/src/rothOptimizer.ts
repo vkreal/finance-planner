@@ -10757,7 +10757,16 @@ type DynamicLedgerState = {
   rothLotsS: RothConversionLotInput[];
   rmdDeferredPendingP: number;
   rmdDeferredPendingS: number;
-  firstRmdPriced: boolean;
+  // PER-PERSON first-RMD flags (Engine Review C10, Pass 3 fix
+  // — M1): each person's flag flips only when THAT person's
+  // first RMD year has been priced. The engine tracks deferral
+  // per person (settleFirstRmdDeferral: hadPrimary / hadSpouse),
+  // and a single shared flag dropped the second spouse's later
+  // deferral election once the first spouse's first RMD year
+  // priced — the rolled trajectory then paid that RMD a year
+  // early while the uninterrupted march still deferred it.
+  firstRmdPricedP: boolean;
+  firstRmdPricedS: boolean;
   /** IRMAA LOOKBACK carried across re-anchors (Engine Review
       C10, Pass 1 fix — M1): the committed years' MAGI with
       the filing status each was priced under, in the engine's
@@ -10825,11 +10834,14 @@ function dynamicReanchorInputs(
     // overrides it with the accumulated list.
     irmaaLookbackSeed: state.irmaaLookback,
     // A first-RMD deferral already priced in a chosen year must
-    // not defer again: the flag is off once the first RMD year
+    // not defer again — per person (Pass 3 fix — M1): each
+    // election is off only once THAT person's first RMD year
     // has been priced, and any amount still pending is carried
-    // in as owed in this march's first year.
-    firstRmdDeferralPrimary: state.firstRmdPriced ? false : base.firstRmdDeferralPrimary,
-    firstRmdDeferralSpouse: state.firstRmdPriced ? false : base.firstRmdDeferralSpouse,
+    // in as owed in this march's first year. Gating the
+    // spouse's election on the primary's flag (or vice versa)
+    // silently dropped the second spouse's later deferral.
+    firstRmdDeferralPrimary: state.firstRmdPricedP ? false : base.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: state.firstRmdPricedS ? false : base.firstRmdDeferralSpouse,
     firstRmdDeferredCarryPrimary: state.rmdDeferredPendingP,
     firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS,
   };
@@ -11207,6 +11219,8 @@ export function runDynamicOptimizer(
 ): DynamicOptimizerResult {
   const annualSpending = opts?.annualSpending ?? base.annualSpending;
   const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const rmdAgeSpouse =
+    base.birthYearSpouse != null ? Math.ceil(rmdAgeForBirthYear(base.birthYearSpouse)) : null;
   const policies = opts?.policies ?? dynamicPolicySet(rmdAge - 1, base.endAgePrimary);
   const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
   const ssStartAge = base.ssPrimaryStartAge ?? null;
@@ -11226,7 +11240,8 @@ export function runDynamicOptimizer(
     rothLotsS: (base.rothConversionLotsSpouse ?? []).map((l) => ({ ...l })),
     rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
     rmdDeferredPendingS: base.firstRmdDeferredCarrySpouse ?? 0,
-    firstRmdPriced: false,
+    firstRmdPricedP: false,
+    firstRmdPricedS: false,
     // The plan's own supplied prior returns lead the lookback;
     // each committed year appends below as it prices.
     irmaaLookback: [...(base.irmaaLookbackSeed ?? [])],
@@ -11418,7 +11433,27 @@ export function runDynamicOptimizer(
     state.rothLotsS = lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
     state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
-    if (y0.rmd > 0 || agePrimary >= rmdAge) state.firstRmdPriced = true;
+    // Per-person first-RMD flags (Pass 3 fix — M1): a person's
+    // flag flips when THAT person's first RMD year has been
+    // priced — a positive RMD paid or deferred that year, or
+    // the person reaching RMD age, mirroring the engine's
+    // attainment rule (settleFirstRmdDeferral counts the
+    // attainment year even on a $0 computed RMD). In a
+    // combined survivor year the RMD is recorded on the
+    // survivor's side, so the survivor's flag is the one that
+    // flips — the deceased's priced RMDs no longer turn the
+    // survivor's election off.
+    const ageSpouse = base.birthYearSpouse != null ? year - base.birthYearSpouse : null;
+    if (y0.detail.rmdPrimary > 0 || y0.detail.rmdDeferredPrimary > 0 || agePrimary >= rmdAge) {
+      state.firstRmdPricedP = true;
+    }
+    if (
+      y0.detail.rmdSpouse > 0 ||
+      y0.detail.rmdDeferredSpouse > 0 ||
+      (ageSpouse != null && rmdAgeSpouse != null && ageSpouse >= rmdAgeSpouse)
+    ) {
+      state.firstRmdPricedS = true;
+    }
   }
 
   const greedyRows = rows;

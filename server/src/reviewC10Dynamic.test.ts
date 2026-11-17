@@ -452,6 +452,173 @@ describe("C10 — Pass 1 fix (S1): the fixed-policy floor return path", () => {
   }, 300_000);
 });
 
+describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
+  // The roll-forward carried ONE flag for BOTH spouses' first-RMD
+  // deferral elections: once the first spouse's first RMD year
+  // priced, the second spouse's later election was silently
+  // turned off in every subsequent re-anchor, and the rolled
+  // trajectory paid that RMD a year early while the
+  // uninterrupted march still deferred it. The flags are now
+  // per person, set from per-person signals (that person's RMD
+  // paid or deferred, or that person reaching RMD age). Each
+  // case below rolls a single fixed policy forward against its
+  // own march on the fictional sample household at end age 95
+  // (primary born 1968 -> first RMD year 2043; spouse born
+  // 1970 -> first RMD year 2045), the spouse given a $500,000
+  // pre-tax balance so the spouse HAS an RMD.
+  const order: DrawOrder = ["taxable", "pretax", "roth"];
+  const fill12TaxableFirst = {
+    key: "fill12|stop95|taxable-pretax-roth",
+    name: "Fill 12% · stop 95",
+    ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
+    guardrail: false,
+    windowStopAge: 95,
+    drawOrder: order,
+  };
+  const deferralInputs = (overrides: Partial<RothPlanInputs> = {}) =>
+    samplePlanInputs({ endAgePrimary: 95, pretaxSpouseStart: 500000, ...overrides });
+
+  // The parity bar from the shared-engine proof above (2¢ per
+  // field per year, net cost within $0.25), plus the per-person
+  // RMD fields the deferral moves. One bar differs by
+  // necessity: the three ENDING BALANCES compound the
+  // re-anchor rounding — each re-anchor restarts from
+  // cent-rounded balances while the march carries
+  // fractional-cent floats, and the 5% return compounds that
+  // cent over a 38-year horizon (observed maxima on these
+  // cases: pretaxEnd $0.07, rothEnd $0.03, taxableEnd $0.17,
+  // a smooth drift with no jump at any deferral year). The
+  // balance bar is therefore $0.50, and the net-cost bar
+  // $0.25 (observed $0.08) — both still orders of magnitude
+  // below any real trajectory divergence (the pre-fix defect
+  // moved net cost $1,052+). Flows stay at 2¢.
+  function assertRollForwardParity(inputs: RothPlanInputs) {
+    const march = simulateRothPlan(
+      { ...inputs, windowStopAge: 95, drawOrder: [...order] },
+      { id: "m1p3", name: "Fill 12% · stop 95", ceilings: fill12TaxableFirst.ceilings, guardrail: false },
+      undefined,
+      { leanDetail: true },
+    );
+    const rolled = runDynamicOptimizer(inputs, { policies: [fill12TaxableFirst] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.floorBound).toBe(false);
+    expect(rolled.years.length).toBe(march.years.length);
+    const within2c = (a: number, b: number) => Math.abs(a - b) <= 0.02;
+    for (let i = 0; i < march.years.length; i++) {
+      const m = march.years[i]!;
+      const r = rolled.years[i]!;
+      expect(r.year).toBe(m.year);
+      expect(within2c(r.federalTax, m.federalTax)).toBe(true);
+      expect(within2c(r.conversion, m.funding.conversion)).toBe(true);
+      expect(within2c(r.pretaxDraw, m.funding.pretaxDraw)).toBe(true);
+      expect(within2c(r.taxableSoldForSpending, m.funding.taxableSoldForSpending)).toBe(true);
+      expect(within2c(r.taxableSoldForTax, m.funding.taxableSoldForTax)).toBe(true);
+      expect(within2c(r.rothDraw, m.funding.rothDraw)).toBe(true);
+      expect(within2c(r.rmd, m.funding.rmd)).toBe(true);
+      expect(within2c(r.rmdPrimary, m.detail.rmdPrimary)).toBe(true);
+      expect(within2c(r.rmdSpouse, m.detail.rmdSpouse)).toBe(true);
+      expect(within2c(r.magi, m.magi)).toBe(true);
+      expect(within2c(r.acaCreditKept, m.acaCreditKept)).toBe(true);
+      // Ending balances: the $0.50 rounding-compounding bar
+      // (see the helper note above), not 2¢.
+      const within50c = (a: number, b: number) => Math.abs(a - b) <= 0.5;
+      expect(within50c(r.pretaxEnd, m.pretaxEnd)).toBe(true);
+      expect(within50c(r.rothEnd, m.rothEnd)).toBe(true);
+      expect(within50c(r.taxableEnd, m.taxableEnd)).toBe(true);
+    }
+    expect(
+      Math.abs(
+        rolled.lifetimeNetCost -
+          netCostBreakdown(march, inputs.heirRatePct, {
+            preservePretax: inputs.preservePretax ?? 0,
+            preserveExitRatePct: inputs.preserveExitRatePct ?? inputs.heirRatePct,
+          }).netCost,
+      ),
+    ).toBeLessThanOrEqual(0.25);
+    return { march, rolled };
+  }
+
+  test("spouse-younger deferral: the later spouse's election survives the primary's priced RMD", () => {
+    const inputs = deferralInputs({ firstRmdDeferralSpouse: true });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    // The march defers the spouse's 2045 RMD ($0, then the
+    // double in 2046); the pre-fix roll-forward paid $51,360.78
+    // in 2045 instead. The rolled trajectory must defer too.
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    const m2046 = march.years.find((y) => y.year === 2046)!;
+    const r2046 = rolled.years.find((y) => y.year === 2046)!;
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
+    expect(m2046.detail.rmdSpouse).toBeGreaterThan(100000);
+    expect(Math.abs(r2046.rmdSpouse - m2046.detail.rmdSpouse)).toBeLessThanOrEqual(0.02);
+  });
+
+  test("both deferrals: each person's election applies in its own first RMD year", () => {
+    const inputs = deferralInputs({ firstRmdDeferralPrimary: true, firstRmdDeferralSpouse: true });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
+  });
+
+  test("mirror (spouse older): the primary's later deferral survives the spouse's priced RMD", () => {
+    // Spouse born 1966 -> first RMD year 2041, priced before
+    // the primary's 2043 first RMD year; the pre-fix flag
+    // dropped the primary's deferral and paid $137,611.78 in
+    // 2043 instead of deferring it.
+    const inputs = deferralInputs({ birthYearSpouse: 1966, firstRmdDeferralPrimary: true });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    const m2044 = march.years.find((y) => y.year === 2044)!;
+    const r2044 = rolled.years.find((y) => y.year === 2044)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+    expect(m2044.detail.rmdPrimary).toBeGreaterThan(200000);
+    expect(Math.abs(r2044.rmdPrimary - m2044.detail.rmdPrimary)).toBeLessThanOrEqual(0.02);
+  });
+
+  test("control (primary deferral, same-person path): parity to the cent", () => {
+    // The path that already worked pre-fix — pinned so the
+    // per-person split cannot regress it.
+    const inputs = deferralInputs({ firstRmdDeferralPrimary: true });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+  });
+
+  test("survivor variant: the survivor's deferral survives the deceased's priced RMD", () => {
+    // The primary dies in 2044, after his 2043 RMD priced; the
+    // spouse's first RMD year is 2045, now a combined survivor
+    // year on her clock. The march defers the combined 2045
+    // RMD ($0, then the double in 2046); the pre-fix
+    // roll-forward paid $190,413.95 in 2045 instead.
+    const inputs = deferralInputs({
+      firstRmdDeferralSpouse: true,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2044,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    const m2046 = march.years.find((y) => y.year === 2046)!;
+    const r2046 = rolled.years.find((y) => y.year === 2046)!;
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
+    expect(m2046.detail.rmdSpouse).toBeGreaterThan(300000);
+    expect(Math.abs(r2046.rmdSpouse - m2046.detail.rmdSpouse)).toBeLessThanOrEqual(0.02);
+  });
+});
+
 describe("C10 — A-vs-B equal-income-budget experiment", () => {
   test("C (dynamic) is never worse than A or B; B realizes gains in year 1 at $100K", () => {
     const inputs = shortInputs();
