@@ -586,14 +586,15 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
     assertBaselineOnce(wyLim);
   });
 
-  test("(14) still 8 tools: full mode is a scope, not a new tool", () => {
-    expect(TOOLS).toHaveLength(8);
+  test("(14) still 9 tools: full mode is a scope, not a new tool", () => {
+    expect(TOOLS).toHaveLength(9);
     expect(TOOLS.map((t) => t.name)).toEqual([
       "retirement_calculate",
       "retirement_monte_carlo",
       "retirement_max_spending",
       "retirement_compare_strategies",
       "retirement_roth_conversion",
+      "retirement_dynamic_withdrawal",
       "retirement_work_years",
       "retirement_tax_year",
       "retirement_describe_capabilities",
