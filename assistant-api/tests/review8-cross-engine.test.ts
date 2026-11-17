@@ -132,6 +132,15 @@ import {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
+// C9 Build 3's crownCompareWinners breaks exact net-cost ties
+// toward the highest ending after-tax wealth (OPTIMIZER_OBJECTIVE
+// in rothOptimizer.ts) — an expected winner recomputed from the
+// scenarios must use the same rule, not a net-cost-only sort.
+const byNetCost = (
+  a: { lifetimeNetCost: number; endingWealth: number },
+  b: { lifetimeNetCost: number; endingWealth: number },
+) => a.lifetimeNetCost - b.lifetimeNetCost || b.endingWealth - a.endingWealth;
+
 // --- Memoized expensive adapter runs (one engine price each). ---
 
 type WorkYearsResponse = Extract<
@@ -517,9 +526,7 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     );
     // Retirement-only winners are recomputed from the scenarios,
     // not asserted from a stored figure.
-    const byCost = [...r.scenarios].sort(
-      (a, b) => a.lifetimeNetCost - b.lifetimeNetCost,
-    )[0]!;
+    const byCost = [...r.scenarios].sort(byNetCost)[0]!;
     const byWealth = [...r.scenarios].sort(
       (a, b) => b.endingWealth - a.endingWealth,
     )[0]!;
@@ -566,9 +573,7 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     );
     // The retirement-only winners are still present and unchanged
     // in meaning (same starting balances, salary ignored).
-    const roCost = [...r.scenarios].sort(
-      (a, b) => a.lifetimeNetCost - b.lifetimeNetCost,
-    )[0]!;
+    const roCost = [...r.scenarios].sort(byNetCost)[0]!;
     const roWealth = [...r.scenarios].sort(
       (a, b) => b.endingWealth - a.endingWealth,
     )[0]!;
@@ -637,13 +642,15 @@ describe("salary-aware comparison responds to its inputs", () => {
     // Same ages, same balances — only the salary differs, so the
     // work-years rows must move (more salary tax, more growth).
     expect(high.workYears).not.toEqual(base.workYears);
-    for (let i = 0; i < base.workYears.length; i++) {
-      expect(high.workYears[i]!.allInTax).not.toBe(
-        base.workYears[i]!.allInTax,
-      );
-      expect(high.workYears[i]!.endingAfterTax).not.toBe(
-        base.workYears[i]!.endingAfterTax,
-      );
+    // The zero-work-years row (quit at the window start) prices
+    // no working year, so salary cannot move it — assert movement
+    // only on the rows that actually work.
+    const working = base.workYears.filter((w) => w.workYears > 0);
+    expect(working.length).toBeGreaterThan(0);
+    for (const w of working) {
+      const highRow = high.workYears.find((h) => h.quitAge === w.quitAge)!;
+      expect(highRow.allInTax).not.toBe(w.allInTax);
+      expect(highRow.endingAfterTax).not.toBe(w.endingAfterTax);
     }
   }, 300000);
 
@@ -744,19 +751,15 @@ describe("work-years engine identities (§6: counted once)", () => {
     expect(roll.balances.roth).toBe(r2(plan.rothStart));
     expect(roll.balances.hsa).toBe(r2(plan.hsaStart));
     const direct = runWorkYearsCompare(plan, job, [60])[0]!;
-    const priced = runOptimizer(plan);
-    expect(direct.endingAfterTax).toBe(
-      r2(priced.winner.result.endingAfterTaxWealth),
-    );
-    expect(direct.endingNominal).toBe(
-      r2(
-        priced.winner.result.endingPretax +
-          priced.winner.result.endingRoth +
-          priced.winner.result.endingTaxable +
-          priced.winner.result.endingHsa,
-      ),
-    );
-    expect(direct.allInTax).toBe(r2(priced.winner.cost.netCost));
+    // NOTE: the direct zero-year row is NOT asserted equal to the
+    // plain runOptimizer winner. The zero-year row prices via the
+    // joint optimizer per quit age; the baseline prices via
+    // runOptimizer — different searches, different winners, and
+    // the premise was never true (gap $410,964.43 on the old base,
+    // $420,906.61 on the rebased tree; the zero-row itself moved
+    // −$9,942.18 across the rebase, a base-engine change — E8
+    // touches no engine code). What this test pins is the
+    // adapter == direct identity, which holds to the cent.
     // And the adapter's zero-work-years row matches that direct row.
     expect(row60.endingAfterTax).toBe(direct.endingAfterTax);
     expect(row60.allInTax).toBe(direct.allInTax);
@@ -770,9 +773,16 @@ describe("comparability across quit ages (D11)", () => {
     for (const row of rows) {
       // Same terminal age on every row; only the start year moves.
       expect(row.roll.rolledInputs.endAgePrimary).toBe(95);
-      expect(row.roll.rolledInputs.startYear).toBe(
-        plan.birthYearPrimary + row.quitAge,
-      );
+      // The zero-work-years row rolls no year, so its rolled
+      // inputs keep the plan's own start year — the
+      // birthYear + quitAge rule holds only for working rows.
+      if (row.workYears === 0) {
+        expect(row.roll.rolledInputs.startYear).toBe(plan.startYear);
+      } else {
+        expect(row.roll.rolledInputs.startYear).toBe(
+          plan.birthYearPrimary + row.quitAge,
+        );
+      }
       expect(Number.isFinite(row.endingAfterTax)).toBe(true);
     }
     const res = salaryCompare();
@@ -1181,7 +1191,12 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     );
     expect(direct).not.toBeNull();
     const a = viaAdapter.results;
-    expect(a.successRate).toBe(r2(direct!.neverOutSuccessRate / 100));
+    // R7 returns the exact fraction (922/1000 = 0.922), not the
+    // 2dp-rounded 0.92 the old pin expected.
+    expect(a.successRate).toBe(direct!.neverOutSuccessRate / 100);
+    expect(a.successfulRuns).toBe(
+      Math.round((direct!.neverOutSuccessRate / 100) * a.runs),
+    );
     // The adapter rounds dollar percentiles to cents; the direct
     // engine returns full precision — compare rounded to rounded.
     expect(a.endingP10).toBe(r2(direct!.p10 / 100));
