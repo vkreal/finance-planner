@@ -17741,12 +17741,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const plan2030 = sim.years.find((y) => y.year === 2030) ?? null;
       const fund2030 = rows.find((r) => r.year === 2030) ?? null;
       const bare2030 = bareRows.find((r) => r.year === 2030) ?? null;
-      // The funding identity in its documented form: the twelve
+      // The funding identity in its documented form: the thirteen
       // sources plus the year's unfunded spending and unpaid tax
       // foot the total need (the 0%-return shape runs dry in its
       // last years, 2061–2063, so the shortfall term is real).
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.salarySurplusCents + r.spendShortfallCents + r.unpaidTaxCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.hsaDrawCents + r.salarySurplusCents + r.spendShortfallCents + r.unpaidTaxCents;
       return {
         planCash2030: plan2030?.funding.cashSpend ?? null,
         fundCash2030: fund2030?.cashSpendCents ?? null,
@@ -17955,7 +17955,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-shortfall-funding-identity",
     kind: "tax",
-    note: "SPEND SHORTFALL funding identity (FIX 3): fixture (a)'s shape through buildRothFunding. By hand: the twelve source fields carry only what was actually applied — the $10,000 Taxable sale for spending = 1,000,000¢ — and spendShortfallCents carries the unfunded $40,000 = 4,000,000¢ as itself, never reconciled into a source field; sources + shortfall = 5,000,000¢ = totalNeedCents = spendingCents (the year's only need). Fixture (c)'s 2028 funding row pins the same figure for the late-insolvency year: spendShortfallCents 2,000,000¢ (the $20,000 residual).",
+    note: "SPEND SHORTFALL funding identity (FIX 3): fixture (a)'s shape through buildRothFunding. By hand: the thirteen source fields carry only what was actually applied — the $10,000 Taxable sale for spending = 1,000,000¢ — and spendShortfallCents carries the unfunded $40,000 = 4,000,000¢ as itself, never reconciled into a source field; sources + shortfall = 5,000,000¢ = totalNeedCents = spendingCents (the year's only need). Fixture (c)'s 2028 funding row pins the same figure for the late-insolvency year: spendShortfallCents 2,000,000¢ (the $20,000 residual).",
     expected: {
       aSourcesCents: 1000000,
       aSpendShortfallCents: 4000000,
@@ -17968,7 +17968,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const src = (r: ReturnType<typeof buildRothFunding>[number]) =>
         r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
         r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
-        r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents +
+        r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.hsaDrawCents +
         r.salarySurplusCents;
       const aRows = buildRothFunding(
         basePlan({
