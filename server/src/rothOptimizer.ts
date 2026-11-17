@@ -89,6 +89,7 @@ type EducationStudent,
 type FilingStatus,
 type FillCeilings,
 type FirstRmdDeferralState,
+type IrmaaLookbackSeedEntry,
 type PriceYearInput,
 type RothConversionLotInput,
 type RothConversionLotSaved,
@@ -10419,6 +10420,27 @@ export function runRothCompare(
    time. Against the EXISTING full optimizer (3,025 candidates)
    the dynamic result is compared, not assumed superior: see
    BUILDER-REPORT.md for the reference-scenario comparison.
+
+   IRMAA LOOKBACK ACROSS RE-ANCHORS (Engine Review C10, Pass 1
+   fix — M1): a premium year's surcharge is graded from the
+   MAGI two years earlier, so a re-anchored march's first two
+   premium years can only price it from history the march did
+   not price itself. The roll-forward therefore carries the
+   lookback forward: every committed year's MAGI, with the
+   filing status it was priced under, seeds each re-anchored
+   march (the plan's own supplied prior returns lead the
+   seed), and each row carries whether its surcharge is KNOWN
+   while the result lists the premium years whose surcharge
+   is still UNKNOWN. Before this fix the seed was never
+   carried, so every committed year priced IRMAA $0-unknown
+   with no flag — the greedy score and the fixed-policy floor
+   both compared IRMAA-omitting costs. With the carry, the
+   greedy score, the floor comparison, and the reported
+   lifetime IRMAA are all IRMAA-complete; the only years that
+   can still price unknown are the plan's first two premium
+   years when it starts within two years of a Medicare start
+   with no supplied seed, and those years are named on the
+   result instead of passing as $0.
    ================================================================= */
 
 export type DynamicPhase =
@@ -10612,6 +10634,14 @@ export type DynamicYearRow = {
   stateTax: number;
   penalty: number;
   irmaa: number;
+  /** Whether this year's IRMAA surcharge is KNOWN — false
+      exactly when someone is on Medicare this year and no
+      MAGI + filing status is recorded for the lookback year
+      (year − 2), so the $0 in `irmaa` is UNKNOWN, not a
+      computed $0. Read off the priced march year's own flag
+      (the engine's E6-S1 convention); the result's
+      `irmaaLookbackMissingYears` lists every such year. */
+  irmaaSurchargeKnown: boolean;
   acaCreditKept: number;
   healthPremiumGross: number;
   magi: number;
@@ -10647,6 +10677,24 @@ export type DynamicOptimizerResult = {
   lifetimeStateTax: number;
   lifetimePenalty: number;
   lifetimeIrmaa: number;
+  /** IRMAA LOOKBACK AVAILABILITY (Engine Review C10, Pass 1
+      fix — M1): the premium years whose IRMAA surcharge is
+      UNKNOWN — someone on Medicare, no lookback entry for
+      year − 2 — so the $0 in those years' rows is not a
+      computed $0 and `lifetimeIrmaa` excludes the unknown
+      amounts. The engine's `irmaaLookbackMissingYears`
+      convention, copied onto the dynamic result: the lookback
+      seed is carried forward across re-anchors (see
+      `dynamicReanchorInputs`), so this list is empty on any
+      run whose lookback years are all priced or seeded, and
+      non-empty exactly when the plan starts within two years
+      of a Medicare start with no supplied seed. `valid` does
+      NOT assert this list is empty — it asserts settlement /
+      shortfall / unpaid-tax only, matching the engine's own
+      integrity convention — so a caller that needs a known
+      IRMAA must check this list, and a non-empty list is
+      never a silent $0. */
+  irmaaLookbackMissingYears: number[];
   lifetimeAcaCreditKept: number;
   lifetimeHealthPremiumGross: number;
   lifetimeRmd: number;
@@ -10687,7 +10735,9 @@ export type DynamicOptimizerResult = {
       replaced when it did. Reported so the floor is auditable,
       never silent. */
   greedyYears: DynamicYearRow[];
-  /** Every year settled, no shortfall, no unpaid tax. */
+  /** Every year settled, no shortfall, no unpaid tax. This
+      does NOT assert the IRMAA surcharge is known in every
+      year — see `irmaaLookbackMissingYears` above. */
   valid: boolean;
   searchLimits: string;
 };
@@ -10708,6 +10758,21 @@ type DynamicLedgerState = {
   rmdDeferredPendingP: number;
   rmdDeferredPendingS: number;
   firstRmdPriced: boolean;
+  /** IRMAA LOOKBACK carried across re-anchors (Engine Review
+      C10, Pass 1 fix — M1): the committed years' MAGI with
+      the filing status each was priced under, in the engine's
+      seed shape, seeded first from the plan's own supplied
+      `irmaaLookbackSeed` (prior returns) and appended to as
+      each year commits. Every re-anchored march is seeded
+      with the whole list (see `dynamicReanchorInputs`), so a
+      premium year reads the committed history for its
+      lookback year instead of pricing $0-unknown — the march
+      overwrites seed entries for years it prices itself, so
+      only the committed (already-priced) years ever answer
+      from the seed. Entries are never invented: only the
+      plan's supplied returns and the trajectory's own priced
+      years land here. */
+  irmaaLookback: IrmaaLookbackSeedEntry[];
 };
 
 function dynamicReanchorInputs(
@@ -10744,6 +10809,21 @@ function dynamicReanchorInputs(
     rothContributionBasisSpouse: state.rothContribS,
     rothConversionLotsPrimary: state.rothLotsP.length > 0 ? state.rothLotsP : null,
     rothConversionLotsSpouse: state.rothLotsS.length > 0 ? state.rothLotsS : null,
+    // IRMAA LOOKBACK CARRY (Engine Review C10, Pass 1 fix —
+    // M1): the re-anchored march is seeded with every
+    // committed year's MAGI + effective filing status (plus
+    // the plan's own supplied prior returns, which lead the
+    // list), so its first two premium years price their true
+    // surcharge instead of $0-unknown. Without this, every
+    // committed year — a re-anchored march's first year —
+    // priced IRMAA $0 with no unknown flag, and the greedy
+    // score and the fixed-policy floor both compared
+    // IRMAA-omitting costs. The march overwrites seed entries
+    // for years it prices itself, so the seed answers only
+    // for years before this march starts. The spread `...base`
+    // above already carries the plan's own seed; this field
+    // overrides it with the accumulated list.
+    irmaaLookbackSeed: state.irmaaLookback,
     // A first-RMD deferral already priced in a chosen year must
     // not defer again: the flag is off once the first RMD year
     // has been priced, and any amount still pending is carried
@@ -10836,6 +10916,7 @@ function dynamicRowFromYear(
     stateTax: y.stateTax,
     penalty: y.penalty,
     irmaa: y.irmaaPaid,
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
     acaCreditKept: y.acaCreditKept,
     healthPremiumGross: y.healthPremiumGross,
     magi: y.magi,
@@ -11013,7 +11094,7 @@ const DYNAMIC_SEARCH_LIMITS =
    greedy shortfall is dollars. */
 export const DYNAMIC_FLOOR_EPSILON = 0.1;
 
-function dynamicResultFromRows(args: {
+export function dynamicResultFromRows(args: {
   rows: DynamicYearRow[];
   base: RothPlanInputs;
   bestFixed: DynamicOptimizerResult["bestFixed"];
@@ -11047,6 +11128,11 @@ function dynamicResultFromRows(args: {
     lifetimeStateTax: r2(rows.reduce((s, r) => s + r.stateTax, 0)),
     lifetimePenalty: r2(rows.reduce((s, r) => s + r.penalty, 0)),
     lifetimeIrmaa: r2(rows.reduce((s, r) => s + r.irmaa, 0)),
+    // The unknown-IRMAA years, read off the rows' own flags
+    // (never re-derived): a row whose surcharge is unknown
+    // contributes its $0 to lifetimeIrmaa above, and this
+    // list names it — see the type comment.
+    irmaaLookbackMissingYears: rows.filter((r) => !r.irmaaSurchargeKnown).map((r) => r.year),
     lifetimeAcaCreditKept: r2(rows.reduce((s, r) => s + r.acaCreditKept, 0)),
     lifetimeHealthPremiumGross: r2(rows.reduce((s, r) => s + r.healthPremiumGross, 0)),
     lifetimeRmd: r2(rows.reduce((s, r) => s + r.rmd, 0)),
@@ -11077,7 +11163,12 @@ function dynamicResultFromRows(args: {
   };
 }
 
-function dynamicRowsFromFixedMarch(
+/* Build schedule rows from a fixed policy's uninterrupted march
+   (the floor's return path — see runDynamicOptimizer): the rows
+   a fixed trajectory contributes when the floor binds. Exported
+   for the floor test (S1): the floor branch itself is the only
+   caller in production. */
+export function dynamicRowsFromFixedMarch(
   result: RothPlanResult,
   policy: DynamicPolicy,
   base: RothPlanInputs,
@@ -11136,6 +11227,9 @@ export function runDynamicOptimizer(
     rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
     rmdDeferredPendingS: base.firstRmdDeferredCarrySpouse ?? 0,
     firstRmdPriced: false,
+    // The plan's own supplied prior returns lead the lookback;
+    // each committed year appends below as it prices.
+    irmaaLookback: [...(base.irmaaLookbackSeed ?? [])],
   };
 
   const rows: DynamicYearRow[] = [];
@@ -11178,6 +11272,7 @@ export function runDynamicOptimizer(
         lifetimeStateTax: 0,
         lifetimePenalty: 0,
         lifetimeIrmaa: 0,
+        irmaaLookbackMissingYears: [],
         lifetimeAcaCreditKept: 0,
         lifetimeHealthPremiumGross: 0,
         lifetimeRmd: 0,
@@ -11214,6 +11309,7 @@ export function runDynamicOptimizer(
         lifetimeStateTax: 0,
         lifetimePenalty: 0,
         lifetimeIrmaa: 0,
+        irmaaLookbackMissingYears: [],
         lifetimeAcaCreditKept: 0,
         lifetimeHealthPremiumGross: 0,
         lifetimeRmd: 0,
@@ -11255,6 +11351,17 @@ export function runDynamicOptimizer(
     const row = dynamicRowFromYear(y0, best.policy, basisEnd, rmdAge, ssStartAge);
     rows.push(row);
     sunkNetCost = r2(sunkNetCost + row.netCostYear);
+    // Record this committed year in the IRMAA lookback (M1):
+    // its priced MAGI under the status it was priced under
+    // (single in a survivor year, else the plan's own
+    // status) — the next re-anchored march's premium years
+    // read it for their lookback year, and the greedy score
+    // and the floor below both price true IRMAA from here on.
+    state.irmaaLookback.push({
+      year,
+      magi: y0.magi,
+      filingStatus: y0.isSurvivorYear ? "single" : base.filingStatus,
+    });
     // Advance the ledgers from the priced year's outputs.
     const eligP = trackEligibleEnd({
       eligibleStart: state.eligP,

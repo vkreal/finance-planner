@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildRothPlanInputs, dynamicWithdrawal } from "../src/adapter";
 import { dispatchTool } from "../src/tools";
-import { runDynamicOptimizer } from "../../server/src/rothOptimizer";
+import { runDynamicOptimizer, type DynamicOptimizerResult } from "../../server/src/rothOptimizer";
 import { expectEnvelope, expectOk, fictionalScenario, normalizedScenario } from "./helpers";
 
 describe("C10 — adapter parity for retirement_dynamic_withdrawal", () => {
@@ -38,7 +38,12 @@ describe("C10 — adapter parity for retirement_dynamic_withdrawal", () => {
       "retirement_dynamic_withdrawal",
       fictionalScenario({ endAge: 70 }),
     );
-    const results = expectOk(result);
+    // dispatchTool is untyped by design (AdapterResult<unknown>),
+    // so the cast names the tool this name wires to — the first
+    // test above already proves the adapter result equals the
+    // engine result to the cent, so the cast asserts nothing
+    // the suite has not already priced.
+    const results = expectOk(result) as DynamicOptimizerResult;
     expectEnvelope(result);
     expect(results.years.length).toBeGreaterThan(0);
     expect(results.valid).toBe(true);

@@ -11,6 +11,8 @@ import {
   buildRothFunding,
   dynamicPhaseForYear,
   dynamicPolicySet,
+  dynamicResultFromRows,
+  dynamicRowsFromFixedMarch,
   dynamicTerminalTax,
   netCostBreakdown,
   priceFixedDynamicPolicies,
@@ -272,6 +274,181 @@ describe("C10 — dynamic optimizer (full set, short horizon)", () => {
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((r) => r.phase === "survivor")).toBe(true);
     expect(result.years.find((r) => r.year === 2036)?.phase).not.toBe("survivor");
+  }, 300_000);
+});
+
+describe("C10 — Pass 1 fix (M1): IRMAA lookback carried across re-anchors", () => {
+  // The survivor variant is the natural nonzero-IRMAA fixture:
+  // the primary dies in 2036, the survivor's single-filer years
+  // on Medicare price a real surcharge on an uninterrupted
+  // march ($14,424.00 lifetime on the Fill-12% march) — before
+  // the fix the roll-forward reported $0 for the same years.
+  const survivorInputs = () =>
+    shortInputs({
+      endAgePrimary: 75,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2036,
+    });
+  const fill12TaxableFirst = {
+    key: "fill12|stop95|taxable-pretax-roth",
+    name: "Fill 12% · stop 95",
+    ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
+    guardrail: false,
+    windowStopAge: 95,
+    drawOrder: ["taxable", "pretax", "roth"] as DrawOrder,
+  };
+
+  test("roll-forward prices true IRMAA: single-policy survivor run matches its march", () => {
+    const inputs = survivorInputs();
+    const march = simulateRothPlan(
+      { ...inputs, windowStopAge: 95, drawOrder: [...fill12TaxableFirst.drawOrder] },
+      { id: "m1", name: "Fill 12% · stop 95", ceilings: fill12TaxableFirst.ceilings, guardrail: false },
+      undefined,
+      { leanDetail: true },
+    );
+    const marchIrmaa = march.years.reduce((s, y) => s + y.irmaaPaid, 0);
+    expect(marchIrmaa).toBeGreaterThan(0);
+    expect(march.irmaaLookbackMissingYears).toEqual([]);
+    const rolled = runDynamicOptimizer(inputs, { policies: [fill12TaxableFirst] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.years.length).toBe(march.years.length);
+    // The roll-forward's lifetime IRMAA is the march's, not $0.
+    expect(rolled.lifetimeIrmaa).toBeGreaterThan(0);
+    expect(Math.abs(rolled.lifetimeIrmaa - marchIrmaa)).toBeLessThanOrEqual(0.02);
+    // Per-year IRMAA agrees with the march's priced years.
+    for (let i = 0; i < march.years.length; i++) {
+      expect(Math.abs(rolled.years[i]!.irmaa - march.years[i]!.irmaaPaid)).toBeLessThanOrEqual(0.02);
+    }
+    // No unknown year anywhere on the trajectory.
+    expect(rolled.irmaaLookbackMissingYears).toEqual([]);
+    expect(rolled.years.every((r) => r.irmaaSurchargeKnown)).toBe(true);
+  });
+
+  test("full-set dynamic run reports nonzero IRMAA with no unknown years", () => {
+    const inputs = survivorInputs();
+    const result = runDynamicOptimizer(inputs);
+    expect(result.ok).toBe(true);
+    expect(result.lifetimeIrmaa).toBeGreaterThan(0);
+    expect(result.irmaaLookbackMissingYears).toEqual([]);
+    expect(result.years.every((r) => r.irmaaSurchargeKnown)).toBe(true);
+    // The floor comparison is IRMAA-complete on both sides:
+    // the reported (greedy) cost and the best-fixed cost are
+    // both priced with true IRMAA, so a floor binding here
+    // would mean greedy genuinely lost, not that it omitted a
+    // term the fixed policy priced.
+    expect(result.greedyNetCost).toBeCloseTo(result.lifetimeNetCost, 2);
+  }, 300_000);
+
+  test("unknown IRMAA is surfaced, not silent: plan starting at 65 with no seed", () => {
+    // Primary 65 at the plan start, no supplied prior returns:
+    // the first two premium years have no lookback entry, so
+    // their $0 surcharge is UNKNOWN — and the result names
+    // exactly those years.
+    const inputs = shortInputs({ birthYearPrimary: 1961 });
+    const march = simulateRothPlan(
+      { ...inputs, windowStopAge: 95, drawOrder: [...fill12TaxableFirst.drawOrder] },
+      { id: "m1-unknown", name: "Fill 12% · stop 95", ceilings: fill12TaxableFirst.ceilings, guardrail: false },
+      undefined,
+      { leanDetail: true },
+    );
+    expect(march.irmaaLookbackMissingYears).toEqual([2026, 2027]);
+    const rolled = runDynamicOptimizer(inputs, { policies: [fill12TaxableFirst] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.irmaaLookbackMissingYears).toEqual([2026, 2027]);
+    expect(rolled.years.find((r) => r.year === 2026)?.irmaaSurchargeKnown).toBe(false);
+    expect(rolled.years.find((r) => r.year === 2027)?.irmaaSurchargeKnown).toBe(false);
+    expect(rolled.years.filter((r) => r.year > 2027).every((r) => r.irmaaSurchargeKnown)).toBe(true);
+    // `valid` is the settlement / shortfall / unpaid-tax check
+    // (the engine's own integrity convention — unknown IRMAA
+    // never invalidated a march there either); the missing
+    // list above is the signal a caller must check.
+    expect(rolled.valid).toBe(true);
+  });
+
+  test("supplied prior returns seed the re-anchored marches", () => {
+    // The same 65-at-start plan, but the two pre-plan returns
+    // are supplied: every premium year is then KNOWN, because
+    // the first two read the supplied seed and the rest read
+    // the committed years carried forward.
+    const inputs = shortInputs({
+      birthYearPrimary: 1961,
+      irmaaLookbackSeed: [
+        { year: 2024, magi: 200000, filingStatus: "mfj" },
+        { year: 2025, magi: 200000, filingStatus: "mfj" },
+      ],
+    });
+    const rolled = runDynamicOptimizer(inputs, { policies: [fill12TaxableFirst] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.irmaaLookbackMissingYears).toEqual([]);
+    expect(rolled.years.every((r) => r.irmaaSurchargeKnown)).toBe(true);
+  });
+});
+
+describe("C10 — Pass 1 fix (S1): the fixed-policy floor return path", () => {
+  test("floor rows built from a fixed march reproduce it, with the greedy trajectory preserved", () => {
+    const inputs = shortInputs();
+    const policies = dynamicPolicySet(74, 70);
+    const { best, scored } = priceFixedDynamicPolicies(inputs, policies);
+    expect(best).not.toBeNull();
+    const bestFixed = best!;
+    const basisStart = (inputs.taxableBasisPct / 100) * inputs.taxableStart;
+    // The floor's rows: the best fixed policy's uninterrupted
+    // march, re-expressed as schedule rows.
+    const floorRows = dynamicRowsFromFixedMarch(bestFixed.result, bestFixed.policy, inputs, basisStart);
+    expect(floorRows.length).toBe(bestFixed.result.years.length);
+    // The greedy trajectory the floor replaces: the Do Nothing
+    // march's rows (a different, worse trajectory on the same
+    // inputs), with its own worse net cost beside them.
+    const doNothing = scored.find((s) => s.policy.ceilings == null)!;
+    const greedyRows = dynamicRowsFromFixedMarch(doNothing.result, doNothing.policy, inputs, basisStart);
+    expect(doNothing.netCost).toBeGreaterThan(bestFixed.netCost + 0.1);
+    const result = dynamicResultFromRows({
+      rows: floorRows,
+      base: inputs,
+      bestFixed: {
+        policyKey: bestFixed.policy.key,
+        policyName: bestFixed.policy.name,
+        netCost: bestFixed.netCost,
+        endingWealth: bestFixed.endingWealth,
+      },
+      floorBound: true,
+      greedyNetCost: doNothing.netCost,
+      greedyEndingWealth: doNothing.endingWealth,
+      greedyYears: greedyRows,
+      policiesEvaluatedPerYear: policies.length,
+    });
+    // The floor branch executed: the returned trajectory IS the
+    // fixed march, and the greedy trajectory is preserved beside it.
+    expect(result.floorBound).toBe(true);
+    expect(result.years.length).toBe(bestFixed.result.years.length);
+    expect(result.greedyYears).toBe(greedyRows);
+    expect(result.greedyNetCost).toBe(doNothing.netCost);
+    expect(result.bestFixed?.policyKey).toBe(bestFixed.policy.key);
+    expect(result.valid).toBe(true);
+    // Every floor row reproduces its march year exactly (the
+    // rows are copies of the priced years, not re-derivations).
+    for (let i = 0; i < bestFixed.result.years.length; i++) {
+      const m = bestFixed.result.years[i]!;
+      const r = result.years[i]!;
+      expect(r.year).toBe(m.year);
+      expect(r.federalTax).toBe(m.federalTax);
+      expect(r.conversion).toBe(m.funding.conversion);
+      expect(r.magi).toBe(m.magi);
+      expect(r.irmaa).toBe(m.irmaaPaid);
+      expect(r.irmaaSurchargeKnown).toBe(m.irmaaSurchargeKnown);
+      expect(r.acaCreditKept).toBe(m.acaCreditKept);
+      expect(r.pretaxEnd).toBe(m.pretaxEnd);
+      expect(r.rothEnd).toBe(m.rothEnd);
+      expect(r.taxableEnd).toBe(m.taxableEnd);
+    }
+    // The floored lifetime net cost is the fixed policy's own
+    // net cost (recomputed from the rows + the terminal term),
+    // and the IRMAA-known state rides along: no unknown years
+    // on this plan.
+    expect(Math.abs(result.lifetimeNetCost - bestFixed.netCost)).toBeLessThanOrEqual(0.1);
+    expect(result.irmaaLookbackMissingYears).toEqual([]);
+    expect(result.years.every((r) => r.irmaaSurchargeKnown)).toBe(true);
   }, 300_000);
 });
 
