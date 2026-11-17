@@ -23,7 +23,11 @@
 // for the §223(f)(4) gate is the primary's while both spouses
 // are alive, the survivor's once combined — the engine carries
 // a single HSA balance with no owner split anywhere, the same
-// convention as convOwnerAge.
+// convention as convOwnerAge. A spouse-owned HSA in a year the
+// two ages straddle 65 would price the gate on the wrong age —
+// a disclosed limitation of the single-balance model (see
+// hsaOwnerAge in taxEngine.ts), not a behavior this build can
+// fix without an owner split that exists nowhere in the engine.
 //
 // Fixture: the FICTIONAL sample household
 // (server/src/sampleHousehold.ts — every figure here is invented,
@@ -45,6 +49,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ROTH_COMPARE_STRATEGIES,
+  acaCreditFor,
   simulateRothPlan,
 } from "./taxEngine";
 import {
@@ -90,6 +95,23 @@ function age65Inputs() {
     rothStart: 10_000,
     saleGainAge: 66,
     saleGainAmount: 20_000_000,
+  });
+}
+
+// The live-ACA-credit construction (C9 Build 4 NICE-4): the same
+// small balances with the HSA cut to $10,000 too, + an injected
+// $119,000 gain at 62. The bill is small enough that the HSA leg
+// draws only $42.86 — and the year's ACA credit stays live
+// (nonzero), so the shape pins the leg with the credit feedback
+// engaged: the distribution's income moves the priced credit.
+function acaInputs() {
+  return samplePlanInputs({
+    pretaxStart: 10_000,
+    taxableStart: 10_000,
+    rothStart: 10_000,
+    hsaStart: 10_000,
+    saleGainAge: 62,
+    saleGainAmount: 119_000,
   });
 }
 
@@ -181,10 +203,16 @@ describe("C9 Build 4 — W2-D1: HSA debited for tax in forced exhaustion (F2)", 
     // income tax on the distribution ($33,730.30) — the
     // distribution is ordinary income, priced, not free.
     expect(y30.federalTax).toBe(5386149.65);
-    // Unpaid tax falls by the bill portion the HSA covered:
-    // $91,162.97 − $18,232.59 = $72,930.38 of bill, less the
-    // $33,730.30 of income tax the distribution itself created
-    // = $39,200.07 less unpaid than the pre-leg $611,944.97.
+    // Unpaid tax falls by the bill portion the HSA covered,
+    // less the income tax the distribution itself created.
+    // Exact (the 2029 HSA end carries sub-cent dust,
+    // $91,162.96875): the bill portion is $72,930.375
+    // (0.8 × $91,162.96875), less the $33,730.30 of income
+    // tax = $39,200.075, on the half-cent boundary — the
+    // rounded fall reads $39,200.07 against the pre-leg
+    // $611,944.97. (Rounded figures alone would read
+    // $72,930.38 − $33,730.30 = $39,200.08; the 1¢ gap is
+    // rounding of the exact sub-cent figures, not a mis-price.)
     expect(y30.unpaidTax).toBe(572744.9);
     expect(res.lifetimeUnpaidTax).toBe(572744.9);
     expect(res.endingAfterTaxWealth).toBe(-572744.9);
@@ -320,5 +348,80 @@ describe("C9 Build 4 — W2-D1: solvent plans never touch the HSA", () => {
     expect(cmp.scenarios[1]!.endingAfterTaxWealthCents).toBe(1163855786);
     expect(cmp.scenarios[0]!.unpaidTaxCents).toBe(0);
     expect(cmp.scenarios[1]!.unpaidTaxCents).toBe(0);
+  });
+});
+
+describe("C9 Build 4 — W2-D1: HSA leg with a live nonzero ACA credit (NICE-4)", () => {
+  test("2030: a $42.86 HSA draw pays the bill while the credit stays live", () => {
+    const inputs = acaInputs();
+    const res = simulateRothPlan(inputs, DO_NOTHING);
+    const y30 = res.years.find((y) => y.year === 2030)!;
+    // The year is ACA-priced with a nonzero credit kept.
+    expect(y30.acaActive).toBe(true);
+    expect(y30.acaPriced).toBe(true);
+    expect(y30.acaMagi).toBe(131328.59);
+    expect(y30.acaCreditKept).toBe(22919.67);
+    // The HSA leg fires for the small bill only: a $42.86
+    // distribution, its own §223(f)(4) additional tax exactly
+    // 20% of it, and the bill fully paid.
+    expect(y30.funding.hsaDraw).toBe(42.86);
+    expect(y30.detail.hsaTaxDebit).toBe(42.86);
+    expect(y30.penalty).toBe(8.57);
+    expect(r2(0.2 * y30.funding.hsaDraw)).toBe(8.57);
+    expect(y30.unpaidTax).toBe(0);
+    // The settlement converged with the HSA feedback closed —
+    // seven rounds, the ACA feedback included.
+    expect(y30.settlementConverged).toBe(true);
+    expect(y30.settlementRounds).toBe(7);
+    expect(y30.settlementMismatchCents.hsa).toBe(0);
+    expect(y30.settlementMismatchCents.gains).toBe(0);
+    expect(y30.settlementMismatchCents.pretax).toBe(0);
+    expect(y30.settlementMismatchCents.roth).toBe(0);
+    expect(y30.settlementMismatchCents.acaCredit).toBe(0);
+    // The leg fires in 2030 only, and only with the other
+    // buckets already empty.
+    for (const y of res.years) {
+      if (y.funding.hsaDraw > 0) {
+        expect(y.year).toBe(2030);
+        expect(y.pretaxEnd).toBe(0);
+        expect(y.taxableEnd).toBe(0);
+        expect(y.rothEnd).toBe(0);
+      }
+    }
+    // The kept credit recomputes to the cent from the year's
+    // final ACA MAGI (household of four, family benchmark
+    // $36,000, projected pricing) — the feedback income is
+    // inside the priced credit, not beside it.
+    const kept = acaCreditFor({
+      magi: y30.acaMagi,
+      householdSize: 4,
+      coverageYear: 2030,
+      benchmarkAnnual: 36000,
+      projected: true,
+    });
+    expect(r2(kept.credit)).toBe(22919.67);
+    // Counterfactual: the same MAGI minus the HSA
+    // distribution's income prices a $22,923.94 credit —
+    // $4.27 higher. The feedback income moves the credit by
+    // the expected ~10% contribution rate; the fixed tree's
+    // kept credit is the post-feedback figure (and the
+    // counterfactual is exactly the pre-leg tree's kept
+    // credit for this shape, as the Build 4 review passes
+    // characterized by pricing both trees).
+    const noFeedback = acaCreditFor({
+      magi: r2(y30.acaMagi - y30.detail.hsaTaxDebit),
+      householdSize: 4,
+      coverageYear: 2030,
+      benchmarkAnnual: 36000,
+      projected: true,
+    });
+    expect(r2(noFeedback.credit)).toBe(22923.94);
+  });
+
+  test("funding + balance identities close in the ACA shape", () => {
+    const inputs = acaInputs();
+    assertRowIdentity(inputs, DO_NOTHING);
+    expect(assertMarchFundingIdentity(inputs, DO_NOTHING, 0.02)).toBeLessThanOrEqual(0.02);
+    expect(assertHsaBalanceIdentity(inputs, DO_NOTHING)).toBeLessThanOrEqual(0.01);
   });
 });

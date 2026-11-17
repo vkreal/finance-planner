@@ -1205,9 +1205,9 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
   });
 
   test("annual funding identity foots exactly (conversions never fund needs)", () => {
-    // Twelve sources + spend shortfall + unpaid tax = total
+    // Thirteen sources + spend shortfall + unpaid tax = total
     // need, every year. The conversion is a transfer between
-    // buckets, not a source: it appears in none of the twelve.
+    // buckets, not a source: it appears in none of the thirteen.
     const funding = buildRothFunding(samplePlanInputs(), FILL12);
     expect(funding).toHaveLength(38);
     for (const row of funding) {
@@ -1223,6 +1223,7 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
         row.taxableSoldForSpendingCents +
         row.taxableSoldForTaxCents +
         row.rothDrawCents +
+        row.hsaDrawCents +
         row.salarySurplusCents;
       expect(sources + row.spendShortfallCents + row.unpaidTaxCents).toBe(
         row.totalNeedCents,
@@ -1252,6 +1253,7 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
         row.taxableSoldForSpendingCents +
         row.taxableSoldForTaxCents +
         row.rothDrawCents +
+        row.hsaDrawCents +
         row.salarySurplusCents;
       expect(sources + row.spendShortfallCents + row.unpaidTaxCents).toBe(
         row.totalNeedCents,

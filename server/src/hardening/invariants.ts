@@ -9,9 +9,9 @@
    priced figures must obey, checked against the engine's
    own outputs.
 
-   (a) Funding footing (the twelve-source identity): for
+   (a) Funding footing (the thirteen-source identity): for
    every year of the sample plan's funding ledger, the
-   twelve funding sources plus the spend shortfall plus the
+   thirteen funding sources plus the spend shortfall plus the
    unpaid tax foot the year's total need EXACTLY, in integer
    cents. The pattern generalizes the footing the committed
    fixtures pin on individual cases (maxDiffCents 0) across
@@ -196,7 +196,7 @@ function fundingRows(funding: unknown): RothFundingRow[] {
   throw new Error("invariants: buildRothFunding returned an unexpected shape");
 }
 
-// (a) The twelve funding sources plus shortfall plus
+// (a) The thirteen funding sources plus shortfall plus
 // unpaid tax foot the total need, exactly, in integer
 // cents. Returns the largest absolute residue in cents.
 function checkFundingFooting(
@@ -217,6 +217,7 @@ function checkFundingFooting(
       r.taxableSoldForTaxCents +
       r.cashSpendCents +
       r.rothDrawCents +
+      r.hsaDrawCents +
       r.salarySurplusCents;
     const diff = Math.abs(
       sources + r.spendShortfallCents + r.unpaidTaxCents - r.totalNeedCents,
