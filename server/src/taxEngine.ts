@@ -8522,53 +8522,152 @@ export function simulateRothPlan(
       // credit (its first settlement funds the full gross
       // premium; the iteration then moves the funded net
       // premium to the credit the settlement prices).
-      let assumed = premiumReconcile ? premiumInitialCredit : 0;
-      let best: ReturnType<typeof settleYearOnce> | null = null;
-      let bestCreditDiff = Infinity;
-      // (Engine Review C3, C3-S1 diagnostics): how many
-      // credit passes the kept settlement took and why the
-      // outer iteration stopped.
-      let passesUsed = 0;
-      let outerStop: "converged" | "repeated-assumption" | "iteration-limit" =
-        "iteration-limit";
-      const seenCredits = new Set<number>();
-      for (let pass = 0; pass < 8; pass++) {
-        if (seenCredits.has(assumed)) {
-          // A repeated assumed credit — the iteration cycles.
-          outerStop = "repeated-assumption";
-          break;
-        }
-        seenCredits.add(assumed);
-        passesUsed = pass + 1;
-        const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
-        const diff = Math.abs(s.createdFbCredit - assumed);
-        if (s.createdFbCredit === r2(assumed)) {
-          // Exact credit fixed point: the settlement funded
-          // the premium its own pricing implies. The ACA
-          // residual is 0 by the equality just checked; the
-          // inner fields pass through from `s` untouched.
-          return {
-            ...s,
-            settlementMismatchCents: {
-              ...s.settlementMismatchCents,
-              acaCredit: 0,
-            },
-            settlementPasses: passesUsed,
-            settlementStopReason: "converged" as const,
+      //
+      // CREDIT FIXED-POINT ITERATION (Engine Review C9,
+      // Build 5 — W5-B1): one bounded run of the assumed /
+      // created credit iteration from a seed. Returns the
+      // exactly-converged settlement when a pass's created
+      // credit equals its assumed credit, else the closest
+      // settlement seen (smallest |created − assumed|) with
+      // the stop reason. The caller below decides which
+      // run's settlement the year keeps.
+      type CreditIteration =
+        | {
+            converged: true;
+            settlement: ReturnType<typeof settleYearOnce>;
+            passes: number;
+          }
+        | {
+            converged: false;
+            settlement: ReturnType<typeof settleYearOnce> | null;
+            passes: number;
+            stopReason:
+              | "converged"
+              | "repeated-assumption"
+              | "iteration-limit";
           };
+      const iterateCreditFrom = (seed: number): CreditIteration => {
+        let assumed = seed;
+        let best: ReturnType<typeof settleYearOnce> | null = null;
+        let bestCreditDiff = Infinity;
+        let passesUsed = 0;
+        let outerStop: "converged" | "repeated-assumption" | "iteration-limit" =
+          "iteration-limit";
+        const seenCredits = new Set<number>();
+        for (let pass = 0; pass < 8; pass++) {
+          if (seenCredits.has(assumed)) {
+            // A repeated assumed credit — the iteration cycles.
+            outerStop = "repeated-assumption";
+            break;
+          }
+          seenCredits.add(assumed);
+          passesUsed = pass + 1;
+          const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
+          const diff = Math.abs(s.createdFbCredit - assumed);
+          if (s.createdFbCredit === r2(assumed)) {
+            // Exact credit fixed point: the settlement funded
+            // the premium its own pricing implies.
+            return { converged: true, settlement: s, passes: passesUsed };
+          }
+          if (diff < bestCreditDiff) {
+            bestCreditDiff = diff;
+            best = s;
+          }
+          assumed = s.createdFbCredit;
         }
-        if (diff < bestCreditDiff) {
-          bestCreditDiff = diff;
-          best = s;
+        return {
+          converged: false,
+          settlement: best,
+          passes: passesUsed,
+          stopReason: outerStop,
+        };
+      };
+      const first = iterateCreditFrom(
+        premiumReconcile ? premiumInitialCredit : 0,
+      );
+      if (first.converged) {
+        // W5-B1 DEGENERATE-$0 RE-SEED: the credit map has
+        // TWO exact fixed points whenever funding the full
+        // gross premium pushes MAGI over the cliff while
+        // funding the net premium keeps it under: the $0
+        // state (assume $0 → fund the gross premium →
+        // MAGI over the cliff → credit $0, self-consistent)
+        // and the credit-keeping state (assume the intact
+        // credit → fund the net premium → MAGI under the
+        // cliff → the same credit, self-consistent). The
+        // iteration from $0 finds the $0 state on its first
+        // pass — created $0 equals assumed $0 — and returns
+        // it at once, never discovering the credit-keeping
+        // state at the same conversion. The cliff-cap
+        // grow-back then bisects on the $0 state's MAGI,
+        // which jumps over the target a cent past the
+        // crossing (measured on the sample household's
+        // 2030 tax-first year: feasible to $4,659.33 /
+        // MAGI $120,709.15, $132,000.01 at $4,659.34), so
+        // the year strands ~$6,291 of conversion room.
+        // When the first run converges to the $0 state,
+        // re-run the iteration once from the credit priced
+        // at the cliff itself — the largest credit the year
+        // can price while on the cliff, hence a seed whose
+        // first settlement funds a smaller need than the
+        // $0 state and lands under the cliff whenever a
+        // credit-keeping state exists — and keep the
+        // re-seeded settlement ONLY if it converges exactly
+        // to a credit above $0. In a genuinely over-cliff
+        // year no such state exists: the re-seed converges
+        // back to $0 (or not at all) and the year keeps
+        // the $0 settlement exactly as before. The re-seed
+        // never displaces an exact non-$0 fixed point and
+        // never displaces an exact fixed point with an
+        // unconverged one. The ACA residual is 0 by the
+        // equality just checked in either branch; the inner
+        // fields pass through untouched.
+        if (first.settlement.createdFbCredit === 0) {
+          const cliffCredit =
+            benchmark != null && acaCliffDollars != null
+              ? acaCreditFor({
+                  magi: acaCliffDollars,
+                  householdSize,
+                  coverageYear: year,
+                  benchmarkAnnual: benchmark,
+                  projected: true,
+                }).credit
+              : 0;
+          if (cliffCredit > 0) {
+            const second = iterateCreditFrom(cliffCredit);
+            if (
+              second.converged &&
+              second.settlement.createdFbCredit > 0
+            ) {
+              return {
+                ...second.settlement,
+                settlementMismatchCents: {
+                  ...second.settlement.settlementMismatchCents,
+                  acaCredit: 0,
+                },
+                settlementPasses: second.passes,
+                settlementStopReason: "converged" as const,
+              };
+            }
+          }
         }
-        assumed = s.createdFbCredit;
+        return {
+          ...first.settlement,
+          settlementMismatchCents: {
+            ...first.settlement.settlementMismatchCents,
+            acaCredit: 0,
+          },
+          settlementPasses: first.passes,
+          settlementStopReason: "converged" as const,
+        };
       }
       // No exact fixed point (a cliff-edge alternation): keep
       // the closest settlement and report it unconverged. The
-      // loop always runs at least one pass, so `best` is set;
-      // the fallback only satisfies the type.
+      // iteration always runs at least one pass, so the
+      // closest settlement is set; the fallback only
+      // satisfies the type.
       const kept =
-        best ??
+        first.settlement ??
         settleYearOnce(
           additionalArg,
           pretaxDrawCapArg,
@@ -8580,8 +8679,7 @@ export function simulateRothPlan(
       // from the kept object itself (its createdFbCredit
       // against its feedbackCredit, the assumption it was
       // priced under), never from the year's reported
-      // post-harvest credit. The previous code computed this
-      // diff (bestCreditDiff) and discarded it here.
+      // post-harvest credit.
       const keptAcaCreditCents = Math.round(
         Math.abs(kept.createdFbCredit - kept.feedbackCredit) * 100,
       );
@@ -8592,8 +8690,9 @@ export function simulateRothPlan(
           ...kept.settlementMismatchCents,
           acaCredit: keptAcaCreditCents,
         },
-        settlementPasses: best != null ? passesUsed : 1,
-        settlementStopReason: best != null ? outerStop : "iteration-limit",
+        settlementPasses: first.settlement != null ? first.passes : 1,
+        settlementStopReason:
+          first.settlement != null ? first.stopReason : "iteration-limit",
       };
     };
 
