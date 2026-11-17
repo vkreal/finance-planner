@@ -22,7 +22,12 @@
 //   i.e. the pre-N1 behavior.
 
 import { describe, expect, test } from "bun:test";
-import { labWinnerFigures, type LabWinnerInput } from "./rothShared";
+import {
+  labFoldKey,
+  labWinnerFigures,
+  type LabFoldRow,
+  type LabWinnerInput,
+} from "./rothShared";
 
 const ALL_INVALID: LabWinnerInput = {
   winnerByNetCost: "taxable-first",
@@ -113,5 +118,88 @@ describe("C9 Build 3 NICEs — N1: Lab badges follow the engine crown", () => {
       lowestTaxNetCostCents: 102025683,
       mostLeftWealthCents: 1163596462,
     });
+  });
+});
+
+// Folded-group integrity (N6): the fold key carries the
+// integrity verdict, not just the priced fields. Two rows can
+// price identically while one is invalid — the folded group
+// shows its representative row's Invalid badge and reasons,
+// so those rows must never fold together. Synthetic rows in
+// the same structure as the Lab action response; the helper
+// only reads priced fields and the verdict, never prices.
+const PRICED_IDENTICAL: Omit<LabFoldRow, "integrity"> = {
+  netCostCents: 0,
+  totalTaxCents: 0,
+  penaltyCents: 0,
+  irmaaCents: 0,
+  acaCreditCents: 0,
+  terminalCents: 0,
+  ssCollectedCents: 0,
+  endingAfterTaxWealthCents: 0,
+  endingPretaxCents: 0,
+  endingRothCents: 0,
+  endingTaxableCents: 0,
+  endingHsaCents: 0,
+};
+
+describe("C9 Build 3 NICEs — N6: folded groups never mix integrity verdicts", () => {
+  test("rows differing ONLY in integrity status do not fold together", () => {
+    // Every priced field identical — before this fix the two
+    // rows shared a fold key and the group showed the
+    // representative row's verdict alone.
+    const invalidRow: LabFoldRow = {
+      ...PRICED_IDENTICAL,
+      integrity: {
+        status: "invalid",
+        reasons: [
+          "unfunded spending of $3,970,954: the plan cannot fund its own spending need",
+        ],
+      },
+    };
+    const validRow: LabFoldRow = {
+      ...PRICED_IDENTICAL,
+      integrity: { status: "valid", reasons: [] },
+    };
+    expect(labFoldKey(invalidRow)).not.toBe(labFoldKey(validRow));
+  });
+
+  test("rows differing ONLY in integrity reasons do not fold together", () => {
+    // Same status, same priced fields — but the group shows
+    // the representative's reasons line, so different reasons
+    // are different displayed outcomes.
+    const shortfallRow: LabFoldRow = {
+      ...PRICED_IDENTICAL,
+      integrity: {
+        status: "invalid",
+        reasons: [
+          "unfunded spending of $3,970,954: the plan cannot fund its own spending need",
+        ],
+      },
+    };
+    const unpaidRow: LabFoldRow = {
+      ...PRICED_IDENTICAL,
+      integrity: {
+        status: "invalid",
+        reasons: [
+          "unpaid tax of $611,945: assessed tax the balances could not pay",
+        ],
+      },
+    };
+    expect(labFoldKey(shortfallRow)).not.toBe(labFoldKey(unpaidRow));
+  });
+
+  test("identical rows (same priced fields, same verdict) still fold together", () => {
+    const a: LabFoldRow = {
+      ...PRICED_IDENTICAL,
+      integrity: {
+        status: "invalid",
+        reasons: [
+          "unfunded spending of $3,970,954: the plan cannot fund its own spending need",
+        ],
+      },
+    };
+    const b: LabFoldRow = { ...a, integrity: { ...a.integrity } };
+    expect(labFoldKey(a)).toBe(labFoldKey(b));
   });
 });

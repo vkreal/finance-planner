@@ -142,11 +142,16 @@ describe("C9 Build 3 — W4-GAP-1: the compare crowns valid winners only", () =>
     // response: all three orders short $3,970,953.88 of spending
     // (unpaid tax $0 — the shortfall is spending, not tax, and
     // the two signals stay distinct). That shortfall is
-    // $77,264.00 above probe E's $3,893,689.88 — exactly the
-    // compare path's acaEmbeddedNetPremium ($13,147.20/yr),
-    // which probe E's direct march never charged: removing that
-    // one field from the compare-path inputs reproduces probe E
-    // exactly, so the figure has not drifted. Every scenario prices
+    // $77,264.00 above probe E's $3,893,689.88 — the CUMULATIVE
+    // effect of the compare path charging acaEmbeddedNetPremium
+    // ($13,147.20/yr), which probe E's direct march never
+    // charged: $77,264.00 is 5.8768 years of that premium, not
+    // a whole number of years — the premium is charged every
+    // ACA-active year but only the unfunded part of each
+    // year's need lands in the lifetime shortfall, so the
+    // delta is not years × premium. Removing that one field
+    // from the compare-path inputs reproduces probe E exactly,
+    // so the figure has not drifted. Every scenario prices
     // net cost $0 / wealth $0, so the raw crown is a three-way
     // $0 tie broken by list order — taxable-first — and it is
     // crowned UNQUALIFIED, with the raw cheapest named beside

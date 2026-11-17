@@ -861,7 +861,7 @@ export type ScoredCandidate = {
   claimAges: ClaimAgeInfo;
 };
 
-function fmtDollars(n: number): string {
+export function fmtDollars(n: number): string {
   const neg = n < 0;
   const abs = Math.abs(n);
   if (abs > 0 && abs < 0.5) {
@@ -871,8 +871,15 @@ function fmtDollars(n: number): string {
     // correct, the human-readable amount wrong. Show cents, so
     // a sub-$0.50 amount never reads as $0. (Totals reaching
     // here are cent-rounded upstream, so the cents figure is
-    // exact; a sub-half-cent remainder renders $0.00.)
+    // exact — except a sub-half-cent remainder, which has no
+    // exact cents rendering and reads "<$0.01", never $0.00.)
     const cents = Math.round(abs * 100);
+    if (cents === 0) {
+      // A nonzero amount below half a cent: "<$0.01", with the
+      // U+2212 minus for negatives, matching the sign
+      // convention below. A nonzero amount NEVER renders $0.00.
+      return neg ? "−<$0.01" : "<$0.01";
+    }
     const s = `$0.${String(cents).padStart(2, "0")}`;
     return neg ? `−${s}` : s;
   }

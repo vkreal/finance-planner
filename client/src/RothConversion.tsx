@@ -25,6 +25,7 @@ hintCls,
 InfoNote,
 inputCls,
 labelCls,
+labFoldKey,
 labWinnerFigures,
 moneyField,
 monthlyRaw,
@@ -3461,11 +3462,14 @@ export function RothConversion({
      field the API returns — net cost, total tax, penalty,
      IRMAA, ACA credit, terminal charge, Social Security
      collected, ending after-tax wealth, and the four ending
-     balances — are one outcome, shown once, under a
-     plain-words title generated from the group's simplest
-     strategy shape. The run data itself is untouched:
-     request building, the staleness fingerprint, the
-     baseline select, and the Saved-list priced lookup all
+     balances — AND carry the same integrity verdict are one
+     outcome, shown once, under a plain-words title generated
+     from the group's simplest strategy shape. (The verdict
+     rides the key because the folded group shows its
+     representative row's Invalid badge and reasons — see
+     labFoldKey in rothShared.) The run data itself is
+     untouched: request building, the staleness fingerprint,
+     the baseline select, and the Saved-list priced lookup all
      keep working on the raw rows exactly as before. Folding
      is recomputed from each run's own figures, so rows that
      coincide under one plan / dial setting separate again in
@@ -3473,25 +3477,14 @@ export function RothConversion({
      tie on net cost but differ anywhere else stay separate,
      so badge ties are preserved. */
   type LabRunRow = LabData["scenarios"][number];
-  // The folding key: every priced field of a run row, in a
-  // fixed order. (The two delta fields are functions of
-  // these fields and the baseline's, so equal keys always
-  // carry equal deltas.)
-  const labFoldKey = (row: LabRunRow): string =>
-    JSON.stringify([
-      row.netCostCents,
-      row.totalTaxCents,
-      row.penaltyCents,
-      row.irmaaCents,
-      row.acaCreditCents,
-      row.terminalCents,
-      row.ssCollectedCents,
-      row.endingAfterTaxWealthCents,
-      row.endingPretaxCents,
-      row.endingRothCents,
-      row.endingTaxableCents,
-      row.endingHsaCents,
-    ]);
+  // The folding key lives in rothShared (labFoldKey, tested in
+  // rothShared.test.ts): every priced field of a run row, in a
+  // fixed order, PLUS the integrity verdict (status and
+  // reasons) — the folded group shows its representative row's
+  // verdict, so rows with differing verdicts must never fold
+  // together. (The two delta fields are functions of these
+  // fields and the baseline's, so equal keys always carry
+  // equal deltas.)
   // Active-cap count of a row's ceilings — for picking a
   // folded group's SIMPLEST shape (e.g. an IRMAA tier cap
   // that never binds folds under its uncapped twin):

@@ -30,6 +30,7 @@ import { describe, expect, test } from "bun:test";
 import { Actions, shapeRothCompareResponse } from "./actions";
 import {
   assessCandidateIntegrity,
+  fmtDollars,
   runRothCompare,
 } from "./rothOptimizer";
 import { type RothPlanResult } from "./taxEngine";
@@ -206,5 +207,27 @@ describe("C9 Build 3 NICEs — N5: sub-$0.50 reason amounts read in cents", () =
     const i = assessCandidateIntegrity(fakeResult(0, 3970953.88));
     expect(i.status).toBe("invalid");
     expect(i.reasons).toEqual([UNFUNDED_REASON]);
+  });
+
+  test("sub-half-cent amounts never render as $0.00 (direct fmtDollars)", () => {
+    // Unreachable via the assessor — it r2-rounds its totals,
+    // so a $0.004 unpaid tax reads $0.00 there and reasons
+    // nothing — so this drives fmtDollars directly, the level
+    // its other call sites (ceiling names, ACA position) read
+    // it at. A nonzero amount below half a cent has no exact
+    // cents rendering: it reads "<$0.01", with the U+2212
+    // minus for negatives.
+    expect(fmtDollars(0.004)).toBe("<$0.01");
+    expect(fmtDollars(-0.004)).toBe("−<$0.01");
+    expect(fmtDollars(0.01)).toBe("$0.01");
+    expect(fmtDollars(0.49)).toBe("$0.49");
+    // $0.50 is outside the sub-$0.50 leg: whole-dollar rounding
+    // (Math.round halves up) renders $1, not $0.50.
+    expect(fmtDollars(0.5)).toBe("$1");
+    // Whole-dollar controls, including the zero that a nonzero
+    // amount must never be confused with.
+    expect(fmtDollars(0)).toBe("$0");
+    expect(fmtDollars(1234)).toBe("$1,234");
+    expect(fmtDollars(-2500)).toBe("−$2,500");
   });
 });

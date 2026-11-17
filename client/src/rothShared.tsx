@@ -565,3 +565,60 @@ export function labWinnerFigures(result: LabWinnerInput): {
         : null),
   };
 }
+
+/* Strategy Lab display-folding key (Engine Review C9, Build 3
+   NICEs, N6 — folded-group integrity): run rows that priced
+   identically in every priced field the API returns fold into
+   one displayed outcome, shown once under the representative
+   row — and the representative row carries its own integrity
+   verdict (the Invalid badge and the reasons line). The priced
+   fields alone do not determine that verdict: two rows can
+   price identically while one is invalid (e.g. the same net
+   cost and wealth with different unfunded-spending totals
+   behind the same rounded figures), so the key ALSO carries
+   the integrity verdict — status and reasons — and rows with
+   differing verdicts never fold together. The reasons embed
+   the formatted unpaid-tax / shortfall totals, so differing
+   totals fold apart exactly when their displayed text would
+   differ. Pure, so a test can drive the fold decision from
+   shaped rows. */
+export type LabFoldRow = {
+  netCostCents: number;
+  totalTaxCents: number;
+  penaltyCents: number;
+  irmaaCents: number;
+  acaCreditCents: number;
+  terminalCents: number;
+  ssCollectedCents: number;
+  endingAfterTaxWealthCents: number;
+  endingPretaxCents: number;
+  endingRothCents: number;
+  endingTaxableCents: number;
+  endingHsaCents: number;
+  integrity: {
+    status: string;
+    reasons: readonly string[];
+  };
+};
+export function labFoldKey(row: LabFoldRow): string {
+  // Every priced field of a run row, in a fixed order, plus the
+  // integrity verdict. (The two delta fields are functions of
+  // these fields and the baseline's, so equal keys always
+  // carry equal deltas.)
+  return JSON.stringify([
+    row.netCostCents,
+    row.totalTaxCents,
+    row.penaltyCents,
+    row.irmaaCents,
+    row.acaCreditCents,
+    row.terminalCents,
+    row.ssCollectedCents,
+    row.endingAfterTaxWealthCents,
+    row.endingPretaxCents,
+    row.endingRothCents,
+    row.endingTaxableCents,
+    row.endingHsaCents,
+    row.integrity.status,
+    row.integrity.reasons,
+  ]);
+}

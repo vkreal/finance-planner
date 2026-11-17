@@ -161,9 +161,15 @@ runRothCompare,
 splitRothBlob,
 type PlaygroundYearInputs,
 type RothCompareBaseSaved,
+type RothCompareCeilingsCents,
 type RothCompareOverrides,
 type ScoredCandidate,
 } from "./rothOptimizer";
+import {
+sampleCompareBase,
+FILL_12_CEILINGS,
+FILL_22_CEILINGS,
+} from "./hardening/sensCompareBase";
 import {
 DEFAULT_DRAW_ORDER,
 deriveSpendFromCashSleeveStartDollars,
@@ -5884,12 +5890,12 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-compare-example-executes",
     kind: "apicontract",
-    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. (Engine Review C9, Build 3: the fixture also verifies the response-level crowning — the five winner fields — and each scenario's published integrity verdict — status, reasons, and the unpaid-tax / shortfall totals.) It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2; the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
+    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. (Engine Review C9, Build 3: the fixture also verifies the response-level crowning — the five winner fields — and each scenario's published integrity verdict — status, reasons, and the unpaid-tax / shortfall totals.) It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both seeded scenarios (netCostIdentityExact counts 2 of the 7: the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent counts 2 of the 7) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2). (Engine Review C9, Build 3 NICEs, N2: the two identity counts run to 7, not 2 — a second compare run on an unpaid-tax-carrying base (the fictional sample household with taxable cut to $200,000 and Roth $0 against $240,000/yr spending) contributes 5 more scenarios, every one carrying unpaid tax, so the wealth identity is now verified with a nonzero unpaid-tax term, not only on the seeded example where unpaid tax is $0 on both scenarios.)",
     expected: {
       fieldsCompared: 38,
       fieldsMatched: 38,
-      netCostIdentityExact: 2,
-      wealthIdentityWithinCent: 2,
+      netCostIdentityExact: 7,
+      wealthIdentityWithinCent: 7,
       descriptionsCarryRetirePrefix: 2,
       // (Engine Review C9, Build 3): the response-level
       // crowning (five winner fields) and each scenario's
@@ -5942,13 +5948,11 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       let netCostIdentityExact = 0;
       let wealthIdentityWithinCent = 0;
       let descriptionsCarryRetirePrefix = 0;
-      res.scenarios.forEach((s, i) => {
-        const pub = published[i]!;
-        for (const f of fields) {
-          fieldsCompared += 1;
-          if ((s as unknown as Record<string, unknown>)[f] === pub[f])
-            fieldsMatched += 1;
-        }
+      // The two A-4 identity checks, shared by the seeded run
+      // and the unpaid-tax run below: the net-cost identity
+      // exact in cents, and the wealth identity within the
+      // published one-cent rounding clause.
+      const countIdentities = (s: (typeof res.scenarios)[number]) => {
         if (
           s.netCostCents ===
           s.totalTaxCents + s.irmaaCents + s.penaltyCents + s.terminalCents -
@@ -5959,10 +5963,14 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         // Wealth identity (Engine Review C9, Build 3 NICEs,
         // N2): the published SCORE_IDENTITIES identity reads
         // balances − terminal − unpaid tax — the unpaid-tax term
-        // is load-bearing here, not a $0 formality: without it
-        // this check passed vacuously on the seeded example
-        // (unpaid $0 on both scenarios) and could never catch a
-        // W2-D2 regression.
+        // is load-bearing in the formula AND in this run now,
+        // not a $0 formality: the seeded example still carries
+        // unpaid $0 on both scenarios, but the unpaid-tax run
+        // below carries nonzero unpaid tax on all five of its
+        // scenarios, so dropping the term fails this fixture on
+        // those five (verified: the regressed identity is off
+        // by exactly the unpaid amount on each) — a W2-D2
+        // regression can no longer hide behind the vacuous seed.
         if (
           Math.abs(
             s.endingAfterTaxWealthCents -
@@ -5975,9 +5983,68 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
           ) <= 1
         )
           wealthIdentityWithinCent += 1;
+      };
+      res.scenarios.forEach((s, i) => {
+        const pub = published[i]!;
+        for (const f of fields) {
+          fieldsCompared += 1;
+          if ((s as unknown as Record<string, unknown>)[f] === pub[f])
+            fieldsMatched += 1;
+        }
+        countIdentities(s);
         if (s.strategyDescription.startsWith("Retire at "))
           descriptionsCarryRetirePrefix += 1;
       });
+      // (Engine Review C9, Build 3 NICEs, N2): the second run
+      // — the same five conversion shapes on an unpaid-tax-
+      // carrying base (the fictional sample household with
+      // taxable cut to $200,000 and Roth $0 against
+      // $240,000/yr spending). Every scenario carries unpaid
+      // tax (Do Nothing / Fill 12% $29,393.13, Fill 22%
+      // $12,408.44, Fill 24% $5,110.93, Fill 37% $34,015.34 —
+      // engine outputs on this shape, verified by execution
+      // before pinning), so the wealth identity above is
+      // exercised with a nonzero unpaid-tax term: without the
+      // term it is off by exactly the unpaid amount on all
+      // five. Only the two identity counters run here — the
+      // published-field, crowning, and prefix checks belong to
+      // the seeded example alone.
+      const FILL_24_CEILINGS: RothCompareCeilingsCents = {
+        bracketTopPct: 24,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCapCents: null,
+        acaCliffBufferCents: null,
+      };
+      const FILL_37_CEILINGS: RothCompareCeilingsCents = {
+        bracketTopPct: 37,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCapCents: null,
+        acaCliffBufferCents: null,
+      };
+      const unpaidBase = sampleCompareBase();
+      unpaidBase.taxableCents = 20_000_000;
+      unpaidBase.rothCents = 0;
+      unpaidBase.annualSpendingCents = 24_000_000;
+      const unpaidRes = runRothCompare(
+        unpaidBase,
+        [
+          { name: "Do Nothing", overrides: {} },
+          { name: "Fill 12%", overrides: { ceilings: FILL_12_CEILINGS } },
+          { name: "Fill 22%", overrides: { ceilings: FILL_22_CEILINGS } },
+          { name: "Fill 24%", overrides: { ceilings: FILL_24_CEILINGS } },
+          { name: "Fill 37%", overrides: { ceilings: FILL_37_CEILINGS } },
+        ] as unknown as { name: string; overrides: RothCompareOverrides }[],
+        2026,
+      );
+      if (unpaidRes.ok) {
+        for (const s of unpaidRes.scenarios) countIdentities(s);
+      }
       // (Engine Review C9, Build 3): the response-level
       // crowning must match the published winner fields, and
       // each scenario's integrity verdict must match the
