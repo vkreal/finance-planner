@@ -140,6 +140,36 @@
 //       adapter-visible flag, so a capped result there cannot
 //       be flagged and is documented as a limitation instead.
 
+//   D13. Work-years rows ARE comparable across quit ages (Review 8,
+//       correcting the old horizon warning and README limitation
+//       (viii)). rollWorkYears spreads the plan into rolledInputs
+//       and overrides only startYear (= birthYearPrimary + quitAge),
+//       retirementAge, windowStartAge, balances, loss carryforwards
+//       and the IRMAA seed — endAgePrimary is carried unchanged, so
+//       every row's march prices quitAge→endAge and every row's
+//       ending wealth is valued at the same terminal date
+//       (birthYearPrimary + endAgePrimary). endingAfterTaxWealth
+//       (taxEngine) is the four ending balances minus the terminal
+//       tax on ending pre-tax, evaluated at that terminal age. The
+//       roll covers window-start→quitAge, so allInTax (workTax +
+//       winner netCost) covers the same full span for every row.
+//       The old "different horizons" claim confused span length
+//       with terminal date. The retirement-only leg's scenarios
+//       likewise all end at endAge, so winnerByEndingWealth was
+//       already a same-terminal-date comparison.
+//   D14. The retirement-age response carries TWO scoped winner
+//       sets (Review 8), not one: retirementOnly (the fixed
+//       Do-Nothing-fill comparison, salary ignored) and
+//       workYearsComparison (the salary-aware work-years leg).
+//       They are reported under comparisonModels, which names what
+//       each model prices and whether it searches claiming ages or
+//       runs the joint optimizer — it is NOT the Review 4
+//       comparisonScope block ("limited"/"full"), which describes
+//       the candidate set of the quit-age comparison itself and
+//       stays untouched. overallRecommendation comes only from
+//       the salary-aware leg, and only when its two objectives
+//       agree on one quit age.
+
 import {
   GUARDRAILS_ADJUSTMENT_DEFAULT,
   GUARDRAILS_CUT_DEFAULT,
@@ -1501,6 +1531,30 @@ export type ComparisonScopeInfo = {
   omittedCosts: string[];
 };
 
+/**
+ * One scoped model inside a retirement-age comparison (Review 8,
+ * D12). Distinct from ComparisonScopeInfo above: that block
+ * describes the candidate set of the quit-age comparison itself
+ * ("limited"/"full"); this one says what a model prices — salary,
+ * work-year contributions, payroll tax — and whether it runs the
+ * joint optimizer or searches claiming ages. The retirement-only
+ * model prices fixed Do-Nothing-fill scenarios at the entered
+ * claiming ages; the salary-aware model prices each quit age's
+ * rolled plan with the joint optimizer, which searches claiming
+ * ages and conversion strategies FOR THAT QUIT AGE ALONE — the
+ * quit-age comparison itself runs no optimizer search across
+ * conversion strategies.
+ */
+export type ComparisonModelInfo = {
+  includesSalary: boolean;
+  includesWorkYearContributions: boolean;
+  includesWorkYearPayrollTaxes: boolean;
+  usesFullOptimizer: boolean;
+  ssClaimingAgesSearched: boolean;
+  objective: string;
+  description: string;
+};
+
 const NET_COST_OBJECTIVE =
   "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus gross health premium where a premium is entered; the adapter enters none, so $0).";
 const WEALTH_OBJECTIVE =
@@ -1694,8 +1748,11 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
 const YEARLY_TABLE_WARNING =
   "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary. Each row also names the law row it priced under (lawProvenance) and how its state tax was priced (stateTaxProvenance): a flat-rate stateTax is an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return, and a year past the newest published law row prices on that row carried forward, a projection.";
 
-const WORK_YEARS_HORIZON_WARNING =
-  "The work-years rows price each quit age as its own plan starting at that quit age with rolled balances, so their ending balances span different horizons and are not like-for-like across quit ages; use the all-in tax and the Roth-compare scenarios for the quit-age decision.";
+const WORK_YEARS_COMPARABILITY_NOTE =
+  "Work-years rows are comparable across quit ages: every row is valued at the same terminal age (the plan end age) from the same starting balances — the roll covers the window start through the quit age and the priced plan covers the quit age through the terminal age — so ending after-tax wealth is valued at the same date for every row, and all-in tax covers the same full span (window start through the terminal age) for every row. The retirement-only winners ignore salary, employer contributions, and payroll tax; use the salary-aware winners for the work-longer decision.";
+
+const MEDICARE_NO_ENROLLMENT_WARNING =
+  "No Medicare enrollment age was provided, so no Medicare enrollment is modeled during the work years: HSA contributions (employee and employer) continue through the work years. Medicare eligibility at 65 is not enrollment — pass medicareAgePrimary to model enrollment.";
 
 // Engine Review 6 (E6-S1/E6-S2): warnings that keep a missing
 // IRMAA lookback and a below-100%-FPL ACA year from reading
@@ -2884,6 +2941,46 @@ export function compareRetirementAges(
     assumptions: string[];
   }>;
   workYearsWinnerByAllInTax: string | null;
+  /** Salary-aware winner by highest ending after-tax wealth
+   *  (work-years rows only; null without a salary). Ending
+   *  after-tax wealth is the engine's endingAfterTaxWealth at the
+   *  shared terminal age, so it is comparable across quit ages
+   *  (D11) — unlike the old horizon warning's claim. */
+  workYearsWinnerByEndingAfterTaxWealth: string | null;
+  /** The retirement-only winners, explicitly scoped: they price
+   *  the same starting balances at each retirement age and ignore
+   *  salary, employer contributions, and payroll tax. Never an
+   *  overall recommendation. */
+  retirementOnly: {
+    winnerByNetCost: string | null;
+    winnerByEndingWealth: string | null;
+  };
+  /** The salary-aware winners, or null without a salary. Lowest
+   *  all-in tax and highest ending after-tax wealth are different
+   *  objectives and may point to different quit ages. */
+  workYearsComparison: {
+    winnerByAllInTax: string | null;
+    winnerByEndingAfterTaxWealth: string | null;
+  } | null;
+  /** What each scoped model prices and whether it searches
+   *  claiming ages or runs the joint optimizer (D12). This is
+   *  NOT the Review 4 comparisonScope block below it, which
+   *  describes the candidate set of the quit-age comparison
+   *  itself. salaryAware is null without a salary. */
+  comparisonModels: {
+    retirementOnly: ComparisonModelInfo;
+    salaryAware: ComparisonModelInfo | null;
+  };
+  /** Overall recommendation, or null when none is defensible: the
+   *  salary-aware objectives agree on one quit age (lowest all-in
+   *  tax AND highest ending after-tax wealth), that age is the
+   *  recommendation; when they disagree, or when no salary was
+   *  provided, there is no overall recommendation — see
+   *  overallRecommendationNote. Never a retirement-only winner. */
+  overallRecommendation: string | null;
+  /** Why overallRecommendation is what it is (agreement, the
+   *  disagreeing objectives, or the missing salary). */
+  overallRecommendationNote: string;
   comparisonScope: ComparisonScopeInfo;
 }> {
   return guard(() => {
@@ -2967,6 +3064,7 @@ export function compareRetirementAges(
       assumptions: string[];
     }> = [];
     let workYearsWinnerByAllInTax: string | null = null;
+    let workYearsWinnerByEndingAfterTaxWealth: string | null = null;
     const workYearsWarnings: string[] = [];
     if (scenario.salaryAnnual != null) {
       const planInputs = buildRothPlanInputs(scenario, {
@@ -3038,15 +3136,90 @@ export function compareRetirementAges(
       workYearsWinnerByAllInTax = wyWinner
         ? `retire-${wyWinner.quitAge}`
         : null;
+      // Salary-aware winner by ending after-tax wealth (D11): the
+      // engine's endingAfterTaxWealth at the shared terminal age,
+      // so rows are comparable — highest wins. Lowest all-in tax
+      // and highest ending wealth are different objectives; neither
+      // implies the other.
+      const wyWealthWinner = pickWinner(
+        workYears,
+        (a, b) => a.endingAfterTax > b.endingAfterTax,
+      );
+      workYearsWinnerByEndingAfterTaxWealth = wyWealthWinner
+        ? `retire-${wyWealthWinner.quitAge}`
+        : null;
+      workYearsWarnings.push(WORK_YEARS_COMPARABILITY_NOTE);
+      if (scenario.medicareAgePrimary == null) {
+        workYearsWarnings.push(MEDICARE_NO_ENROLLMENT_WARNING);
+      }
     } else {
       workYearsWarnings.push(
-        "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it.",
+        "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation.",
       );
     }
     const withAges = outcome.mapped.map((m, i) => ({
       ...m,
       retirementAge: ages[i]!,
     }));
+    // Winner semantics (Review 8, D12): the top-level winnerBy*
+    // fields stay retirement-only, for backward compatibility —
+    // and are now also exposed as retirementOnly, explicitly
+    // scoped. The overall recommendation comes ONLY from the
+    // salary-aware leg, and only when its two objectives agree on
+    // one quit age. comparisonModels names what each model prices:
+    // the retirement-only model prices fixed Do-Nothing-fill
+    // scenarios at the ENTERED claiming ages (no claiming-age
+    // search, no optimizer); the salary-aware model's per-age
+    // winnerStrategy IS the joint optimizer's pick for that quit
+    // age alone — the optimizer searches claiming ages and
+    // conversion strategies per quit age, but the quit-age
+    // comparison itself runs no optimizer search across
+    // conversion strategies.
+    const comparisonModels: {
+      retirementOnly: ComparisonModelInfo;
+      salaryAware: ComparisonModelInfo | null;
+    } = {
+      retirementOnly: {
+        includesSalary: false,
+        includesWorkYearContributions: false,
+        includesWorkYearPayrollTaxes: false,
+        usesFullOptimizer: false,
+        ssClaimingAgesSearched: false,
+        objective:
+          "lowest lifetime net cost or highest ending after-tax wealth among fixed Do-Nothing-fill strategies per quit age",
+        description:
+          "Prices the same starting balances at each retirement age with one fixed Do-Nothing-fill strategy per age at the entered Social Security claiming ages; ignores the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, and searches neither claiming ages nor conversion strategies.",
+      },
+      salaryAware:
+        scenario.salaryAnnual == null
+          ? null
+          : {
+              includesSalary: true,
+              includesWorkYearContributions: true,
+              includesWorkYearPayrollTaxes: true,
+              usesFullOptimizer: true,
+              ssClaimingAgesSearched: true,
+              objective:
+                "lowest all-in tax or highest ending after-tax wealth among quit ages, each priced by the joint optimizer",
+              description:
+                "Rolls the extra working years forward — salary, employee payroll taxes, the employee contribution stack, employer 401(k) and HSA, spending during the working years, and investment growth — then prices each quit age's rolled plan with the joint optimizer; each row's winnerStrategy is the optimizer's pick for that quit age alone, searching claiming ages and conversion strategies per quit age, while the quit-age comparison itself runs no optimizer search across conversion strategies.",
+            },
+    };
+    let overallRecommendation: string | null = null;
+    let overallRecommendationNote: string;
+    if (scenario.salaryAnnual == null) {
+      overallRecommendationNote =
+        "No overall recommendation: the salary-aware comparison needs salaryAnnual. The retirement-only winners above price the same starting balances at each retirement age and ignore the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, so they cannot recommend a retirement age.";
+    } else if (
+      workYearsWinnerByAllInTax != null &&
+      workYearsWinnerByAllInTax === workYearsWinnerByEndingAfterTaxWealth
+    ) {
+      overallRecommendation = workYearsWinnerByAllInTax;
+      overallRecommendationNote = `Both salary-aware objectives agree on ${overallRecommendation}: it has the lowest all-in tax and the highest ending after-tax wealth among the compared ages.`;
+    } else {
+      overallRecommendationNote =
+        `No overall recommendation: the salary-aware objectives disagree — lowest all-in tax points to ${workYearsWinnerByAllInTax} while highest ending after-tax wealth points to ${workYearsWinnerByEndingAfterTaxWealth}. Lowest tax does not imply the best outcome; the choice depends on whether the caller values tax saved or wealth left more.`;
+    }
     // Limited comparison: one fixed (Do-Nothing-fill) strategy per
     // quit age — the ages are the candidates, not conversion
     // strategies. The work-years leg's per-age winnerStrategy does
@@ -3081,12 +3254,27 @@ export function compareRetirementAges(
         yearly: yearlyTable(outcome.baselineRaw),
         workYears,
         workYearsWinnerByAllInTax,
+        workYearsWinnerByEndingAfterTaxWealth,
+        retirementOnly: {
+          winnerByNetCost: outcome.winnerByNetCost,
+          winnerByEndingWealth: outcome.winnerByEndingWealth,
+        },
+        workYearsComparison:
+          scenario.salaryAnnual == null
+            ? null
+            : {
+                winnerByAllInTax: workYearsWinnerByAllInTax,
+                winnerByEndingAfterTaxWealth:
+                  workYearsWinnerByEndingAfterTaxWealth,
+              },
+        comparisonModels,
+        overallRecommendation,
+        overallRecommendationNote,
         comparisonScope: scope,
       },
       [
         ...healthPremiumWarnings(scenario),
         YEARLY_TABLE_WARNING,
-        WORK_YEARS_HORIZON_WARNING,
         ...irmaaAcaCompareWarnings(outcome.mapped),
         ...unqualifiedWinnerWarning(outcome),
         // The work-years leg prices its own rolled marches,

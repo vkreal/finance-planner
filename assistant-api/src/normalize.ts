@@ -168,6 +168,8 @@ export interface NormalizedScenario {
   // — the engine falls back as documented on each field and
   // records the fallback as an assumption. medicareAgePrimary
   // null = not enrolled during the work years.
+  // Null is NOT age 65: eligibility is not enrollment, and the
+  // engine keeps HSA contributions going while it is null.
   hsaCoverage: "self-only" | "family" | "none" | null;
   hsaEligible: boolean | null;
   medicareAgePrimary: number | null;
@@ -1354,6 +1356,34 @@ export function normalizeInputs(
       "Provided by caller.",
     );
   }
+  // Medicare enrollment age: null (omitted or explicit) means NO
+  // enrollment is modeled during the work years — the engine keeps
+  // HSA contributions going (employee and employer) while it is
+  // null. It is never defaulted to 65: turning 65 makes the
+  // primary eligible, not enrolled.
+  const medicareAgePrimary = input.medicareAgePrimary ?? null;
+  if (input.medicareAgePrimary === undefined) {
+    record(
+      "medicareAgePrimary",
+      null,
+      "assumption",
+      "Not provided — no Medicare enrollment is modeled during the work years, so HSA contributions (employee and employer) continue through the work years. Eligibility at 65 is not enrollment.",
+    );
+  } else if (input.medicareAgePrimary === null) {
+    record(
+      "medicareAgePrimary",
+      null,
+      "user",
+      "Provided by caller: no Medicare enrollment is modeled during the work years.",
+    );
+  } else {
+    record(
+      "medicareAgePrimary",
+      medicareAgePrimary,
+      "user",
+      "Provided by caller: the engine stops all HSA contributions (employee and employer) in work years at or after this age.",
+    );
+  }
 
   // --- Explicit HSA inputs (Engine Review 7, E7-S1) and the
   // prior-year wage input (E7-S2). Each stays null when
@@ -1382,22 +1412,7 @@ export function normalizeInputs(
   } else {
     record("hsaEligible", hsaEligible, "user", "Provided by caller.");
   }
-  const medicareAgePrimary = input.medicareAgePrimary ?? null;
-  if (input.medicareAgePrimary === undefined) {
-    record(
-      "medicareAgePrimary",
-      null,
-      "assumption",
-      "Not provided — the primary is assumed not enrolled in Medicare during the work years.",
-    );
-  } else {
-    record(
-      "medicareAgePrimary",
-      medicareAgePrimary,
-      "user",
-      "Provided by caller.",
-    );
-  }
+
   const priorYearWagesAnnual = input.priorYearWagesAnnual ?? null;
   if (input.priorYearWagesAnnual === undefined) {
     record(

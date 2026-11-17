@@ -172,10 +172,16 @@ describe("drift: future fields stay out until their review lands", () => {
       expect(PRICED_OPTIONAL[tool]).not.toContain("medicareAgePrimary");
     }
     expect(FUTURE_FIELDS["medicareAgePrimary"]).toBeUndefined();
+    expect(FUTURE_FIELDS["medicareAgePrimary"]).toBeUndefined();
+    // Sending it is accepted now, and the value echoes in the
+    // effective inputs (the pricing itself is pinned by the
+    // review8-cross-engine suite).
     const res = dispatchTool(
       "retirement_work_years",
       fictionalScenario({ medicareAgePrimary: 65 }),
     );
     expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(JSON.stringify(res.error));
+    expect(res.effectiveInputs["medicareAgePrimary"]).toBe(65);
   });
 });

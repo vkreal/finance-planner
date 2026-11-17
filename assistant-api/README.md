@@ -24,7 +24,7 @@
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware (limited default); all six draw-order permutations with `comparisonScope: "full"`.
 - `retirement_roth_conversion` — convert to Roth? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 (limited default); the engine's full optimizer search with `comparisonScope: "full"`.
 - `retirement_dynamic_withdrawal` — year-by-year withdrawal plan: which account to draw from and how much to convert each year, re-priced annually instead of one fixed order or ceiling for the whole horizon.
-- `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg.
+- `retirement_work_years` — retire at which age? Tax-aware comparison across `compareAges`; add `salaryAnnual` for the work-years leg, `medicareAgePrimary` to model Medicare enrollment (HSA stops at or after that age).
 - `retirement_tax_year` — one year's federal/state tax, ACA credit, IRMAA, and health premiums (gross and net, when premium fields are supplied) for a published law year (2025 or 2026 today).
 - `retirement_describe_capabilities` — no inputs; returns the machine-readable guide to all of the above.
 
@@ -238,7 +238,7 @@ defaults inside `normalize` (see "Input assumptions + defaults").
 | `retirement_compare_strategies` | — | `retirementAge`, `endAge`, `spouseAge`, `filingStatus`, `householdSize`, `stocksPct`, `expectedRealReturnPct`, `socialSecurityAnnual` + `socialSecurityStartAge`, `spouseSocialSecurityAnnual` + `spouseSocialSecurityStartAge`, `taxableBasisPct`, taxable yields, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`), `comparisonScope`. Spending strategy and volatility do not change this comparison. `taxYear` does not change it either — the march starts in the current year and prices each year under that year's tables. **No strategy input** — the default compares three orders; `comparisonScope: "full"` compares all six permutations. | `scenarios` (3 by default — taxable-first / pre-tax-first / roth-first — 6 in full mode) with lifetime tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), ending wealth; `winnerByEndingWealth`, `winnerByNetCost`, `deltas` vs baseline, `comparisonScope` block, `yearly` table |
 | `retirement_roth_conversion` | — | Same as compare_strategies. | `scenarios` (do-nothing / fill-12% / fill-22% / fill-22%-irmaa-tier-1 by default; Do Nothing + winner + runners-up + ending-wealth winner in full mode) with federal/state tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when supplied), conversions total, terminal tax, ending wealth; winners + deltas; `comparisonScope` block; in full mode an `optimizer` block (candidates evaluated, winning policy, yearly conversions); `yearly` table |
 | `retirement_dynamic_withdrawal` | — | Same as compare_strategies, except `comparisonScope` — the dynamic tool has no limited/full modes; a supplied `comparisonScope` is reported ignored. | Annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, federal and state tax, penalty, IRMAA, ACA credit kept, MAGI and ACA MAGI against the cliff, RMD, ending balances with taxable basis), lifetime totals (net cost, tax, penalty, IRMAA, ACA credit, RMDs, conversions), terminal block (terminal tax on the standing pre-tax balance and the step-up in basis on the taxable balance), and the best fixed policy for comparison |
-| `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual` | Per-age Roth-compare scenarios + winners/deltas, plus `workYears` rows (all-in tax per quit age) and `workYearsWinnerByAllInTax` — the rows are `[]` and the winner `null` without a salary |
+| `retirement_work_years` | — | Same as compare_strategies, plus `compareAges` (2–5 ages; default `[retirementAge, +2, +5]`), `salaryAnnual` (needed for the work-years leg), `employer401kAnnual`, `employerHsaAnnual`, `medicareAgePrimary` (Medicare enrollment age, whole years, or `null` — omitted/`null` means no enrollment is modeled; never defaulted to 65) | Per-age Roth-compare scenarios + retirement-only winners, plus — when a salary is given — `workYears` rows (all-in tax and ending after-tax wealth per quit age), `workYearsComparison` (winner by all-in tax and by ending after-tax wealth), `comparisonModels` (what each scoped model prices), and `overallRecommendation` (set only when both salary-aware objectives agree). The rows are `[]`, the comparison `null`, and the recommendation `null` without a salary |
 | `retirement_tax_year` | — | `taxYear` (a published law year — 2025/2026 today), single-year flat fields: `interestAnnual`, `ordinaryDividendsAnnual` (TOTAL ordinary dividends, 1099-DIV Box 1a, including the qualified portion), `qualifiedDividendsAnnual` (the qualified portion, Box 1b — must not exceed ordinary; qualified above ordinary is rejected as `invalid_input` naming both fields, contract 164), `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`, plus a share sale (`stockSoldAnnual` proceeds, `stockBasisAnnual` basis — the gain or loss rides the capital-gains stack, the proceeds count as cash in) and RMDs (`pretaxPriorYearEndAnnual` / `pretaxSpousePriorYearEndAnnual` — each owner's pre-tax balance at Dec 31 of the year before the priced year; `rmdAlreadyReceivedAnnual`; `primarySoleBeneficiaryOfSpouse`), plus `filingStatus`, `householdSize`, `spouseAge`, Social Security amounts and start ages, `otherOrdinaryAnnual`, `taxExemptInterestAnnual`, ACA benchmarks, `stateRatePct`, `state`, health premiums (`healthPremiumAcaHouseholdAnnual`, `healthPremiumAcaSingleAnnual`, `healthPremiumMedicarePerPersonAnnual` — supplying any requires `spendingIncludesHealthPremiums`). `retirementAge`, `endAge`, portfolio assumptions and taxable basis do not change this year's price; the four current balances are required by the contract but never price an RMD — only the prior-Dec-31 balances above do. | Single-year price: income stack, AGI/MAGI, `federalTax`, `stateTax`, `totalTax`, ACA credit, IRMAA, health premiums (gross and net, when supplied), cash left vs spending, sale gain/loss, RMD |
 | `retirement_describe_capabilities` | None — takes no inputs | None | `tools` (9 guide entries), `requiredInputsGlobal`, `assumptionsSummary`, `limitations`, `quickStart`, `engine` block |
 
@@ -453,6 +453,7 @@ authority for any single call.
 | `taxYear` | Current calendar year clamped to the latest published law year; only the published law years (2025/2026 today) accepted | assumption |
 | `salaryAnnual` | `null` — only the work-years tool needs it | assumption |
 | `employer401kAnnual` / `employerHsaAnnual` | `0` | assumption |
+| `medicareAgePrimary` | `null` — no Medicare enrollment is modeled during the work years, so HSA contributions continue; eligibility at 65 is not enrollment. When given, the engine stops all HSA contributions (employee and employer) in work years at or after that age. Never defaulted to 65. | assumption (omitted) / user (provided) |
 | `inflationPct` | `0` — all figures in today's dollars | assumption |
 | Single-year fields (`interestAnnual`, `ordinaryDividendsAnnual`, `qualifiedDividendsAnnual`, `conversionAnnual`, `spendingDrawAnnual`, `cashDrawAnnual`, `rothDrawAnnual`) | `0` each | assumption |
 | Single-year sale (`stockSoldAnnual`, `stockBasisAnnual`) | Omitted → no sale priced (explicit `0` sale prices no gain/loss). Basis omitted with a sale → `$0` basis (whole proceeds as gain); basis with no sale → no effect. A basis above the proceeds is a realized loss: up to $3,000 offsets ordinary income, the rest carries forward. The sale is never inferred from `taxableBasisPct`. | assumption |
@@ -854,9 +855,55 @@ Plain-English answer: "Working to 60 leaves about $2.99M more at
 spending. But it isn't free: the work-years measure adds about
 $226,000 of tax for the extra working years ($53,617 of salary tax
 plus $33,737 of payroll tax, plus the tax on the bigger plan), so
-on tax alone, retiring at 56 wins. One caution: the two ending
-balances span different horizons, so compare the tax, not the
-balances — the adapter says so in its own warning."
+on tax alone, retiring at 56 wins. One caution: those two ending
+balances are retirement-only — each prices the same starting
+balances at its retirement age and ignores the salary earned by
+working to 60. The salary-aware work-years rows include the
+salary, and every row is valued at the same terminal age (95), so
+their ending after-tax wealth is comparable across quit ages
+(corrected Review 8 — the old 'different horizons' caution was
+wrong; see limitation (viii)). Lowest all-in tax and highest
+ending after-tax wealth are different objectives and may point to
+different ages; the response reports both under
+`workYearsComparison`, and `overallRecommendation` names an age
+only when both salary-aware objectives agree on it."
+
+Two comparisons, not one — read the response as two scoped
+results. The retirement-only comparison (`winnerByEndingWealth` /
+`winnerByNetCost`, also under `retirementOnly`) prices the same
+starting balances at each retirement age and ignores the salary,
+employer 401(k)/HSA contributions, and payroll tax earned by
+working longer. The salary-aware comparison (`workYears` rows,
+`workYearsComparison`) rolls the extra working years forward —
+salary, employee payroll taxes, the employee contribution stack,
+employer 401(k) and HSA, spending during the working years, and
+investment growth — then prices each quit age's rolled plan with
+the joint optimizer. `winnerByAllInTax` (lowest lifetime tax
+including the work years) and `winnerByEndingAfterTaxWealth`
+(highest ending after-tax wealth, valued at the shared terminal
+age) are different objectives: do not treat the lowest-tax age as
+the best age. `comparisonModels` names what each model prices and
+whether it searches claiming ages or runs the joint optimizer —
+the retirement-only model searches neither; the salary-aware
+model's per-age winner is the joint optimizer's pick for that quit
+age alone. Without a salary there is no salary-aware comparison,
+`workYearsComparison` is `null`, and `overallRecommendation` is
+`null` with a note saying salary input is required — a
+retirement-only winner is never presented as an overall
+recommendation.
+
+`medicareAgePrimary` models Medicare enrollment (whole years, or
+`null`): when given, the engine stops all HSA contributions — the
+employee's and the employer's — in work years at or after that
+age. Omitted or `null` means no enrollment is modeled during the
+work years, so HSA contributions continue; the response says so in
+a warning. Medicare eligibility at 65 is not enrollment, and the
+adapter never defaults this to 65. Only the primary's enrollment
+is modeled — no spouse Medicare or HSA-eligibility rule is
+invented. The standalone bundle is built from these engine
+sources by a separate step: after this change it must be rebuilt
+before its outputs can be compared with the MCP path (bundle
+parity is pending that rebuild).
 
 ## Success-rate precision and max-spending semantics
 
@@ -972,10 +1019,21 @@ spouse's claiming age is converted into the primary's age
 timeline through the two birth years. Two streams starting the
 same calendar year sum exactly, as before.
 
-(viii) **Work-years ending balances are not like-for-like across
-quit ages** (different horizons — each quit age is priced as its own
-plan starting at that quit age with rolled balances). Compare
-all-in tax, not ending wealth; the response carries the warning.
+(viii) **Work-years ending balances ARE comparable across quit
+ages** — corrected Review 8 (the old note said the opposite).
+Each quit age is priced as its own plan starting at that quit age
+with rolled balances, but every row carries the same terminal age
+(endAge): the roll covers the window start through the quit age
+and the priced plan covers the quit age through the terminal age,
+so ending after-tax wealth is valued at the same date for every
+row, and all-in tax covers the same full span for every row. The
+old "different horizons" claim confused span length with terminal
+date; the response now carries a comparability note instead of the
+old warning, and reports the salary-aware winner by ending
+after-tax wealth beside the winner by all-in tax. What still
+differs between the two comparisons is scope, not horizon: the
+retirement-only winners ignore salary, employer contributions, and
+payroll tax, while the salary-aware winners include them.
 
 (ix) **MCP Registry `server.json` is metadata only, not published,**
 and the `{host}` URL is a placeholder until a deployment exists.

@@ -320,7 +320,8 @@ const FIELD_BLURBS: Record<string, string> = {
   employerHsaAnnual: "the annual employer HSA contribution",
   hsaCoverage: "the HDHP coverage type the HSA limit prices from",
   hsaEligible: "whether the primary is an HSA-eligible individual",
-  medicareAgePrimary: "the primary's Medicare enrollment age",
+  medicareAgePrimary:
+    "the primary's Medicare enrollment age (HSA contributions stop in work years at or after that age; omitted or null means no enrollment is modeled)",
   priorYearWagesAnnual:
     "the prior calendar year's Social Security wages from the plan sponsor",
   taxYear: "the tax law year to price under",
@@ -421,6 +422,17 @@ function conditionalReason(
   }
   if (field === "spouseSocialSecurityStartAge" && s.ssSpouseAnnual === 0) {
     return "no spouse Social Security benefit was entered, so no claiming age applies; it is priced by every tool once a benefit is entered";
+  }
+  // A Medicare enrollment age prices only through the work-years
+  // leg, which runs only when a salary was provided: without one
+  // no work year is rolled and the enrollment stop has nothing to
+  // stop.
+  if (
+    tool === "retirement_work_years" &&
+    field === "medicareAgePrimary" &&
+    s.salaryAnnual == null
+  ) {
+    return "no salary was provided, so the work-years leg does not run and the enrollment age prices nothing for this scenario; retirement_work_years prices it once salaryAnnual is entered";
   }
   if (tool === "retirement_tax_year") {
     // A basis prices only against a sale.

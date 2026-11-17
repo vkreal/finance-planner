@@ -57,6 +57,17 @@ describe("advertised schema == accepting schema", () => {
     expect(props.compareAges.maxItems).toBe(5);
   });
 
+  test("medicareAgePrimary type and range agree between zod and the advertised schema", () => {
+    const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
+      .properties as Record<string, Record<string, unknown>>;
+    // Advertised side must stay an integer-or-null 0–120, matching
+    // zod .int().min(0).max(120).nullable() (schema.ts) — a one-sided
+    // future edit must fail here, not silently desync the schemas.
+    expect(props.medicareAgePrimary.type).toEqual(["integer", "null"]);
+    expect(props.medicareAgePrimary.minimum).toBe(0);
+    expect(props.medicareAgePrimary.maximum).toBe(120);
+  });
+
   test("the old advertised names appear nowhere in the schema", () => {
     const props = schemaProps();
     for (const old of [
