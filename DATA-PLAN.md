@@ -1,3 +1,11 @@
+C9 Build 4 NICE — the "ten funding sources" count in the YEAR FUNDING fixture note (2026-11-17): the note on the cliff-shape blank-yields identity fixture said ten funding sources; the true count is thirteen, matching the four other notes in the file. The count word is corrected to thirteen, with a short parenthetical noting the fixture's own sum lists the eleven non-zero terms here, the other two being zero in every year of this shape. Note prose only: no figure, no expected value, no fixture logic changed.
+
+## Build (2026-11-17): C9 Build 4 NICE — "ten funding sources" count corrected to thirteen (API contract stays 163)
+
+Note prose only: the count word in the YEAR FUNDING cliff-shape blank-yields fixture note is corrected from ten to thirteen, with a short parenthetical reconciling the note with the fixture's own sum, which lists the eleven non-zero terms — the two omitted terms are zero in every year of this shape, verified by probe on this tree (both terms zero across all priced years; the eleven-term and thirteen-term sums both foot to the cent). No figure, no expected value, and no fixture logic changed; the fixture still passes with its pinned identity intact.
+
+EVIDENCE: regression gate 9,728 leaves, 0 diffs; December reference bit-identical; December fixtures 96/96; the fixture carrying the note plus its two sibling identity fixtures 3/3; four typechecks exit 0 (server, client, adapter, adapter-check). Scrub (patterns.txt + patterns-supplement.txt over the final diff, its own gated step): zero matches. CONTRACT: stays 163 — note prose only; no action signature, no request shape, no stored format, and no priced value changed.
+
 Harness-guard NICEs — guard-comment coverage note and the no-tsconfig note (2026-11-17): the header comment above the Retirement-literals guard now states that the Calc-derived required-key set is the same set as the baseline and scenario actions, so the one derivation covers the baseline calls too; the packaged README now notes that no tsconfig covers the harness file. Comment and documentation only: no code, no tests, no figures, no behavior change.
 
 ## Build (2026-11-17): Harness-guard NICEs — guard-comment coverage note and no-tsconfig note (API contract stays 163)
