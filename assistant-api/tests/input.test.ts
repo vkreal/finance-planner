@@ -188,6 +188,23 @@ describe("invalid values", () => {
     }
   });
 
+  test("taxYear rejection names the app's carried-forward alternative", () => {
+    // Engine Review 3 NICE-2: the real caller path (through
+    // normalize) must carry the pointer the adapter guard names
+    // only for direct calls bypassing normalize — an unpublished
+    // year is rejected here, while the app's single-year action
+    // prices it on the newest published row carried forward.
+    const n = normalizeInputs(
+      fictionalScenario({ taxYear: latestTaxLawYear() + 1 }),
+    );
+    expect(n.ok).toBe(false);
+    if (n.ok) return;
+    expect(n.error.error.code).toBe("invalid_input");
+    const details = JSON.stringify(n.error.error.details);
+    expect(details).toContain("carried forward");
+    expect(details).toContain("single-year action");
+  });
+
   test("retirementAge before currentAge is invalid_input", () => {
     const n = normalizeInputs(fictionalScenario({ retirementAge: 53 }));
     expect(n.ok).toBe(false);

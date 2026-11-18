@@ -1008,7 +1008,10 @@ clone.
 
 (vi) **Single-year tax covers the published law years only
 (2025/2026 today).** Later tables are not yet published, so
-later-year pricing is not available.
+later-year pricing is not available from this tool. The app's
+single-year action differs: it prices a later year on the newest
+published row carried forward, naming the substitution in
+lawProvenance.
 
 (vii) **Both Social Security streams are priced in the
 deterministic projection, Monte Carlo, and max-spending solver,
@@ -1043,7 +1046,9 @@ the latest published law year (2026).** The default never names a
 year the tables don't cover, and `describe_capabilities` reports
 the same derived year. (The accepted set is derived from the
 published law tables — when the 2027 tables publish, the schema
-accepts 2027 with no code change.)
+accepts 2027 with no code change.) An explicitly entered later
+year is still rejected by this tool — the app's single-year action
+prices it on the newest published row carried forward instead.
 
 (xi) **A long call stalls the whole server.** Engine calls run
 synchronously in-process with no timeout in v1: while one call

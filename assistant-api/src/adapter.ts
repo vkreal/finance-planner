@@ -1837,13 +1837,15 @@ function irmaaAcaCompareWarnings(
 // roll, and a quit-age row spans exact and carried-forward
 // years at once. The response-level note below is the label
 // instead: the state tax inside workTax / totalTax /
-// allInTax is the same flat-rate estimate as in the yearly
-// table, never an exact state return, and salary years past
-// the newest published law row price on that row carried
-// forward, a projection. The per-year provenance for the
-// same plan is in this response's yearly table.
+// allInTax is the flat-rate estimate — or, for a Washington household,
+// the Washington capital-gains excise where a deficit-funding Taxable
+// sale prices under RCW 82.87 — never an exact state return, and salary
+// years past the newest published law row price on that row carried
+// forward, a projection. The retirement years' per-year provenance is
+// in this response's yearly table; the salary years' per-year
+// provenance is not in this response.
 const WORK_YEARS_STATE_TAX_NOTE =
-  "Work-years tax totals (workTax, totalTax, allInTax) include flat-rate state tax: an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return. Salary years past the newest published law row price on that row carried forward, a projection; see the yearly table in this response for the per-year lawProvenance and stateTaxProvenance.";
+  "Work-years tax totals (workTax, totalTax, allInTax) include flat-rate state tax: an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return; for a Washington household the totals may instead include a Washington capital-gains excise slice (RCW 82.87) from a deficit-funding Taxable sale. Salary years past the newest published law row price on that row carried forward, a projection; see the yearly table in this response for the retirement years' per-year lawProvenance and stateTaxProvenance — the salary years' per-year provenance is not in this response.";
 
 // ---------------------------------------------------------------------------
 // 1. Deterministic projection

@@ -11,7 +11,7 @@ A stateless, read-only MCP server (`assistant-api/`) over the Finance
 Planner's own retirement engines. Every call carries its complete
 scenario in dollars — balances, spending, ages, Social Security — and
 nothing is saved, read from a database, or remembered between calls.
-Pricing uses the 2026 tax-law tables unless `taxYear` says 2025.
+Pricing uses the 2026 tax-law tables unless `taxYear` says 2025; a year past the newest published row prices on that row carried forward in today's dollars — a projection, named in lawProvenance — and multi-year plans price their later years the same way.
 
 ## Where it lives
 

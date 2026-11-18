@@ -2057,6 +2057,26 @@ export function December() {
                   This estimate is before any withholding or estimated payments,
                   which this console does not track.
                 </p>
+                {/* Law + state-tax provenance (Engine Review 3,
+                    NICE-3): the case's headline year names the row
+                    it actually priced under — the same conditional
+                    hint the Playground renders beside its priced
+                    year (Playground.tsx tax-year hint): the law
+                    note only when the year has no published row of
+                    its own, the state note only when the state tax
+                    is the flat-rate estimate. All three cases share
+                    one headline year, so the likely case's notes
+                    describe the whole projection. */}
+                {likelyCase.lawProvenance.status !== "exact" && (
+                  <p className="mt-2 text-xs text-[var(--dim)]">
+                    {likelyCase.lawProvenance.note}
+                  </p>
+                )}
+                {likelyCase.stateTaxProvenance.kind === "flat-rate-estimate" && (
+                  <p className="mt-2 text-xs text-[var(--dim)]">
+                    {likelyCase.stateTaxProvenance.note}
+                  </p>
+                )}
               </div>
             )}
             {result.cases.length > 0 && (

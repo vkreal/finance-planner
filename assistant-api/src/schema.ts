@@ -297,7 +297,7 @@ export const RetirementQuestionInputs = z.strictObject({
         ...z.ZodLiteral<number>[],
       ],
       {
-        error: `taxYear must be one of ${TAX_YEAR_LIST.join(", ")} (the available law years)`,
+        error: `taxYear must be one of ${TAX_YEAR_LIST.join(", ")} (the available law years). The app's single-year action prices other years on the newest published row carried forward instead — this tool rejects them`,
       },
     )
     .optional(),
