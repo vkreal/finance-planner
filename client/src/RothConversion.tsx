@@ -11646,9 +11646,10 @@ export function RothConversion({
                 limit for joint filers, the self-only limit otherwise, and
                 eligibility assumed unless Medicare enrollment ends it) and
                 the run names the fallback as an assumption. From Jan 1,
-                2026, bronze and catastrophic plans count as
+                2026, bronze and catastrophic plans available as
+                individual coverage through an Exchange count as
                 HSA-compatible even when they do not meet the usual HDHP
-                deductible minimums (IRS Notice 2026-05), so a bronze
+                deductible minimums (IRS Notice 2026-05), so such a bronze
                 plan is qualifying coverage — not &ldquo;none.&rdquo; A spouse&rsquo;s
                 $1,000 age-55 catch-up is never added to your HSA: each
                 spouse&rsquo;s catch-up belongs in their own HSA. The
