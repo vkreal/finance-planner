@@ -7607,6 +7607,14 @@ export function simulateRothPlan(
       // this fix the remainder vanished here and the year's tax
       // read as fully paid.
       let unpaidTaxAmt = 0;
+      // (Engine Review C3, NICE-1): the Taxable sales the tax
+      // legs make beyond the priced draws — the reprice-delta
+      // pay, the spending-draw penalty pay, and the unpaid-tax
+      // debit's Taxable leg. The drift ledger removes their
+      // basis at once (basisOut at each site below); the legacy
+      // display's flat-% update reads this total so it removes
+      // their basis too. Display-only: nothing priced reads it.
+      let taxableTaxLegs = 0;
       const debitUnpaid = (amount: number): number => {
         let rest = amount;
         const fromT = Math.min(rest, Math.max(0, taxableBal));
@@ -7624,6 +7632,7 @@ export function simulateRothPlan(
         taxableBal -= fromT;
         rest -= fromT;
         fundTaxTaxable += fromT;
+        taxableTaxLegs += fromT;
         const fromP = Math.min(rest, Math.max(0, pretaxBalP));
         pretaxBalP -= fromP;
         rest -= fromP;
@@ -8214,6 +8223,7 @@ export function simulateRothPlan(
           createdFbGains += basisOut(pay);
           taxableBal -= pay;
           fundTaxTaxable += pay;
+          taxableTaxLegs += pay;
           const rest = delta - topUpTax - pay;
           if (rest > 0) unpaidTaxAmt += debitUnpaid(rest);
         } else if (delta < 0) {
@@ -8245,6 +8255,7 @@ export function simulateRothPlan(
         createdFbGains += basisOut(payPen);
         taxableBal -= payPen;
         fundTaxTaxable += payPen;
+        taxableTaxLegs += payPen;
         const restPen = r2(spendPenalty - payPen);
         if (restPen > 0) unpaidTaxAmt += debitUnpaid(restPen);
       }
@@ -8374,6 +8385,12 @@ export function simulateRothPlan(
         // from Taxable + spending draws) — the gain-realizing
         // draws the harvest's basis ledger reduces pro-rata.
         taxableDrawn,
+        // (Engine Review C3, NICE-1): the tax legs' Taxable
+        // sales beyond the priced draws above (reprice-delta
+        // pay, penalty pay, unpaid-tax debit's Taxable leg) —
+        // the sales the legacy display's flat-% basis update
+        // must also remove basis for. Display-only.
+        taxableTaxLegs,
         // The drift ledger's basis dollars at settlement end
         // (pre-growth, pre-harvest); read only on drift runs —
         // the legacy path keeps its own ledger update below.
@@ -8810,7 +8827,13 @@ export function simulateRothPlan(
     // (bracket top / 0% LTCG space on taxable income, IRMAA tier
     // cap / custom cap on MAGI, ACA cliff on ACA MAGI), checked
     // against the settled year's official figures.
-    const respectsCeilings = (p: PriceYearResult): boolean => {
+    // (Engine Review C3, NICE-3): the candidate conversion is
+    // a parameter, not the year's current `additional` / `conversion`
+    // lets — callers judge settlements priced at other conversions
+    // (the R7-4 bisection's at-zero and mid candidates, the
+    // grow-backs' grown candidates), and the ACA-inactive-only-
+    // ceiling branch below reads the conversion being judged.
+    const respectsCeilings = (p: PriceYearResult, additionalToJudge: number): boolean => {
       const ceilings = yearCeilings;
       if (!ceilings) return true;
       const law = lawForYear(year);
@@ -8849,14 +8872,14 @@ export function simulateRothPlan(
           ceilings.irmaaTierCap == null &&
           !ceilings.ltcgZeroCap &&
           ceilings.magiCap == null &&
-          conversion > 0
+          already + additionalToJudge > 0
         ) {
           // ACA inactive and the cliff cap is the only ceiling:
           // fillConversion converts $0 in this case, so any
           // priced conversion here (the already-converted
           // top-up) is the user's own, not the strategy's — but
           // a strategy-driven additional conversion must be $0.
-          if (additional > 0) return false;
+          if (additionalToJudge > 0) return false;
         }
       }
       return true;
@@ -8875,7 +8898,7 @@ export function simulateRothPlan(
     let settled = settleYear(additional);
     if (yearCeilings && ceilingsActive(yearCeilings) && inWindow) {
       for (let pass = 1; pass < 6; pass++) {
-        if (additional <= 0 || respectsCeilings(settled.priced)) break;
+        if (additional <= 0 || respectsCeilings(settled.priced, additional)) break;
         const target = fillConversion({
           base: {
             ...fillBase,
@@ -8938,10 +8961,10 @@ export function simulateRothPlan(
       ceilingsActive(yearCeilings) &&
       inWindow &&
       additional > 0 &&
-      !respectsCeilings(settled.priced)
+      !respectsCeilings(settled.priced, additional)
     ) {
       const atZero = settleYear(0);
-      if (respectsCeilings(atZero.priced)) {
+      if (respectsCeilings(atZero.priced, 0)) {
         let lo = 0;
         let hi = Math.round(additional * 100);
         let bestAdd = 0;
@@ -8949,7 +8972,7 @@ export function simulateRothPlan(
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(mid / 100);
-          if (respectsCeilings(candidate.priced)) {
+          if (respectsCeilings(candidate.priced, mid / 100)) {
             lo = mid;
             bestAdd = mid / 100;
             best = candidate;
@@ -9046,7 +9069,7 @@ export function simulateRothPlan(
       !bunchZero &&
       !eraZeroFill &&
       !forceZeroConversion &&
-      respectsCeilings(settled.priced)
+      respectsCeilings(settled.priced, additional)
     ) {
       const lawG = lawForYear(year);
       // Narrowed once: the gate above proves irmaaTierCap
@@ -9136,7 +9159,7 @@ export function simulateRothPlan(
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional + mid / 100);
           if (
-            respectsCeilings(candidate.priced) &&
+            respectsCeilings(candidate.priced, additional + mid / 100) &&
             tierOk(candidate.priced) &&
             guardrailStepOk(candidate, already + additional + mid / 100)
           ) {
@@ -9293,7 +9316,7 @@ export function simulateRothPlan(
       !bunchZero &&
       !eraZeroFill &&
       !forceZeroConversion &&
-      respectsCeilings(settled.priced) &&
+      respectsCeilings(settled.priced, additional) &&
       settled.priced.acaMagi < acaTargetDollars - 0.005
     ) {
       const maxAdditional = Math.max(
@@ -9361,7 +9384,7 @@ export function simulateRothPlan(
           const candidate = settleYear(additional + mid / 100);
           if (
             candidate.priced.acaMagi <= acaTargetDollars + 0.005 &&
-            respectsCeilings(candidate.priced) &&
+            respectsCeilings(candidate.priced, additional + mid / 100) &&
             guardrailStepOk(candidate, already + additional + mid / 100)
           ) {
             lo = mid;
@@ -9526,10 +9549,18 @@ export function simulateRothPlan(
       // when the yields outrun the return the counter can
       // carry a basis above the balance it describes, and
       // that is the true basis — dollars paid, not a share
-      // of the balance.
+      // of the balance. (Engine Review C3, NICE-1: the
+      // flat-% removal covers the tax legs' Taxable sales
+      // too — settled.taxableTaxLegs — not only the priced
+      // draws; before this fix the reprice-delta pay's basis
+      // share was omitted and the display overstated by
+      // exactly that share, e.g. +$1,876.53 in year 1 of a
+      // state-5% run.)
       taxableBasisDollars = Math.max(
         0,
-        taxableBasisDollars - settled.taxableDrawn * basisPctClamped + yieldTotal,
+        taxableBasisDollars -
+          (settled.taxableDrawn + settled.taxableTaxLegs) * basisPctClamped +
+          yieldTotal,
       );
     }
     // SPEND-FROM-CASH sleeve commit: the kept settlement's own
@@ -10996,7 +11027,7 @@ export function simulateRothPlan(
       ceilingBreached:
         yearCeilings != null &&
         ceilingsActive(yearCeilings) &&
-        !respectsCeilings(priced),
+        !respectsCeilings(priced, additional),
     });
   }
 

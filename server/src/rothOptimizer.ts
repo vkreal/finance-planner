@@ -1179,7 +1179,11 @@ export function scoreAllCandidates(
   const planOrderKey = drawOrderKey(inputs.drawOrder);
   const scored: ScoredCandidate[] = [];
   const dnResult = simulateRothPlan(
-    inputs,
+    // (Engine Review C3, NICE-4): deep-clone — the march must
+    // never receive the plan's own inputs object, whose nested
+    // arrays (taxableTiers, educationStudents,
+    // acaHouseholdSchedule) a shallow copy would still share.
+    structuredClone(inputs),
     {
       id: "none",
       name: "Do Nothing",
@@ -1200,11 +1204,17 @@ export function scoreAllCandidates(
     claimAges,
   });
   for (const spec of buildOptimizerCandidates(inputs, orders)) {
+    // (Engine Review C3, NICE-4): deep-clone — on a window /
+    // order match the candidate inputs must NOT be the plan's
+    // own inputs object, and a shallow spread would still share
+    // the nested arrays (taxableTiers, educationStudents,
+    // acaHouseholdSchedule). Safe today (the march never
+    // mutates its inputs), fragile without the clone.
     const candidateInputs =
       spec.windowStopAge === inputs.windowStopAge &&
       drawOrderKey(spec.drawOrder) === planOrderKey
-        ? inputs
-        : { ...inputs, windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
+        ? structuredClone(inputs)
+        : { ...structuredClone(inputs), windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
     const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), undefined, {
       leanDetail: true,
     });
@@ -1802,7 +1812,10 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   };
   const screened: Screened[] = combos.map((combo) => {
     const dnResult = simulateRothPlan(
-      combo.inputs,
+      // (Engine Review C3, NICE-4): deep-clone — see the
+      // runOptimizer Do Nothing call above; the march must
+      // never receive the combo's own inputs object.
+      structuredClone(combo.inputs),
       {
         id: "none",
         name: "Do Nothing",
@@ -1814,10 +1827,12 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
     const doNothingCost = planNetCost(dnResult, inputs).netCost;
     let best = doNothingCost;
     for (const spec of specs) {
+      // (Engine Review C3, NICE-4): deep-clone — see the
+      // runOptimizer candidate loop above.
       const candidateInputs =
         spec.windowStopAge === combo.inputs.windowStopAge
-          ? combo.inputs
-          : { ...combo.inputs, windowStopAge: spec.windowStopAge };
+          ? structuredClone(combo.inputs)
+          : { ...structuredClone(combo.inputs), windowStopAge: spec.windowStopAge };
       const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), undefined, {
         leanDetail: true,
       });
@@ -2397,17 +2412,25 @@ function priceMcCandidate(
   };
   if (spec.key === DO_NOTHING_SPEC.key) {
     const result = simulateRothPlan(
-      comboInputs,
+      // (Engine Review C3, NICE-4): deep-clone — same exposure
+      // as the candidate branch below; comboInputs shares the
+      // plan's nested arrays.
+      structuredClone(comboInputs),
       { id: "none", name: "Do Nothing", ceilings: null },
       series,
     );
     return planNetCost(result, inputs).netCost;
   }
+  // (Engine Review C3, NICE-4): deep-clone — see the
+  // runOptimizer candidate loop above; on a window / order
+  // match the candidate inputs must NOT be the combo's own
+  // inputs object, and a shallow spread would still share
+  // the nested arrays.
   const candidateInputs =
     spec.windowStopAge === comboInputs.windowStopAge &&
     drawOrderKey(spec.drawOrder) === drawOrderKey(comboInputs.drawOrder)
-      ? comboInputs
-      : { ...comboInputs, windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
+      ? structuredClone(comboInputs)
+      : { ...structuredClone(comboInputs), windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
   const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), series);
   return planNetCost(result, inputs).netCost;
 }

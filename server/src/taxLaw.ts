@@ -553,6 +553,33 @@ export const EARLIEST_LAW: YearLaw = TAX_LAW_YEARS[0]!;
 // year's row to TAX_LAW_YEARS moves this pointer automatically.
 export const CURRENT_LAW: YearLaw = TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1]!;
 
+// (Engine Review C3, NICE-5): the table rows are DEEP-FROZEN at
+// module load, so lawForYear can return the shared row itself
+// and no writer anywhere in the process can corrupt it — a
+// write to any field, top-level or nested, throws in strict
+// mode instead of silently standing for every later pricing.
+// A deliberate nested mutation in a throwaway process
+// (row.brackets.mfj[0] = 1) moved a later pricing's federal
+// tax $4,615.00 → $4,970.98 before this freeze; after it the
+// same write throws and the pricing is untouched. A freeze
+// (rather than a per-call deep copy) is the pick here because
+// lawForYear is called once per priced year in every
+// simulation — millions of calls in an optimizer run — and a
+// structuredClone per call measured ~38µs under load, enough
+// to stretch a ~60s cold optimizer run past ten minutes; the
+// freeze costs nothing per call. No engine or test path
+// mutates a law row (verified by grep over every law-row
+// write form), so freezing changes no behavior — a future
+// local tweak prices from a spread copy instead, as before.
+function deepFreezeLaw<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) deepFreezeLaw(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+for (const law of TAX_LAW_YEARS) deepFreezeLaw(law);
+
 export function lawForYear(year: number): YearLaw {
   // Called once per priced year in every simulation; the table
   // is static, so resolve by direct comparison instead of a
@@ -565,6 +592,11 @@ export function lawForYear(year: number): YearLaw {
   // year resolved to CURRENT_LAW, so a 2023 or 2024 year was
   // silently taxed with 2026 brackets, standard deduction, and
   // thresholds).
+  //
+  // (Engine Review C3, NICE-5): the row returned is the shared
+  // table row itself, deep-frozen at module load (see the freeze
+  // above) — no copy is made, so this stays free on the hot
+  // path, and no writer can corrupt the table through it.
   for (const law of TAX_LAW_YEARS) {
     if (law.year === year) return law;
   }

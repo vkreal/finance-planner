@@ -27984,6 +27984,125 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "c3-niit-w6-b1",
+    kind: "tax",
+    note: "Engine Review C3, NICE-2 (W6 case B1, guard fixture): the NIIT (§1411) threshold is tested against AGI, NOT the ACA/IRMAA MAGI — §1411(d)(2) adds back only foreign-income exclusions (none modeled), never tax-exempt interest. PINNED on W6's exact construction, 2026 MFJ: $100,000 other ordinary + $20,000 interest + $5,000 ordinary dividends + $6,100 long-term gains with $200,000 tax-exempt interest → AGI $131,100, IRMAA/ACA MAGI $331,100, NIIT $0.00. Had the threshold been tested against MAGI (W3's error), the NIIT would be 3.8% × min($31,100 base, $81,100 excess) = $1,181.80 — this fixture FAILS under that inversion, which is what pins the distinction. (W6 VERIFIED CLEAN; no behavior to change — the fixture guards the correct behavior against re-introduction of W3's error.)",
+    expected: { agi: 131100, magi: 331100, niit: 0 },
+    actual: () => {
+      const p = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          interestIncome: 20000,
+          ordinaryDividends: 5000,
+          ltcg: 6100,
+          taxExemptInterest: 200000,
+        }),
+      );
+      return { agi: p.agi, magi: p.magi, niit: p.niit };
+    },
+  },
+  {
+    id: "c3-niit-w6-b2",
+    kind: "tax",
+    note: "Engine Review C3, NICE-2 (W6 case B2, positive control): the NIIT DOES fire when §1411 MAGI (AGI) crosses the threshold with investment income present — the companion to c3-niit-w6-b1, proving the $0.00 there is the threshold test working, not NIIT never firing. PINNED on W6's exact construction, 2026 MFJ: $300,000 other ordinary + $50,000 interest → AGI $350,000, MAGI $350,000, NIIT base $50,000, excess over the $250,000 MFJ threshold $100,000, NIIT 3.8% × min($50,000, $100,000) = $1,900.00.",
+    expected: { agi: 350000, magi: 350000, niit: 1900 },
+    actual: () => {
+      const p = priceYear(
+        basePrice({
+          otherOrdinary: 300000,
+          interestIncome: 50000,
+        }),
+      );
+      return { agi: p.agi, magi: p.magi, niit: p.niit };
+    },
+  },
+  {
+    id: "c3-aca-3c-knife-edge-2034",
+    kind: "tax",
+    note: "Engine Review C3, NICE-8 (P3 §C): pin the 3¢ ACA knife-edge as a boundary fixture. The Fill-10% roth-pretax-taxable candidate's year 2034 (S1-shaped inputs on the shared fictional sample household: spend $150,000, roth-first draw order, embedded premium $13,147.20, window stop 65) is settlementConverged=false with mismatch {gains:0, pretax:0, acaCredit:3}, rounds 2, passes 8, stop iteration-limit, inner converged; ACA MAGI $89,045.72 against a $132,000 cliff — NOT a cliff case, the credit iteration contracts slowly and the 8-pass limit is hit with a 2–3¢ residual left. The residual re-derives from observables (W2 §1.5): kept credit $9,447.60 vs assumed $9,447.57 (benchmark $17,500.00 − net premium $8,052.43) = 3¢ exactly, so the engine field is genuine, not a rounding artifact. Neighbours: spend $149,500 → 2¢ (benign), $150,500 → 3¢ (invalid) — the benign/invalid boundary is a 1¢ knife-edge in spending. The candidate reads invalid (maxMismatchAcaCreditCents 3, one reason naming the 3¢ ACA residual in 2034); the crown is unaffected (the fill candidates sit ~$800k behind the winner). No behavior change is implied — the fixture documents the ACA component's tolerance line so any future tolerance decision must confront the boundary deliberately.",
+    expected: {
+      y2034Converged: 0,
+      y2034MismatchGains: 0,
+      y2034MismatchPretax: 0,
+      y2034MismatchAcaCredit: 3,
+      y2034Rounds: 2,
+      y2034Passes: 8,
+      y2034Stop: "iteration-limit",
+      y2034InnerStop: "converged",
+      y2034AcaMagi: 89045.72,
+      y2034Cliff: 132000,
+      y2034CreditKept: 9447.6,
+      y2034AssumedCredit: 9447.57,
+      y2034Neighbour149500Aca: 2,
+      y2034Neighbour149500Converged: 0,
+      y2034Neighbour150500Aca: 3,
+      y2034Neighbour150500Converged: 0,
+      integrityStatus: "invalid",
+      integrityMaxAcaCredit: 3,
+      integrityReasons: 1,
+    },
+    actual: () => {
+      const s1inputs = samplePlanInputs({
+        annualSpending: 150000,
+        drawOrder: ["roth", "taxable", "pretax"],
+        acaEmbeddedNetPremium: 13147.2,
+      });
+      const specs = buildOptimizerCandidates(s1inputs);
+      const spec = specs.find(
+        (s) => s.key === "10|-|-|-|-:65:-:-:roth-pretax-taxable:hv",
+      )!;
+      const candInputs = {
+        ...s1inputs,
+        windowStopAge: spec.windowStopAge,
+        drawOrder: spec.drawOrder,
+      };
+      const plan = simulateRothPlan(candInputs, candidateStrategy(spec), undefined, {
+        leanDetail: true,
+      });
+      const y34 = plan.years.find((y) => y.year === 2034)!;
+      const neighbourAca = (spend: number) => {
+        const inp = samplePlanInputs({
+          annualSpending: spend,
+          drawOrder: ["roth", "taxable", "pretax"],
+          acaEmbeddedNetPremium: 13147.2,
+          windowStopAge: 65,
+        });
+        const p = simulateRothPlan(
+          { ...inp, drawOrder: ["roth", "pretax", "taxable"] },
+          candidateStrategy(spec),
+          undefined,
+          { leanDetail: true },
+        );
+        return p.years.find((yy) => yy.year === 2034)!;
+      };
+      const n149500 = neighbourAca(149500);
+      const n150500 = neighbourAca(150500);
+      const integ = assessCandidateIntegrity(plan);
+      return {
+        y2034Converged: y34.settlementConverged ? 1 : 0,
+        y2034MismatchGains: y34.settlementMismatchCents.gains,
+        y2034MismatchPretax: y34.settlementMismatchCents.pretax,
+        y2034MismatchAcaCredit: y34.settlementMismatchCents.acaCredit,
+        y2034Rounds: y34.settlementRounds,
+        y2034Passes: y34.settlementPasses,
+        y2034Stop: y34.settlementStopReason,
+        y2034InnerStop: y34.settlementInnerStopReason,
+        y2034AcaMagi: y34.acaMagi,
+        y2034Cliff: y34.detail.aca.cliff,
+        y2034CreditKept: y34.acaCreditKept,
+        y2034AssumedCredit:
+          Math.round((y34.detail.aca.benchmark! - y34.detail.acaPremiumNet) * 100) / 100,
+        y2034Neighbour149500Aca: n149500.settlementMismatchCents.acaCredit,
+        y2034Neighbour149500Converged: n149500.settlementConverged ? 1 : 0,
+        y2034Neighbour150500Aca: n150500.settlementMismatchCents.acaCredit,
+        y2034Neighbour150500Converged: n150500.settlementConverged ? 1 : 0,
+        integrityStatus: integ.status,
+        integrityMaxAcaCredit: integ.maxMismatchAcaCreditCents,
+        integrityReasons: integ.reasons.length,
+      };
+    },
+  },
+  {
     id: "health-premium-terminal-tier-rule",
     kind: "tax",
     note: "Terminal tier rule (build v208 pin of the rule the step-(a) re-price resolved): the score's terminal tax on the ending pre-tax balance prices in two tiers — the preserved part (ending pre-tax up to the preserve floor) at the preserve's EXIT rate, and only the excess above the floor at the HEIR rate. Pinned directly on netCostBreakdown with a stub result (all lifetime components $0, so the net cost IS the terminal): ending pre-tax $800,000 with a $500,000 preserve at a 10% exit rate and a 22% heir rate → preserved $500,000 × 10% = $50,000 plus excess $300,000 × 22% = $66,000, terminal $116,000. Below the floor the whole balance prices at the exit rate: ending $300,000 → $30,000, excess $0. (The stub's other lifetime fields are the RothPlanResult fields netCostBreakdown reads; every one is $0 here, including the health premium fields the v208 score added.)",
