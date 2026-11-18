@@ -1237,16 +1237,23 @@ function solveGuardrailsScan(
     // when guardrailsCutPct < 100, the raise rail when
     // guardrailsRaisePct > 100. The cut is checked first, so
     // with cut < 100 the year-1 gross is
-    // round(cents * (1 - adj)) for every run with a positive
-    // balance at retirement (a zero balance takes no
-    // adjustment, so its gross stays the base spending — a
-    // HIGHER net, which is the safe direction for this
-    // filter). The filter must therefore bound the TRUE
-    // first-year net: with cut < 100 the threshold is the cut
-    // gross minus the first-year income, the lowest net any
-    // run can take; otherwise the base spending minus the
-    // first-year income still bounds it from below (the raise
-    // side only ever increases the gross). The earlier version
+    // round(cents * (1 - adj)) when the cut fires, and the base
+    // spending (or the raise gross) when it does not fire —
+    // tolerance edge or zero balance. The filter must therefore
+    // bound the TRUE first-year net from below, so firstYearGross
+    // is the SMALLEST gross any run can take: the base spending,
+    // the cut gross when cut < 100, the raise gross when
+    // raise > 100, whichever is least. For adj >= 0 that minimum
+    // is the cut gross when cut < 100 and the base spending
+    // otherwise (the raise side only ever increases the gross
+    // for adj >= 0); for adj < 0 (direct call only; the app
+    // clamps adj to 1..50) the raise gross is the smallest, and
+    // pricing the base spending instead would overstate the
+    // year-1 net and reject feasible steps. A naive
+    // Math.max(0, adj) mirror-guard would still price the base
+    // spending on the raise side and stay up to 10% low — the
+    // raise gross is the true minimum (Engine Review C5, NICE-5).
+    // The earlier version
     // of this filter assumed the gross was always the base
     // spending and so overstated the net — and undercounted
     // the runs that can pass year 1 — whenever cut < 100.
@@ -1259,10 +1266,31 @@ function solveGuardrailsScan(
     // bound on successes, never a lower one: passing the filter
     // proves nothing, so every step that passes is still
     // decided by runNeverRunsOut below.
-    const firstYearGross =
-      base.guardrailsCutPct < 100
-        ? Math.round(cents * (1 - base.guardrailsAdjustmentPct / 100))
-        : cents;
+    // Engine Review C5, NICE-5: firstYearGross is the minimum
+    // over the applicable year-1 grosses (base spending, cut
+    // gross when cut < 100, raise gross when raise > 100). That
+    // minimum is the cut gross when cut < 100 and the base
+    // spending otherwise for adj >= 0 — exactly the previous
+    // formula — and the raise gross for adj < 0 when the raise
+    // fires, which is the true minimum there. Identity for
+    // adj >= 0.
+    const firstYearGross = Math.min(
+      cents,
+      ...(base.guardrailsCutPct < 100
+        ? [
+            Math.round(
+              cents * (1 - base.guardrailsAdjustmentPct / 100),
+            ),
+          ]
+        : []),
+      ...(base.guardrailsRaisePct > 100
+        ? [
+            Math.round(
+              cents * (1 + base.guardrailsAdjustmentPct / 100),
+            ),
+          ]
+        : []),
+    );
     const firstYearNet = firstYearGross - firstYearIncome;
     if (firstYearNet > 0) {
       let lo = 0;
@@ -1297,7 +1325,15 @@ function solveGuardrailsScan(
   // < 100 and adj < 100 (the cut fires in year 1, so the gross
   // is round(cents * (1 - adj))), and the search cap when cut
   // < 100 and adj >= 100 (the year-1 cut zeroes the spending,
-  // so no finite year-1 ceiling exists). The spending exactly
+  // so no finite year-1 ceiling exists). When cut >= 100 and
+  // raise > 100 and adj < 0 (Engine Review C5, NICE-5), the
+  // total is divided by the year-1 raise factor (1 + adj)
+  // instead (the raise fires in year 1, so the gross is
+  // round(cents * (1 + adj)) — the undivided bound would cut
+  // the scan short there, and bound the scanSteps = 0 edge);
+  // the search cap when cut >= 100 and adj <= -100 (the
+  // year-1 raise zeroes the spending, so no finite year-1
+  // ceiling exists). The spending exactly
   // AT that ceiling can succeed — an exactly funded first-year
   // withdrawal is not short, and a plan whose later years are
   // covered by the income can succeed there — so the scan bound
@@ -1367,6 +1403,24 @@ function solveGuardrailsScan(
   // only bound.
   const cutFactor =
     1 - Math.max(0, base.guardrailsAdjustmentPct) / 100;
+  // Engine Review C5, NICE-5: the raise factor, parallel to
+  // cutFactor — the year-1 gross factor when the raise fires.
+  // For adj >= 0 it is >= 1, so the undivided bound below is
+  // already sound and nothing changes; for adj < 0 with
+  // raise > 100 it is (1 + adj) < 1, and the undivided bound
+  // would cut the scan short — the ceiling divides by it,
+  // exactly as the cut side divides by cutFactor (including
+  // the +1 cent of Math.round slack and the +1 step for the
+  // floor). It also bounds the scanSteps = 0 edge: with
+  // maxRetBal + eventualIncome < $100 the divided bound still
+  // yields at least one step when the raise-shrunk $100 gross
+  // can pass year 1. A raise factor at or below 0 (adj <= -100)
+  // zeroes the year-1 gross, so no finite ceiling exists and
+  // the search cap is the only bound. Identity for adj >= 0.
+  const raiseFactor =
+    base.guardrailsRaisePct > 100
+      ? 1 + base.guardrailsAdjustmentPct / 100
+      : 1;
   const scanSteps =
     base.guardrailsCutPct < 100 && cutFactor > 0
       ? Math.min(
@@ -1380,10 +1434,22 @@ function solveGuardrailsScan(
         )
       : base.guardrailsCutPct < 100
         ? capSteps
-        : Math.min(
-            capSteps,
-            Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)),
-          );
+        : raiseFactor > 0 && raiseFactor < 1
+          ? Math.min(
+              capSteps,
+              Math.max(
+                0,
+                Math.floor(
+                  (maxRetBal + eventualIncome + 1) / (STEP * raiseFactor),
+                ) + 1,
+              ),
+            )
+          : raiseFactor <= 0
+            ? capSteps
+            : Math.min(
+                capSteps,
+                Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)),
+              );
   // Descending scan (Engine Review C5, Phase 6): the scan used
   // to walk k = 1..scanSteps and keep the largest feasible step.
   // Under non-monotonicity that tests every step — including the
@@ -1395,9 +1461,9 @@ function solveGuardrailsScan(
   // failing in the first retired year) and no step below it can
   // beat it. The answer is identical by construction; when no
   // step is feasible the scan tests them all and best stays 0,
-  // exactly as before. Measured on the bench plan (ceiling
-  // (probe-phase6.ts; the best itself is recorded in
-  // bench-after.log). The filter cuts the infeasible tail
+  // exactly as before. Measured on the bench plan in
+  // probe-phase6.ts; the best itself is recorded in
+  // bench-after.log. The filter cuts the infeasible tail
   // further still — see bench-after.
   let best = 0;
   for (let k = scanSteps; k >= 1; k--) {
@@ -1456,6 +1522,12 @@ export function solveMaxSpending(
   // never does, so without this a NaN seed would silently solve
   // on the historical engine.
   validateMonteCarloSeed(mcSeed);
+  // Engine Review C5, NICE-2: expected/vol are validated up front
+  // too, alongside the seed — the Monte Carlo legs reach
+  // runMonteCarlo (which validates them) but the historical leg
+  // never does, so without this a NaN expected/vol would silently
+  // solve on the historical engine. Identity for finite inputs.
+  validateMonteCarloReturn(expected, vol);
   // No retired years (build v66, boundary audit F6): when
   // the retirement age is at or past the plan's end age, no
   // modeled year ever withdraws the solved spending, so every

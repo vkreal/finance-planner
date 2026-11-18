@@ -45,6 +45,7 @@ import {
   MAX_MONTE_CARLO_RUNS,
   medianOf,
   mulberry32,
+  neverRunsOutFromDetailed,
   normalRandom,
   percentile,
   runHistorical,
@@ -387,6 +388,25 @@ describe("C5-M1-d/e: runMonteCarlo seed / return / volatility validation", () =>
     expect(() =>
       solveMaxSpending(probeInputs(), 95, 0.05, 0.15, "historical", 85, 1.5),
     ).toThrowError(/seed must be a finite integer/);
+  });
+
+  test("solveMaxSpending validates expected/vol even on the historical leg (a NaN expected/vol cannot silently solve)", () => {
+    // Engine Review C5, NICE-2: the Monte Carlo legs reach
+    // runMonteCarlo (which validates expected/vol) but the
+    // historical leg never does — the entry check fails fast
+    // there too, with the same messages runMonteCarlo throws.
+    expect(() =>
+      solveMaxSpending(probeInputs(), 95, NaN, 0.15, "historical", 85, 12345),
+    ).toThrowError(/expected return must be a finite number/);
+    expect(() =>
+      solveMaxSpending(probeInputs(), 95, Infinity, 0.15, "historical", 85, 12345),
+    ).toThrowError(/expected return must be a finite number/);
+    expect(() =>
+      solveMaxSpending(probeInputs(), 95, 0.05, NaN, "historical", 85, 12345),
+    ).toThrowError(/volatility must be a finite number at or above 0/);
+    expect(() =>
+      solveMaxSpending(probeInputs(), 95, 0.05, -0.1, "historical", 85, 12345),
+    ).toThrowError(/volatility must be a finite number at or above 0/);
   });
 
   test("valid seeded outputs are unchanged by the fix (Phase 1 after-probe pins)", () => {
@@ -797,6 +817,93 @@ describe("C5 Phase 2: Monte Carlo-level oracles vs the independent reference", (
         }
       }
     }
+  });
+
+  test("neverRunsOutFromDetailed (production helper) agrees with runNeverRunsOut directly", () => {
+    // Engine Review C5, NICE-4: the production helper itself had
+    // no direct unit test — only the test's re-derived helper was
+    // compared against runNeverRunsOut. Call the production helper
+    // on the detailed run's own arrays and compare it against
+    // runNeverRunsOut (and the re-derived helper) on three
+    // hand-computed vectors, all at 0% returns.
+    // Vector A — $0-mid-horizon-refill: start $30,000, spend
+    // $20,000/yr, $50,000/yr income from 58, ages 55-59. Age 55
+    // nets $20,000 -> $10,000; age 56 nets $20,000 against
+    // $10,000 — the run fails mid-horizon; ages 57-59 refill on
+    // the income to a $60,000 ending. Ending positive, verdict
+    // false: the first failure settles it.
+    const refill = sampleInputs({
+      startCents: 3_000_000,
+      spendingCents: 2_000_000,
+      currentAge: 55,
+      retirementAge: 55,
+      endAge: 59,
+      extraIncomeCents: 5_000_000,
+      extraIncomeStartAge: 58,
+    });
+    const refillReturns = [0, 0, 0, 0, 0];
+    const refillDet = simulateDetailed(refill, refillReturns);
+    expect(refillDet.balances).toEqual([
+      3_000_000, 1_000_000, 0, 0, 3_000_000, 6_000_000,
+    ]);
+    expect(refillDet.netWithdrawals).toEqual([
+      2_000_000, 2_000_000, 2_000_000, -3_000_000, -3_000_000,
+    ]);
+    expect(runNeverRunsOut(refill, refillReturns)).toBe(false);
+    expect(derivedNeverOut(refillDet, refill)).toBe(false);
+    expect(neverRunsOutFromDetailed(refillDet, refill)).toBe(false);
+    expect(neverRunsOutFromDetailed(refillDet, refill)).toBe(
+      runNeverRunsOut(refill, refillReturns),
+    );
+    // Vector B — first-retired-year failure: start $10,000,
+    // spend $20,000/yr, no income, ages 55-57. The very first
+    // retired year shorts ($20,000 > $10,000).
+    const firstYear = sampleInputs({
+      startCents: 1_000_000,
+      spendingCents: 2_000_000,
+      currentAge: 55,
+      retirementAge: 55,
+      endAge: 57,
+      extraIncomeCents: 0,
+      extraIncomeStartAge: null,
+    });
+    const firstYearReturns = [0, 0, 0];
+    const firstYearDet = simulateDetailed(firstYear, firstYearReturns);
+    expect(firstYearDet.balances).toEqual([1_000_000, 0, 0, 0]);
+    expect(firstYearDet.netWithdrawals).toEqual([
+      2_000_000, 2_000_000, 2_000_000,
+    ]);
+    expect(runNeverRunsOut(firstYear, firstYearReturns)).toBe(false);
+    expect(derivedNeverOut(firstYearDet, firstYear)).toBe(false);
+    expect(neverRunsOutFromDetailed(firstYearDet, firstYear)).toBe(false);
+    expect(neverRunsOutFromDetailed(firstYearDet, firstYear)).toBe(
+      runNeverRunsOut(firstYear, firstYearReturns),
+    );
+    // Control — passing vector: start $100,000, spend $20,000/yr,
+    // no income, ages 55-57. Every retired year's net is funded.
+    const passing = sampleInputs({
+      startCents: 10_000_000,
+      spendingCents: 2_000_000,
+      currentAge: 55,
+      retirementAge: 55,
+      endAge: 57,
+      extraIncomeCents: 0,
+      extraIncomeStartAge: null,
+    });
+    const passingReturns = [0, 0, 0];
+    const passingDet = simulateDetailed(passing, passingReturns);
+    expect(passingDet.balances).toEqual([
+      10_000_000, 8_000_000, 6_000_000, 4_000_000,
+    ]);
+    expect(passingDet.netWithdrawals).toEqual([
+      2_000_000, 2_000_000, 2_000_000,
+    ]);
+    expect(runNeverRunsOut(passing, passingReturns)).toBe(true);
+    expect(derivedNeverOut(passingDet, passing)).toBe(true);
+    expect(neverRunsOutFromDetailed(passingDet, passing)).toBe(true);
+    expect(neverRunsOutFromDetailed(passingDet, passing)).toBe(
+      runNeverRunsOut(passing, passingReturns),
+    );
   });
 });
 
