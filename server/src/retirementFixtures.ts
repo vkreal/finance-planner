@@ -753,7 +753,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "hist-phased-adequacy-sample",
     kind: "historical",
-    note: "E1-S1 pin: the same sample plan on Phased (step-down from 75 at 1%/yr) with a $150,000/yr floor. The decline is deterministic — by the end age (95) gross is $180,000 × 0.99^20 = $147,236.37, below the floor — so adequacy is 0% in every run even though funding success is 42.6%, the same as Constant's (the step-down never saves a run Constant loses here). A floor above the late-plan phased level fails adequacy by construction, in every return sequence.",
+    note: "E1-S1 pin: the same sample plan on Phased (step-down from 75 at 1%/yr) with a $150,000/yr floor. The decline is deterministic — by the end age (95) gross is $180,000 × 0.99^20 = $147,223.25, below the floor — so adequacy is 0% in every run even though funding success is 42.6%, the same as Constant's (the step-down never saves a run Constant loses here). A floor above the late-plan phased level fails adequacy by construction, in every return sequence.",
     input: { portfolioCents: 200000000, spendingCents: 18000000, currentAge: 58, retirementAge: 62, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1, minimumAnnualSpendingCents: 15000000 },
     expected: {"successRate":42.6,"neverOutSuccessRate":42.6,"spendingAdequacySuccessRate":0,"medianEndingCents":0,"worstEndingCents":0,"worstStartYear":1928,"runCount":61},
   },

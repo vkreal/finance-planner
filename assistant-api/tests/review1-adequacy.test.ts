@@ -124,7 +124,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
   });
 
   test("calculate constant + floor at spending: adequacy 100% with the caveat warning", () => {
-    // Constant spending ($114,000/yr) with the floor at the
+    // Constant spending ($114k/yr) with the floor at the
     // spending itself: gross never varies, so adequacy reads 1 —
     // and the response warns, in its own words, that this rate
     // cannot see unfunded withdrawals. Funding and ending are
@@ -148,6 +148,35 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     expect(
       plainWarnings.ok && plainWarnings.warnings.join(" "),
     ).not.toContain("constant spending never varies");
+  });
+
+  test("calculate constant + floor above spending: adequacy 0% with no caveat warning", () => {
+    // Constant spending ($114k/yr) with the floor above it
+    // ($150k/yr): gross never varies, so adequacy reads 0 — and
+    // the caveat warning must NOT fire, because its premise ("with
+    // the floor at or below yearly spending, adequacy reads 100%")
+    // does not hold here (E1 NICE, pass 1 NICE-2 / pass 2 NICE-1).
+    const floored = calculateRetirement(
+      normalizedScenario({ minimumAnnualSpending: 150000 }),
+    );
+    const r = expectOk(floored);
+    expect(r.historicalSpendingAdequacyRate).toBe(0);
+    expect(floored.ok && floored.warnings.join(" ")).not.toContain(
+      "constant spending never varies",
+    );
+  });
+
+  test("monte carlo constant + floor above spending: adequacy 0% with no caveat warning", () => {
+    // Same gating on the Monte Carlo leg: floor above yearly
+    // spending, adequacy 0, no caveat warning.
+    const floored = runRetirementMonteCarlo(
+      normalizedScenario({ minimumAnnualSpending: 150000 }),
+    );
+    const r = expectOk(floored);
+    expect(r.spendingAdequacyRate).toBe(0);
+    expect(floored.ok && floored.warnings.join(" ")).not.toContain(
+      "constant spending never varies",
+    );
   });
 
   test("minimumAnnualSpending is normalized with provenance and echoed", () => {

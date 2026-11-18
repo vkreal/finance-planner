@@ -22,7 +22,7 @@ Pricing uses the 2026 tax-law tables unless `taxYear` says 2025; a year past the
 
 ## The 9 tools (one line each)
 
-- `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check.
+- `retirement_calculate` — can the money last to the end age? Ending balance + year-by-year table + historical cross-check. Optional `minimumAnnualSpending` adds the historical spending-adequacy rate — funding success alone is not proof spending held up.
 - `retirement_monte_carlo` — how likely is the plan to succeed? Success rate (0–1) + p10/p50/p90 outcomes. Optional `minimumAnnualSpending` adds the spending-adequacy rate — funding success alone is not proof spending held up.
 - `retirement_max_spending` — highest sustainable monthly spending at 85% Monte Carlo success, with feasibility (`targetAchieved`, `solutionStatus`: a $0 maximum with `infeasible_at_zero` means no spending level reaches the target).
 - `retirement_compare_strategies` — which account to spend from first? Taxable-first vs pre-tax-first vs Roth-first, tax-aware; all six orders with `comparisonScope: "full"`.

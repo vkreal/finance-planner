@@ -861,9 +861,13 @@ export function RetirementCalc({
     setPhaseDeclinePct(String(s?.phaseDeclinePct ?? PHASE_DECLINE_PCT_DEFAULT));
     // A record saved before the spending floor existed carries
     // no floor field: the field opens blank (no floor), exactly
-    // what the engines run for such a record.
+    // what the engines run for such a record. A saved literal $0
+    // (or negative) floor opens blank too: the inputs memo already
+    // treats <= 0 as no floor, so the field must agree instead of
+    // displaying "$0" for a floor no surface prices.
     setMinimumAnnualSpending(
-      s?.minimumAnnualSpendingCents != null
+      s?.minimumAnnualSpendingCents != null &&
+        s.minimumAnnualSpendingCents > 0
         ? String(s.minimumAnnualSpendingCents / 100)
         : "",
     );
@@ -3163,9 +3167,12 @@ export function RetirementCalc({
     setPhaseStartAge(String(sc.phaseStartAge ?? PHASE_START_AGE_DEFAULT));
     setPhaseDeclinePct(String(sc.phaseDeclinePct ?? PHASE_DECLINE_PCT_DEFAULT));
     // A scenario saved before the spending floor existed has no
-    // floor field: it loads blank (no floor).
+    // floor field: it loads blank (no floor). A saved literal $0
+    // (or negative) floor loads blank too, as in the record load
+    // above — the inputs memo already treats <= 0 as no floor.
     setMinimumAnnualSpending(
-      sc.minimumAnnualSpendingCents != null
+      sc.minimumAnnualSpendingCents != null &&
+        sc.minimumAnnualSpendingCents > 0
         ? String(sc.minimumAnnualSpendingCents / 100)
         : "",
     );
@@ -3199,7 +3206,15 @@ export function RetirementCalc({
       guardrailsAdjustmentPct: sc.guardrailsAdjustmentPct,
       phaseStartAge: sc.phaseStartAge,
       phaseDeclinePct: sc.phaseDeclinePct,
-      minimumAnnualSpendingCents: sc.minimumAnnualSpendingCents,
+      // Canonicalized through floorCentsOrNull like every other
+      // save path: a stored 0 (or negative) floor saves as no
+      // floor (null), never as a literal 0 — the only route a 0
+      // could otherwise reach the record.
+      minimumAnnualSpendingCents: floorCentsOrNull(
+        sc.minimumAnnualSpendingCents != null
+          ? String(sc.minimumAnnualSpendingCents / 100)
+          : "",
+      ),
     };
     submitSave(payload, (res) => {
       if (!res.ok) return;

@@ -567,7 +567,7 @@ const REQUIRED_INPUTS_GLOBAL: string[] = [
 // (Pass-3 S1: one shared list for every tool advertised inert inputs
 // as if they mattered — mcRuns on max-spending, tax inputs on the
 // sim-only tools, strategy/volatility on the compare/tax-year tools.)
-// (Pass-5 S1: calculate has no Monte Carlo leg — simulateDetailed +
+// (E1 fix round: calculate has no Monte Carlo leg — simulateDetailed +
 // runHistorical + runNeverRunsOut never read volatility — so the
 // calculate guide lists SIM minus volatilityPct. MC and max-spending
 // keep the full SIM list (their Monte Carlo legs price it).)

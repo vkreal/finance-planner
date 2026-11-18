@@ -1911,7 +1911,11 @@ export function calculateRetirement(
     }
     if (
       scenario.minimumAnnualSpendingCents != null &&
-      scenario.strategy === "constant"
+      scenario.strategy === "constant" &&
+      // E1 NICE: the warning's premise ("adequacy reads 100%") holds
+      // only when the floor is at or below yearly spending; above it
+      // adequacy reads 0%, not 100%, so the warning must not fire.
+      scenario.minimumAnnualSpendingCents <= scenario.annualSpendingCents
     ) {
       warnings.push(
         "Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.",
@@ -2031,7 +2035,11 @@ export function runRetirementMonteCarlo(
     const mcMostlySucceeds = successRate >= 0.5;
     if (
       scenario.minimumAnnualSpendingCents != null &&
-      scenario.strategy === "constant"
+      scenario.strategy === "constant" &&
+      // E1 NICE: the warning's premise ("adequacy reads 100%") holds
+      // only when the floor is at or below yearly spending; above it
+      // adequacy reads 0%, not 100%, so the warning must not fire.
+      scenario.minimumAnnualSpendingCents <= scenario.annualSpendingCents
     ) {
       warnings.push(
         "Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.",

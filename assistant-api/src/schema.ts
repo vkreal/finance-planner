@@ -13,7 +13,9 @@
 //   Defaults are resolved in normalize.ts, which must be able to tell
 //   "caller supplied it" from "omitted" in order to record provenance
 //   (user vs assumption vs engine_constant). The effective defaults are
-//   documented on each field; see normalize.ts for the resolution.
+//   documented on each field; see normalize.ts for the resolution
+//   of field defaults (not adequacy — the adequacy floor is a
+//   separate optional input, resolved the same way as any other).
 // - Unknown keys are REJECTED (z.strictObject): a misspelled or
 //   unrecognized field fails validation with `invalid_input` naming
 //   the key, instead of being silently stripped — so a mistyped
