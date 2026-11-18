@@ -1251,7 +1251,10 @@ function solveGuardrailsScan(
     // pricing the base spending instead would overstate the
     // year-1 net and reject feasible steps. A naive
     // Math.max(0, adj) mirror-guard would still price the base
-    // spending on the raise side and stay up to 10% low — the
+    // spending on the raise side and stay low by the raise factor —
+    // at the probed adj −10 it was 10% low (solver $1,000,000 vs
+    // grid $1,111,000), and the shortfall scales as (1 + adj), so
+    // adj −50 would be ~50% low — the
     // raise gross is the true minimum (Engine Review C5, NICE-5).
     // The earlier version
     // of this filter assumed the gross was always the base
@@ -1526,7 +1529,8 @@ export function solveMaxSpending(
   // too, alongside the seed — the Monte Carlo legs reach
   // runMonteCarlo (which validates them) but the historical leg
   // never does, so without this a NaN expected/vol would silently
-  // solve on the historical engine. Identity for finite inputs.
+  // solve on the historical engine. Identity for valid inputs
+  // (finite expected, finite vol ≥ 0).
   validateMonteCarloReturn(expected, vol);
   // No retired years (build v66, boundary audit F6): when
   // the retirement age is at or past the plan's end age, no
