@@ -520,8 +520,12 @@ async function encryptNum(key: CryptoKey, cents: number, context: string): Promi
   // with encryptStr, now routes through here too. What does NOT
   // pass through here is the Roth, Playground, Retirement, and
   // December saves, which store their inputs as encrypted JSON
-  // blobs via encryptStr — the client parser is the only
-  // safe-integer check on those paths — or re-encryption of an
+  // blobs via encryptStr — on the December and Playground paths
+  // the client parser is the only safe-integer check (their
+  // money fields are .finite() only, and the Playground dials
+  // are typed strings), while on the Roth and Retirement paths
+  // the save schemas' own .int() on every money-cents field is
+  // itself a safe-integer check — or re-encryption of an
   // already-stored value — the CAS rebind, the restore handler's
   // settings loop — whose values were validated at first write
   // or at restore preflight, except a reserve value still
