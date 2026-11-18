@@ -575,6 +575,125 @@ describe("solver agreement and maximality", () => {
     expect(counts[24_800_000]!).toBeLessThan(counts[24_840_000]!);
   });
 
+  test("guardrails $3M witness: historical 85% solver max is the full-grid max, with the corrected tie", () => {
+    // The E2 non-monotonicity witness, pinned with the corrected
+    // tie. The recorded "850 == needed, next step 848" does not
+    // re-derive on this shape — it is the sample household's
+    // Monte Carlo tie (the 850 half pinned exactly by the
+    // "threshold boundary and tie" test below, the 848 next step
+    // stated in that test's comment and bounded by its assertion);
+    // on the witness itself the tie is 50/58, next step 49.
+    // Shape: $3,000,000 portfolio, ages 55-95, retire
+    // at 60, no income, guardrails, 75% stocks, 5% expected real,
+    // 18% volatility. Target 85%. (Distinct from the retire-57
+    // shape in the test above.)
+    const inputs = sampleInputs({
+      startCents: 300_000_000,
+      spendingCents: 10_000_000,
+      currentAge: 55,
+      retirementAge: 60,
+      endAge: 95,
+      extraIncomeCents: 0,
+      extraIncomeStartAge: null,
+      strategy: "guardrails",
+    });
+
+    // 1) Solver agreement: engine and reference both return
+    // $297,600, feasible.
+    const eng = solveMaxSpending(inputs, STOCKS, EXPECTED, VOL, "historical", 85, 12345);
+    const ref = refSolveMaxSpending(asRef(inputs), STOCKS, EXPECTED, VOL, "historical", 85, 12345);
+    expectSolverEqual(eng, ref, "hist85 $3M witness");
+    expect(eng?.maxSpendingCents).toBe(29_760_000);
+    expect(eng?.solutionStatus).toBe("feasible");
+
+    // 2) Full-grid enumeration to the proven $6,000,000 ceiling
+    // (max(2 x $3M, $1M)): the grid max is $297,600 and no
+    // feasible step hides above it.
+    let gridMax = 0;
+    for (let k = 0; k <= 60000; k++) {
+      if (refFeasible({ ...asRef(inputs), spendingCents: k * STEP }, STOCKS, EXPECTED, VOL, "historical", 85, 12345)) {
+        gridMax = k;
+      }
+    }
+    expect(gridMax * STEP).toBe(29_760_000);
+
+    // 3) The gap structure below the max: exactly 8 maximal
+    // infeasible runs (24 infeasible $100 steps), so a binary
+    // search would stop at the first gap, $290,600 — $7,000
+    // below the true max.
+    const infeasible: number[] = [];
+    for (let k = 0; k <= 2976; k++) {
+      if (!refFeasible({ ...asRef(inputs), spendingCents: k * STEP }, STOCKS, EXPECTED, VOL, "historical", 85, 12345)) {
+        infeasible.push(k * STEP);
+      }
+    }
+    expect(infeasible.length).toBe(24);
+    const gaps: Array<[number, number]> = [];
+    for (const c of infeasible) {
+      const last = gaps[gaps.length - 1];
+      if (last && c === last[1] + STEP) last[1] = c;
+      else gaps.push([c, c]);
+    }
+    expect(gaps).toEqual([
+      [29_060_000, 29_060_000],
+      [29_090_000, 29_090_000],
+      [29_110_000, 29_120_000],
+      [29_150_000, 29_190_000],
+      [29_310_000, 29_310_000],
+      [29_540_000, 29_590_000],
+      [29_610_000, 29_610_000],
+      [29_630_000, 29_690_000],
+    ]);
+
+    // 4) The first gap: $290,600 is infeasible (49/58) and
+    // $290,700 is feasible (50/58) — the step a binary search
+    // would stop at.
+    const lo = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 29_060_000 }, STOCKS, EXPECTED, VOL, "historical", 12345);
+    expect(lo.runs).toBe(58);
+    expect(lo.successes).toBe(49);
+    expect(lo.successRate).toBeLessThan(85);
+    const hi = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 29_070_000 }, STOCKS, EXPECTED, VOL, "historical", 12345);
+    expect(hi.successes).toBe(50);
+    expect(hi.successRate).toBeGreaterThanOrEqual(85);
+
+    // 5) The corrected tie at the max: 58 historical runs, needed
+    // = ceil(0.85 x 58 - 1e-9) = 50; the max $297,600 scores
+    // exactly 50, and the next $100 step scores 49. The engine's
+    // own rates agree exactly.
+    const atMax = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 29_760_000 }, STOCKS, EXPECTED, VOL, "historical", 12345);
+    expect(atMax.runs).toBe(58);
+    expect(atMax.successes).toBe(50);
+    const needed = Math.ceil(0.85 * atMax.runs - 1e-9);
+    expect(needed).toBe(50);
+    expect(atMax.successes).toBe(needed);
+    const atNext = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 29_770_000 }, STOCKS, EXPECTED, VOL, "historical", 12345);
+    expect(atNext.successes).toBe(49);
+    const engMax = runHistorical({ ...inputs, spendingCents: 29_760_000 }, STOCKS);
+    const engNext = runHistorical({ ...inputs, spendingCents: 29_770_000 }, STOCKS);
+    expect(engMax?.neverOutSuccessRate).toBe(atMax.successRate);
+    expect(engNext?.neverOutSuccessRate).toBe(atNext.successRate);
+
+    // 6) The Monte Carlo leg of the same shape has its own max
+    // and its own tie: $176,200 scores exactly 850/1,000, and
+    // the next $100 step scores 849. (This is the real 850
+    // figure on this shape — the recorded 850/848 pair belongs
+    // to the sample household, pinned below.)
+    const mcEng = solveMaxSpending(inputs, STOCKS, EXPECTED, VOL, "montecarlo", 85, 12345);
+    const mcRef = refSolveMaxSpending(asRef(inputs), STOCKS, EXPECTED, VOL, "montecarlo", 85, 12345);
+    expectSolverEqual(mcEng, mcRef, "mc85 $3M witness");
+    expect(mcEng?.maxSpendingCents).toBe(17_620_000);
+    expect(mcEng?.solutionStatus).toBe("feasible");
+    const mcMax = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 17_620_000 }, STOCKS, EXPECTED, VOL, "montecarlo", 12345);
+    expect(mcMax.runs).toBe(1000);
+    expect(mcMax.successes).toBe(850);
+    const mcNext = refNeverOutRateAt({ ...asRef(inputs), spendingCents: 17_630_000 }, STOCKS, EXPECTED, VOL, "montecarlo", 12345);
+    expect(mcNext.successes).toBe(849);
+    const engMcMax = runMonteCarlo({ ...inputs, spendingCents: 17_620_000 }, EXPECTED, VOL, 12345, 1000);
+    const engMcNext = runMonteCarlo({ ...inputs, spendingCents: 17_630_000 }, EXPECTED, VOL, 12345, 1000);
+    expect(engMcMax?.neverOutSuccessRate).toBe(mcMax.successRate);
+    expect(engMcNext?.neverOutSuccessRate).toBe(mcNext.successRate);
+  }, 180_000);
+
   test("threshold boundary and tie: the 95% historical solve sits exactly on the needed count", () => {
     // The sample plan prices 38 years (58 to 95), so 61 historical
     // runs fit (1928-1988); 95% target: needed = ceil(0.95*61 -
