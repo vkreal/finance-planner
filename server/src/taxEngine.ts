@@ -1860,6 +1860,14 @@ export type AcaCreditResult = {
   // modeled. Medicaid eligibility is never modeled and never
   // assumed — the engine prices the marketplace credit only.
   below100Fpl: boolean;
+  // NICE-A (Engine Review 6 NICEs, E6 batch): under138Fpl is
+  // true when household income is under 138% of the poverty
+  // line — classified in integer cents (magiCents * 100 <
+  // 138 * fplCents), never from the stored 2dp pctFpl, so 1¢
+  // below 138% still reads true while the stored pctFpl
+  // rounds up onto 138. The march flag and the Playground
+  // Medicaid-routing flag both read this field.
+  under138Fpl: boolean;
   eligibilityNote: string | null;
 };
 
@@ -1943,6 +1951,12 @@ export function acaCreditFor(args: {
   const hasCliff = args.coverageYear >= 2026;
   const overCliff = hasCliff && args.magi > cliff;
   const below100Fpl = magiCents < fplCents;
+  // NICE-A (Engine Review 6 NICEs, E6 batch): under-138%
+  // classifies in integer cents like the band edges above,
+  // never from the stored 2dp pctFpl — 1¢ below 138% the
+  // stored value rounds up onto 138 and the old pctFpl <
+  // 138 gate read false.
+  const under138Fpl = magiCents * 100 < 138 * fplCents;
   if (overCliff || below100Fpl) {
     return {
       credit: 0,
@@ -1952,6 +1966,7 @@ export function acaCreditFor(args: {
       cliff,
       overCliff,
       below100Fpl,
+      under138Fpl,
       eligibilityNote: below100Fpl
         ? acaBelow100Note(args.coverageYear)
         : null,
@@ -1995,6 +2010,7 @@ export function acaCreditFor(args: {
     cliff,
     overCliff: false,
     below100Fpl: false,
+    under138Fpl,
     eligibilityNote: null,
   };
 }
@@ -10055,7 +10071,13 @@ export function simulateRothPlan(
         : acaResult.credit;
       acaPriced = true;
     }
-    const acaUnder138 = acaPriced && acaResult != null && acaResult.pctFpl < 138;
+    // NICE-A (Engine Review 6 NICEs, E6 batch): the flag reads
+    // acaCreditFor's integer-cents under138Fpl, never the
+    // stored 2dp pctFpl — 1¢ below 138% the stored value
+    // rounds up onto 138 and the old pctFpl < 138 gate read
+    // false, so neither march warning fired. Flag-only; no
+    // priced figure moves.
+    const acaUnder138 = acaPriced && acaResult != null && acaResult.under138Fpl;
     // ELIGIBILITY (Engine Review 6, E6-S2): the year's ACA
     // MAGI is under 100% FPL, so the $0 credit is the
     // standard §36B income test's answer (see the warning

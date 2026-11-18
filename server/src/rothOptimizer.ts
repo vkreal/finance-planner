@@ -4910,6 +4910,11 @@ export type PlaygroundYearResult = {
     // in eligibilityNote (null when not below 100%). False
     // when the ACA block does not apply at all.
     below100Fpl: boolean;
+    // NICE-A (Engine Review 6 NICEs, E6 batch): true when
+    // the year's ACA MAGI is under 138% FPL, classified in
+    // integer cents by acaCreditFor — never from the stored
+    // 2dp pctFpl, so 1¢ below 138% still reads true.
+    under138Fpl: boolean;
     eligibilityNote: string | null;
   };
   // IRMAA: applies when at least one person is on Medicare
@@ -5856,6 +5861,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     credit: null,
     applicablePct: null,
     below100Fpl: false,
+    under138Fpl: false,
     eligibilityNote: null,
   };
   // The §36B household MAGI: the year's own ACA MAGI plus
@@ -5885,6 +5891,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       credit: inp.acaBenchmarkAnnual != null ? res.credit : null,
       applicablePct: inp.acaBenchmarkAnnual != null ? res.applicablePct : null,
       below100Fpl: res.below100Fpl,
+      under138Fpl: res.under138Fpl,
       eligibilityNote: res.eligibilityNote,
     };
   }

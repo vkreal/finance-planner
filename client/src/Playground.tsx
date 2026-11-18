@@ -9020,7 +9020,13 @@ export function Playground({
               const acaMarker = acaCrossed ? (
                 <div className={markerCls} role="note">
                   <span aria-hidden="true">⚠</span>{" "}
-                  {`ACA cliff crossed — ${fmtDollars(acaCliff)} (400% of FPL). Over the cliff, the premium credit is $0.`}
+                  {`ACA cliff crossed — ${fmtDollars(acaCliff)} (400% of FPL). Over the cliff, the premium credit ${pg.aca.credit != null ? "is $0" : "would be $0"}.`}
+                  {/* NICE-B (Engine Review 6 NICEs, E6 batch):
+                  pg.aca.credit is null when no benchmark
+                  premium was entered, so the $0 is
+                  conditional ("would be") until a benchmark
+                  is entered and the $0 is actually priced —
+                  same conditional as the below-100% line. */}
                 </div>
               ) : null;
               const irmaaMarker =
@@ -9184,7 +9190,7 @@ export function Playground({
                     {fmtDollars(pg.aca.cliff)}{" "}
                     (400% of the poverty line).{" "}
                     {pg.aca.overCliff
-                      ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
+                      ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit ${pg.aca.credit != null ? "is $0" : "would be $0"} at the cliff.`
                       : `ACA household income is under the cliff by ${fmtDollars(pg.aca.positionDollars ?? 0)}`}
                     {!pg.aca.overCliff &&
                       (pg.aca.credit != null ? (
@@ -9211,8 +9217,12 @@ export function Playground({
                         {pg.aca.eligibilityNote}
                       </>
                     ) : (
-                      pg.aca.pctFpl != null &&
-                      pg.aca.pctFpl < 138 && (
+                      // NICE-A (Engine Review 6 NICEs, E6 batch):
+                      // the flag reads pg.aca.under138Fpl — the
+                      // integer-cents classification from
+                      // acaCreditFor — never the stored 2dp
+                      // pctFpl, so 1¢ below 138% still shows.
+                      pg.aca.under138Fpl && (
                         <>
                           {" "}
                           Under 138% of the poverty line, coverage routes to

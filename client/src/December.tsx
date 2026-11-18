@@ -1859,10 +1859,10 @@ export function December() {
                   console prices no IRMAA payable at all (the
                   surcharge for next year is set by the MAGI from
                   two years ago, which this console does not carry),
-                  so no IRMAA appears anywhere in the bill above.
+                  so no IRMAA appears anywhere in this bill.
                   Do not read the bill as including it. */}
                   <p className="mt-1 text-sm">
-                    Medicare IRMAA is not priced in this December console — the surcharge is set by the MAGI from two years ago, which this console does not carry, so no IRMAA is included in the bill above.
+                    Medicare IRMAA is not priced in this December console — the surcharge is set by the MAGI from two years ago, which this console does not carry, so no IRMAA is included in this bill.
                   </p>
                   {likelyCase.harvestedGainAtHeadline > 0 &&
                     billRow(

@@ -493,7 +493,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "e6-nice2-pctfpl-display-floor",
     kind: "tax",
-    note: "ENGINE REVIEW 6 NICEs fix — pctFpl DISPLAY only (hand-derived; 2026 coverage, HH2, FPL $21,150): the engine stores pctFpl rounded to 2dp, so 1¢ below a band edge it reads the edge while the band prices correctly (edges classify in integer cents). MAGI $28,129.49 is 1¢ below 133% ($28,129.50): stored pctFpl 133, but the display — ACA MAGI / poverty line floored to one decimal — is 132.9% (warning-text integer floor 132%), and the FIRST band prices: applicable 2.10%, contribution 2.10% × $28,129.49 = $590.72, credit $20,000 − $590.72 = $19,409.28. Exactly at 133% the display is 133.0% and the second band prices (3.14%, $19,116.73). MAGI $21,149.99 is 1¢ below 100%: below100Fpl true, credit $0, stored pctFpl 100, display 99.9% (integer floor 99%). MAGI $29,186.99 is 1¢ below 138% ($29,187.00): stored pctFpl 138, display 137.9% (integer floor 137%), applicable 3.45%. Pricing is untouched by the display fix.",
+    note: "ENGINE REVIEW 6 NICEs fix — pctFpl DISPLAY only (hand-derived; 2026 coverage, HH2, FPL $21,150): the engine stores pctFpl rounded to 2dp, so 1¢ below a band edge it reads the edge while the band prices correctly (edges classify in integer cents). MAGI $28,129.49 is 1¢ below 133% ($28,129.50): stored pctFpl 133, but the display — ACA MAGI / poverty line floored to one decimal — is 132.9% (warning-text integer floor 132%), and the FIRST band prices: applicable 2.10%, contribution 2.10% × $28,129.49 = $590.72, credit $20,000 − $590.72 = $19,409.28. Exactly at 133% the display is 133.0% and the second band prices (3.14%, $19,116.73). MAGI $21,149.99 is 1¢ below 100%: below100Fpl true, credit $0, stored pctFpl 100, display 99.9% (integer floor 99%). MAGI $29,186.99 is 1¢ below 138% ($29,187.00): stored pctFpl 138, display 137.9% (integer floor 137%), applicable 3.45%. Pricing is untouched by the display fix. NICE-A pin (E6 batch): the under-138% flag classifies in integer cents too, so it reads true 1¢ below 138% and false exactly at 138%, even though the stored pctFpl reads 138 in both cases.",
     expected: {
       below133Stored: 133,
       below133Display: 132.9,
@@ -513,6 +513,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       below138Display: 137.9,
       below138WarnInt: 137,
       below138Pct: 3.45,
+      // NICE-A (Engine Review 6 NICEs, E6 batch) — the flag pin:
+      // the under-138% flag classifies in integer cents, so 1¢
+      // below 138% it reads true even though the stored pctFpl
+      // rounds up onto 138; exactly at 138% it reads false.
+      below138Flag: 1,
+      at138Flag: 0,
     },
     actual: () => {
       // The display formulas, exactly as the UI renders them:
@@ -527,6 +533,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const a133 = acaCreditFor({ magi: 28129.5, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
       const b100 = acaCreditFor({ magi: 21149.99, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
       const b138 = acaCreditFor({ magi: 29186.99, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
+      const a138 = acaCreditFor({ magi: 29187, householdSize: 2, coverageYear: 2026, benchmarkAnnual: 20000 });
       return {
         below133Stored: b133.pctFpl,
         below133Display: disp(28129.49, b133.fpl),
@@ -546,6 +553,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         below138Display: disp(29186.99, b138.fpl),
         below138WarnInt: warn(29186.99, b138.fpl),
         below138Pct: b138.applicablePct,
+        below138Flag: b138.under138Fpl ? 1 : 0,
+        at138Flag: a138.under138Fpl ? 1 : 0,
       };
     },
   },
