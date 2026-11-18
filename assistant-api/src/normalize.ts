@@ -402,8 +402,8 @@ export function normalizeInputs(
     const details = issues.flatMap((issue) => {
       if (issue.code === "unrecognized_keys") {
         // One detail per rejected key, each message naming just its
-        // own key: zod's combined message ("Unrecognized keys: "a",
-        // "b"") would repeat the whole list on every entry. The
+        // own key: zod's combined message ('Unrecognized keys: "a",
+        // "b"') would repeat the whole list on every entry. The
         // per-key message mirrors the singular form zod already
         // produces for a single key; the top-level message still
         // lists every rejected key.

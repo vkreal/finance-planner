@@ -1,3 +1,11 @@
+Strict-schema leftover comment — nested-quote cleanup in the normalize comment (2026-11-17): the explanatory comment at the unrecognized-keys detail expansion quoted zod's combined message with awkward nested double quotes; the outer quotation is now single quotes so the inner double quotes read cleanly. Comment-only: no code, no tests, no figures, no behavior change.
+
+## Build (2026-11-17): Strict-schema leftover comment — nested-quote cleanup (API contract stays 163)
+
+Comment-only: two lines of the explanatory comment at the unrecognized-keys detail expansion in normalize.ts — zod's combined message is now quoted with single quotes outside and double quotes inside, instead of double quotes nested inside double quotes. Meaning unchanged; the quoted message was verified against zod's actual combined-message output. No code, no tests, no figures, no behavior change. One clean review pass, 0 MUST / 0 SHOULD, no new NICEs. The standalone bundle is untouched by this build — its rebuild stays an owed follow-up owned by its coordinator.
+
+EVIDENCE: regression gate 9,728 leaves, 0 diffs; December reference bit-identical; December fixtures 96/96; adapter input 43/43, drift 10/10, schema-consistency 16/16; parity 26/26 not run (comment-only change, not required for this batch). Four typechecks exit 0 (server, client, adapter, adapter-check). Scrub (patterns.txt + patterns-supplement.txt over the final diff, its own gated step): zero matches. CONTRACT: stays 163 — comment only; no action signature, no request shape, no stored format, and no priced value changed.
+
 Engine Review 8 NICEs — the four polish items from the E8 review passes (2026-11-17): a zero salary now prices as no salary for the scoped comparison models; the salary-aware description names the already-started-benefit lock; the federal-tax test labels its cash-in terms; the Medicare no-enrollment warning drops its HSA clause when the salary leg prices zero HSA. No priced figure moves on any existing plan; the zero-salary scoping is the only intended behavior change, and it moves no plan that entered a positive salary.
 
 ## Build (2026-11-17): Engine Review 8 NICEs — four polish fixes (API contract stays 163)
