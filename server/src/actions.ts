@@ -509,12 +509,20 @@ async function decryptNum(key: CryptoKey, raw: unknown, context: string): Promis
   return Number.isFinite(n) ? n : 0;
 }
 async function encryptNum(key: CryptoKey, cents: number, context: string): Promise<string> {
-  // (Engine Review C6, C6-S2): the single write guard for every
-  // encrypted money field — a non-finite or non-safe-integer
-  // cent amount is refused here, never stored as truncated or
-  // imprecise text (Number.parseInt on read-back would silently
-  // return a neighbouring value, off by cents). Every writer
-  // passes integer cents, so no valid write changes.
+  // (Engine Review C6, C6-S2): the write guard for encrypted
+  // money fields — a non-finite or non-safe-integer cent amount
+  // is refused here, never stored as truncated or imprecise text
+  // (Number.parseInt on read-back would silently return a
+  // neighbouring value, off by cents). Every writer of a fresh
+  // money value passes integer cents through here, so no valid
+  // write changes. (C6 NICEs: the opening reserve, which
+  // previously encrypted its cents with encryptStr, now routes
+  // through here too. What does NOT pass through here is
+  // re-encryption of an already-stored value — the seed constant,
+  // the CAS rebind, the restore handler's settings loop — whose
+  // values were validated at first write or at restore preflight;
+  // and the Net Worth target, which is plaintext by design and
+  // carries its own safe-integer check at its writer.)
   if (!Number.isFinite(cents) || !Number.isSafeInteger(cents)) {
     throw new Error(
       `encryptNum: refusing to store a cent amount that cannot be represented exactly (${context})`,
@@ -10888,7 +10896,17 @@ export const Actions = {
           };
         }
       }
-      const encReserve = await encryptStr(key, String(args.openingReserveCents), settingContext("opening_reserve_cents"));
+      // (Engine Review C6, NICE-4): the reserve used to encrypt
+      // its cents with encryptStr, bypassing the safe-integer
+      // guard — a ~$90T-scale reserve stored text that reads back
+      // as a neighbouring value. It now routes through encryptNum:
+      // the stored string is identical for every valid integer
+      // (same plain integer-cents string, same context), and an
+      // unrepresentable amount is refused instead of stored. The
+      // request schema's .int() already refuses non-safe integers
+      // (zod v4), so this is the handler-level guard, not a new
+      // refusal for any input the action accepts.
+      const encReserve = await encryptNum(key, args.openingReserveCents, settingContext("opening_reserve_cents"));
       await db
         .insert(schema.settings)
         .values({
@@ -12273,8 +12291,25 @@ export const Actions = {
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
     // Omitting it keeps the pre-v121 unchecked behaviour.
+    // (Engine Review C6, NICE-4): the target is plaintext by
+    // design — seeded, stored, restored, and read as a plain
+    // integer-cents string — so it genuinely cannot route through
+    // encryptNum without changing its stored format. It is
+    // guarded in place instead: the explicit safe-integer refine
+    // below. (zod v4's .int() already refuses non-safe integers,
+    // so the refine changes no accepted input; it states the
+    // bound outright so the guard survives a zod-version change,
+    // and restore preflight enforces the same bound.)
     request: z.object({
-      targetCents: z.number().int().positive().nullable(),
+      targetCents: z
+        .number()
+        .int()
+        .positive()
+        .refine(Number.isSafeInteger, {
+          message:
+            "nw_target_cents must be a safe integer number of cents",
+        })
+        .nullable(),
       baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,

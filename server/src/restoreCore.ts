@@ -647,25 +647,37 @@ export function preflightRestoreBackup(
     // decrypt-verify path guards it, and its plaintext cannot be
     // checked here — every current export carries the reserve
     // decrypted, so the check bites exactly where it can see.
+    // (Engine Review C6, NICE-4): the integer must also be a safe
+    // integer — the writer routes the reserve through encryptNum,
+    // which refuses anything past the boundary, so preflight
+    // refuses it too and the restore never lands a value the
+    // writer would reject.
     if (
       s.key === "opening_reserve_cents" &&
       !s.value.startsWith("enc:v1:") &&
-      !/^-?\d+$/.test(s.value.trim())
+      (!/^-?\d+$/.test(s.value.trim()) ||
+        !Number.isSafeInteger(Number(s.value.trim())))
     ) {
       return refuse(
-        `Backup rejected: the opening_reserve_cents setting ("${s.value}") is not a valid integer number of cents.`,
+        `Backup rejected: the opening_reserve_cents setting ("${s.value}") is not a valid integer number of cents (it must be a safe integer).`,
       );
     }
     // The Net Worth target's writer takes a positive integer
     // number of cents (clearing the target deletes the row, so a
     // stored value is never 0 or negative). Plaintext setting —
     // never encrypted — so there is no ciphertext case.
+    // (Engine Review C6, NICE-4): the positive integer must also
+    // be a safe integer, matching the writer's own safe-integer
+    // check — otherwise a beyond-boundary target would land
+    // verbatim where the writer would refuse it.
     if (
       s.key === "nw_target_cents" &&
-      !(/^\d+$/.test(s.value.trim()) && Number(s.value.trim()) > 0)
+      !(/^\d+$/.test(s.value.trim()) &&
+        Number(s.value.trim()) > 0 &&
+        Number.isSafeInteger(Number(s.value.trim())))
     ) {
       return refuse(
-        `Backup rejected: the nw_target_cents setting ("${s.value}") is not a valid positive integer number of cents.`,
+        `Backup rejected: the nw_target_cents setting ("${s.value}") is not a valid positive integer number of cents (it must be a safe integer).`,
       );
     }
     // The reserve start month's writer takes a YYYY-MM month or

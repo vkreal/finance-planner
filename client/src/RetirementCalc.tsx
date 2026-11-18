@@ -348,7 +348,13 @@ function parseMoney(s: string): number | null {
   if (cleaned === "") return null;
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100);
+  // (Engine Review C6, NICE-1): same guard as the shared
+  // parseMoney in rothShared.tsx — a rounded cent amount past
+  // the safe-integer boundary (~$90T) is rejected, in this
+  // parser's null convention. Every valid parse returns exactly
+  // as before.
+  const cents = Math.round(n * 100);
+  return Number.isSafeInteger(cents) ? cents : null;
 }
 // A typed floor of $0 (or negative) is no floor: the engine and the
 // adapter both treat an explicit 0 as no floor (buildSimInputs maps

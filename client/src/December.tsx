@@ -324,7 +324,16 @@ const parseMoney = (s: string): number => {
   const cleaned = s.replace(/[$,\s]/g, "");
   if (cleaned === "") return 0;
   const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n)) return 0;
+  // (Engine Review C6, NICE-1): same guard as the shared
+  // parseMoney in rothShared.tsx — a dollar figure whose rounded
+  // cents are past the safe-integer boundary (~$90T) reads back
+  // as a neighbouring value, so it is refused here, in this
+  // parser's 0 convention. This parser also serves the percent
+  // fields (capped at 100 downstream); an absurd ~$90T-scale
+  // percent now reads 0 rather than 100 — both are garbage-in
+  // handling at unreachable scale, and no reachable input changes.
+  return Number.isSafeInteger(Math.round(n * 100)) ? n : 0;
 };
 const parseIntOrNull = (s: string): number | null => {
   const cleaned = s.replace(/\s/g, "");

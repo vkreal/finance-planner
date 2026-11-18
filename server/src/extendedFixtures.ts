@@ -6998,6 +6998,46 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "restore-typed-settings-beyond-safe-integer-refused",
+    kind: "restore",
+    note: "Engine Review C6, NICE-4 (restore landing path for the two bypassing settings): preflight's hand-duplicated typed-settings rules checked only the integer SHAPE (reserve: an integer string; target: a positive integer string), so a value past the safe-integer boundary — 2^53 + 1 cents, $90,071,992,547,409.93 — passed preflight and landed verbatim, where the writers themselves now refuse it (the reserve through encryptNum, the target through its writer's safe-integer check). Preflight now also requires a safe integer, keeping the restore invariant — the restore never lands a value the app's own writers would reject. Controls: the largest safe integer, 2^53 − 1 cents ($90,071,992,547,409.91), restores and lands verbatim for both settings.",
+    expected: {
+      reserveBeyondSafeRefused: 1, targetBeyondSafeRefused: 1,
+      largestSafeReserveRestores: 1, largestSafeTargetRestores: 1,
+      largestSafeValuesLand: 2,
+    },
+    actual: () => {
+      const withSetting = (key: string, value: string): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        (raw.settings as Record<string, unknown>[]).push({ key, value });
+        return raw;
+      };
+      const attempt = (raw: Record<string, unknown>) =>
+        attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      const controlRaw = baseRestorePayload();
+      (controlRaw.settings as Record<string, unknown>[]).push(
+        { key: "opening_reserve_cents", value: "9007199254740991" },
+        { key: "nw_target_cents", value: "9007199254740991" },
+      );
+      const control = attempt(controlRaw);
+      const landed = new Map<string, string>(
+        control.state.settings.map(
+          (s) => [String(s.key), String(s.value)] as [string, string],
+        ),
+      );
+      return {
+        reserveBeyondSafeRefused: !attempt(withSetting("opening_reserve_cents", "9007199254740993")).ok ? 1 : 0,
+        targetBeyondSafeRefused: !attempt(withSetting("nw_target_cents", "9007199254740993")).ok ? 1 : 0,
+        largestSafeReserveRestores: attempt(withSetting("opening_reserve_cents", "9007199254740991")).ok ? 1 : 0,
+        largestSafeTargetRestores: attempt(withSetting("nw_target_cents", "9007199254740991")).ok ? 1 : 0,
+        largestSafeValuesLand: [
+          landed.get("opening_reserve_cents") === "9007199254740991",
+          landed.get("nw_target_cents") === "9007199254740991",
+        ].filter(Boolean).length,
+      };
+    },
+  },
+  {
     id: "restore-bucket-undecryptable-enc-prefix-refused",
     kind: "restore",
     note: "Build v94, stored-data finding F6 (the reviewer's reproduction): a restore carrying a Net Worth account whose bucket value is an undecryptable enc:v1:-prefixed value is REFUSED at preflight, before any write — no commit, the prior state byte-identical, and the reason names the bucket field. Two value classes are refused: malformed base64 after the prefix, and a plausible-looking prefixed body that is not genuine ciphertext. The control — the same payload with a plaintext legacy bucket — restores. The refusal is the preflight's, not the schema's: the payload schema types the bucket as an unrestricted string, so only the decrypt verdict can refuse it.",

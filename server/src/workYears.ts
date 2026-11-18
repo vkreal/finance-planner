@@ -359,7 +359,7 @@ export function contributionStack(
   age: number,
   salary: number,
   employer401k: number,
-  employerHsa: number,
+  employerHsaTyped: number,
   filingStatus: FilingStatus,
   law: YearLaw,
   // The PRIOR calendar year's §3121(a) wages (W-2 Box 3) from
@@ -407,6 +407,17 @@ export function contributionStack(
     hsaEligible: false,
     assumptions: [],
   };
+  // (Engine Review C6, NICE-3): a direct caller may pass a
+  // negative employer HSA — no reachable product path does (the
+  // work-years job fields carry .min(0) at the shared field
+  // record), but the stack must not let one through: a negative
+  // would inflate the employee's room (the limit-minus-employer
+  // term grows) and break the S1 identity (accepted employer +
+  // own === bucket). Floor the typed figure at 0, so a negative
+  // prices exactly as no employer contribution — requested and
+  // accepted both read $0, and the identity holds for every
+  // input, not just validated ones.
+  const employerHsa = Math.max(0, employerHsaTyped);
   // HSA COVERAGE AND ELIGIBILITY (Engine Review 7, E7-S1;
   // IRC §223, IRS Publication 969; limits Rev. Proc. 2024-25
   // for 2025 — $4,300 self-only / $8,550 family — and Rev.

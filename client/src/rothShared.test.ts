@@ -25,6 +25,8 @@ import { describe, expect, test } from "bun:test";
 import {
   labFoldKey,
   labWinnerFigures,
+  parseDollars,
+  parseMoney,
   type LabFoldRow,
   type LabWinnerInput,
 } from "./rothShared";
@@ -201,5 +203,44 @@ describe("C9 Build 3 NICEs — N6: folded groups never mix integrity verdicts", 
     };
     const b: LabFoldRow = { ...a, integrity: { ...a.integrity } };
     expect(labFoldKey(a)).toBe(labFoldKey(b));
+  });
+});
+
+// Engine Review C6 NICEs — NICE-1: parseMoney's safe-integer
+// guard. A typed dollar figure whose rounded cents are not a
+// safe integer (past ~$90,071,992,547,409.91, i.e. 2^53 − 1
+// cents) reads back as a neighbouring value, so the parser
+// rejects it — the same rejection the server converters apply
+// (adapter dollarsToCents), in this parser's null convention.
+// Ordinary figures parse exactly as before.
+describe("C6 NICEs — NICE-1: parseMoney rejects unrepresentable cents", () => {
+  test("largest exactly representable amount still parses", () => {
+    expect(parseMoney("90071992547409.91")).toBe(9007199254740991);
+    expect(parseMoney("-90071992547409.91")).toBe(-9007199254740991);
+  });
+
+  test("one cent past the boundary returns null", () => {
+    expect(parseMoney("90071992547409.92")).toBeNull();
+    expect(parseMoney("-90071992547409.92")).toBeNull();
+    expect(parseMoney("90071992547409.99")).toBeNull();
+  });
+
+  test("non-finite results return null", () => {
+    expect(parseMoney("1e308")).toBeNull();
+    expect(parseMoney("Infinity")).toBeNull();
+    expect(parseMoney("NaN")).toBeNull();
+  });
+
+  test("ordinary figures parse exactly as before", () => {
+    expect(parseMoney("1,234.56")).toBe(123456);
+    expect(parseMoney("$1,234.56")).toBe(123456);
+    expect(parseMoney("0")).toBe(0);
+    expect(parseMoney("-5.25")).toBe(-525);
+    expect(parseMoney("")).toBeNull();
+  });
+
+  test("parseDollars inherits the guard", () => {
+    expect(parseDollars("90071992547409.92")).toBeNull();
+    expect(parseDollars("1,234.56")).toBe(1234.56);
   });
 });

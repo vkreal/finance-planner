@@ -244,3 +244,54 @@ describe("C6-S1: roll-level conservation", () => {
     expect(roll.balances.hsa).toBe(84750);
   });
 });
+
+// Engine Review C6 NICEs — NICE-3: a direct contributionStack
+// call with a NEGATIVE employer HSA. No reachable product path
+// supplies one (the work-years job fields carry .min(0) at the
+// shared field record), but the stack itself must not let one
+// through: unclamped, a negative inflates the employee's room
+// (the limit-minus-employer term grows) so ownHsa can exceed
+// the limit, and the S1 identity (accepted employer + own ===
+// bucket) breaks. The stack floors the contribution at 0 — a
+// negative prices exactly as no employer contribution — so the
+// identity holds for every input, not just validated ones.
+describe("C6 NICEs — NICE-3: negative employer HSA clamps to $0", () => {
+  test("negative employer HSA on a priced year: requested $0, own fills the limit", () => {
+    // Family limit $8,750 at 40 (no catch-up under 55). A −$500
+    // employer figure must not inflate ownHsa to $9,250 (the
+    // pre-fix behaviour: limit − (−$500)) — own fills exactly
+    // the $8,750 limit and the identity holds.
+    const s = stack(40, 100000, 0, -500, "mfj", null, {
+      coverage: "family",
+      eligible: true,
+    });
+    expect(s.hsaLimit).toBe(8750);
+    expect(s.employerHsaRequested).toBe(0);
+    expect(s.employerHsa).toBe(0);
+    expect(s.ownHsa).toBe(8750);
+    expect(s.hsaBucket).toBe(8750);
+    expect(s.employerHsa + s.ownHsa).toBe(s.hsaBucket);
+  });
+
+  test("negative employer HSA on a zero-salary year: requested $0", () => {
+    const s = stack(40, 0, 0, -500, "mfj", null, {
+      coverage: "family",
+      eligible: true,
+    });
+    expect(s.employerHsaRequested).toBe(0);
+    expect(s.employerHsa).toBe(0);
+    expect(s.hsaBucket).toBe(0);
+  });
+
+  test("control: a positive employer HSA still prices as before", () => {
+    const s = stack(40, 100000, 0, 2000, "mfj", null, {
+      coverage: "family",
+      eligible: true,
+    });
+    expect(s.employerHsaRequested).toBe(2000);
+    expect(s.employerHsa).toBe(2000);
+    expect(s.ownHsa).toBe(6750);
+    expect(s.hsaBucket).toBe(8750);
+    expect(s.employerHsa + s.ownHsa).toBe(s.hsaBucket);
+  });
+});

@@ -30,7 +30,18 @@ export function parseMoney(s: string): number | null {
   if (cleaned === "") return null;
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100);
+  // (Engine Review C6, NICE-1): a rounded cent amount past the
+  // safe-integer boundary (~$90T) reads back as a neighbouring
+  // value, so it is rejected here — the same rejection the server
+  // converters apply (adapter dollarsToCents), in this parser's
+  // null convention. The client guard is the only safe-integer
+  // check on these paths: the Roth and Playground saves store
+  // their inputs as encrypted JSON blobs, not through the
+  // per-field encrypted-money guard, so nothing downstream would
+  // catch an unrepresentable figure. Every valid parse returns
+  // exactly as before.
+  const cents = Math.round(n * 100);
+  return Number.isSafeInteger(cents) ? cents : null;
 }
 export function parseDollars(s: string): number | null {
   const c = parseMoney(s);
