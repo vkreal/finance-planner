@@ -43,7 +43,7 @@
    more than the band fails (a swap that far is a signal,
    not a coin flip); a pair that holds its order may widen
    by any amount. At base the Do Nothing − Fill 12% gap is
-   $2,622.22 (inside the band) while the next-smallest gap,
+   $2,622.21 (inside the band) while the next-smallest gap,
    Fill 12% − Fill to cliff, is $54,521.32 (outside it) —
    so the band draws the line between the one known
    near-tie and the genuinely separated pairs.
@@ -52,13 +52,13 @@
    "caps ordering"): the full ranking held in all 7 probed
    perturbations (spending ±$1,000, return ±0.25%, and the
    spend +$1,000 / return +0.25% corner); the smallest
-   observed pairwise gap anywhere was $149.62 (Do Nothing
+   observed pairwise gap anywhere was $149.65 (Do Nothing
    vs Fill 12% at spend +$1,000 / return +0.25%). Base net
-   costs (cents): Fill 22% 120,026,186; Fill to cliff
-   157,740,467; Fill 12% 163,192,599; Do Nothing
-   163,454,821. Base pairwise gaps: Do Nothing − Fill 12%
-   $2,622.22; Fill 12% − Fill to cliff $54,521.32;
-   Fill to cliff − Fill 22% $377,142.81.
+   costs (cents): Fill 22% 120,026,195; Fill to cliff
+   157,740,466; Fill 12% 163,192,598; Do Nothing
+   163,454,819. Base pairwise gaps: Do Nothing − Fill 12%
+   $2,622.21; Fill 12% − Fill to cliff $54,521.32;
+   Fill to cliff − Fill 22% $377,142.71.
 
    Runtime: each grid point prices four scenarios in one
    runRothCompare call, milliseconds per run — the 9-run
@@ -125,11 +125,23 @@ const EXPECTED_BASE_RANKING: StrategyKey[] = [
   "doNothing",
 ];
 const EXPECTED_BASE_COSTS_CENTS: Record<StrategyKey, number> = {
-  fill22: 120026186,
-  fillCliff: 157740467,
-  fill12: 163192599,
-  doNothing: 163454821,
+  fill22: 120026195,
+  fillCliff: 157740466,
+  fill12: 163192598,
+  doNothing: 163454819,
 };
+// (Re-pinned under Engine Review C2, S2 — the bracket walk now
+// prices exact half-cent ties at the exact half-up value
+// (integer-cents walk on cent-quantized inputs): fill22 +4¢,
+// fill12 +3¢, doNothing −1¢. fillCliff is unmoved. The ranking
+// is unchanged: fill22 < fillCliff < fill12 < doNothing.)
+// (Re-pinned again in C2 round 2 — the preferential staircase
+// now prices its exact half-cent ties the same way: fill12 −4¢,
+// doNothing −1¢, fill22 +5¢, fillCliff −1¢ against the S2
+// pins; ranking unchanged. The first round-2 note wrongly
+// said fill22 / fillCliff were unmoved — the hardening
+// re-run proved otherwise, and the pins above are the
+// hardening-priced values.)
 
 /* ---- The perturbation grid: 9 runs including base ---------------
    Spending ±$1,000/yr (annualSpendingCents 17,900,000 /

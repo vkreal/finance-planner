@@ -216,7 +216,10 @@ describe("C9 fix 1 — MUST 2: withholding penalty shelters on answered eligibil
       const u = yearOf(unanswered, yr);
       const e = yearOf(eligible, yr);
       // Unanswered: the landing default, pinned to the cent.
-      expect(u.penalty).toBe(yr === 2026 ? 3315.78 : 3295.76);
+      // C2 re-pin (2026-11-18): the conditional integer-cents
+      // bracket walk prices the 2027 penalty a cent higher
+      // (3295.76 -> 3295.77); the 2026 value is unchanged.
+      expect(u.penalty).toBe(yr === 2026 ? 3315.78 : 3295.77);
       expect(u.earlyWithdrawalEligibilityUnknown).toBe(false);
       // Answered-eligible: the withheld distribution shelters up to
       // the conversion's eligible share — the fully-eligible
@@ -253,7 +256,9 @@ describe("C9 fix 1 — MUST 2: withholding penalty shelters on answered eligibil
     );
     expect(yearOf(res, 2026).penalty).toBe(2204.67);
     expect(yearOf(res, 2026).earlyWithdrawalEligibilityUnknown).toBe(false);
-    expect(yearOf(res, 2027).penalty).toBe(3295.76);
+    // C2 re-pin (2026-11-18): the conditional integer-cents bracket
+    // walk prices the 2027 penalty a cent higher (3295.76 -> 3295.77).
+    expect(yearOf(res, 2027).penalty).toBe(3295.77);
   });
 
   test("partial top-up shelter: case-4 shape, eligible $20k primary", () => {
@@ -324,7 +329,9 @@ describe("C9 fix 1 — MUST 2: withholding penalty shelters on answered eligibil
       FILL22 as never,
     );
     expect(yearOf(res, 2026).penalty).toBe(3315.78);
-    expect(yearOf(res, 2027).penalty).toBe(3295.76);
+    // C2 re-pin (2026-11-18): the conditional integer-cents bracket
+    // walk prices the 2027 penalty a cent higher (3295.76 -> 3295.77).
+    expect(yearOf(res, 2027).penalty).toBe(3295.77);
   });
 });
 

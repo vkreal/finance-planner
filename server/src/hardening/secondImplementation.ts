@@ -191,9 +191,34 @@ function deflateYears(
   return factor;
 }
 
-// Ordinary-bracket tax: walk the year's tops at the year's
-// rates, taxing each layer's slice of taxable ordinary
-// income. The tops and rates come from the law row.
+// Cent-quantization test for the bracket walk (C2-S2), identical
+// to the pricer's bracketInputsAreCentQuantized: the integer-cents
+// walk is exact only where its inputs are exact cents. Whole-dollar
+// tops hold on the published rows and on the carried-forward rows
+// (2027+ price under the 2026 row). A fractional-cent taxable
+// amount fails it — the senior-deduction phase-out and §68 dust
+// can produce one — and rounding such an amount to cents first
+// would itself move the tax, so the float walk is retained there.
+// An exact tie on a fractional input is possible in principle:
+// it needs phase-out dust aligned to a lattice point, and one is
+// constructible (2026 MFJ, taxable income $800,000.2297297…,
+// 37% layer $11,581.085, priced $11,581.08, layers 1¢ under the
+// total) — but none occurs in the priced grids, and the retained
+// float walk prices such a tie 1¢ low, as before. Extending the
+// integer walk to fractional inputs would need exact-decimal
+// taxable income, which the float pricer does not carry.
+function bracketInputsAreCentQuantized(
+  taxableOrdinary: number,
+  law: YearLaw,
+  fs: FilingStatus,
+): boolean {
+  if (Math.abs(taxableOrdinary * 100 - Math.round(taxableOrdinary * 100)) > 1e-6) return false;
+  for (const top of law.brackets[fs]) {
+    if (Number.isFinite(top) && Math.abs(top - Math.round(top)) > 1e-9) return false;
+  }
+  return true;
+}
+
 function ordinaryBracketTax(
   taxableOrdinary: number,
   law: YearLaw,
@@ -210,6 +235,100 @@ function ordinaryBracketTax(
     prev = top;
   }
   return tax;
+}
+
+// Ordinary-bracket tax and display layers, one call (C2-S2),
+// identical to the pricer's ordinaryBracket: cent-quantized
+// inputs take the integer-cents walk, so the layers sum exactly
+// to ordinaryTax; fractional inputs keep the float walk.
+function ordinaryBracket(
+  taxableOrdinary: number,
+  law: YearLaw,
+  fs: FilingStatus,
+): { ordinaryTax: number; layers: IndependentBracketLayer[] } {
+  if (bracketInputsAreCentQuantized(taxableOrdinary, law, fs)) {
+    const { ordinaryTaxCents, layers } = ordinaryBracketWalkCents(taxableOrdinary, law, fs);
+    return { ordinaryTax: ordinaryTaxCents / 100, layers };
+  }
+  const ordinaryTax = ordinaryBracketTax(taxableOrdinary, law, fs);
+  const layers: IndependentBracketLayer[] = [];
+  {
+    let prev = 0;
+    for (let i = 0; i < law.brackets[fs].length; i++) {
+      const top = law.brackets[fs][i] ?? Infinity;
+      if (taxableOrdinary <= prev) break;
+      const amount = Math.min(taxableOrdinary, top) - prev;
+      const ratePct = law.rates[i] ?? 0;
+      layers.push({
+        ratePct,
+        from: roundCent(prev),
+        to: Number.isFinite(top) ? top : null,
+        amount: roundCent(amount),
+        tax: roundCent(amount * (ratePct / 100)),
+      });
+      prev = top;
+    }
+  }
+  return { ordinaryTax, layers };
+}
+
+// Ordinary-bracket tax: walk the year's tops at the year's
+// rates, taxing each layer's slice of taxable ordinary
+// income. The tops and rates come from the law row.
+// Integer-cents walk, identical to the pricer's bracketWalkCents
+// (C2-S2): each layer's tax is rounded half-up in exact integer
+// arithmetic, so the layers sum exactly to ordinaryTax by
+// construction and the two implementations agree at exact
+// half-cent ties, where the old float walk disagreed.
+function ordinaryBracketWalkCents(
+  taxableOrdinary: number,
+  law: YearLaw,
+  fs: FilingStatus,
+): { ordinaryTaxCents: number; layers: IndependentBracketLayer[] } {
+  const ordinaryTiCents = Math.round(taxableOrdinary * 100);
+  const tops = law.brackets[fs];
+  const layers: IndependentBracketLayer[] = [];
+  let prevCents = 0;
+  let ordinaryTaxCents = 0;
+  for (let i = 0; i < tops.length; i++) {
+    const top = tops[i] ?? Infinity;
+    const topCents = Number.isFinite(top) ? top * 100 : Infinity;
+    if (ordinaryTiCents <= prevCents) break;
+    const amountCents = Math.min(ordinaryTiCents, topCents) - prevCents;
+    const ratePct = law.rates[i] ?? 0;
+    const taxCents = Math.floor((amountCents * ratePct + 50) / 100);
+    layers.push({
+      ratePct,
+      from: prevCents / 100,
+      to: Number.isFinite(top) ? top : null,
+      amount: amountCents / 100,
+      tax: taxCents / 100,
+    });
+    ordinaryTaxCents += taxCents;
+    prevCents = topCents;
+  }
+  return { ordinaryTaxCents, layers };
+}
+
+// Preferential-staircase tax in exact integer cents (C2 round 2),
+// identical to the pricer's ltcgStaircaseTaxCents (taxEngine.ts):
+// the float product rounds an exact half-cent 15% layer 1¢ low
+// (2026 MFJ, at15 $100.30: exact $15.045, priced $15.04), and the
+// differential is blind to it unless both sides price it exactly.
+// Only the 15% layer can tie on cent inputs; the 20% layer cannot
+// (20c ≡ 50 (mod 100) has no solution), so the total is computed
+// exactly once — never per layer, since the 20% layer is not
+// cent-integral — on cent-quantized inputs, with the float sum kept
+// bit-identically otherwise. Returns null when either amount is
+// not cent-quantized.
+function ltcgStaircaseTaxCents(at15: number, at20: number): number | null {
+  const at15Cents = at15 * 100;
+  const at20Cents = at20 * 100;
+  if (Math.abs(at15Cents - Math.round(at15Cents)) > 1e-6) return null;
+  if (Math.abs(at20Cents - Math.round(at20Cents)) > 1e-6) return null;
+  return Math.floor(
+    (15 * Math.round(at15Cents) + 20 * Math.round(at20Cents) + 50) / 100,
+  );
 }
 
 function ordinaryMarginalRate(
@@ -480,7 +599,8 @@ function amtIndependent(args: {
   );
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  tentative += 0.15 * at15 + 0.2 * at20;
+  const staircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  tentative += staircaseCents != null ? staircaseCents / 100 : 0.15 * at15 + 0.2 * at20;
   const owed = Math.max(0, tentative - Math.max(0, args.regularTax));
   return {
     amti: roundCent(amti),
@@ -631,7 +751,9 @@ export function priceYearIndependent(
   // whole in the preferential stack, and the loss reaches
   // ordinary income only through the §1211(b) allowance
   // passed in (subtracted in agiExclSs below).
-  const gainsStack = Math.max(0, input.ltcg) + (input.qualifiedDividends ?? 0);
+  // qualifiedDividends is clamped the same way (C2 SHOULD-1):
+  // a negative input must not drive the stack negative.
+  const gainsStack = Math.max(0, input.ltcg) + Math.max(0, input.qualifiedDividends ?? 0);
   const agiExclSs =
     input.otherOrdinary +
     input.rmd +
@@ -688,15 +810,18 @@ export function priceYearIndependent(
   const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
   const deductionTrioApplies = input.calendarYear >= DEDUCTION_2026.firstYear;
   const charitableEntered = Math.max(0, input.itemizedCharitable ?? 0);
+  // Contribution base floored at $0, as in the pricer (C2-S1):
+  // a percentage limit on a negative base is $0, never negative.
+  const contributionBase = Math.max(0, agi);
   const charitableFloor = deductionTrioApplies
-    ? (DEDUCTION_2026.charitableFloorRatePct / 100) * agi
+    ? (DEDUCTION_2026.charitableFloorRatePct / 100) * contributionBase
     : 0;
   // §170(b)(1)(G) 60% ceiling, every law year: the floor is
   // applied to the entered input first, the ceiling then
   // caps the after-floor amount.
   const itemizedCharitableAllowed = Math.min(
     Math.max(0, charitableEntered - charitableFloor),
-    (CHARITABLE_CEILING.ratePct / 100) * agi,
+    (CHARITABLE_CEILING.ratePct / 100) * contributionBase,
   );
   const itemizedBefore68 =
     Math.max(0, input.itemizedMortgageInterest ?? 0) +
@@ -745,25 +870,9 @@ export function priceYearIndependent(
 
   const gainsInTi = Math.min(gainsStack, taxableIncome);
   const ordinaryTi = taxableIncome - gainsInTi;
-  const ordinaryTax = ordinaryBracketTax(ordinaryTi, law, fs);
-  const bracketLayers: IndependentBracketLayer[] = [];
-  {
-    let prev = 0;
-    for (let i = 0; i < law.brackets[fs].length; i++) {
-      const top = law.brackets[fs][i] ?? Infinity;
-      if (ordinaryTi <= prev) break;
-      const amount = Math.min(ordinaryTi, top) - prev;
-      const ratePct = law.rates[i] ?? 0;
-      bracketLayers.push({
-        ratePct,
-        from: roundCent(prev),
-        to: Number.isFinite(top) ? top : null,
-        amount: roundCent(amount),
-        tax: roundCent(amount * (ratePct / 100)),
-      });
-      prev = top;
-    }
-  }
+  // One call derives both ordinaryTax and the layers (C2-S2),
+  // as in the pricer.
+  const { ordinaryTax, layers: bracketLayers } = ordinaryBracket(ordinaryTi, law, fs);
   // The preferential staircase: the 0% space is what the
   // year's LTCG zero top leaves after the ordinary stack;
   // the 15% space runs to the 20% floor; the rest is 20%.
@@ -773,7 +882,8 @@ export function priceYearIndependent(
   const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryTi - at0);
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  const ltcgTax = 0.15 * at15 + 0.2 * at20;
+  const ltcgStaircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  const ltcgTax = ltcgStaircaseCents != null ? ltcgStaircaseCents / 100 : 0.15 * at15 + 0.2 * at20;
 
   // §1411 NIIT: the base is net investment income — gross
   // interest and dividends (qualified or not) plus net

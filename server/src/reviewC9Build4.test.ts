@@ -331,10 +331,17 @@ describe("C9 Build 4 — W2-D1: solvent plans never touch the HSA", () => {
       expect(assertMarchFundingIdentity(inputs, strategy, 0.03)).toBe(0);
       expect(assertHsaBalanceIdentity(inputs, strategy)).toBeLessThanOrEqual(0.01);
     }
-    // The solvent pins are the gate's own — the leg must not
-    // move a cent on a plan with no unpaid tax.
+    // The solvent pins are the gate's own — the HSA leg moves nothing
+    // on a plan with no unpaid tax (hsaDraw $0 every year, identities
+    // hold). The plan's own ending wealth moved under the Engine
+    // Review C2 tie corrections (direct −2¢, Fill 12% compare −4¢),
+    // re-pinned here. Re-pinned again in C2 round 2: the
+    // preferential staircase moves the direct wealth a further
+    // −7¢ to $11,557,998.87; the Do Nothing compare wealth
+    // moves +2¢ to $11,635,964.64 and the Fill 12% compare
+    // wealth returns to its pre-walk pin $11,638,557.86.
     const res = simulateRothPlan(samplePlanInputs(), DO_NOTHING);
-    expect(res.endingAfterTaxWealth).toBe(11557998.96);
+    expect(res.endingAfterTaxWealth).toBe(11557998.87);
     const cmp = runRothCompare(
       sampleCompareBase(),
       [
@@ -344,7 +351,7 @@ describe("C9 Build 4 — W2-D1: solvent plans never touch the HSA", () => {
       2026,
     );
     expect(cmp.ok).toBe(true);
-    expect(cmp.scenarios[0]!.endingAfterTaxWealthCents).toBe(1163596462);
+    expect(cmp.scenarios[0]!.endingAfterTaxWealthCents).toBe(1163596464);
     expect(cmp.scenarios[1]!.endingAfterTaxWealthCents).toBe(1163855786);
     expect(cmp.scenarios[0]!.unpaidTaxCents).toBe(0);
     expect(cmp.scenarios[1]!.unpaidTaxCents).toBe(0);

@@ -298,9 +298,10 @@ describe("C9 Build 1 — Rule-of-55 eligibility + §72(t) penalty", () => {
     // ($2,055.78 in 2026). After the fix the delta's share joins
     // it, so the penalty is again the final federal tax ÷ 9 to
     // within a cent of rounding: 2026 $29,842 ÷ 9 = $3,315.78;
-    // 2027 $29,661.90 ÷ 9 = $3,295.77, while the engine prices
-    // $3,295.76 — the opening and top-up gross-ups rounded
-    // separately; lifetime $6,611.54.
+    // 2027 $29,661.91 ÷ 9 = $3,295.77, which the engine now prices
+    // exactly (the C2 integer-cents walk prices the tie at its exact
+    // half-up value, so the opening and top-up gross-ups agree);
+    // lifetime $6,611.55.
     const res = simulateRothPlan(
       samplePlanInputs({
         retirementAge: 55,
@@ -314,9 +315,15 @@ describe("C9 Build 1 — Rule-of-55 eligibility + §72(t) penalty", () => {
     expect(yearOf(res, 2026).federalTax).toBe(29_842);
     expect(yearOf(res, 2026).penalty).toBe(3_315.78);
     expect(yearOf(res, 2027).conversion).toBe(147_900);
-    expect(yearOf(res, 2027).federalTax).toBe(29_661.9);
-    expect(yearOf(res, 2027).penalty).toBe(3_295.76);
-    expect(res.lifetimePenalty).toBe(6_611.54);
+    // C2 re-pin (2026-11-18): the conditional integer-cents bracket
+    // walk prices the 2027 exact half-up tie a cent higher
+    // (29_661.90 -> 29_661.91); the penalty follows the tax (see below).
+    expect(yearOf(res, 2027).federalTax).toBe(29_661.91);
+    // C2 re-pin: 29_661.91 / 9 = 3_295.77 — the engine now prices the
+    // penalty the header comment always said it should be.
+    expect(yearOf(res, 2027).penalty).toBe(3_295.77);
+    // C2 re-pin: lifetime 3_315.78 + 3_295.77 = 6_611.55.
+    expect(res.lifetimePenalty).toBe(6_611.55);
   });
 
   test("W2-D3: the spending-draw penalty is funded and scored, not just priced", () => {
@@ -424,13 +431,29 @@ describe("C9 Build 1 — Rule-of-55 eligibility + §72(t) penalty", () => {
       "roth-first",
     ]);
     expect(rank(after)).toEqual(rank(before));
-    expect(before["pretax-first"]!.netCost).toBe(545_859.34);
-    expect(after["pretax-first"]!.netCost).toBe(604_530.53);
+    // C2 re-pin (2026-11-18): the conditional integer-cents bracket
+    // walk moves the pretax-first net cost 545_859.34 -> 545_859.36
+    // (+2c, two tie cents cascading); the ranking is unchanged.
+    // C2 round 2 re-pin: the preferential staircase moves it a
+    // further +4c to 545_859.40.
+    expect(before["pretax-first"]!.netCost).toBe(545_859.4);
+    // C2 re-pin (2026-11-18): same walk move on the after leg,
+    // 604_530.53 -> 604_530.58 (+5c).
+    expect(after["pretax-first"]!.netCost).toBe(604_530.58);
     expect(after["pretax-first"]!.penalty).toBe(75_000);
-    expect(after["pretax-roth-taxable"]!.netCost).toBe(675_272.86);
+    // C2 re-pin (2026-11-18): same walk move, 675_272.86 -> 675_272.90 (+4c).
+    // C2 round 2 re-pin: the preferential staircase moves it −1c
+    // to 675_272.89.
+    expect(after["pretax-roth-taxable"]!.netCost).toBe(675_272.89);
     expect(after["roth-pretax-taxable"]!.penalty).toBe(21_770.63);
     expect(after["taxable-first"]!.netCost).toBe(before["taxable-first"]!.netCost);
-    expect(after["taxable-first"]!.netCost).toBe(1_468_062.62);
+    // C2 round 2 re-pin: the preferential staircase moves the
+    // taxable-first net cost +4c to 1_468_062.66 (both legs move
+    // together — the equality above still holds).
+    expect(after["taxable-first"]!.netCost).toBe(1_468_062.66);
+    // C2 re-pin (2026-11-18): same walk move, 1_677_058.52 -> 1_677_058.51 (-1c).
+    // C2 round 2 re-pin: the preferential staircase moves it +1c
+    // back to 1_677_058.52, its pre-walk value.
     expect(after["roth-first"]!.netCost).toBe(1_677_058.52);
   });
 });

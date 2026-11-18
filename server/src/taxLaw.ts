@@ -799,8 +799,8 @@ export function saltScheduleForYear(
 /* -------- Charitable percentage ceiling (IRC
    §170(b)(1)(G)) --------
    The deduction for CASH contributions to public charities
-   may not exceed 60% of the contribution base (AGI; the
-   engine models no NOL carryback). The 60% figure has been
+   may not exceed 60% of the contribution base (the year's
+   AGI floored at $0; the engine models no NOL carryback). The 60% figure has been
    in effect for every law year this engine holds (enacted
    for 2018–2025 by the TCJA and made permanent by Pub. L.
    119-21), so the ceiling applies in EVERY priced year —
@@ -814,7 +814,7 @@ export function saltScheduleForYear(
    and later) is applied to the entered input FIRST, and the
    60% ceiling then caps the after-floor amount — the final
    charitable component of the itemized total therefore
-   never exceeds 60% of AGI. The excess over the ceiling is
+   never exceeds 60% of the contribution base. The excess over the ceiling is
    NOT deducted and does NOT carry forward: the engine
    keeps no §170(d)(1) carryforward ledger (the
    floor-disallowed amounts likewise do not carry), so the
@@ -836,8 +836,8 @@ export const CHARITABLE_CEILING = {
    three:
    · The charitable floor for itemizers (IRC §170(b)(1)(I)):
      an itemizer's deductible charitable contributions are
-     reduced by 0.5% of the contribution base (AGI; the
-     engine models no NOL carryback). Floor-disallowed
+     reduced by 0.5% of the contribution base (the year's
+     AGI floored at $0; the engine models no NOL carryback). Floor-disallowed
      amounts do NOT carry forward.
    · The non-itemizer charitable deduction (IRC §170(p)):
      a standard-deduction filer's charitable contributions

@@ -140,10 +140,21 @@ describe("C9 Build 5 — W5-B1: capped tax-first lands on the cliff with the ter
       expect(y.settlementMismatchCents.acaCredit).toBe(0);
     }
     expect(res.lifetimeAcaKept).toBe(79754);
-    expect(planNetCost(res, health).netCost).toBe(1940765.7);
-    expect(planNetCost(res, health).tax).toBe(1082521.38);
-    expect(res.endingAfterTaxWealth).toBe(10924009.89);
-    expect(assessCandidateIntegrity(res).status).toBe("valid");
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 4¢.
+    expect(planNetCost(res, health).netCost).toBe(1940765.74);
+    // RE-PINNED (Engine Review C2, 2026-11-18): the integer-cents
+    // walk moves the tax +4¢ and the wealth −5¢.
+    expect(planNetCost(res, health).tax).toBe(1082521.42);
+    expect(res.endingAfterTaxWealth).toBe(10924009.84);
+    // The shape now carries a benign residual: year 2042 cycles
+    // on a 1¢ gains tie under the integer-cents walk (the
+    // settlement flip moved a non-convergence into this shape).
+    const i1 = assessCandidateIntegrity(res);
+    expect(i1.status).toBe("valid-with-benign-residual");
+    expect(i1.nonConvergedYearList).toEqual([2042]);
+    expect(i1.maxMismatchGainsCents).toBe(1);
+    expect(i1.maxMismatchPretaxCents).toBe(0);
   });
 
   test("pretax-first: the same under-fill, filled by the capped draw", () => {
@@ -167,8 +178,19 @@ describe("C9 Build 5 — W5-B1: capped tax-first lands on the cliff with the ter
     expect(years[1]!.funding.pretaxDraw).toBe(16511.05);
     expect(years[2]!.funding.pretaxDraw).toBe(13179.84);
     expect(res.lifetimeAcaKept).toBe(79754);
-    expect(planNetCost(res, health).netCost).toBe(1611574.02);
-    expect(assessCandidateIntegrity(res).status).toBe("valid");
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 1¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it −2¢.
+    expect(planNetCost(res, health).netCost).toBe(1611574.01);
+    // The shape now carries a benign residual: year 2047 cycles
+    // on a 1¢ gains tie under the preferential staircase (the
+    // round-2 settlement flip moved the non-convergence from
+    // 2045 to 2047).
+    const i2 = assessCandidateIntegrity(res);
+    expect(i2.status).toBe("valid-with-benign-residual");
+    expect(i2.nonConvergedYearList).toEqual([2047]);
+    expect(i2.maxMismatchGainsCents).toBe(1);
+    expect(i2.maxMismatchPretaxCents).toBe(0);
   });
 
   test("roth-first and the term-off shapes are bit-identical", () => {
@@ -181,7 +203,9 @@ describe("C9 Build 5 — W5-B1: capped tax-first lands on the cliff with the ter
     );
     expect(acaYears(roth)[0]!.acaMagi).toBe(127000);
     expect(acaYears(roth)[0]!.conversion).toBe(97013);
-    expect(planNetCost(roth, health).netCost).toBe(1772232.8);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 5¢.
+    expect(planNetCost(roth, health).netCost).toBe(1772232.85);
     // Term off (no v208 term, no embedded premium): the
     // fast path runs, the driver change cannot engage.
     const plain = samplePlanInputs();
@@ -230,8 +254,19 @@ describe("C9 Build 5 — W5-B1: the same defect in an uncapped year", () => {
     expect(y34.settlementConverged).toBe(true);
     expect(y34.settlementMismatchCents.acaCredit).toBe(0);
     expect(res.lifetimeAcaKept).toBe(37466.47);
-    expect(planNetCost(res, health).netCost).toBe(2103084.94);
-    expect(assessCandidateIntegrity(res).status).toBe("valid");
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 3¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it +2¢.
+    expect(planNetCost(res, health).netCost).toBe(2103084.93);
+    // Re-pinned again in C2 round 2: the preferential staircase
+    // moves a 1¢ gains tie into this shape — year 2043 cycles
+    // (4 rounds, repeated-assumption), so it now carries a
+    // benign residual instead of converging cleanly.
+    const i3 = assessCandidateIntegrity(res);
+    expect(i3.status).toBe("valid-with-benign-residual");
+    expect(i3.nonConvergedYearList).toEqual([2043]);
+    expect(i3.maxMismatchGainsCents).toBe(1);
+    expect(i3.maxMismatchPretaxCents).toBe(0);
   });
 
   test("a genuinely over-cliff year still keeps $0 credit", () => {
@@ -247,7 +282,10 @@ describe("C9 Build 5 — W5-B1: the same defect in an uncapped year", () => {
     expect(y30.conversion).toBe(88400);
     expect(y30.acaCreditKept).toBe(0);
     expect(res.lifetimeAcaKept).toBe(0);
-    expect(planNetCost(res, health).netCost).toBe(1572486.01);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 4¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it −3¢.
+    expect(planNetCost(res, health).netCost).toBe(1572486.02);
   });
 });
 
@@ -413,14 +451,14 @@ describe("C9 Build 5 NICEs — alternation fallback (re-seed scope)", () => {
     }
   });
 
-  test("a post-ACA alternating year keeps its closest settlement; no credit iteration runs", () => {
-    // Young-spouse C6, 2044 (first post-ACA year): the
-    // settlement iteration alternates on the known 1¢ gains
-    // knife-edge, so the year keeps its closest settlement
-    // and reports unconverged with stop repeated-assumption.
-    // No credit iteration runs in a non-ACA year (fast path),
-    // so the re-seed cannot engage here — the fallback is
-    // the whole behavior, pinned by the kept figures.
+  test("a post-ACA year that used to alternate now converges under the integer-cents walk (Engine Review C2); no credit iteration runs", () => {
+    // Young-spouse C6, 2044 (first post-ACA year): the year used to
+    // alternate on the known 1¢ gains knife-edge, keeping its closest
+    // settlement and reporting unconverged with stop
+    // repeated-assumption; the integer-cents walk prices the tie
+    // exactly, so it now converges. No credit iteration runs in a
+    // non-ACA year (fast path), so the re-seed cannot engage here —
+    // the fallback is the whole behavior, pinned by the kept figures.
     const res = simulateRothPlan(
       {
         ...samplePlanInputs({
@@ -436,20 +474,27 @@ describe("C9 Build 5 NICEs — alternation fallback (re-seed scope)", () => {
     );
     const y44 = res.years.find((y) => y.year === 2044)!;
     expect(y44.acaActive).toBe(false);
-    expect(y44.acaMagi).toBe(218164.94);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this year's MAGI 1¢.
+    expect(y44.acaMagi).toBe(218164.95);
     expect(y44.conversion).toBe(0);
     expect(y44.funding.pretaxDraw).toBe(0);
-    expect(y44.settlementConverged).toBe(false);
-    expect(y44.settlementStopReason).toBe("repeated-assumption");
-    expect(y44.settlementInnerStopReason).toBe("repeated-assumption");
+    // The year used to alternate on a 1¢ gains tie and keep its
+    // closest settlement; the integer-cents walk prices the tie
+    // exactly, so it now converges in 5 rounds with zero
+    // mismatch — and its federal tax moves 1¢ with the MAGI.
+    expect(y44.settlementConverged).toBe(true);
+    expect(y44.settlementStopReason).toBe("converged");
+    expect(y44.settlementInnerStopReason).toBe("converged");
     expect(y44.settlementPasses).toBe(1);
+    expect(y44.settlementRounds).toBe(5);
     expect(y44.settlementMismatchCents).toEqual({
-      gains: 1,
+      gains: 0,
       pretax: 0,
       roth: 0,
       hsa: 0,
       acaCredit: 0,
     });
-    expect(y44.federalTax).toBe(27363.66);
+    expect(y44.federalTax).toBe(27363.67);
   });
 });

@@ -521,9 +521,20 @@ describe("C5-M1-f/g: runRothMonteCarloCheck validation", () => {
     expect(r.paths.length).toBe(8);
     expect(r.wins).toBe(7);
     expect(r.winRatePct).toBe(87.5);
+    // C2 re-pin (2026-11-18): the conditional integer-cents bracket
+    // walk moves this seeded median advantage 388441.45 -> 388441.43
+    // (-2c); winner, win count, and both median net costs unchanged.
+    // C2 round 2 re-pin: the preferential staircase moves it back
+    // +2c to 388441.45, its pre-walk value.
     expect(r.medianAdvantage).toBe(388441.45);
-    expect(r.winnerMedianNetCost).toBe(473965.57);
-    expect(r.doNothingMedianNetCost).toBe(944804.46);
+    // C2 round 2 re-pin: the preferential staircase moves the
+    // winner median net cost −1c to 473965.56.
+    expect(r.winnerMedianNetCost).toBe(473965.56);
+    // C2 re-pin (2026-11-18): same walk move, the do-nothing median
+    // net cost 944804.46 -> 944804.45 (-1c).
+    // C2 round 2 re-pin: the preferential staircase moves it +3c
+    // to 944804.48.
+    expect(r.doNothingMedianNetCost).toBe(944804.48);
   }, 300_000);
 
   test("every successful check result samples at least one path (N=1)", () => {

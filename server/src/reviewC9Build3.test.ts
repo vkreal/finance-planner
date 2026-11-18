@@ -111,15 +111,23 @@ describe("C9 Build 3 — W2-D2: unpaid tax nets out of ending wealth", () => {
     expect(res.lifetimeUnpaidTax).toBeGreaterThan(0);
   });
 
-  test("valid plan: wealth is unchanged bit for bit (gate-pinned)", () => {
+  test("valid plan: unpaid tax $0, wealth is the gate pin (re-pinned under Engine Review C2)", () => {
     // The sample household never owes unpaid tax, so the
-    // subtraction is $0 and every figure below is the pre-fix
-    // value — the regression gate's own pin, reproduced here so
-    // a future change to the subtraction cannot hide behind
-    // the gate's leaf counts.
+    // subtraction is $0 and every figure below is the
+    // regression gate's own pin, reproduced here so a future
+    // change to the subtraction cannot hide behind the
+    // gate's leaf counts. Re-pinned under Engine Review C2
+    // (2026-11-18): the integer-cents walk moves the plan's
+    // own wealth −2¢ (direct) / −4¢ (Fill 12% compare); the
+    // subtraction itself is still $0. Re-pinned again in C2
+    // round 2: the preferential staircase moves the direct
+    // wealth a further −7¢ to $11,557,998.87; the Do Nothing
+    // compare wealth moves +2¢ to $11,635,964.64 (unmoved by
+    // the walk) and the Fill 12% compare wealth returns to its
+    // pre-walk pin $11,638,557.86.
     const res = simulateRothPlan(samplePlanInputs(), DO_NOTHING);
     expect(res.lifetimeUnpaidTax).toBe(0);
-    expect(res.endingAfterTaxWealth).toBe(11557998.96);
+    expect(res.endingAfterTaxWealth).toBe(11557998.87);
     const cmp = runRothCompare(
       sampleCompareBase(),
       [
@@ -129,7 +137,7 @@ describe("C9 Build 3 — W2-D2: unpaid tax nets out of ending wealth", () => {
       2026,
     );
     expect(cmp.ok).toBe(true);
-    expect(cmp.scenarios[0]!.endingAfterTaxWealthCents).toBe(1163596462);
+    expect(cmp.scenarios[0]!.endingAfterTaxWealthCents).toBe(1163596464);
     expect(cmp.scenarios[1]!.endingAfterTaxWealthCents).toBe(1163855786);
     expect(cmp.scenarios[0]!.unpaidTaxCents).toBe(0);
     expect(cmp.scenarios[1]!.unpaidTaxCents).toBe(0);
@@ -211,15 +219,18 @@ describe("C9 Build 3 — W4-GAP-1: the compare crowns valid winners only", () =>
     expect(cmp.excludedInvalidWinner?.integrity.reasons).toEqual([UNFUNDED_REASON]);
     const funded = cmp.scenarios.find((s) => s.name === "funded")!;
     expect(funded.integrity.status).toBe("valid");
-    expect(funded.netCostCents).toBe(166954821);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 1¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it −1¢.
+    expect(funded.netCostCents).toBe(166954819);
   });
 
   test("all valid: qualified, nothing excluded, the two objectives may disagree", () => {
     // The sample household, three orders: every scenario valid,
     // so the crown is qualified and excluded is null. The two
     // objectives genuinely disagree here — pre-tax-first is
-    // cheapest ($1,020,256.83) while taxable-first leaves the
-    // most wealth ($11,635,964.62) — and the result names both
+    // cheapest ($1,020,256.86) while taxable-first leaves the
+    // most wealth ($11,635,964.64) — and the result names both
     // instead of hiding one behind the tie-break. Pre-tax-first
     // is valid-with-benign-residual (a 1¢ settlement residual
     // inside the documented tolerance), which still counts as
@@ -237,8 +248,11 @@ describe("C9 Build 3 — W4-GAP-1: the compare crowns valid winners only", () =>
     );
     expect(byName.get("taxable-first")!.integrity.status).toBe("valid");
     expect(byName.get("roth-first")!.integrity.status).toBe("valid");
-    expect(byName.get("pre-tax-first")!.netCostCents).toBe(102025683);
-    expect(byName.get("taxable-first")!.endingAfterTaxWealthCents).toBe(1163596462);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 1¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it +4¢.
+    expect(byName.get("pre-tax-first")!.netCostCents).toBe(102025686);
+    expect(byName.get("taxable-first")!.endingAfterTaxWealthCents).toBe(1163596464);
   });
 });
 

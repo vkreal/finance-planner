@@ -296,6 +296,25 @@ export function marginalCgRateForYear(row: RothYear): number {
   return 20;
 }
 
+// Preferential-staircase tax in exact integer cents (C2 round 2),
+// same treatment as priceYear (taxEngine.ts): the float product
+// rounds an exact half-cent 15% layer 1¢ low (2026 MFJ, at15
+// $100.30: exact $15.045, priced $15.04). Only the 15% layer can
+// tie on cent inputs; the 20% layer cannot, so the total is
+// computed exactly once — never per layer, since the 20% layer is
+// not cent-integral — on cent-quantized inputs, with the float sum
+// kept bit-identically otherwise. Returns null when either amount
+// is not cent-quantized.
+function ltcgStaircaseTaxCents(at15: number, at20: number): number | null {
+  const at15Cents = at15 * 100;
+  const at20Cents = at20 * 100;
+  if (Math.abs(at15Cents - Math.round(at15Cents)) > 1e-6) return null;
+  if (Math.abs(at20Cents - Math.round(at20Cents)) > 1e-6) return null;
+  return Math.floor(
+    (15 * Math.round(at15Cents) + 20 * Math.round(at20Cents) + 50) / 100,
+  );
+}
+
 // The federal tax on a capital-gains stack, computed exactly
 // as priceYear computes it (taxEngine.ts): ordinary taxable
 // income fills the staircase first; the gains then price at
@@ -313,7 +332,8 @@ export function cgStackTax(
   const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryTi - at0);
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  return 0.15 * at15 + 0.2 * at20;
+  const staircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  return staircaseCents != null ? staircaseCents / 100 : 0.15 * at15 + 0.2 * at20;
 }
 
 // The parents' Form 8615 allocable tax on `excess` dollars of

@@ -19,9 +19,10 @@
    these pins: both filers under 65); reduction =
    (2/37) × min(itemized-before-§68, excess), $0 in
    2025 (the trio is 2026+ only).
-   (b) Charitable: floor 0.5% of AGI (2026+ only),
-   ceiling 60% of AGI (every year); allowed =
-   min(max(0, entered − floor), 0.6 × AGI), floor
+   (b) Charitable: floor 0.5% of the contribution base (2026+ only),
+   ceiling 60% of the contribution base (every year); the contribution
+   base is AGI floored at $0; allowed =
+   min(max(0, entered − floor), 0.6 × contribution base), floor
    applied first.
    (c) §170(p): standard-side only, min(entered, cap)
    with the cap $2,000 MFJ / $1,000 single or HOH,
@@ -137,11 +138,14 @@ function expectedCharitable(
   agi: number,
   entered: number,
 ): number {
+  // Contribution base floored at $0, as in the pricer (C2-S1):
+  // a percentage limit on a negative base is $0, never negative.
+  const contributionBase = Math.max(0, agi);
   const floor =
     year >= DEDUCTION_2026.firstYear
-      ? (DEDUCTION_2026.charitableFloorRatePct / 100) * agi
+      ? (DEDUCTION_2026.charitableFloorRatePct / 100) * contributionBase
       : 0;
-  return roundCent(Math.min(Math.max(0, entered - floor), 0.6 * agi));
+  return roundCent(Math.min(Math.max(0, entered - floor), 0.6 * contributionBase));
 }
 
 function expected170p(

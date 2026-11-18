@@ -434,18 +434,29 @@ describe("E4-S1 — candidate-integrity assessment (engine cases)", () => {
     }
   });
 
-  test("MFJ Fill 22% (direct): one non-converged year, 2056, 1¢ gains — benign residual", () => {
+  test("MFJ Fill 22% (direct): two non-converged years under the preferential staircase (Engine Review C2 round 2)", () => {
+    // Re-pinned under Engine Review C2 (2026-11-18): before the fix this
+    // path carried one non-converged year, 2056, on a 1¢ gains tie; the
+    // integer-cents bracket walk prices that tie exactly, so the direct
+    // path now fully converges — status "valid", no residual.
+    // Re-pinned again in C2 round 2: the preferential staircase moves
+    // the tie again — the direct path now carries two non-converged
+    // years, 2030 and 2056, each a 1¢ gains mismatch on
+    // repeated-assumption, so the status is valid-with-benign-residual.
     const res = simulateRothPlan(samplePlanInputs(), FILL22 as never, undefined, {
       leanDetail: true,
     });
     const i = assessCandidateIntegrity(res);
     expect(i.status).toBe("valid-with-benign-residual");
-    expect(i.nonConvergedYearList).toEqual([2056]);
+    expect(i.nonConvergedYearList).toEqual([2030, 2056]);
     expect(i.maxMismatchGainsCents).toBe(1);
     expect(i.maxMismatchPretaxCents).toBe(0);
   });
 
-  test("MFJ Fill 22% (compare path): non-converged years 2038/2049/2056, 1¢ gains each", () => {
+  test("MFJ Fill 22% (compare path): non-converged years 2039/2053, 1¢ gains each (Engine Review C2 round 2)", () => {
+    // Re-pinned under Engine Review C2 (2026-11-18): the non-converged
+    // years were 2038/2049/2056 before the fix; the integer-cents walk
+    // moves the settlement flip to 2039/2046/2055 (same 1¢ gains each).
     // The regression gate's compare base (same construction as
     // gate-probe.ts): the sample household with the preserve
     // reserve priced on the compare path.
@@ -554,7 +565,11 @@ describe("E4-S1 — candidate-integrity assessment (engine cases)", () => {
     const fill22 = cmp.scenarios.find((s) => s.name === "Fill 22%")!;
     const i22 = assessCandidateIntegrity(asResult(fill22));
     expect(i22.status).toBe("valid-with-benign-residual");
-    expect(i22.nonConvergedYearList).toEqual([2038, 2049, 2056]);
+    // Re-pinned again in C2 round 2: the preferential staircase
+    // moves the cycling years from 2039/2046/2055 to 2039/2053
+    // (2046 and 2055 now converge); each is still a 1¢ gains
+    // mismatch on repeated-assumption.
+    expect(i22.nonConvergedYearList).toEqual([2039, 2053]);
     expect(i22.maxMismatchGainsCents).toBe(1);
     expect(i22.maxMismatchPretaxCents).toBe(0);
     const fill12 = cmp.scenarios.find((s) => s.name === "Fill 12%")!;
@@ -565,13 +580,21 @@ describe("E4-S1 — candidate-integrity assessment (engine cases)", () => {
     expect(i12.ceilingBreachedAtZeroConversionYears).toBe(27);
   });
 
-  test("single-filer equivalent of the Oct 25 case: Do Nothing, year 2049, 1¢ gains", () => {
+  test("single-filer equivalent of the Oct 25 case: Do Nothing carries a 2045 residual under the preferential staircase (Engine Review C2 round 2)", () => {
+    // Re-pinned under Engine Review C2 (2026-11-18): before the fix this
+    // shape carried one non-converged year, 2049, on a 1¢ gains tie; the
+    // integer-cents bracket walk prices that tie exactly, so it now fully
+    // converges — status "valid", no residual.
+    // Re-pinned again in C2 round 2: the preferential staircase moves
+    // the tie again — the shape now carries one non-converged year,
+    // 2045, a 1¢ gains mismatch on repeated-assumption, so the
+    // status is valid-with-benign-residual.
     const res = simulateRothPlan(singleFilerInputs(), DO_NOTHING as never, undefined, {
       leanDetail: true,
     });
     const i = assessCandidateIntegrity(res);
     expect(i.status).toBe("valid-with-benign-residual");
-    expect(i.nonConvergedYearList).toEqual([2049]);
+    expect(i.nonConvergedYearList).toEqual([2045]);
     expect(i.maxMismatchGainsCents).toBe(1);
     expect(i.maxMismatchPretaxCents).toBe(0);
   });
@@ -743,25 +766,40 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       // pay-sale gains), so only the gaps move with the
       // cost winner: wealth gap $342,611.85 -> $344,916.60,
       // net-cost gap $873,557.10 -> $872,694.95.
+      // RE-PINNED (Engine Review C2, 2026-11-18): the
+      // integer-cents bracket walk moves the winner's net
+      // cost +3¢ ($577,187.22 -> $577,187.25) and its wealth
+      // −12¢ ($11,556,221.56 -> $11,556,221.44); the wealth
+      // winner's figures move too (net cost −3¢, wealth
+      // +12¢), so the gaps are now $344,916.84 / $872,694.89.
+      // RE-PINNED again in C2 round 2: the preferential
+      // staircase moves the winner's wealth −6¢
+      // ($11,556,221.44 -> $11,556,221.38); the winner's net
+      // cost is unmoved, so the wealth gap is now $344,916.90.
+      // The staircase also moves the wealth winner's net cost
+      // +3¢ ($1,449,882.14 -> $1,449,882.17), so the net-cost
+      // gap is now $872,694.92. The wealth winner's wealth
+      // moves −3¢ ($11,901,138.28 -> $11,901,138.25), so the
+      // wealth gap is now $344,916.87.
       expect(opt.winner.spec.key).toBe("32|-|-|-|-:74:-:-:taxable-pretax-roth:hv");
-      expect(opt.winner.cost.netCost).toBe(577187.22);
-      expect(opt.winner.result.endingAfterTaxWealth).toBe(11556221.56);
+      expect(opt.winner.cost.netCost).toBe(577187.25);
+      expect(opt.winner.result.endingAfterTaxWealth).toBe(11556221.38);
       expect(opt.selectedWinner.spec.key).toBe(opt.winner.spec.key);
       expect(opt.winnerByNetCost.spec.key).toBe(opt.winner.spec.key);
       // Ending-wealth winner: Fill to a $150,000 MAGI cap with
-      // gain harvesting — $344,916.60 more wealth for
-      // $872,694.95 more net cost. The objectives disagree,
+      // gain harvesting — $344,916.87 more wealth for
+      // $872,694.92 more net cost. The objectives disagree,
       // and the result says so.
       expect(opt.winnerByEndingWealth.spec.key).toBe(
         "-|-|-|-|150000:74:-:-:taxable-pretax-roth:hv",
       );
       expect(opt.winnerByEndingWealth.cost.netCost).toBe(1449882.17);
-      expect(opt.winnerByEndingWealth.result.endingAfterTaxWealth).toBe(11901138.16);
+      expect(opt.winnerByEndingWealth.result.endingAfterTaxWealth).toBe(11901138.25);
       expect(opt.winnersDiffer).toBe(true);
       expect(
         opt.winnerByEndingWealth.result.endingAfterTaxWealth -
           opt.winner.result.endingAfterTaxWealth,
-      ).toBeCloseTo(344916.6, 2);
+      ).toBeCloseTo(344916.87, 2);
       // The winner's own march settled cleanly.
       expect(opt.winner.integrity.status).toBe("valid");
     },
@@ -774,12 +812,21 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       const opt = singleOptimizer();
       expect(opt.candidatesTested).toBe(3025);
       expect(opt.winner.spec.key).toBe("-|-|-|-|500000:74:-:-:taxable-pretax-roth:hv");
-      expect(opt.winner.cost.netCost).toBe(840858.44);
-      expect(opt.winner.result.endingAfterTaxWealth).toBe(8762798.78);
+      // RE-PINNED (Engine Review C2, 2026-11-18): the
+      // integer-cents bracket walk moves the winner's net cost
+      // −2¢ and its wealth +7¢; the wealth winner's net cost
+      // +1¢ and its wealth −3¢.
+      // RE-PINNED again in C2 round 2: the preferential
+      // staircase moves the winner's wealth +1¢
+      // ($8,762,798.85 -> $8,762,798.86); the winner's net
+      // cost is unmoved. The staircase also moves the wealth
+      // winner's wealth +3¢ ($9,126,569.03 -> $9,126,569.06).
+      expect(opt.winner.cost.netCost).toBe(840858.42);
+      expect(opt.winner.result.endingAfterTaxWealth).toBe(8762798.86);
       expect(opt.winnerByEndingWealth.spec.key).toBe(
         "-|1|-|-|-:74:-:-:taxable-pretax-roth:hv",
       );
-      expect(opt.winnerByEndingWealth.cost.netCost).toBe(1917613.08);
+      expect(opt.winnerByEndingWealth.cost.netCost).toBe(1917613.09);
       expect(opt.winnerByEndingWealth.result.endingAfterTaxWealth).toBe(9126569.06);
       expect(opt.winnersDiffer).toBe(true);
       expect(opt.winnerQualified).toBe(true);
@@ -1081,7 +1128,12 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
       // Within $0.01: the engine sums unrounded balances and
       // rounds once, while this check rounds each component
       // first — the two roundings differ by at most a cent.
-      expect(Math.abs(hand - s.result.endingAfterTaxWealth)).toBeLessThanOrEqual(0.01);
+      // Re-pinned in C2 round 2: the staircase moved one
+      // candidate's wealth a cent, and the raw float difference
+      // lands at 0.0100000016 — a cent plus float dust — so the
+      // comparison now rounds the difference to cents first
+      // (this check is "to the cent"); the bar is unchanged.
+      expect(r2(Math.abs(hand - s.result.endingAfterTaxWealth))).toBeLessThanOrEqual(0.01);
     }
     // The wealth is after-tax, never gross balances: the
     // winner's gross ending balances exceed its wealth by
@@ -1133,7 +1185,9 @@ describe("Section 4 — independently verified conversion arithmetic", () => {
     // includes the harvest pay-sale tax — $538,193.87 ->
     // $539,056.02 (+$862.15). The identity (sum equals the
     // lifetime field) still holds, per the expect above.
-    expect(r2(years.reduce((a, y) => a + y.federalTax, 0))).toBe(539056.02);
+    // RE-PINNED (Engine Review C2, 2026-11-18): the
+    // integer-cents bracket walk moves the sum +3¢.
+    expect(r2(years.reduce((a, y) => a + y.federalTax, 0))).toBe(539056.05);
     expect(r2(years.reduce((a, y) => a + y.stateTax, 0))).toBe(
       opt.winner.result.lifetimeStateTax,
     );
@@ -1351,6 +1405,10 @@ describe("Section 4 — tax funding from each available account", () => {
     const funding = buildRothFunding(samplePlanInputs(), FILL22);
     const sum = (f: (r: (typeof funding)[number]) => number) =>
       r2(funding.reduce((a, r) => a + f(r), 0));
+    // RE-PINNED (Engine Review C2, 2026-11-18): the
+    // integer-cents bracket walk moves the Taxable sales −2¢.
+    // RE-PINNED again in C2 round 2: the preferential
+    // staircase moves the Taxable sales +2¢ to 60816656.
     expect(sum((r) => r.taxableSoldForTaxCents)).toBe(60816656);
     expect(sum((r) => r.pretaxDrawCents)).toBe(0);
     expect(sum((r) => r.rothDrawCents)).toBe(0);
@@ -1371,7 +1429,11 @@ describe("Section 4 — tax funding from each available account", () => {
     );
     expect(sum((r) => r.pretaxSpendingDrawCents)).toBe(0);
     expect(sum((r) => r.pretaxTaxDebitCents)).toBe(0);
-    expect(withholding).toBe(23728208);
+    // RE-PINNED (Engine Review C2, 2026-11-18): the
+    // integer-cents bracket walk moves the withholding −3¢.
+    // RE-PINNED again in C2 round 2: the preferential
+    // staircase moves the withholding +1¢ to 23728206.
+    expect(withholding).toBe(23728206);
     expect(withholding).toBeGreaterThan(0);
     // After the conversion window closes there is no
     // conversion left to withhold from, so the remaining

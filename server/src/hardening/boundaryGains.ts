@@ -140,7 +140,22 @@ function checkEq(
 // how a gains stack splits across the 0% / 15% / 20%
 // bands when ordinary taxable income fills the staircase
 // first. This is the independent expectation cgStackTax
-// and priceYear are both checked against.
+// and priceYear are both checked against — so it prices
+// the staircase total in exact integer cents (C2 round 2),
+// the same treatment as the engine: the float product
+// rounds an exact half-cent 15% layer 1¢ low, and an
+// expectation that kept the float sum would fail the fixed
+// engine exactly on the tie cases.
+function ltcgStaircaseTaxCents(at15: number, at20: number): number | null {
+  const at15Cents = at15 * 100;
+  const at20Cents = at20 * 100;
+  if (Math.abs(at15Cents - Math.round(at15Cents)) > 1e-6) return null;
+  if (Math.abs(at20Cents - Math.round(at20Cents)) > 1e-6) return null;
+  return Math.floor(
+    (15 * Math.round(at15Cents) + 20 * Math.round(at20Cents) + 50) / 100,
+  );
+}
+
 function staircase(
   year: number,
   fs: FS,
@@ -154,7 +169,13 @@ function staircase(
   const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryTi - at0);
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  return { at0, at15, at20, tax: 0.15 * at15 + 0.2 * at20 };
+  const staircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  return {
+    at0,
+    at15,
+    at20,
+    tax: staircaseCents != null ? staircaseCents / 100 : 0.15 * at15 + 0.2 * at20,
+  };
 }
 
 function roundCent(n: number): number {

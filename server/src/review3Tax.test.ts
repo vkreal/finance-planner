@@ -348,7 +348,8 @@ describe("review3 independent federal tax (§4)", () => {
 
   test("2026 deduction trio is 2026-and-later only: the charitable floor", () => {
     // §170(b)(1)(I): an itemizer's charitable deduction is
-    // reduced by 0.5% of AGI — 2026 and later only. At AGI
+    // reduced by 0.5% of the contribution base — the year's
+    // AGI floored at $0 — 2026 and later only. At AGI
     // $200,000 the floor is $1,000, so $10,000 of giving
     // allows $9,000 in 2026 — and the whole $10,000 in 2025.
     const p2026 = priceYear(base({ otherOrdinary: 200000, itemizedSaltPaid: 40400, itemizedCharitable: 10000 }));

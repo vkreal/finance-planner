@@ -153,7 +153,10 @@ describe("C9 Build 3 NICEs — N1: the action threads the verdict to the Lab", (
     const byName = new Map(res.scenarios.map((s) => [s.name, s]));
     expect(byName.get("funded")!.integrity.status).toBe("valid");
     expect(byName.get("taxable-first")!.integrity.status).toBe("invalid");
-    expect(byName.get("funded")!.netCostCents).toBe(166954821);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 1¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it −1¢.
+    expect(byName.get("funded")!.netCostCents).toBe(166954819);
   });
 
   test("valid control: qualified, nothing excluded, winners unchanged", () => {
@@ -179,8 +182,11 @@ describe("C9 Build 3 NICEs — N1: the action threads the verdict to the Lab", (
       "valid-with-benign-residual",
     );
     expect(byName.get("taxable-first")!.integrity.status).toBe("valid");
-    expect(byName.get("pre-tax-first")!.netCostCents).toBe(102025683);
-    expect(byName.get("taxable-first")!.endingAfterTaxWealthCents).toBe(1163596462);
+    // Re-pinned under Engine Review C2 (2026-11-18): the integer-cents
+    // walk moves this net cost 1¢. Re-pinned again in C2 round 2:
+    // the preferential staircase moves it +4¢.
+    expect(byName.get("pre-tax-first")!.netCostCents).toBe(102025686);
+    expect(byName.get("taxable-first")!.endingAfterTaxWealthCents).toBe(1163596464);
   });
 });
 

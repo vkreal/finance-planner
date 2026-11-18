@@ -179,7 +179,10 @@ describe("C10 — roll-forward parity (shared-engine proof)", () => {
     // tolerance is 2¢ per component per year). The parity bar
     // is therefore 2¢ per field, not exact cents — and the
     // observed worst case on this plan is 1¢.
-    const within2c = (a: number, b: number) => Math.abs(a - b) <= 0.02;
+    // 2c per flow field, in integer cents — the Pass 4 note applies
+    // here too: the fields are cent-rounded dollars, and a raw-float
+    // `<= 0.02` fails a true 2c difference on float noise alone.
+    const within2c = (a: number, b: number) => Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 2;
     for (let i = 0; i < march.years.length; i++) {
       const m = march.years[i]!;
       const r = rolled.years[i]!;
@@ -526,7 +529,12 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
     expect(rolled.ok).toBe(true);
     expect(rolled.floorBound).toBe(false);
     expect(rolled.years.length).toBe(march.years.length);
-    const within2c = (a: number, b: number) => Math.abs(a - b) <= 0.02;
+    // 2c per flow field, in integer cents — the Pass 4 note applies
+    // here too: the fields are cent-rounded dollars, and a raw-float
+    // `<= 0.02` fails a true 2c difference on float noise (this
+    // case's 2061 RMD/federalTax sit exactly on the bar after the
+    // C2 conditional integer-cents walk moved one leg a cent).
+    const within2c = (a: number, b: number) => Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 2;
     for (let i = 0; i < march.years.length; i++) {
       const m = march.years[i]!;
       const r = rolled.years[i]!;
@@ -543,8 +551,9 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
       expect(within2c(r.magi, m.magi)).toBe(true);
       expect(within2c(r.acaCreditKept, m.acaCreditKept)).toBe(true);
       // Ending balances: the $0.50 rounding-compounding bar
-      // (see the helper note above), not 2¢.
-      const within50c = (a: number, b: number) => Math.abs(a - b) <= 0.5;
+      // (see the helper note above), not 2¢ — compared in
+      // integer cents like the flow bar, for the same float reason.
+      const within50c = (a: number, b: number) => Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 50;
       expect(within50c(r.pretaxEnd, m.pretaxEnd)).toBe(true);
       expect(within50c(r.rothEnd, m.rothEnd)).toBe(true);
       expect(within50c(r.taxableEnd, m.taxableEnd)).toBe(true);
@@ -574,7 +583,9 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
     expect(m2045.detail.rmdSpouse).toBe(0);
     expect(r2045.rmdSpouse).toBe(0);
     expect(m2046.detail.rmdSpouse).toBeGreaterThan(100000);
-    expect(Math.abs(r2046.rmdSpouse - m2046.detail.rmdSpouse)).toBeLessThanOrEqual(0.02);
+    // Integer cents, like the parity helper: a raw-float <= 0.02
+    // fails a true 2c gap on float noise.
+    expect(Math.abs(Math.round(r2046.rmdSpouse * 100) - Math.round(m2046.detail.rmdSpouse * 100))).toBeLessThanOrEqual(2);
   });
 
   test("both deferrals: each person's election applies in its own first RMD year", () => {
@@ -604,7 +615,9 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
     expect(m2043.detail.rmdPrimary).toBe(0);
     expect(r2043.rmdPrimary).toBe(0);
     expect(m2044.detail.rmdPrimary).toBeGreaterThan(200000);
-    expect(Math.abs(r2044.rmdPrimary - m2044.detail.rmdPrimary)).toBeLessThanOrEqual(0.02);
+    // Integer cents, like the parity helper: a raw-float <= 0.02
+    // fails a true 2c gap on float noise.
+    expect(Math.abs(Math.round(r2044.rmdPrimary * 100) - Math.round(m2044.detail.rmdPrimary * 100))).toBeLessThanOrEqual(2);
   });
 
   test("control (primary deferral, same-person path): parity to the cent", () => {
@@ -638,7 +651,9 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
     expect(m2045.detail.rmdSpouse).toBe(0);
     expect(r2045.rmdSpouse).toBe(0);
     expect(m2046.detail.rmdSpouse).toBeGreaterThan(300000);
-    expect(Math.abs(r2046.rmdSpouse - m2046.detail.rmdSpouse)).toBeLessThanOrEqual(0.02);
+    // Integer cents, like the parity helper: a raw-float <= 0.02
+    // fails a true 2c gap on float noise.
+    expect(Math.abs(Math.round(r2046.rmdSpouse * 100) - Math.round(m2046.detail.rmdSpouse * 100))).toBeLessThanOrEqual(2);
   });
 });
 

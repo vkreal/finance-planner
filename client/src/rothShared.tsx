@@ -17,6 +17,21 @@ export function fmtDollars(dollars: number): string {
   const s = `$${abs.toLocaleString("en-US")}`;
   return neg ? `−${s}` : s;
 }
+/* Cents-exact dollars (C2-S2): the bracket-detail rows in the Roth
+   Conversion view are priced to the cent, and whole-dollar
+   fmtDollars rounds each row up or down independently, so the
+   displayed rows miss the displayed total by $1–$2 (single 2025:
+   $17,652 shown against a $17,651 tax). Showing cents makes the
+   listed rows sum to the total shown, line by line. Same shape as
+   December.tsx / Playground.tsx fmtDollarsExact. */
+export function fmtDollarsExact(dollars: number): string {
+  const neg = dollars < 0;
+  const s = `$${Math.abs(dollars).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  return neg ? `−${s}` : s;
+}
 export function fmtCents(cents: number): string {
   return fmtDollars(cents / 100);
 }

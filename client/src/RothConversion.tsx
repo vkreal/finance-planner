@@ -20,6 +20,7 @@ FILING_LABELS,
 fmtCents,
 fmtCompactDollars,
 fmtDollars,
+fmtDollarsExact,
 fmtMoneyInput,
 hintCls,
 InfoNote,
@@ -6489,20 +6490,20 @@ export function RothConversion({
                     <>
                       <p className="mt-2 text-sm">
                         Ordinary income of{" "}
-                        <span className="tnum">{fmtDollars(detailRow.detail.ordinaryTaxableIncome)}</span>{" "}
+                        <span className="tnum">{fmtDollarsExact(detailRow.detail.ordinaryTaxableIncome)}</span>{" "}
                         is taxed layer by layer:
                       </p>
                       <ul className="mt-1 space-y-1 text-sm">
                         {detailRow.detail.bracketLayers.map((l) => (
                           <li key={l.ratePct} className="tnum">
-                            {l.ratePct}% on {fmtDollars(l.amount)} (from {fmtDollars(l.from)}
-                            {l.to != null ? ` to ${fmtDollars(l.to)}` : " and up"}) — tax{" "}
-                            {fmtDollars(l.tax)}
+                            {l.ratePct}% on {fmtDollarsExact(l.amount)} (from {fmtDollarsExact(l.from)}
+                            {l.to != null ? ` to ${fmtDollarsExact(l.to)}` : " and up"}) — tax{" "}
+                            {fmtDollarsExact(l.tax)}
                           </li>
                         ))}
                         <li>
                           Ordinary tax:{" "}
-                          <span className="tnum font-medium">{fmtDollars(detailRow.detail.ordinaryTax)}</span>
+                          <span className="tnum font-medium">{fmtDollarsExact(detailRow.detail.ordinaryTax)}</span>
                         </li>
                       </ul>
                     </>
