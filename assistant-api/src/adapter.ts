@@ -1827,7 +1827,7 @@ function irmaaAcaCompareWarnings(
     if (m.cliffCapInoperativeYears.length > 0) {
       const years = m.cliffCapInoperativeYears.join(", ");
       out.push(
-        `ACA cliff cap is inoperative for ${m.name} in ${years}: mandatory income alone exceeds the cliff even with no conversion and no pre-tax spending draw, so the cap cannot defend the cliff and the credit is $0 in those years. The $0 credit is priced, not missing — do not read those years as a choice to forfeit the credit, and do not expect a different draw order to recover it unless the draw mix itself changes what is mandatory.`,
+        `ACA cliff cap is inoperative for ${m.name} in ${years}: mandatory income alone exceeds the cliff even with no conversion and no pre-tax spending draw, so the cap cannot defend the cliff and the credit is $0 in those years. The $0 credit is priced, not missing — do not read those years as a choice to forfeit the credit, and do not expect a different draw order to recover it unless the funding mix itself removes the gains (funding from Roth instead of taxable sales).`,
       );
     }
     if (m.earlyWithdrawalUnknownYears.length > 0) {
