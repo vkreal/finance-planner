@@ -227,7 +227,7 @@ describe("advertised schema == accepting schema", () => {
       retirement_roth_conversion: compare,
       // The dynamic tool prices the compare optionals EXCEPT
       // comparisonScope — it has no limited/full modes (it always
-      // runs its own 114-policy roll-forward), so a supplied
+      // runs its own up-to-114-policy roll-forward), so a supplied
       // comparisonScope is reported ignored (pricedInputs.ts).
       retirement_dynamic_withdrawal: compare.filter(
         (f) => f !== "comparisonScope",

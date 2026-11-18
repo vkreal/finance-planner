@@ -831,7 +831,7 @@ describe("C10 — Pass 4 (N1): five extra deferral corners as regression tests",
 });
 
 describe("C10 — A-vs-B equal-income-budget experiment", () => {
-  test("C (dynamic) is never worse than A or B; B realizes gains in year 1 at $100K", () => {
+  test("C (dynamic) is never worse than A or B on this plan; B realizes gains in year 1 at $100K", () => {
     const inputs = shortInputs();
     const rows = runDynamicAbExperiment(inputs, [0, 50000, 100000]);
     expect(rows.length).toBe(3);

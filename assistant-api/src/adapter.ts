@@ -2877,7 +2877,7 @@ function compareRothConversionsFull(
 /**
  * Year-by-year withdrawal optimization, priced entirely by the
  * shared engine (runDynamicOptimizer in rothOptimizer.ts): at
- * each year the 114-policy fixed-fill set is priced over the
+ * each year the up-to-114-policy fixed-fill set is priced over the
  * remaining horizon from that year's actual balances and the
  * best valid policy's first year becomes the schedule's row.
  * The response carries the annual schedule table (per-year

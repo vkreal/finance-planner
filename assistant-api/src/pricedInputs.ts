@@ -249,7 +249,7 @@ export const PRICED_OPTIONAL: Record<FinancialToolName, string[]> = {
   // Engine Review C10: the dynamic tool prices the same
   // optionals as the compare tools EXCEPT comparisonScope —
   // it has no limited/full modes (it always runs its own
-  // 114-policy roll-forward), so a supplied comparisonScope
+  // up-to-114-policy roll-forward), so a supplied comparisonScope
   // is reported ignored for this tool instead of silently
   // meaning nothing.
   retirement_dynamic_withdrawal: COMPARE_OPTIONAL_INPUTS.filter(
