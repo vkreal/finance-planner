@@ -514,15 +514,17 @@ async function encryptNum(key: CryptoKey, cents: number, context: string): Promi
   // is refused here, never stored as truncated or imprecise text
   // (Number.parseInt on read-back would silently return a
   // neighbouring value, off by cents). Every writer of a fresh
-  // money value passes integer cents through here, so no valid
-  // write changes. (C6 NICEs: the opening reserve, which
+  // user-supplied money value passes integer cents through here,
+  // so no valid write changes. (C6 NICEs: the opening reserve, which
   // previously encrypted its cents with encryptStr, now routes
   // through here too. What does NOT pass through here is
-  // re-encryption of an already-stored value — the seed constant,
-  // the CAS rebind, the restore handler's settings loop — whose
-  // values were validated at first write or at restore preflight;
-  // and the Net Worth target, which is plaintext by design and
-  // carries its own safe-integer check at its writer.)
+  // re-encryption of an already-stored value — the CAS rebind,
+  // the restore handler's settings loop — whose values were
+  // validated at first write or at restore preflight; the fixed
+  // seed constant, a fresh write of a literal that is safe by
+  // construction and written via encryptStr, not here; and the
+  // Net Worth target, which is plaintext by design and carries
+  // its own safe-integer check at its writer.)
   if (!Number.isFinite(cents) || !Number.isSafeInteger(cents)) {
     throw new Error(
       `encryptNum: refusing to store a cent amount that cannot be represented exactly (${context})`,
