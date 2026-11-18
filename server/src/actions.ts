@@ -514,14 +514,21 @@ async function encryptNum(key: CryptoKey, cents: number, context: string): Promi
   // is refused here, never stored as truncated or imprecise text
   // (Number.parseInt on read-back would silently return a
   // neighbouring value, off by cents). Every writer of a fresh
-  // user-supplied money value passes integer cents through here,
-  // so no valid write changes. (C6 NICEs: the opening reserve, which
-  // previously encrypted its cents with encryptStr, now routes
-  // through here too. What does NOT pass through here is
-  // re-encryption of an already-stored value — the CAS rebind,
-  // the restore handler's settings loop — whose values were
-  // validated at first write or at restore preflight; the fixed
-  // seed constant, a fresh write of a literal that is safe by
+  // user-supplied money value as a single integer-cents field
+  // passes through here, so no valid write changes. (C6 NICEs:
+  // the opening reserve, which previously encrypted its cents
+  // with encryptStr, now routes through here too. What does NOT
+  // pass through here is the Roth, Playground, Retirement, and
+  // December saves, which store their inputs as encrypted JSON
+  // blobs via encryptStr — the client parser is the only
+  // safe-integer check on those paths — or re-encryption of an
+  // already-stored value — the CAS rebind, the restore handler's
+  // settings loop — whose values were validated at first write
+  // or at restore preflight, except a reserve value still
+  // carrying an older export's enc:v1: ciphertext, whose
+  // plaintext was validated at neither and is carried through
+  // decrypt and re-encryption unchanged; the fixed seed
+  // constant, a fresh write of a literal that is safe by
   // construction and written via encryptStr, not here; and the
   // Net Worth target, which is plaintext by design and carries
   // its own safe-integer check at its writer.)
