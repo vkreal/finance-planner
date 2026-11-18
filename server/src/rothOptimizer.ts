@@ -10056,6 +10056,14 @@ export type RothCompareScenarioResult = {
   // with complete lookbacks and no below-100% year.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9, Build 5
+  // NICEs — W5 §3/§6, display only): the ACA years where the
+  // cliff cap cannot defend the cliff because mandatory income
+  // alone breaches it (see the march result's
+  // `cliffCapInoperativeYears`). Read off the priced march's
+  // own list, never re-derived. Both empty on a scenario with
+  // no cliff cap, or where the cap defends every ACA year.
+  cliffCapInoperativeYears: number[];
   // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
   // Build 1, display only): the years whose pre-59½ pre-tax
   // spending draw was priced while the drawing owner's
@@ -10301,6 +10309,7 @@ export function runRothCompare(
       // march's own lists, never re-derived.
       irmaaLookbackMissingYears: result.irmaaLookbackMissingYears,
       acaBelow100FplYears: result.acaBelow100FplYears,
+      cliffCapInoperativeYears: result.cliffCapInoperativeYears,
       earlyWithdrawalUnknownYears: result.earlyWithdrawalUnknownYears,
       rothBasisUnknownYears: result.rothBasisUnknownYears,
       healthPremiumCents: toCents(cost.healthPremium),
@@ -10359,6 +10368,7 @@ export function runRothCompare(
       acaCreditCents: p.acaCreditCents,
       irmaaLookbackMissingYears: p.irmaaLookbackMissingYears,
       acaBelow100FplYears: p.acaBelow100FplYears,
+      cliffCapInoperativeYears: p.cliffCapInoperativeYears,
       earlyWithdrawalUnknownYears: p.earlyWithdrawalUnknownYears,
       rothBasisUnknownYears: p.rothBasisUnknownYears,
       healthPremiumCents: p.healthPremiumCents,

@@ -2590,6 +2590,13 @@ export type WorkYearsCompareRow = {
   // priced march, never re-derived.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9, Build 5
+  // NICEs — W5 §3/§6, display only): the winner march's ACA
+  // years where the cliff cap cannot defend the cliff because
+  // mandatory income alone breaches it (see the march
+  // result's `cliffCapInoperativeYears`). Read off the
+  // winner's own priced march, never re-derived.
+  cliffCapInoperativeYears: number[];
   // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
   // Build 1, display only): the winner march's years whose
   // pre-59½ pre-tax spending draw was priced while the
@@ -2680,6 +2687,7 @@ export function runWorkYearsCompare(
       endingAfterTax: opt.winner.result.endingAfterTaxWealth,
       irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
       acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
+      cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
       earlyWithdrawalUnknownYears:
         opt.winner.result.earlyWithdrawalUnknownYears,
       rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears,

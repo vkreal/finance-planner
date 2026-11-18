@@ -65,8 +65,13 @@ import {
 import {
   assessCandidateIntegrity,
   planNetCost,
+  runRothCompare,
 } from "./rothOptimizer";
 import { samplePlanInputs } from "./sampleHousehold";
+import {
+  FILL_CLIFF_CEILINGS,
+  sampleCompareBase,
+} from "./hardening/sensCompareBase";
 
 const CAPPED_FILL_ACA = {
   id: "fill-aca",
@@ -105,7 +110,7 @@ describe("C9 Build 5 — W5-B1: capped tax-first lands on the cliff with the ter
     const years = acaYears(res);
     // The recovered fill: conversion $10,656.78 / $8,788.70 /
     // $7,100.63 (was $4,659.33 / $2,449.98 / $436.42) — the
-    // stranded $19,002 of conversion is back in Roth.
+    // stranded ~$19,000 of conversion is back in Roth.
     expect(years[0]!.acaMagi).toBe(127000);
     expect(years[0]!.conversion).toBe(10656.78);
     expect(years[1]!.acaMagi).toBe(127000);
@@ -275,5 +280,176 @@ describe("C9 Build 5 — 2043 MAGI jump: the primary's RMD starts at 75", () => 
     expect(y43.detail.drawGains).toBe(28940.87);
     expect(y42.detail.drawGains).toBe(93596.55);
     expect(y43.federalTax).toBe(28834.81);
+  });
+});
+
+describe("C9 Build 5 NICEs — cliffCapInoperativeYears summary flag (W5 §3/§6)", () => {
+  const INOPERATIVE = [2035, 2036, 2037, 2038, 2039, 2040, 2041, 2042, 2043];
+  const youngHealth = samplePlanInputs({
+    birthYearSpouse: 1979,
+    ssSpouseStartAge: 67,
+    healthPremiumAcaHousehold: 36000,
+    healthPremiumAcaSingle: 17500,
+    healthPremiumMedicarePerPerson: 2902.68,
+  });
+
+  test("young-spouse shape: the nine $0-credit years are listed, defended years are not", () => {
+    // Audit C6: 14 ACA years, 9 at $0 credit (2035–2043) —
+    // Social Security starts at 67 in 2035, and mandatory
+    // income alone breaches the cliff even at $0 conversion
+    // and $0 pre-tax draw. 2030–2034 land on target.
+    const res = simulateRothPlan(
+      { ...youngHealth, drawOrder: taxFirst },
+      CAPPED_FILL_ACA,
+    );
+    expect(res.cliffCapInoperativeYears).toEqual(INOPERATIVE);
+    const y35 = res.years.find((y) => y.year === 2035)!;
+    expect(y35.acaMagi).toBe(152095.88);
+    expect(y35.conversion).toBe(0);
+    expect(y35.funding.pretaxDraw).toBe(0);
+    expect(y35.acaCreditKept).toBe(0);
+    expect(y35.ceilingBreached).toBe(true);
+    const y34 = res.years.find((y) => y.year === 2034)!;
+    expect(y34.acaMagi).toBe(127000);
+    expect(y34.conversion).toBe(2775.1);
+    expect(y34.acaCreditKept).toBe(4850.8);
+  });
+
+  test("empty when the cap defends every ACA year, and when the cap is off", () => {
+    // Base shape (spouse born 1970): all five ACA years land
+    // on target, so the flag is empty.
+    const defended = simulateRothPlan(
+      { ...health, drawOrder: taxFirst },
+      CAPPED_FILL_ACA,
+    );
+    expect(defended.cliffCapInoperativeYears).toEqual([]);
+    // Same young-spouse shape uncapped: the cap is off, so no
+    // year is ever inoperative — the flag keys on the cap.
+    const uncapped = simulateRothPlan(
+      { ...youngHealth, drawOrder: taxFirst },
+      DO_NOTHING,
+    );
+    expect(uncapped.cliffCapInoperativeYears).toEqual([]);
+  });
+
+  test("the flag flows through runRothCompare", () => {
+    // Compare base carries no health-premium term, so this
+    // leg prices term-off — the same nine years (the
+    // taxable-led default draw order).
+    const base = {
+      ...sampleCompareBase(),
+      birthYearSpouse: 1979,
+      ssSpouseStartAge: 67,
+    };
+    const cmp = runRothCompare(
+      base as never,
+      [
+        { name: "Do Nothing", overrides: {} },
+        { name: "Fill ACA", overrides: { ceilings: FILL_CLIFF_CEILINGS } },
+      ],
+      2026,
+    );
+    expect(cmp.ok).toBe(true);
+    expect(cmp.scenarios[0]!.cliffCapInoperativeYears).toEqual([]);
+    expect(cmp.scenarios[1]!.cliffCapInoperativeYears).toEqual(INOPERATIVE);
+  });
+});
+
+describe("C9 Build 5 NICEs — alternation fallback (re-seed scope)", () => {
+  test("an alternating year keeps its credit-keeping settlement, not $0", () => {
+    // Closest reachable alternating shape WITHOUT the credit
+    // collapsing to $0 (term on, spending $120,000, taxable
+    // $500,000, no buffer, tax-first): 2034's INNER settlement
+    // iteration alternates on a 1¢ pretax residual
+    // (repeated-assumption), so the year keeps its closest
+    // settlement and reports unconverged — while the CREDIT
+    // iteration itself converged exactly (outer stop
+    // "converged", ACA residual 0¢) and the year keeps its
+    // $4,352.80 credit. The re-seed rescue is what produced
+    // that credit: the first run converged to the $0 state in
+    // one pass and the re-seed from the credit priced at the
+    // cliff converged in one pass, because the credit is flat
+    // to the cent across the 1¢ MAGI step at the cliff
+    // ($4,352.80 at $132,000.00 and at $131,999.99 alike).
+    // No credit-iteration alternation into a $0 closest
+    // settlement was reached in the batch's sweeps (see the
+    // batch report), so the re-seed is not extended on
+    // speculation — this test pins the fallback as it behaves.
+    const res = simulateRothPlan(
+      {
+        ...samplePlanInputs({
+          annualSpending: 120000,
+          taxableStart: 500000,
+          healthPremiumAcaHousehold: 36000,
+          healthPremiumAcaSingle: 17500,
+          healthPremiumMedicarePerPerson: 2902.68,
+        }),
+        drawOrder: taxFirst,
+      },
+      {
+        id: "fill-aca",
+        name: "Fill capped at ACA cliff",
+        ceilings: { ...NO_CEILINGS, acaCliffCap: true, acaCliffBuffer: 0 },
+      } as never,
+    );
+    const y34 = res.years.find((y) => y.year === 2034)!;
+    expect(y34.acaMagi).toBe(131999.99);
+    expect(y34.acaCreditKept).toBe(4352.8);
+    expect(y34.conversion).toBe(49950.18);
+    expect(y34.settlementConverged).toBe(false);
+    expect(y34.settlementStopReason).toBe("converged");
+    expect(y34.settlementInnerStopReason).toBe("repeated-assumption");
+    expect(y34.settlementPasses).toBe(1);
+    expect(y34.settlementMismatchCents).toEqual({
+      gains: 0,
+      pretax: 1,
+      roth: 0,
+      hsa: 0,
+      acaCredit: 0,
+    });
+    // The other ACA years converge cleanly.
+    for (const y of acaYears(res).filter((y) => y.year < 2034)) {
+      expect(y.settlementConverged).toBe(true);
+    }
+  });
+
+  test("a post-ACA alternating year keeps its closest settlement; no credit iteration runs", () => {
+    // Young-spouse C6, 2044 (first post-ACA year): the
+    // settlement iteration alternates on the known 1¢ gains
+    // knife-edge, so the year keeps its closest settlement
+    // and reports unconverged with stop repeated-assumption.
+    // No credit iteration runs in a non-ACA year (fast path),
+    // so the re-seed cannot engage here — the fallback is
+    // the whole behavior, pinned by the kept figures.
+    const res = simulateRothPlan(
+      {
+        ...samplePlanInputs({
+          birthYearSpouse: 1979,
+          ssSpouseStartAge: 67,
+          healthPremiumAcaHousehold: 36000,
+          healthPremiumAcaSingle: 17500,
+          healthPremiumMedicarePerPerson: 2902.68,
+        }),
+        drawOrder: taxFirst,
+      },
+      CAPPED_FILL_ACA,
+    );
+    const y44 = res.years.find((y) => y.year === 2044)!;
+    expect(y44.acaActive).toBe(false);
+    expect(y44.acaMagi).toBe(218164.94);
+    expect(y44.conversion).toBe(0);
+    expect(y44.funding.pretaxDraw).toBe(0);
+    expect(y44.settlementConverged).toBe(false);
+    expect(y44.settlementStopReason).toBe("repeated-assumption");
+    expect(y44.settlementInnerStopReason).toBe("repeated-assumption");
+    expect(y44.settlementPasses).toBe(1);
+    expect(y44.settlementMismatchCents).toEqual({
+      gains: 1,
+      pretax: 0,
+      roth: 0,
+      hsa: 0,
+      acaCredit: 0,
+    });
+    expect(y44.federalTax).toBe(27363.66);
   });
 });

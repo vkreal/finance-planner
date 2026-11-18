@@ -5131,6 +5131,18 @@ export type RothPlanResult = {
   // score or ranking reads them.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9, Build 5
+  // NICEs — W5 §3/§6, display only): the ACA years where the
+  // cliff cap cannot defend the cliff because mandatory income
+  // alone breaches it — the cap is on, the year is ACA-active,
+  // and the settled year still sits over the cliff with both
+  // of the cap's levers exhausted (conversion $0 and pre-tax
+  // spending draw $0), so no draw cap can land the year and
+  // the credit is $0. Read off the priced march's own rows,
+  // never re-derived. Empty on a plan with no cliff cap, or
+  // where the cap defends every ACA year. Display only — no
+  // score or ranking reads it.
+  cliffCapInoperativeYears: number[];
   // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
   // Build 1): the years whose pre-59½ pre-tax spending draw
   // was priced while the drawing owner's Rule-of-55
@@ -5714,6 +5726,11 @@ export function simulateRothPlan(
   // and the ACA-priced years under 100% FPL, in year order.
   const irmaaLookbackMissingYears: number[] = [];
   const acaBelow100FplYears: number[] = [];
+  // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9, Build 5
+  // NICEs — W5 §3/§6): the ACA years where the cliff cap
+  // cannot defend the cliff because mandatory income alone
+  // breaches it, in year order.
+  const cliffCapInoperativeYears: number[] = [];
   // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9, Build 1):
   // the years whose pre-59½ pre-tax spending draw was priced
   // while the drawing owner's eligibility was unanswered.
@@ -6361,7 +6378,12 @@ export function simulateRothPlan(
     // marketplace, the single amount when exactly one is, a
     // null applicable amount falling back to the year's
     // benchmark (null benchmark = no premium can be stated,
-    // $0). The Medicare part is computed with
+    // $0). The single amount is ONE shared amount for both
+    // one-spouse cases: a primary-only year and a spouse-only
+    // year price the same entered single amount — there is no
+    // separate entered premium per spouse, so different
+    // premiums for the two cases cannot be priced (see the
+    // field's contract text). The Medicare part is computed with
     // personsOnMedicare below. The term funds premiums only
     // in retired years (year >= retirementYear is already
     // the ACA scope; the charge itself is gated on the
@@ -8630,7 +8652,6 @@ export function simulateRothPlan(
             settlement: ReturnType<typeof settleYearOnce> | null;
             passes: number;
             stopReason:
-              | "converged"
               | "repeated-assumption"
               | "iteration-limit";
           };
@@ -8639,7 +8660,7 @@ export function simulateRothPlan(
         let best: ReturnType<typeof settleYearOnce> | null = null;
         let bestCreditDiff = Infinity;
         let passesUsed = 0;
-        let outerStop: "converged" | "repeated-assumption" | "iteration-limit" =
+        let outerStop: "repeated-assumption" | "iteration-limit" =
           "iteration-limit";
         const seenCredits = new Set<number>();
         for (let pass = 0; pass < 8; pass++) {
@@ -10086,6 +10107,32 @@ export function simulateRothPlan(
     const acaBelow100Fpl =
       acaPriced && acaResult != null && acaResult.below100Fpl;
     if (acaBelow100Fpl) acaBelow100FplYears.push(year);
+    // CLIFF-CAP INOPERATIVE (Engine Review C9, Build 5 NICEs
+    // — W5 §3/§6): the year's cliff cap cannot defend the
+    // cliff because mandatory income alone breaches it. The
+    // determination is the draw-convergence block's own notion
+    // (see the $0-draw settlement test there): at a $0 pre-tax
+    // draw the settlement still breaches, so no draw cap can
+    // land the year — and the conversion, the cap's other
+    // lever, is already $0 (the shrink loop drives it there
+    // whenever a breach remains). The threshold is the cliff
+    // itself, not the cliff−buffer target: a year landing
+    // between target and cliff keeps its credit, so the cap
+    // did defend the cliff; only a year over the cliff, with
+    // both levers exhausted, is inoperative. The era gate
+    // already ran: yearCeilings carries the cap off in
+    // post-first-step years, so those years never match.
+    // Read off the final priced MAGI (the row's own figure),
+    // with the cap code's half-cent tolerance.
+    if (
+      yearCeilings?.acaCliffCap === true &&
+      acaCliffDollars != null &&
+      priced.acaMagi > acaCliffDollars + 0.005 &&
+      conversion <= 0 &&
+      extraDraw <= 0
+    ) {
+      cliffCapInoperativeYears.push(year);
+    }
     // EARLY-WITHDRAWAL UNKNOWN (Engine Review C9, Build 1):
     // the kept settlement's flag, read off the settlement
     // exactly like the ACA flag above — the year row and the
@@ -10989,6 +11036,7 @@ export function simulateRothPlan(
     lifetimeAcaKept: r2(lifetimeAcaKept),
     irmaaLookbackMissingYears,
     acaBelow100FplYears,
+    cliffCapInoperativeYears,
     earlyWithdrawalUnknownYears,
     rothBasisUnknownYears,
     lifetimeEducationRefundable: r2(lifetimeEducationRefundable),

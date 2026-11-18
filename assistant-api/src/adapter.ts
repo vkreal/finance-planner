@@ -1066,6 +1066,13 @@ type MappedCompareScenario = {
   // with complete lookbacks and no below-100% year.
   irmaaLookbackMissingYears: number[];
   acaBelow100FplYears: number[];
+  // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9, Build 5
+  // NICEs — W5 §3/§6): the ACA years where the cliff cap
+  // cannot defend the cliff because mandatory income alone
+  // breaches it (see the engine march result's
+  // `cliffCapInoperativeYears`). Empty on a scenario with no
+  // cliff cap, or where the cap defends every ACA year.
+  cliffCapInoperativeYears: number[];
   // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
   // Build 1): the years whose pre-59½ pre-tax spending draw
   // was priced while the drawing owner's Rule-of-55
@@ -1196,6 +1203,7 @@ function mapCompareScenario(
     irmaaTotal: centsToDollars(s.irmaaCents),
     irmaaLookbackMissingYears: s.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.acaBelow100FplYears,
+    cliffCapInoperativeYears: s.cliffCapInoperativeYears,
     earlyWithdrawalUnknownYears: s.earlyWithdrawalUnknownYears,
     rothBasisUnknownYears: s.rothBasisUnknownYears,
     // (Engine Review C9, Build 3 — W4-GAP-1): the integrity
@@ -1640,6 +1648,7 @@ function mapScoredCandidate(
     irmaaTotal: r2(s.cost.irmaa),
     irmaaLookbackMissingYears: s.result.irmaaLookbackMissingYears,
     acaBelow100FplYears: s.result.acaBelow100FplYears,
+    cliffCapInoperativeYears: s.result.cliffCapInoperativeYears,
     earlyWithdrawalUnknownYears: s.result.earlyWithdrawalUnknownYears,
     rothBasisUnknownYears: s.result.rothBasisUnknownYears,
     // (Engine Review C9, Build 3 — W4-GAP-1): same four fields
@@ -1775,11 +1784,18 @@ const MEDICARE_NO_ENROLLMENT_NO_HSA_WARNING =
 // per-year detail.aca.eligibilityNote carries the law-year
 // specific note (OBBBA §71302 repeal for 2026+; the
 // pre-OBBBA §36B(c)(1)(B) exception unmodeled for 2025).
+// (Engine Review C9, Build 5 NICEs — W5 §3/§6): the same
+// function also warns when the cliff cap is inoperative in a
+// year — mandatory income alone breaches the cliff, so the
+// $0 credit there is priced, not a choice to forfeit it —
+// carried as the cliffCapInoperativeYears list on the
+// scenario.
 function irmaaAcaCompareWarnings(
   scenarios: Array<{
     name: string;
     irmaaLookbackMissingYears: number[];
     acaBelow100FplYears: number[];
+    cliffCapInoperativeYears: number[];
     earlyWithdrawalUnknownYears: number[];
     rothBasisUnknownYears: number[];
   }>,
@@ -1806,6 +1822,12 @@ function irmaaAcaCompareWarnings(
       // fixed to say "would be $0" when the credit is null.
       out.push(
         `ACA credit is $0 for ${m.name} in ${years} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`,
+      );
+    }
+    if (m.cliffCapInoperativeYears.length > 0) {
+      const years = m.cliffCapInoperativeYears.join(", ");
+      out.push(
+        `ACA cliff cap is inoperative for ${m.name} in ${years}: mandatory income alone exceeds the cliff even with no conversion and no pre-tax spending draw, so the cap cannot defend the cliff and the credit is $0 in those years. The $0 credit is priced, not missing — do not read those years as a choice to forfeit the credit, and do not expect a different draw order to recover it unless the draw mix itself changes what is mandatory.`,
       );
     }
     if (m.earlyWithdrawalUnknownYears.length > 0) {
@@ -2448,6 +2470,12 @@ export type RothConversionResults = {
       // the winner's own priced march, never re-derived.
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9,
+      // Build 5 NICEs — W5 §3/§6): the winner march's ACA
+      // years where the cliff cap cannot defend the cliff
+      // because mandatory income alone breaches it — read off
+      // the winner's own priced march, never re-derived.
+      cliffCapInoperativeYears: number[];
       // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
       // Build 1): the winner march's years whose pre-59½
       // pre-tax spending draw was priced while the drawing
@@ -2479,6 +2507,11 @@ export type RothConversionResults = {
       // UNKNOWN and its ACA years under 100% FPL.
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9,
+      // Build 5 NICEs — W5 §3/§6): the do-nothing march's
+      // ACA years where the cliff cap cannot defend the cliff
+      // because mandatory income alone breaches it.
+      cliffCapInoperativeYears: number[];
       // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
       // Build 1): the do-nothing march's years, as above.
       earlyWithdrawalUnknownYears: number[];
@@ -2744,6 +2777,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               winner.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
+            cliffCapInoperativeYears:
+              winner.result.cliffCapInoperativeYears,
             earlyWithdrawalUnknownYears:
               winner.result.earlyWithdrawalUnknownYears,
             rothBasisUnknownYears: winner.result.rothBasisUnknownYears,
@@ -2775,6 +2810,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               doNothing.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+            cliffCapInoperativeYears:
+              doNothing.result.cliffCapInoperativeYears,
             earlyWithdrawalUnknownYears:
               doNothing.result.earlyWithdrawalUnknownYears,
             rothBasisUnknownYears:
@@ -2830,6 +2867,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               winner.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: winner.result.acaBelow100FplYears,
+            cliffCapInoperativeYears:
+              winner.result.cliffCapInoperativeYears,
             earlyWithdrawalUnknownYears:
               winner.result.earlyWithdrawalUnknownYears,
             rothBasisUnknownYears:
@@ -2840,6 +2879,8 @@ function compareRothConversionsFull(
             irmaaLookbackMissingYears:
               doNothing.result.irmaaLookbackMissingYears,
             acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+            cliffCapInoperativeYears:
+              doNothing.result.cliffCapInoperativeYears,
             earlyWithdrawalUnknownYears:
               doNothing.result.earlyWithdrawalUnknownYears,
             rothBasisUnknownYears:
@@ -3060,6 +3101,12 @@ export function compareRetirementAges(
       winnerClaimSpouseAge: number | null;
       irmaaLookbackMissingYears: number[];
       acaBelow100FplYears: number[];
+      // CLIFF-CAP INOPERATIVE YEARS (Engine Review C9,
+      // Build 5 NICEs — W5 §3/§6): the winner march's ACA
+      // years where the cliff cap cannot defend the cliff
+      // because mandatory income alone breaches it (see the
+      // row type in workYears.ts).
+      cliffCapInoperativeYears: number[];
       // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review C9,
       // Build 1): the winner march's years whose pre-59½
       // pre-tax spending draw was priced while the drawing
@@ -3129,6 +3176,7 @@ export function compareRetirementAges(
           // (see the row type in workYears.ts).
           irmaaLookbackMissingYears: row.irmaaLookbackMissingYears,
           acaBelow100FplYears: row.acaBelow100FplYears,
+          cliffCapInoperativeYears: row.cliffCapInoperativeYears,
           // EARLY-WITHDRAWAL UNKNOWN YEARS (Engine Review
           // C9, Build 1): as above, for the winner march.
           earlyWithdrawalUnknownYears: row.earlyWithdrawalUnknownYears,
@@ -3316,6 +3364,7 @@ export function compareRetirementAges(
             name: `retire-${w.quitAge}`,
             irmaaLookbackMissingYears: w.irmaaLookbackMissingYears,
             acaBelow100FplYears: w.acaBelow100FplYears,
+            cliffCapInoperativeYears: w.cliffCapInoperativeYears,
             earlyWithdrawalUnknownYears: w.earlyWithdrawalUnknownYears,
             rothBasisUnknownYears: w.rothBasisUnknownYears,
           })),
