@@ -7453,7 +7453,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-optimizer-improvements-selection",
     kind: "apicontract",
-    note: "Build v69 (priced levers): optimizerImprovements selects the candidates the optimizer response publishes as improvements over the entered plan. Pins, on synthetic scored stubs (net costs in dollars): Do Nothing is excluded even when it beats the plan; a candidate whose gain rounds below one cent is excluded; the same lever (name, window stop, claiming ages, draw order) priced by both runs collapses to its cheapest pricing; ordering is lowest net cost first; the gain is savedPlanNetCost − netCost rounded to the cent; and the list caps at three.",
+    note: "Build v69 (priced levers): optimizerImprovements selects the candidates the optimizer response publishes as improvements over the entered plan. Pins, on synthetic scored stubs (net costs in dollars): Do Nothing is excluded even when it beats the plan; a candidate whose gain rounds below one cent is excluded; the same lever (name, window stop, claiming ages, draw order) priced by both runs collapses to its cheapest pricing; ordering is lowest net cost first; the gain is savedPlanNetCost − netCost rounded to the cent; and the list caps at three. (Engine Review 4 NICEs, NICE-3): no lever is excluded as invalid here, so excludedInvalidLevers is 0.",
     expected: {
       count: 3,
       firstGainCents: 50000,
@@ -7462,6 +7462,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       dupKeptCheapestGainCents: 50000,
       doNothingExcluded: 1,
       subCentExcluded: 1,
+      excludedInvalidLevers: 0,
     },
     actual: () => {
       const ceilings = {
@@ -7515,7 +7516,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         stub("d", "Fill to the top of the 24% bracket", 99900),
         stub("e", "Fill to the top of the 10% bracket", 99950),
       ];
-      const out = optimizerImprovements([joint, fixed], saved);
+      const priced = optimizerImprovements([joint, fixed], saved);
+      const out = priced.improvements;
       const gains = out.map((o) => Math.round(o.gainVsSavedPlan * 100));
       return {
         count: out.length,
@@ -7525,19 +7527,21 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         dupKeptCheapestGainCents: gains[0] ?? null,
         doNothingExcluded: out.some((o) => o.candidate.spec.key === DO_NOTHING_SPEC.key) ? 0 : 1,
         subCentExcluded: out.some((o) => o.candidate.spec.key === "c") ? 0 : 1,
+        excludedInvalidLevers: priced.excludedInvalidLevers,
       };
     },
   },
   {
     id: "api-optimizer-improvements-missing-integrity",
     kind: "apicontract",
-    note: "ENGINE REVIEW 6 NICEs fix — optimizerImprovements must not throw on a scored candidate with NO integrity assessment attached (synthetic stubs carry none; real candidates always carry one from scoreAllCandidates). Per E4's assessCandidateIntegrity contract a candidate is invalid only when an assessment finds a reason, so no assessment means no invalid verdict: stubs without integrity are selected on their priced gain, while a stub carrying an explicit invalid assessment is still excluded. Pins, on synthetic scored stubs (net costs in dollars): the two no-integrity levers are selected in lowest-net-cost order (gains $500 then $250 over the $100,000 plan); the invalid-assessed lever is excluded even though it is cheapest; Do Nothing is excluded even when it beats the plan.",
+    note: "ENGINE REVIEW 6 NICEs fix — optimizerImprovements must not throw on a scored candidate with NO integrity assessment attached (synthetic stubs carry none; real candidates always carry one from scoreAllCandidates). Per E4's assessCandidateIntegrity contract a candidate is invalid only when an assessment finds a reason, so no assessment means no invalid verdict: stubs without integrity are selected on their priced gain, while a stub carrying an explicit invalid assessment is still excluded. Pins, on synthetic scored stubs (net costs in dollars): the two no-integrity levers are selected in lowest-net-cost order (gains $500 then $250 over the $100,000 plan); the invalid-assessed lever is excluded even though it is cheapest; Do Nothing is excluded even when it beats the plan. (Engine Review 4 NICEs, NICE-3): the one invalid lever is counted in excludedInvalidLevers (1).",
     expected: {
       count: 2,
       firstGainCents: 50000,
       secondGainCents: 25000,
       invalidExcluded: 1,
       doNothingExcluded: 1,
+      excludedInvalidLevers: 1,
     },
     actual: () => {
       const ceilings = {
@@ -7583,7 +7587,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
           ...(integrity != null ? { integrity } : {}),
         }) as unknown as ScoredCandidate;
       const saved = 100000;
-      const out = optimizerImprovements(
+      const priced = optimizerImprovements(
         [
           [
             stub("a", "Fill to the top of the 22% bracket", 99500),
@@ -7594,6 +7598,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         ],
         saved,
       );
+      const out = priced.improvements;
       const gains = out.map((o) => Math.round(o.gainVsSavedPlan * 100));
       return {
         count: out.length,
@@ -7601,6 +7606,98 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         secondGainCents: gains[1] ?? null,
         invalidExcluded: out.some((o) => o.candidate.spec.key === "c") ? 0 : 1,
         doNothingExcluded: out.some((o) => o.candidate.spec.key === DO_NOTHING_SPEC.key) ? 0 : 1,
+        excludedInvalidLevers: priced.excludedInvalidLevers,
+      };
+    },
+  },
+  {
+    id: "api-optimizer-improvements-excluded-invalid-levers",
+    kind: "apicontract",
+    note: "(Engine Review 4 NICEs, NICE-3) optimizerImprovements reports how many distinct levers were excluded as invalid. Hand-verified on synthetic scored stubs (net costs in dollars, saved plan $100,000): joint run — Lever A invalid $90,000, Lever B invalid $91,000, Lever C $99,500 (gain $500), Lever E invalid $90,000, Do Nothing invalid $90,000; fixed run — Lever A invalid $90,000 again (same lever), Lever E $99,500 valid (gain $500, same lever as the joint run's invalid E). Improvements are C and E (gains $500 each, count 2). excludedInvalidLevers is 2: Lever A counts once despite being invalid in both runs, plus Lever B; Lever E is not counted because its valid pricing was selected, and Do Nothing is not counted because the key check skips it before the invalid check.",
+    expected: {
+      count: 2,
+      firstGainCents: 50000,
+      secondGainCents: 50000,
+      excludedInvalidLevers: 2,
+      invalidSelectedNotCounted: 1,
+      doNothingInvalidNotCounted: 1,
+    },
+    actual: () => {
+      const ceilings = {
+        bracketTopPct: 22,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCap: null,
+        acaCliffBuffer: null,
+      };
+      const stub = (
+        key: string,
+        name: string,
+        netCost: number,
+        integrity?: { status: "valid" | "valid-with-benign-residual" | "invalid" },
+      ): ScoredCandidate =>
+        ({
+          spec: {
+            key,
+            name,
+            ceilings,
+            windowStopAge: 75,
+            windowKind: "throughRmd",
+            windowLabel: "",
+            guardrail: false,
+            bunching: false,
+            gainsHarvest: false,
+            drawOrder: DEFAULT_DRAW_ORDER,
+          },
+          result: { endingAfterTaxWealth: 0 },
+          cost: { netCost },
+          claimAges: {
+            primaryAge: 67,
+            spouseAge: null,
+            primaryAnnual: 0,
+            spouseAnnual: 0,
+            searchedPrimary: false,
+            searchedSpouse: false,
+          },
+          ...(integrity != null ? { integrity } : {}),
+        }) as unknown as ScoredCandidate;
+      const saved = 100000;
+      const invalid = { status: "invalid" } as const;
+      const priced = optimizerImprovements(
+        [
+          [
+            stub("a", "Lever A", 90000, invalid),
+            stub("b", "Lever B", 91000, invalid),
+            stub("c", "Lever C", 99500),
+            stub("e", "Lever E", 90000, invalid),
+            stub(DO_NOTHING_SPEC.key, "Do Nothing", 90000, invalid),
+          ],
+          [
+            stub("a2", "Lever A", 90000, invalid),
+            stub("e2", "Lever E", 99500),
+          ],
+        ],
+        saved,
+      );
+      const out = priced.improvements;
+      const gains = out.map((o) => Math.round(o.gainVsSavedPlan * 100));
+      return {
+        count: out.length,
+        firstGainCents: gains[0] ?? null,
+        secondGainCents: gains[1] ?? null,
+        excludedInvalidLevers: priced.excludedInvalidLevers,
+        invalidSelectedNotCounted: out.some(
+          (o) => o.candidate.spec.name === "Lever E",
+        )
+          ? 1
+          : 0,
+        doNothingInvalidNotCounted: out.some(
+          (o) => o.candidate.spec.key === DO_NOTHING_SPEC.key,
+        )
+          ? 0
+          : 1,
       };
     },
   },

@@ -688,6 +688,18 @@ describe("E4-S2 — distinct optimization objectives (selectors)", () => {
     expect(crowned.validCandidatesTested).toBe(0);
   });
 
+  test("empty list: typed RangeError, not a raw TypeError", () => {
+    // (Engine Review 4 NICEs, NICE-1): before the guard this
+    // threw a raw "TypeError: undefined is not an object"
+    // from the `sortedAll[0]!` dereference. Callers always
+    // pass a non-empty list, so this pins the failure mode
+    // only — no priced run can reach it.
+    expect(() => crownOptimizerWinners([])).toThrow(RangeError);
+    expect(() => crownOptimizerWinners([])).toThrow(
+      /at least one scored candidate/,
+    );
+  });
+
   test("candidate ordering is deterministic on repeated sorts", () => {
     const list = [
       fakeScored("a", 100, 400, true),
@@ -913,6 +925,78 @@ describe("E4-S2 — distinct optimization objectives (engine runs)", () => {
       // The early-return path clears the per-age table; a
       // non-empty table proves the fallback branch ran.
       expect(joint.claimAgeTable.length).toBeGreaterThan(0);
+    },
+    900_000,
+  );
+
+  test(
+    "joint search with a locked claim below the floor: fallback runners-up come from the fallback pool",
+    () => {
+      // (Engine Review 4 NICEs, NICE-4): the no-eligible-
+      // candidate fallback crowns the plain best over the
+      // full scored set, so the runners-up are the next-best
+      // of that same pool — not the empty eligible list,
+      // which showed the winner with runnersUp: [] as if it
+      // had no competition. Same inputs as the fallback test
+      // above (memoized), so this pins the presentation only.
+      const inputs = samplePlanInputs({
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 58,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+        claimAgeFloor: 70,
+      });
+      const joint = runJointOptimizer(inputs);
+      expect(joint.claimAgeFloorMet).toBe(false);
+      expect(joint.runnersUp).toHaveLength(3);
+      // No runner-up is the winner itself (same lever at the
+      // same claiming ages — the loop's own skip condition).
+      expect(
+        joint.runnersUp.some(
+          (s) =>
+            s.spec.key === joint.winner.spec.key &&
+            s.claimAges.primaryAge === joint.winner.claimAges.primaryAge &&
+            s.claimAges.spouseAge === joint.winner.claimAges.spouseAge,
+        ),
+      ).toBe(false);
+      // Every runner-up claims the same locked age as the
+      // winner (58, below the floor 70): they are the
+      // next-best of the fallback pool, and the floor conflict
+      // stays disclosed by claimAgeFloorMet, not hidden by [].
+      expect(
+        joint.runnersUp.every((s) => s.claimAges.primaryAge === 58),
+      ).toBe(true);
+    },
+    900_000,
+  );
+
+  test(
+    "fully-locked joint run: scope says held, never '(1 combinations)'",
+    () => {
+      // (Engine Review 4 NICEs, NICE-2): both benefits already
+      // receiving (primary entered at 58, the current age;
+      // spouse entered at 56, the current age), so the joint
+      // search has exactly 1 combination and takes the early
+      // return through runOptimizer — the scope says "held",
+      // and the searched branch's "(1 combinations)" wording
+      // can never emit from a real run.
+      const inputs = samplePlanInputs({
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 58,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 56,
+      });
+      const joint = runJointOptimizer(inputs);
+      expect(joint.jointSearch.combosTested).toBe(1);
+      expect(joint.jointSearch.lockedPrimary).toBe(true);
+      expect(joint.jointSearch.lockedSpouse).toBe(true);
+      expect(joint.searchScope.claimingAgesSearched).toBe(false);
+      expect(joint.searchScope.claimingAgeCombinations).toBe(1);
+      expect(joint.searchScope.description).toMatch(
+        /Claiming ages: held at the entered ages/,
+      );
+      expect(joint.searchScope.description).not.toMatch(/1 combinations/);
+      expect(joint.claimAgeTable).toEqual([]);
     },
     900_000,
   );

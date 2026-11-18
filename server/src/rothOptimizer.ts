@@ -574,13 +574,24 @@ function describeOptimizerSearchScope(
         : "claiming ages (no benefit entered, so none searched)",
     );
   }
+  // (Engine Review 4 NICEs, NICE-2): the searched branch
+  // also requires combosTested > 1 — a 1-combination "search"
+  // is not a search, and the scope must never print
+  // "(1 combinations)". That sub-case is unreachable from the
+  // engine's two callers: runOptimizer passes
+  // claimingAgesSearched: false (the "held" branch), and the
+  // joint search calls this only past its combos.length <= 1
+  // early return, which routes a 1-combination run through
+  // runOptimizer — so the searched branch only ever sees
+  // combosTested >= 2. The guard keeps the dead wording
+  // unprintable even if a future caller passes 1.
   const description =
     `Conversion ceilings: ${ceilingFamilies.join("; ")}. ` +
     `Conversion windows: stop at ${stops.join(", ")} (stop at 65 / stop the year before RMDs begin / keep topping up through the RMD years). ` +
     (opts.searchOrders
       ? "Draw orders: all six permutations searched. "
       : `Draw orders: held at the plan order (${drawOrderLabel(inputs.drawOrder)}). `) +
-    (opts.claimingAgesSearched
+    (opts.claimingAgesSearched && opts.combosTested > 1
       ? `Claiming ages: searched jointly with the conversion strategies (${opts.combosTested} combinations). `
       : "Claiming ages: held at the entered ages. ") +
     `Variants: ${variants.join("; ")}.`;
@@ -646,6 +657,21 @@ export function crownOptimizerWinners(
   winnerQualified: boolean;
   winnersDiffer: boolean;
 } {
+  // (Engine Review 4 NICEs, NICE-1): an empty list has no raw
+  // winner to crown — fail as a typed RangeError, the engine's
+  // established invalid-input error (runRothMonteCarloCheck
+  // throws RangeError on invalid options below), instead of
+  // the raw TypeError the `sortedAll[0]!` dereference used to
+  // throw ("undefined is not an object" on `.integrity`).
+  // Every caller passes a non-empty list (scoreAllCandidates
+  // always includes Do Nothing; the joint fallback passes
+  // scoredAll when the eligible list is empty), so no priced
+  // run can reach this guard.
+  if (sortedAll.length === 0) {
+    throw new RangeError(
+      "crownOptimizerWinners needs at least one scored candidate — an empty list has no winner to crown.",
+    );
+  }
   // E6 NICEs fix — a candidate with NO integrity assessment
   // attached is never excluded as invalid: under E4's
   // assessCandidateIntegrity contract a candidate is invalid
@@ -1294,24 +1320,35 @@ export type OptimizerImprovement = {
   gainVsSavedPlan: number;
 };
 
+// What optimizerImprovements returns: the improvements list
+// plus the count of distinct levers the invalid check kept
+// out of it (Engine Review 4 NICEs, NICE-3).
+export type OptimizerImprovementsResult = {
+  improvements: OptimizerImprovement[];
+  // Distinct levers excluded as invalid: the number of
+  // distinct lever keys (same key as the dedupe below —
+  // name, window stop, claiming ages, draw order) whose
+  // pricing(s) the invalid check skipped and which produced
+  // no improvement — i.e. the key never entered the
+  // improvement map. A lever invalid in one run but valid
+  // (and selected) in the other is NOT counted: it is an
+  // improvement, not an exclusion. The same lever invalid in
+  // both runs counts once. Do Nothing is never counted: it is
+  // skipped by key before the invalid check, so it is not
+  // excluded as invalid but as the benchmark.
+  excludedInvalidLevers: number;
+};
+
 export function optimizerImprovements(
   scoredLists: ScoredCandidate[][],
   savedPlanNetCost: number,
   limit = 3,
-): OptimizerImprovement[] {
+): OptimizerImprovementsResult {
   const byLever = new Map<string, ScoredCandidate>();
+  const invalidLeverKeys = new Set<string>();
   for (const list of scoredLists) {
     for (const s of list) {
       if (s.spec.key === DO_NOTHING_SPEC.key) continue;
-      // E4-S1: a lever whose own pricing did not settle, left
-      // tax unpaid, or left spending unfunded is not a
-      // recommendation, however cheap it scores. (E6 NICEs
-      // fix: the optional chain — a candidate with no
-      // integrity assessment attached is never excluded as
-      // invalid; see crownOptimizerWinners above.)
-      if (s.integrity?.status === "invalid") continue;
-      const gain = Math.round((savedPlanNetCost - s.cost.netCost) * 100) / 100;
-      if (gain < 0.01) continue;
       const leverKey = [
         s.spec.name,
         s.spec.windowStopAge,
@@ -1319,6 +1356,22 @@ export function optimizerImprovements(
         s.claimAges.spouseAge ?? "",
         drawOrderKey(s.spec.drawOrder),
       ].join("|");
+      // E4-S1: a lever whose own pricing did not settle, left
+      // tax unpaid, or left spending unfunded is not a
+      // recommendation, however cheap it scores. (E6 NICEs
+      // fix: the optional chain — a candidate with no
+      // integrity assessment attached is never excluded as
+      // invalid; see crownOptimizerWinners above.)
+      // (Engine Review 4 NICEs, NICE-3): record the lever
+      // key before skipping, so the excluded-as-invalid
+      // count below is the distinct levers the check kept
+      // out — not the skipped candidates.
+      if (s.integrity?.status === "invalid") {
+        invalidLeverKeys.add(leverKey);
+        continue;
+      }
+      const gain = Math.round((savedPlanNetCost - s.cost.netCost) * 100) / 100;
+      if (gain < 0.01) continue;
       const prev = byLever.get(leverKey);
       if (!prev || s.cost.netCost < prev.cost.netCost) byLever.set(leverKey, s);
     }
@@ -1329,11 +1382,15 @@ export function optimizerImprovements(
       a.cost.netCost - b.cost.netCost ||
       b.result.endingAfterTaxWealth - a.result.endingAfterTaxWealth,
   );
-  return distinct.slice(0, limit).map((candidate) => ({
-    candidate,
-    gainVsSavedPlan:
-      Math.round((savedPlanNetCost - candidate.cost.netCost) * 100) / 100,
-  }));
+  return {
+    improvements: distinct.slice(0, limit).map((candidate) => ({
+      candidate,
+      gainVsSavedPlan:
+        Math.round((savedPlanNetCost - candidate.cost.netCost) * 100) / 100,
+    })),
+    excludedInvalidLevers: [...invalidLeverKeys].filter((k) => !byLever.has(k))
+      .length,
+  };
 }
 
 export function runOptimizer(
@@ -1420,7 +1477,11 @@ export function runOptimizer(
    The floor changes only which candidate is CROWNED: the
    winner is the best fully-priced candidate whose primary
    claiming age is at or above the floor, and the runners-up
-   are the next-best eligible candidates. Every age is still
+   are the next-best eligible candidates. When no candidate
+   is eligible the plain best is crowned instead (the
+   fallback below) and the runners-up are the next-best of
+   that same fallback pool, so the result never shows a
+   winner with an empty runners-up list. Every age is still
    priced and still shown in the per-age table — below-floor
    rows are marked, not hidden — and Do Nothing (the best Do
    Nothing found, at its own best claiming ages) is unchanged.
@@ -1906,8 +1967,20 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
     scoredAll
       .filter((s) => s.spec.key === DO_NOTHING_SPEC.key)
       .sort(compareJointCandidates)[0] ?? winner;
+  // (Engine Review 4 NICEs, NICE-4): the runners-up come
+  // from the SAME pool the winner was crowned over. When
+  // eligible is empty the winner is the plain best over
+  // scoredAll (the fallback above), so the runners-up are
+  // the next-best of scoredAll too — reading them off the
+  // empty eligible list showed the winner with runnersUp:
+  // [], as if it had no competition, when the search priced
+  // thousands of candidates and only the floor disqualified
+  // them. The fallback stays disclosed where it already is:
+  // claimAgeFloorMet is false and the result note states the
+  // conflict (see jointSearchNote).
+  const runnerPool = eligible.length > 0 ? eligible : scoredAll;
   const runnersUp: ScoredCandidate[] = [];
-  for (const s of eligible) {
+  for (const s of runnerPool) {
     if (runnersUp.length >= 3) break;
     // E6 NICEs fix: optional chain — no assessment attached
     // is never an invalid verdict (see crownOptimizerWinners).
