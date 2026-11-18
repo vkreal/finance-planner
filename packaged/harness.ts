@@ -156,7 +156,9 @@ function eq(label: string, actual: unknown, expected: unknown) {
 // guard derives the required keys from the server's own
 // saveRetirementCalc request schema (the same schema the
 // dispatcher validates against, so it cannot drift from it) and
-// fails loudly if any literal is missing one. The optional CAS
+// fails loudly if any literal is missing one. (The same 18 required
+// keys as `saveRetirementBaseline` / `saveRetirementScenario`, so
+// this one derivation covers the baseline calls too.) The optional CAS
 // bases (baseRevision, baseBaselineRevision) are excluded: the
 // literals never carry them — they are added at each call site.
 function retirementRequiredKeys(): string[] {

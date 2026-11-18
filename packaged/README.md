@@ -117,3 +117,5 @@ bun run probe     # headless-Chromium probe of packaged/dist:
                   # figures, edit -> reload persistence, export ->
                   # wipe -> restore
 ```
+
+Note: no tsconfig covers `packaged/harness.ts`, so the harness is checked by the Bun build and the harness leg itself, not by any typecheck.
