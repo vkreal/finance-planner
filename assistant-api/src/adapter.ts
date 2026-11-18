@@ -1754,6 +1754,13 @@ const WORK_YEARS_COMPARABILITY_NOTE =
 const MEDICARE_NO_ENROLLMENT_WARNING =
   "No Medicare enrollment age was provided, so no Medicare enrollment is modeled during the work years: HSA contributions (employee and employer) continue through the work years. Medicare eligibility at 65 is not enrollment — pass medicareAgePrimary to model enrollment.";
 
+// Review 8 NICEs (P3-1): the no-enrollment disclosure when the
+// salary leg prices zero HSA — the "contributions continue"
+// clause is dropped because there are no contributions to
+// continue; the no-enrollment disclosure itself is kept.
+const MEDICARE_NO_ENROLLMENT_NO_HSA_WARNING =
+  "No Medicare enrollment age was provided, so no Medicare enrollment is modeled during the work years. Medicare eligibility at 65 is not enrollment — pass medicareAgePrimary to model enrollment.";
+
 // Engine Review 6 (E6-S1/E6-S2): warnings that keep a missing
 // IRMAA lookback and a below-100%-FPL ACA year from reading
 // as a verified $0. A missing lookback means the surcharge is
@@ -3066,7 +3073,15 @@ export function compareRetirementAges(
     let workYearsWinnerByAllInTax: string | null = null;
     let workYearsWinnerByEndingAfterTaxWealth: string | null = null;
     const workYearsWarnings: string[] = [];
-    if (scenario.salaryAnnual != null) {
+    // Review 8 NICEs (P1-1): a $0 salary is no salary for the
+    // scoped models — the salary leg, the salary-aware model,
+    // the work-years comparison, and the overall recommendation
+    // all need a positive salary to price. (Previously 0 took
+    // the salary branch while comparisonModels claimed
+    // includesSalary: true.)
+    const salaryAnnual = scenario.salaryAnnual;
+    const hasSalary = salaryAnnual != null && salaryAnnual !== 0;
+    if (hasSalary) {
       const planInputs = buildRothPlanInputs(scenario, {
         retirementAge: firstAge,
         windowStartAge: firstAge,
@@ -3077,7 +3092,7 @@ export function compareRetirementAges(
       // (null = omitted — the engine falls back as documented
       // and records the fallback as an assumption on the row).
       const job: WorkYearJob = {
-        salary: scenario.salaryAnnual,
+        salary: salaryAnnual,
         employer401k: scenario.employer401kAnnual,
         employerHsa: scenario.employerHsaAnnual,
         medicareAgePrimary: scenario.medicareAgePrimary,
@@ -3150,11 +3165,25 @@ export function compareRetirementAges(
         : null;
       workYearsWarnings.push(WORK_YEARS_COMPARABILITY_NOTE);
       if (scenario.medicareAgePrimary == null) {
-        workYearsWarnings.push(MEDICARE_NO_ENROLLMENT_WARNING);
+        // Review 8 NICEs (P3-1): the "HSA contributions
+        // continue" clause overstates when the salary leg prices
+        // zero HSA — gate the full warning on positive priced
+        // HSA (the rolls' hsaContributions, employee + employer).
+        const pricedHsa = wyRows.reduce(
+          (sum, row) => sum + row.roll.totals.hsaContributions,
+          0,
+        );
+        workYearsWarnings.push(
+          pricedHsa > 0
+            ? MEDICARE_NO_ENROLLMENT_WARNING
+            : MEDICARE_NO_ENROLLMENT_NO_HSA_WARNING,
+        );
       }
     } else {
       workYearsWarnings.push(
-        "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation.",
+        salaryAnnual === 0
+          ? "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: salaryAnnual is $0, so there is no salary to price. Pass a positive salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation."
+          : "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation.",
       );
     }
     const withAges = outcome.mapped.map((m, i) => ({
@@ -3191,7 +3220,7 @@ export function compareRetirementAges(
           "Prices the same starting balances at each retirement age with one fixed Do-Nothing-fill strategy per age at the entered Social Security claiming ages; ignores the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, and searches neither claiming ages nor conversion strategies.",
       },
       salaryAware:
-        scenario.salaryAnnual == null
+        !hasSalary
           ? null
           : {
               includesSalary: true,
@@ -3202,12 +3231,12 @@ export function compareRetirementAges(
               objective:
                 "lowest all-in tax or highest ending after-tax wealth among quit ages, each priced by the joint optimizer",
               description:
-                "Rolls the extra working years forward — salary, employee payroll taxes, the employee contribution stack, employer 401(k) and HSA, spending during the working years, and investment growth — then prices each quit age's rolled plan with the joint optimizer; each row's winnerStrategy is the optimizer's pick for that quit age alone, searching claiming ages and conversion strategies per quit age, while the quit-age comparison itself runs no optimizer search across conversion strategies.",
+                "Rolls the extra working years forward — salary, employee payroll taxes, the employee contribution stack, employer 401(k) and HSA, spending during the working years, and investment growth — then prices each quit age's rolled plan with the joint optimizer; each row's winnerStrategy is the optimizer's pick for that quit age alone, searching claiming ages and conversion strategies per quit age (a benefit already started at plan start keeps its entered claiming age and is not searched), while the quit-age comparison itself runs no optimizer search across conversion strategies.",
             },
     };
     let overallRecommendation: string | null = null;
     let overallRecommendationNote: string;
-    if (scenario.salaryAnnual == null) {
+    if (!hasSalary) {
       overallRecommendationNote =
         "No overall recommendation: the salary-aware comparison needs salaryAnnual. The retirement-only winners above price the same starting balances at each retirement age and ignore the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, so they cannot recommend a retirement age.";
     } else if (
@@ -3260,7 +3289,7 @@ export function compareRetirementAges(
           winnerByEndingWealth: outcome.winnerByEndingWealth,
         },
         workYearsComparison:
-          scenario.salaryAnnual == null
+          !hasSalary
             ? null
             : {
                 winnerByAllInTax: workYearsWinnerByAllInTax,
@@ -3291,9 +3320,7 @@ export function compareRetirementAges(
         ),
         // Only when the salary leg ran: with no salary there are
         // no work-years rows for the note to describe.
-        ...(scenario.salaryAnnual != null
-          ? [WORK_YEARS_STATE_TAX_NOTE]
-          : []),
+        ...(hasSalary ? [WORK_YEARS_STATE_TAX_NOTE] : []),
         ...workYearsWarnings,
       ],
       taxAwareAssumptions(scenario),

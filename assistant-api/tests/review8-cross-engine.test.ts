@@ -229,6 +229,44 @@ function medicareCompare() {
   return cachedMedicare;
 }
 
+// Review 8 NICEs (P1-1): a $0 salary prices no salary leg —
+// memoized like the other compares because the retirement-only
+// march still runs per quit age.
+let cachedZeroSalary: WorkYearsResponse | null = null;
+function zeroSalaryCompare() {
+  if (cachedZeroSalary === null) {
+    cachedZeroSalary = expectEnvelope(
+      compareRetirementAges(
+        normalizedScenario({
+          salaryAnnual: 0,
+          compareAges: [60, 62],
+        }),
+      ),
+    );
+  }
+  return cachedZeroSalary;
+}
+
+// Review 8 NICEs (P3-1): a salary leg that prices zero HSA
+// (no qualifying HDHP coverage) — the no-enrollment warning
+// must not claim HSA contributions continue.
+let cachedNoHsaSalary: WorkYearsResponse | null = null;
+function noHsaSalaryCompare() {
+  if (cachedNoHsaSalary === null) {
+    cachedNoHsaSalary = expectEnvelope(
+      compareRetirementAges(
+        normalizedScenario({
+          salaryAnnual: 120000,
+          hsaCoverage: "none",
+          spouseSocialSecurityAnnual: 0,
+          compareAges: [60, 62],
+        }),
+      ),
+    );
+  }
+  return cachedNoHsaSalary;
+}
+
 // The scenario + job the adapter builds for a salary compare, so
 // direct-engine calls price the identical inputs.
 function directInputs(
@@ -255,6 +293,12 @@ function directInputs(
     employer401k: scenario.employer401kAnnual,
     employerHsa: scenario.employerHsaAnnual,
     medicareAgePrimary: scenario.medicareAgePrimary,
+    // Review 8 NICEs (P3-1): the E7 job fields ride the job too —
+    // without them a direct-engine call prices the fallback
+    // coverage/eligibility/wages, not the caller's inputs.
+    hsaCoverage: scenario.hsaCoverage,
+    hsaEligible: scenario.hsaEligible,
+    priorYearWages: scenario.priorYearWagesAnnual,
   };
   return { scenario, plan, job, ages };
 }
@@ -548,6 +592,39 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     // describes the quit-age comparison's candidate set.
     expect(r.comparisonScope.scope).toBe("limited");
     expect(r.comparisonScope.searchKind).toBe("fixed-comparison");
+  }, 120000);
+
+  // Review 8 NICEs (P1-1): a $0 salary is no salary — the
+  // salary leg does not run, there is no salary-aware model,
+  // and comparisonModels does not claim includesSalary.
+  test("with a $0 salary the winners are retirement-only, like no salary at all", () => {
+    const res = zeroSalaryCompare();
+    const r = res.results;
+    expect(r.workYears).toEqual([]);
+    expect(r.workYearsComparison).toBeNull();
+    expect(r.workYearsWinnerByAllInTax).toBeNull();
+    expect(r.workYearsWinnerByEndingAfterTaxWealth).toBeNull();
+    expect(r.overallRecommendation).toBeNull();
+    expect(r.overallRecommendationNote).toMatch(/salaryAnnual/);
+    // The note names the $0 explicitly — "no salary was
+    // provided" would misstate a salary that was provided.
+    expect(res.warnings.join(" ")).toMatch(/salaryAnnual is \$0/);
+    expect(res.warnings.join(" ")).toMatch(
+      /retirement-only, not an overall recommendation/,
+    );
+    expect(res.warnings.join(" ")).not.toMatch(/No Medicare enrollment age/);
+    expect(r.comparisonModels.retirementOnly.includesSalary).toBe(false);
+    expect(r.comparisonModels.salaryAware).toBeNull();
+    // The retirement-only march prices identically to the
+    // omitted-salary run (yearlySalaryCents is work-years-only
+    // input — the compare march never reads it).
+    expect(r.scenarios).toEqual(noSalaryCompare().results.scenarios);
+    const byCost = [...r.scenarios].sort(byNetCost)[0]!;
+    const byWealth = [...r.scenarios].sort(
+      (a, b) => b.endingWealth - a.endingWealth,
+    )[0]!;
+    expect(r.retirementOnly.winnerByNetCost).toBe(byCost.name);
+    expect(r.retirementOnly.winnerByEndingWealth).toBe(byWealth.name);
   }, 120000);
 
   test("with a salary the salary-aware winners come from the work-years rows", () => {
@@ -870,9 +947,41 @@ describe("adapter vs engine parity", () => {
     expect(res.warnings.join(" ")).not.toMatch(/No Medicare enrollment age/);
     const noMed = salaryCompare();
     expect(noMed.warnings.join(" ")).toMatch(/No Medicare enrollment age/);
+    // (Review 8 NICEs fix: the pre-existing regex below read
+    // /Eligibility at 65 is not enrollment/ with a capital E,
+    // which never matches any warning — the warning says
+    // "Medicare eligibility at 65 is not enrollment" and the
+    // capital-E sentence lives in the medicareAgePrimary
+    // assumption note, not the warnings. Verified by direct
+    // probe on the base tree: the capital-E form matches false.)
     expect(noMed.warnings.join(" ")).toMatch(
-      /Eligibility at 65 is not enrollment/,
+      /Medicare eligibility at 65 is not enrollment/,
     );
+  }, 300_000);
+
+  // Review 8 NICEs (P3-1): when the salary leg prices zero HSA
+  // (no qualifying HDHP coverage) the no-enrollment warning must
+  // not claim HSA contributions continue — it keeps the
+  // no-enrollment disclosure without that clause.
+  test("no-enrollment warning drops the HSA clause when the salary leg prices zero HSA", () => {
+    const res = noHsaSalaryCompare();
+    const warnings = res.warnings.join(" ");
+    expect(warnings).toMatch(/No Medicare enrollment age/);
+    expect(warnings).not.toMatch(/continue through the work years/);
+    expect(warnings).toMatch(/Medicare eligibility at 65 is not enrollment/);
+    // Control: the same call with HSA priced keeps the full
+    // warning, contributions-continue clause included.
+    expect(salaryCompare().warnings.join(" ")).toMatch(
+      /HSA contributions \(employee and employer\) continue through the work years/,
+    );
+    // And the priced HSA really is zero on the no-HSA run: the
+    // direct engine rows agree (same job, same ages).
+    const { plan, job, ages } = directInputs({ hsaCoverage: "none" });
+    const direct = runWorkYearsCompare(plan, job, ages);
+    expect(
+      direct.reduce((s, d) => s + d.roll.totals.hsaContributions, 0),
+    ).toBe(0);
+    expect(res.results.workYears.map((w) => w.quitAge)).toEqual([60, 62]);
   }, 300_000);
 });
 
@@ -995,7 +1104,17 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(direct.qualifiedDividends).toBe(3000);
     // Cash in counts the full sale proceeds once (plus the draws
     // and the yield); the gain is income, the proceeds are cash.
-    expect(direct.cashIn).toBe(114000 + 10000 + 5000 + 20000);
+    // Each term is labeled: the $20,000 here is the stock sale
+    // proceeds (stockSold), NOT the $20,000 conversion — the
+    // conversion contributes $0 to cash in (next test), so the
+    // two equal literals must not be confused.
+    const spendingDraw = 114000;
+    const interest = 10000;
+    const ordinaryDividends = 5000;
+    const stockSaleProceeds = 20000;
+    expect(direct.cashIn).toBe(
+      spendingDraw + interest + ordinaryDividends + stockSaleProceeds,
+    );
   });
 
   test("Federal tax: a conversion is a transfer, not new wealth or new cash", () => {
