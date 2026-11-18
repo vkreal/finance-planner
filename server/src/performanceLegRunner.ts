@@ -114,6 +114,7 @@ export interface SolverRun {
 export interface WorkYearsRow {
   quitAge: number;
   workYears: number;
+  combosTested: number | undefined;
   allInTax: number;
   endingAfterTax: number;
   totalTax: number;
@@ -299,6 +300,9 @@ function workYears(): LegOutput {
         rows: r.out.map((row) => ({
           quitAge: row.quitAge,
           workYears: row.workYears,
+          // The rolled joint search's combo count — 1 on this
+          // SS-locked shape; the test pins it (NICE-2).
+          combosTested: row.optimizer.jointSearch?.combosTested,
           allInTax: row.allInTax,
           endingAfterTax: row.endingAfterTax,
           totalTax: row.totalTax,

@@ -2,10 +2,17 @@
 //
 // Repeatable benchmarks as committed tests. Every budget below is a
 // CPU-time budget — NEVER wall time: on this shared VM wall time
-// inflates several-fold with sibling load while the leg's own CPU
-// time is what the audit measured as stable across runs
-// (audit-blocking.md: three runOptimizer runs 21,480 / 22,060 /
-// 21,628 ms CPU against wall times 139,875 / 213,814 / 197,088 ms).
+// inflates several-fold with sibling load — the NaN cold joint leg
+// ran 91.9 s wall against ~2.75 s CPU (~33×) — while the leg's own
+// CPU time is what the audit measured as stable across runs for the
+// harnessed shapes (audit-blocking.md: three runOptimizer runs
+// 21,480 / 22,060 / 21,628 ms CPU against wall times 139,875 /
+// 213,814 / 197,088 ms). The qualification matters: the all-orders
+// 5y shape is deliberately not harnessed because its CPU spread
+// ~3× across processes (6,595 vs 18,899 ms), so "stable" holds for
+// the harnessed shapes, not for every shape. The 300 s per-test
+// wall timeout on the NaN leg has only ~3.3× headroom under current
+// load (91.9 s observed) — worth the note, not a budget change.
 // Each budget cites the measured baseline it derives from, with a
 // wide margin; a budget without a cited measurement is not
 // acceptable.
@@ -46,6 +53,11 @@
 //
 // Run per-file (whole-suite bun test in one process OOMs on
 // this VM): bun test server/src/performanceRegression.test.ts
+//
+// No file-level wall bound: six benchmark tests at 600 s each, so
+// a fully hung file would take ~56 min to fail (each test still
+// fails loudly within its own 600 s). No file-level timeout is
+// added — that would change test-runner behaviour beyond this note.
 
 import { describe, test, expect } from "bun:test";
 import { join } from "node:path";
@@ -62,29 +74,69 @@ import type { LegName, LegOutput } from "./performanceLegRunner";
 const LEG_RUNNER = join(import.meta.dir, "performanceLegRunner.ts");
 // Per-child wall timeout: each test spawns twice inside a 600 s
 // test timeout, so 280 s per child leaves room for both attempts.
+// Work-years per-child wall headroom is the tightest in the file:
+// worst observed ~193 s per child (386.99 s test wall under load)
+// vs this 280 s timeout — 1.45× headroom, tighter than joint's
+// 1.72× (162.7 s). A child timeout fails the test loudly (spawn
+// timeout → runner error), never hangs. No timeout change.
 const LEG_TIMEOUT_MS = 280_000;
+// Grace period after SIGTERM before escalating to SIGKILL (NICE-1p).
+const LEG_KILL_GRACE_MS = 5_000;
 
-function spawnLeg<L extends LegName>(
+async function spawnLeg<L extends LegName>(
   leg: L,
-): Extract<LegOutput, { leg: L }> {
-  const proc = Bun.spawnSync([process.execPath, LEG_RUNNER, leg], {
+): Promise<Extract<LegOutput, { leg: L }>> {
+  const proc = Bun.spawn([process.execPath, LEG_RUNNER, leg], {
     stdout: "pipe",
     stderr: "pipe",
-    timeout: LEG_TIMEOUT_MS,
   });
-  const stderr = proc.stderr.toString("utf8");
-  if (proc.exitCode !== 0) {
+  // Async spawn with SIGKILL escalation (NICE-1p): Bun.spawnSync's
+  // `timeout` sends SIGTERM once and does NOT escalate, and Bun's
+  // dangling-process kill is also SIGTERM-only, so a SIGTERM-ignoring
+  // child would hang the whole `bun test` invocation and leak as an
+  // orphan. The trigger is unreachable in this build — zero signal
+  // handlers anywhere in server/src, zero spawn/exec sites in the
+  // runner's import closure, every child the runner can produce dies
+  // on SIGTERM — so this is defense-in-depth, not a fix for a live
+  // hang: on timeout, SIGTERM first, then SIGKILL after a short
+  // grace period, and the test fails loudly within its budget.
+  let timedOut = false;
+  const killTimer = setTimeout(() => {
+    timedOut = true;
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // Already exited; nothing to kill.
+    }
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Already exited; nothing to kill.
+      }
+    }, LEG_KILL_GRACE_MS);
+  }, LEG_TIMEOUT_MS);
+  const exitCode = await proc.exited;
+  clearTimeout(killTimer);
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  if (timedOut) {
     throw new Error(
-      `leg runner ${leg} failed (exit ${proc.exitCode}, signal ${proc.signalCode}): ${stderr}`,
+      `leg runner ${leg} timed out after ${LEG_TIMEOUT_MS} ms (SIGTERM, then SIGKILL escalation): ${stderr}`,
     );
   }
-  const stdout = proc.stdout.toString("utf8").trim();
+  if (exitCode !== 0) {
+    throw new Error(
+      `leg runner ${leg} failed (exit ${exitCode}, signal ${proc.signalCode ?? "none"}): ${stderr}`,
+    );
+  }
+  const trimmed = stdout.trim();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout);
+    parsed = JSON.parse(trimmed);
   } catch {
     throw new Error(
-      `leg runner ${leg} printed unparseable stdout: ${stdout}\nstderr: ${stderr}`,
+      `leg runner ${leg} printed unparseable stdout: ${trimmed}\nstderr: ${stderr}`,
     );
   }
   if (
@@ -95,7 +147,7 @@ function spawnLeg<L extends LegName>(
     (parsed as { runs: unknown[] }).runs.length === 0
   ) {
     throw new Error(
-      `leg runner ${leg} printed an unexpected shape: ${stdout}\nstderr: ${stderr}`,
+      `leg runner ${leg} printed an unexpected shape: ${trimmed}\nstderr: ${stderr}`,
     );
   }
   for (const run of (parsed as { runs: Record<string, unknown>[] }).runs) {
@@ -106,7 +158,7 @@ function spawnLeg<L extends LegName>(
       !Number.isFinite(run.heapDeltaMb)
     ) {
       throw new Error(
-        `leg runner ${leg} printed a run without numeric cpuMs/heapDeltaMb: ${stdout}`,
+        `leg runner ${leg} printed a run without numeric cpuMs/heapDeltaMb: ${trimmed}`,
       );
     }
   }
@@ -120,6 +172,19 @@ function minCpu(runs: readonly { cpuMs: number }[]): number {
   return Math.min(...runs.map((r) => r.cpuMs));
 }
 
+// Log the min CPU (and heap) per leg when each test completes, so a
+// passing run records its margin evidence (NICE-4c). The tests
+// assert on spawnLeg's output, not on console output, so logging
+// changes no assertion.
+function logLegMargin(
+  leg: string,
+  runs: readonly { cpuMs: number; heapDeltaMb: number }[],
+): void {
+  console.log(
+    `[perf-margin] ${leg} minCpuMs=${minCpu(runs).toFixed(1)} heapDeltaMb=[${runs.map((r) => r.heapDeltaMb.toFixed(1)).join(", ")}]`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Joint cache key — C7 A4 collision fix
 //
@@ -127,10 +192,12 @@ function minCpu(runs: readonly { cpuMs: number }[]): number {
 // JSON.stringify(NaN) is `null`: a cold NaN run priced netCost NaN,
 // and the following null call returned in hit time with netCost NaN,
 // while a fresh null run prices finite ($383,753.13 on the full-size
-// plan). These tests run in file order in one process, so the
-// null-first test below captures the true null result before any
-// NaN entry exists, and the later tests prove each non-finite
-// variant is served its own entry, never another's.
+// plan). In file order the null-first test below captures the true
+// null result before any NaN entry exists, and the later tests prove
+// each non-finite variant is served its own entry, never another's.
+// Each later test also captures its own null baseline when run in
+// isolation (a cache hit is cheap in file order, a cold run alone),
+// so no test depends on an earlier test having run.
 // ---------------------------------------------------------------------------
 describe("joint cache key distinguishes non-finite values from null (C7 A4)", () => {
   test("finite inputs key exactly as before the fix", () => {
@@ -178,6 +245,23 @@ describe("joint cache key distinguishes non-finite values from null (C7 A4)", ()
   // Captured by the null-first cold run; the NaN/null tests below
   // compare against it. Runs first so no NaN entry exists yet.
   let nullNetCost: number | undefined;
+
+  // The null baseline for the later tests: in file order it is the
+  // null-first test's capture (a cache hit is cheap); run in
+  // isolation it prices the null run itself, so the later tests
+  // are self-sufficient and never throw "null baseline was not
+  // captured" for want of an earlier test.
+  function captureNullBaseline(): number {
+    if (typeof nullNetCost !== "number") {
+      const r = runJointOptimizer(jointSmall({ pretaxStart: null as never }));
+      const net = r.selectedWinner?.cost.netCost;
+      if (typeof net !== "number" || !Number.isFinite(net)) {
+        throw new Error("null baseline did not price finite");
+      }
+      nullNetCost = net;
+    }
+    return nullNetCost;
+  }
   test("null pretaxStart cold run prices finite (the true null result)", () => {
     const r = runJointOptimizer(jointSmall({ pretaxStart: null as never }));
     const net = r.selectedWinner?.cost.netCost;
@@ -193,14 +277,12 @@ describe("joint cache key distinguishes non-finite values from null (C7 A4)", ()
     expect(typeof net).toBe("number");
     expect(Number.isNaN(net)).toBe(true);
     if (typeof net !== "number") throw new Error("expected a numeric netCost");
-    if (typeof nullNetCost !== "number") throw new Error("null baseline was not captured");
-    expect(net).not.toBe(nullNetCost);
+    expect(net).not.toBe(captureNullBaseline());
   }, 300_000);
 
   test("null after NaN returns the finite null result (A4 reproduction)", () => {
     const r = runJointOptimizer(jointSmall({ pretaxStart: null as never }));
-    if (typeof nullNetCost !== "number") throw new Error("null baseline was not captured");
-    expect(r.selectedWinner?.cost.netCost).toBe(nullNetCost);
+    expect(r.selectedWinner?.cost.netCost).toBe(captureNullBaseline());
   }, 300_000);
 
   // NOTE — no behavioral test runs a cold Infinity joint search:
@@ -224,9 +306,9 @@ describe("joint cache key distinguishes non-finite values from null (C7 A4)", ()
 // Determinism is asserted across the two fresh processes.
 // ---------------------------------------------------------------------------
 describe("C7 §8 performance regression harness (CPU budgets, small shapes)", () => {
-  test("fixed-age runOptimizer, 1 draw order, 5y: completes, deterministic, 505 candidates", () => {
-    const a = spawnLeg("fixedAge");
-    const b = spawnLeg("fixedAge");
+  test("fixed-age runOptimizer, 1 draw order, 5y: completes, deterministic, 505 candidates", async () => {
+    const a = await spawnLeg("fixedAge");
+    const b = await spawnLeg("fixedAge");
     const [first, second] = [a.runs[0], b.runs[0]];
     expect(first.candidatesTested).toBe(505);
     expect(second.candidatesTested).toBe(505);
@@ -241,11 +323,12 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // Heap growth at the call: probe A measured +8.3 MB.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
     expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+    logLegMargin("fixedAge", [first, second]);
   }, 600_000);
 
-  test("joint optimizer, 1 combo, 5y: cold completes, hit is identical, counts hold", () => {
-    const a = spawnLeg("joint");
-    const b = spawnLeg("joint");
+  test("joint optimizer, 1 combo, 5y: cold completes, hit is identical, counts hold", async () => {
+    const a = await spawnLeg("joint");
+    const b = await spawnLeg("joint");
     const [coldA, hitA] = a.runs;
     const [coldB, hitB] = b.runs;
     expect(coldA.combosTested).toBe(1);
@@ -271,11 +354,13 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     expect(hitA.heapDeltaMb).toBeLessThanOrEqual(256);
     expect(coldB.heapDeltaMb).toBeLessThanOrEqual(256);
     expect(hitB.heapDeltaMb).toBeLessThanOrEqual(256);
+    logLegMargin("joint-cold", [coldA, coldB]);
+    logLegMargin("joint-hit", [hitA, hitB]);
   }, 600_000);
 
-  test("runRothCompare, 3 scenarios, 38y: completes, deterministic, 3 priced", () => {
-    const a = spawnLeg("compare");
-    const b = spawnLeg("compare");
+  test("runRothCompare, 3 scenarios, 38y: completes, deterministic, 3 priced", async () => {
+    const a = await spawnLeg("compare");
+    const b = await spawnLeg("compare");
     const [first, second] = [a.runs[0], b.runs[0]];
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
@@ -299,11 +384,12 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
     expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+    logLegMargin("compare", [first, second]);
   }, 600_000);
 
-  test("retirement Monte Carlo, 1,000 runs: completes, deterministic, 1,000 runs", () => {
-    const a = spawnLeg("mc");
-    const b = spawnLeg("mc");
+  test("retirement Monte Carlo, 1,000 runs: completes, deterministic, 1,000 runs", async () => {
+    const a = await spawnLeg("mc");
+    const b = await spawnLeg("mc");
     const [first, second] = [a.runs[0], b.runs[0]];
     expect(first.successRate).toBe(97.5);
     expect(first.neverOutSuccessRate).toBe(97.5);
@@ -324,11 +410,12 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // is ~30× the measured growth.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(128);
     expect(second.heapDeltaMb).toBeLessThanOrEqual(128);
+    logLegMargin("mc", [first, second]);
   }, 600_000);
 
-  test("solveMaxSpending constant/Monte Carlo 85%: completes, deterministic, feasible", () => {
-    const a = spawnLeg("solver");
-    const b = spawnLeg("solver");
+  test("solveMaxSpending constant/Monte Carlo 85%: completes, deterministic, feasible", async () => {
+    const a = await spawnLeg("solver");
+    const b = await spawnLeg("solver");
     const [first, second] = [a.runs[0], b.runs[0]];
     expect(first.solutionStatus).toBe("feasible");
     expect(first.maxSpendingCents).toBe(22_710_000);
@@ -354,22 +441,27 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     // first-call growth and ~20× the two-call cumulative.
     expect(first.heapDeltaMb).toBeLessThanOrEqual(256);
     expect(second.heapDeltaMb).toBeLessThanOrEqual(256);
+    logLegMargin("solver", [first, second]);
   }, 600_000);
 
-  test("work-years, 1 quit age, small shape: completes, deterministic, 1 row", () => {
-    const a = spawnLeg("workYears");
-    const b = spawnLeg("workYears");
+  test("work-years, 1 quit age, small shape: completes, deterministic, 1 row", async () => {
+    const a = await spawnLeg("workYears");
+    const b = await spawnLeg("workYears");
     const [first, second] = [a.runs[0], b.runs[0]];
     expect(first.rows.length).toBe(1);
     expect(second.rows.length).toBe(1);
     const row = first.rows[0]!;
     expect(row.quitAge).toBe(63);
     expect(row.workYears).toBe(1);
+    // The defining property of the SS-locked 1-combo shape: the
+    // rolled joint search tested exactly one claiming-age combo.
+    expect(row.combosTested).toBe(1);
     expect(Number.isFinite(row.allInTax)).toBe(true);
     expect(Number.isFinite(row.endingAfterTax)).toBe(true);
     const secondRow = second.rows[0]!;
     expect(secondRow.quitAge).toBe(63);
     expect(secondRow.workYears).toBe(1);
+    expect(secondRow.combosTested).toBe(1);
     expect(Number.isFinite(secondRow.allInTax)).toBe(true);
     expect(Number.isFinite(secondRow.endingAfterTax)).toBe(true);
     expect(second.rows).toEqual(first.rows);
@@ -384,5 +476,6 @@ describe("C7 §8 performance regression harness (CPU budgets, small shapes)", ()
     expect(minCpu([first, second])).toBeLessThanOrEqual(30_000);
     expect(first.heapDeltaMb).toBeLessThanOrEqual(256);
     expect(second.heapDeltaMb).toBeLessThanOrEqual(256);
+    logLegMargin("workYears", [first, second]);
   }, 600_000);
 });

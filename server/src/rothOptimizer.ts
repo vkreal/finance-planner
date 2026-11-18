@@ -2068,7 +2068,12 @@ const jointOptimizerCache = new Map<string, JointOptimizerResult>();
 // result (Engine Review C7, A4: a null call after a NaN run returned
 // the NaN run's NaN netCost in hit time, while a fresh null run
 // prices finite). The tokens are objects, not bare strings, so a
-// genuine string field can never collide with one; every finite
+// genuine string field can never collide with one, for any
+// well-typed input (a same-field object value exactly equal to the
+// single-key token would collide, but no well-typed RothPlanInputs
+// field can be that object: every field is a number / string /
+// boolean / null or an array of those, and the only object-typed
+// fields have fixed multi-key shapes); every finite
 // value serializes exactly as before, so valid inputs hit the cache
 // bit-identically to the pre-fix key. (Engine Review C6, §7 addressed
 // the same collision with string sentinels; the object tokens here
