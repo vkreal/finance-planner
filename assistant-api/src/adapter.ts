@@ -2901,7 +2901,7 @@ export function dynamicWithdrawal(
       result,
       [
         ...healthPremiumWarnings(scenario),
-        "Dynamic schedule: each year's policy (draw order + conversion fill + window) was chosen by re-pricing the remaining horizon from that year's actual balances. The greedy choice is floored at the best valid fixed policy over the same 114-policy set — see floorBound and searchLimits in the results.",
+        "Dynamic schedule: each year's policy (draw order + conversion fill + window) was chosen by re-pricing the remaining horizon from that year's actual balances. The greedy choice is floored at the best valid fixed policy over the same fixed-policy set (up to 114 policies) — see floorBound and searchLimits in the results.",
       ],
       taxAwareAssumptions(scenario),
       null,

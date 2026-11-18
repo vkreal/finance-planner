@@ -57,6 +57,29 @@ describe("C10 — phases", () => {
     expect(new Set(policies.map((p) => p.key)).size).toBe(114);
     expect(policies.filter((p) => p.ceilings == null).length).toBe(6);
   });
+
+  test("policy set: stops deduped when windows collide (78 unique, no duplicates)", () => {
+    // stops = [65, rmdStopAge, endAge] with no dedupe emitted 36
+    // duplicate policies when two stops coincided (114 rows, 78
+    // unique keys) — compute-only, the duplicate marches tied
+    // exactly, but 36 extra marches were priced per greedy year
+    // and policiesEvaluatedPerYear overstated the set. The stops
+    // are now deduped: 6 + 6 fills x 2 windows x 6 orders = 78.
+    for (const [rmdStop, end] of [
+      [74, 74],
+      [65, 95],
+      [74, 65],
+    ] as const) {
+      const policies = dynamicPolicySet(rmdStop, end);
+      expect(policies.length).toBe(78);
+      expect(new Set(policies.map((p) => p.key)).size).toBe(78);
+      expect(policies.filter((p) => p.ceilings == null).length).toBe(6);
+    }
+    // Non-colliding control: still 114.
+    const control = dynamicPolicySet(74, 70);
+    expect(control.length).toBe(114);
+    expect(new Set(control.map((p) => p.key)).size).toBe(114);
+  });
 });
 
 describe("C10 — ledger helpers", () => {
@@ -616,6 +639,194 @@ describe("C10 — Pass 3 fix (M1): per-person first-RMD deferral flags", () => {
     expect(r2045.rmdSpouse).toBe(0);
     expect(m2046.detail.rmdSpouse).toBeGreaterThan(300000);
     expect(Math.abs(r2046.rmdSpouse - m2046.detail.rmdSpouse)).toBeLessThanOrEqual(0.02);
+  });
+});
+
+describe("C10 — Pass 4 (N1): five extra deferral corners as regression tests", () => {
+  // The five shapes the Pass 4 probe found holding parity that
+  // no test covered: pending deferral at death (F), death in
+  // the deferral year (G), single filer (H — the only shape
+  // exercising the rmdAgeSpouse-null branch), death before the
+  // first RMD year (I), and both deferrals + survivor (J).
+  // Same harness as the Pass 3 describe above (single fixed
+  // policy rolled forward against its own march on the
+  // fictional sample household at end age 95, spouse given a
+  // $500,000 pre-tax balance so the spouse HAS an RMD), same
+  // bars (2c per flow field, $0.50 ending balances, $0.25 net
+  // cost) — with one necessary difference in HOW the 2c bar is
+  // compared. The bar is 2 CENTS per field, and the fields are
+  // cent-rounded dollars; the comparison is therefore in
+  // integer cents. Shape I's 2046 RMD sits exactly on the bar
+  // ($423,599.12 vs $423,599.14) and the raw float difference
+  // is 0.0200000000186... — a hair ABOVE 0.02 — so a raw-float
+  // `<= 0.02` check would fail a true 2c difference on float
+  // noise alone. The cent-domain comparison pins the bar as
+  // designed; it does not loosen it (2 integer cents, no more).
+  const order: DrawOrder = ["taxable", "pretax", "roth"];
+  const fill12TaxableFirst = {
+    key: "fill12|stop95|taxable-pretax-roth",
+    name: "Fill 12% · stop 95",
+    ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
+    guardrail: false,
+    windowStopAge: 95,
+    drawOrder: order,
+  };
+  const deferralInputs = (overrides: Partial<RothPlanInputs> = {}) =>
+    samplePlanInputs({ endAgePrimary: 95, pretaxSpouseStart: 500000, ...overrides });
+
+  function assertRollForwardParity(inputs: RothPlanInputs) {
+    const march = simulateRothPlan(
+      { ...inputs, windowStopAge: 95, drawOrder: [...order] },
+      { id: "m1p4", name: "Fill 12% · stop 95", ceilings: fill12TaxableFirst.ceilings, guardrail: false },
+      undefined,
+      { leanDetail: true },
+    );
+    const rolled = runDynamicOptimizer(inputs, { policies: [fill12TaxableFirst] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.floorBound).toBe(false);
+    expect(rolled.years.length).toBe(march.years.length);
+    // 2c per flow field, in integer cents (see the note above).
+    const within2c = (a: number, b: number) => Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 2;
+    // $0.50 ending balances, in integer cents likewise.
+    const within50c = (a: number, b: number) => Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 50;
+    for (let i = 0; i < march.years.length; i++) {
+      const m = march.years[i]!;
+      const r = rolled.years[i]!;
+      expect(r.year).toBe(m.year);
+      expect(within2c(r.federalTax, m.federalTax)).toBe(true);
+      expect(within2c(r.conversion, m.funding.conversion)).toBe(true);
+      expect(within2c(r.pretaxDraw, m.funding.pretaxDraw)).toBe(true);
+      expect(within2c(r.taxableSoldForSpending, m.funding.taxableSoldForSpending)).toBe(true);
+      expect(within2c(r.taxableSoldForTax, m.funding.taxableSoldForTax)).toBe(true);
+      expect(within2c(r.rothDraw, m.funding.rothDraw)).toBe(true);
+      expect(within2c(r.rmd, m.funding.rmd)).toBe(true);
+      expect(within2c(r.rmdPrimary, m.detail.rmdPrimary)).toBe(true);
+      expect(within2c(r.rmdSpouse, m.detail.rmdSpouse)).toBe(true);
+      expect(within2c(r.magi, m.magi)).toBe(true);
+      expect(within2c(r.acaCreditKept, m.acaCreditKept)).toBe(true);
+      expect(within50c(r.pretaxEnd, m.pretaxEnd)).toBe(true);
+      expect(within50c(r.rothEnd, m.rothEnd)).toBe(true);
+      expect(within50c(r.taxableEnd, m.taxableEnd)).toBe(true);
+    }
+    expect(
+      Math.abs(
+        rolled.lifetimeNetCost -
+          netCostBreakdown(march, inputs.heirRatePct, {
+            preservePretax: inputs.preservePretax ?? 0,
+            preserveExitRatePct: inputs.preserveExitRatePct ?? inputs.heirRatePct,
+          }).netCost,
+      ),
+    ).toBeLessThanOrEqual(0.25);
+    return { march, rolled };
+  }
+
+  test("F: pending deferral at death — the deceased's pending RMD is honored in the combined year", () => {
+    // The primary defers his 2043 first RMD and dies in 2044:
+    // the combined 2044 year must pay the pending deferral
+    // ($286,858.60 on the march), not a fresh single-year RMD.
+    const inputs = deferralInputs({
+      firstRmdDeferralPrimary: true,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2044,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    const m2044 = march.years.find((y) => y.year === 2044)!;
+    const r2044 = rolled.years.find((y) => y.year === 2044)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+    expect(m2044.detail.rmdPrimary).toBeGreaterThan(200000);
+    expect(Math.abs(Math.round(r2044.rmdPrimary * 100) - Math.round(m2044.detail.rmdPrimary * 100))).toBeLessThanOrEqual(2);
+  });
+
+  test("G: death in the deferral year — the spouse's deferred RMD still defers", () => {
+    // The spouse defers her 2045 first RMD and the primary dies
+    // in that same year: the 2045 RMD is $0 on both trajectories
+    // and the double lands in 2046.
+    const inputs = deferralInputs({
+      firstRmdDeferralSpouse: true,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2045,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    const m2046 = march.years.find((y) => y.year === 2046)!;
+    const r2046 = rolled.years.find((y) => y.year === 2046)!;
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
+    expect(m2046.detail.rmdSpouse).toBeGreaterThan(100000);
+    expect(Math.abs(Math.round(r2046.rmdSpouse * 100) - Math.round(m2046.detail.rmdSpouse * 100))).toBeLessThanOrEqual(2);
+  });
+
+  test("H: single filer — the rmdAgeSpouse-null path still defers the primary's first RMD", () => {
+    // No spouse at all (birthYearSpouse null, single filer, no
+    // spouse pre-tax balance): the only shape exercising the
+    // rmdAgeSpouse-null branch of the per-person flag fix.
+    const inputs = deferralInputs({
+      birthYearSpouse: null,
+      filingStatus: "single",
+      pretaxSpouseStart: 0,
+      firstRmdDeferralPrimary: true,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    const m2044 = march.years.find((y) => y.year === 2044)!;
+    const r2044 = rolled.years.find((y) => y.year === 2044)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+    expect(m2044.detail.rmdPrimary).toBeGreaterThan(200000);
+    expect(Math.abs(Math.round(r2044.rmdPrimary * 100) - Math.round(m2044.detail.rmdPrimary * 100))).toBeLessThanOrEqual(2);
+  });
+
+  test("I: death before the first RMD year — the survivor's deferral survives the deceased's unflipped flag", () => {
+    // The primary dies in 2042, before his 2043 first RMD year,
+    // so the deceased's flag never flips; the spouse's 2045
+    // deferral as survivor must still apply. The 2046 RMD sits
+    // exactly on the 2c bar ($423,599.12 vs $423,599.14) — the
+    // bar working as designed, not a defect; pinned at the bar
+    // in integer cents (see the helper note above).
+    const inputs = deferralInputs({
+      firstRmdDeferralSpouse: true,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2042,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    const m2046 = march.years.find((y) => y.year === 2046)!;
+    const r2046 = rolled.years.find((y) => y.year === 2046)!;
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
+    expect(m2046.detail.rmdSpouse).toBeGreaterThan(400000);
+    expect(Math.abs(Math.round(r2046.rmdSpouse * 100) - Math.round(m2046.detail.rmdSpouse * 100))).toBeLessThanOrEqual(2);
+  });
+
+  test("J: both deferrals + survivor — each person's election applies before the death year", () => {
+    // Both deferrals elected and the primary dies in 2044: the
+    // primary's 2043 deferral and the spouse's 2045 deferral
+    // must both hold on the rolled trajectory.
+    const inputs = deferralInputs({
+      firstRmdDeferralPrimary: true,
+      firstRmdDeferralSpouse: true,
+      survivorEnabled: true,
+      survivorWho: "primary",
+      survivorDeathYear: 2044,
+    });
+    const { march, rolled } = assertRollForwardParity(inputs);
+    const m2043 = march.years.find((y) => y.year === 2043)!;
+    const r2043 = rolled.years.find((y) => y.year === 2043)!;
+    const m2045 = march.years.find((y) => y.year === 2045)!;
+    const r2045 = rolled.years.find((y) => y.year === 2045)!;
+    expect(m2043.detail.rmdPrimary).toBe(0);
+    expect(r2043.rmdPrimary).toBe(0);
+    expect(m2045.detail.rmdSpouse).toBe(0);
+    expect(r2045.rmdSpouse).toBe(0);
   });
 });
 

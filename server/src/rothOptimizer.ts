@@ -10454,7 +10454,9 @@ export function runRothCompare(
    re-derivation.
 
    SEARCH LIMITS (disclosed, not hidden): the per-year policy
-   set is the fixed-fill family above (114 policies) — it does
+   set is the fixed-fill family above (up to 114 policies —
+   114 when the three window stops differ, 78 when two
+   coincide) — it does
    NOT include the full optimizer's thousands of ceilings
    (bracket × IRMAA combinations, MAGI-cap steps, bunching,
    gain-harvest twins) or per-year conversion amounts finer
@@ -10524,7 +10526,11 @@ export type DynamicPolicy = {
    shape), × windows stopping at 65 / the year before RMDs
    begin / the end age × all six draw orders. Do Nothing is
    window-inert, so it appears once per order (6), not once per
-   window: 6 + 6 fills × 3 windows × 6 orders = 114 policies. */
+   window: 6 + 6 fills × 3 windows × 6 orders = 114 policies.
+   The three stops are deduped, so the set is 114 only when
+   they differ; when two coincide the set is 78 (6 + 6 fills ×
+   2 windows × 6 orders) — no duplicate policy is ever emitted
+   or priced. */
 export function dynamicPolicySet(rmdStopAge: number, endAge: number): DynamicPolicy[] {
   const fills: { key: string; name: string; ceilings: FillCeilings; guardrail: boolean }[] = [
     { key: "fill12", name: "Fill 12%", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 }, guardrail: false },
@@ -10534,7 +10540,7 @@ export function dynamicPolicySet(rmdStopAge: number, endAge: number): DynamicPol
     { key: "fill22-irmaa1", name: "Fill 22% capped at IRMAA Tier 1", ceilings: { ...NO_CEILINGS, bracketTopPct: 22, irmaaTierCap: 1 }, guardrail: false },
     { key: "fill-aca", name: "Fill capped at ACA cliff", ceilings: { ...NO_CEILINGS, acaCliffCap: true }, guardrail: false },
   ];
-  const stops = [65, rmdStopAge, endAge];
+  const stops = [...new Set([65, rmdStopAge, endAge])];
   const out: DynamicPolicy[] = [];
   for (const order of ALL_DRAW_ORDERS) {
     out.push({
@@ -11141,7 +11147,7 @@ export function rescoreDynamicTerminal(
 }
 
 const DYNAMIC_SEARCH_LIMITS =
-  "Greedy roll-forward over 114 fixed-fill policies per year (Do Nothing, Fill 12%/22% ± guardrail, Fill 22% IRMAA-1, Fill ACA-cliff × windows stop-65 / stop-year-before-RMD / through-RMD × all six draw orders), each priced over the remaining horizon by the shared engine; one year committed at a time; no per-year conversion amounts finer than a ceiling fill; no bunching, gain-harvest, or claiming-age search. No global-optimality claim.";
+  "Greedy roll-forward over up to 114 fixed-fill policies per year (Do Nothing, Fill 12%/22% ± guardrail, Fill 22% IRMAA-1, Fill ACA-cliff × windows stop-65 / stop-year-before-RMD / through-RMD × all six draw orders), each priced over the remaining horizon by the shared engine; one year committed at a time; no per-year conversion amounts finer than a ceiling fill; no bunching, gain-harvest, or claiming-age search. No global-optimality claim.";
 
 /* The fixed-policy floor triggers only past this gap (see the
    header note): re-anchor rounding noise is cents, a real
@@ -11569,9 +11575,17 @@ export function runDynamicOptimizer(
        order with a Fill-12% conversion (the $100K of spending
        comes from taxable sales while $100K converts to Roth).
    C — blended: the dynamic optimizer at this spending target
-       (year-by-year re-optimization, floored at the best fixed
-       policy — so C is never worse than the better of A/B's
-       policy family on net cost).
+       (year-by-year re-optimization, floored at the best valid
+       fixed policy over the same set — so C is never worse than
+       that best fixed policy on net cost, within the $0.10
+       floor epsilon (DYNAMIC_FLOOR_EPSILON: the floor binds
+       only past a $0.10 gap, so C can trail the best fixed by
+       up to $0.10 of re-anchor rounding). The floor covers A
+       always — Do Nothing pre-tax-first is in the set — and B
+       only when the plan's own conversion window matches a set
+       stop {65, year-before-RMD, end age}, so C beating the
+       better of A/B is an empirical result on the plans tested,
+       not a consequence of the floor).
    The $100K central question is answered by the $100K target's
    year-1 rows: the same $100K of ordinary income either way,
    but B also realizes the taxable sale's gains and consumes
