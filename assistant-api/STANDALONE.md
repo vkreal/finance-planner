@@ -5,21 +5,14 @@ Planner's retirement engines under plain Node.js — no MCP server, no
 hosting, no install, no network, no database.
 
 The file is `assistant-api/dist/finance-planner-cli.mjs`
-(559,443 bytes, sha256
-`698e0fa0326568f4980bc8af5dd7df8008ee3edd01bfda873452b5031f1ca372`),
-built from source commit `4bc7316` (main at the Review 4 reviewer-NICE
-gloss fix; the bundle commit also carries the Engine Review 1 adequacy
-floor, Engine Review 2 solver-feasibility fields, Review 4
-comparisonScope and its 6 NICE fixes, the Review 2/6/8/3 fixes, the
-Review 10 Pass 2/3 fixes (missing-input detection, locale-independent
-error-detail messages, three doc fixes), the Review 10 round-2
-follow-ups (PropertyKey type fix, Releases-page qualifier in the
-bundled quick-start + AI_USAGE + llms.txt, `cd` prefix on the
-llms.txt/STANDALONE.md verify commands, wy56 winner correction), and
-the Review 10 round-3 follow-ups (execution-model-neutral long-call
-wording in the shared describe limitations, `cd` prefix on the
-AI_USAGE.md verify command) — Review 7's Monte Carlo precision work
-is not in this build). Size and hash change with every rebuild from a new source
+(729,265 bytes, sha256
+`b145079349b64ca4149b20e4fd1c9283a082e7888149059d345aa855897021f7`),
+built from source commit `adcb8fd` (main at the labels NICEs landing;
+the bundle commit also carries Engine Reviews 1–8, C1–C10, R7, the E2
+witness pin, the C2 tax-internals fix, the UI stack, and the Review 10
+fixes (missing-input detection, locale-independent error-detail
+messages, doc fixes, execution-model-neutral long-call wording)).
+Size and hash change with every rebuild from a new source
 commit — verify the copy you hold with the `.sha256` file next to it,
 not with the numbers in this paragraph.
 It calls the same `dispatchTool()` the MCP server and the bun CLI
@@ -40,7 +33,7 @@ the first release, the committed copy in `dist/` is the live path.
 ### How to publish a release (maintainer step — no release exists yet)
 
 1. Pick the source commit the bundle was built from and record it in
-   the release notes (immutable reference, e.g. `4bc7316` plus the
+   the release notes (immutable reference, e.g. `adcb8fd` plus the
    bundle commit). Rebuild from that exact commit if the committed
    copy is not already byte-identical to a fresh build from it.
 2. Tag the commit, e.g. `git tag -a standalone-v0.1.0 -m "Standalone
@@ -98,7 +91,7 @@ it with `{}`. Every other tool needs a JSON file or `--stdin`.
 `serve` is a usage error — the bundle starts no server; run the MCP
 server with `bun src/server.ts` (or Docker) instead.
 
-## The eight tools
+## The nine tools
 
 | Tool | What it answers |
 | --- | --- |
@@ -107,6 +100,7 @@ server with `bun src/server.ts` (or Docker) instead.
 | `retirement_max_spending` | Highest sustainable monthly spending at 85% Monte Carlo success. |
 | `retirement_compare_strategies` | Which account to spend from first? Taxable-first vs pretax-first vs roth-first, tax-aware. |
 | `retirement_roth_conversion` | Convert or not? Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1, tax-aware. |
+| `retirement_dynamic_withdrawal` | Year-by-year withdrawal plan: which account to draw from and how much to convert each year, re-priced annually instead of one fixed order or ceiling for the whole horizon. |
 | `retirement_work_years` | Is working longer worth it? Retiring at each age in `compareAges`, tax-aware; with `salaryAnnual` it also prices the earned-income leg. |
 | `retirement_tax_year` | The tax bill for one specific year. |
 | `retirement_describe_capabilities` | The machine-readable guide: every tool, its inputs, example calls, assumptions, limitations. No calculation. |
@@ -145,7 +139,7 @@ Every call returns one JSON envelope:
   "ok": true,
   "source": "finance-planner-engine",
   "adapterVersion": "assistant-api 0.1.0",
-  "apiContractVersion": 164,
+  "apiContractVersion": 165,
   "taxLawYear": 2026,
   "effectiveInputs": { "...": "what was priced" },
   "assumptions": [ { "field": "…", "value": "…", "provenance": "…" } ],
@@ -263,38 +257,51 @@ rule, the "don't invent results" rule, and a worked example. The
   `assistant-api/`).
 - Full adapter suite green (`bun test tests/`), including
   `tests/standalone.test.ts`.
-- Parity (four-way matrix, base `4bc7316`, bundle
-  `698e0fa0326568f4980bc8af5dd7df8008ee3edd01bfda873452b5031f1ca372`):
-  all 8 tools MATCH across all 5 legs — direct adapter, bun CLI,
+- Parity (four-way matrix, base `adcb8fd`, bundle
+  `b145079349b64ca4149b20e4fd1c9283a082e7888149059d345aa855897021f7`):
+  all 9 tools MATCH across all 5 legs — direct adapter, bun CLI,
   MCP endpoint, standalone bundle under system Node 24, standalone
-  bundle under Node 20.19.5 — on identical input JSON (40 MATCH,
-  0 MISMATCH; fresh direct references, logs `parity10.log`,
-  `parity10-taxyear.log`, `parity10-wy.log`). Key figures: calculate
-  ending $19,889,344.44; Monte Carlo successRate 0.92; max-spending
-  $11,100/mo at 0.85; tax_year federalTax $32,429.05 (RMD $42,058.82);
+  bundle under Node 20.19.5 — on identical input JSON (45 MATCH,
+  0 MISMATCH; fresh direct references, logs `parity11.log`,
+  `parity11-wy.log`). Key figures: calculate
+  ending $19,889,344.44; Monte Carlo successRate 0.922; max-spending
+  $11,100/mo at 0.85; dynamic-withdrawal ending $18,994,325;
+  tax_year federalTax $32,429.05 (RMD $42,058.82);
   work-years 2-age variant (spouse SS $0, compareAges [58,60],
   salary $120,000) retire-58 ending $17,091,856.23, retire-60
-  $18,513,081.03, winners wealth retire-60 / net cost retire-58 /
-  all-in tax retire-58. The heavy work-years input (spouse SS
-  $18,000, compareAges [58,60,63], salary $200,000) still cannot run
-  on the 6 GB VM — preserved as `parity4/retirement_work_years.heavy.json`
-  for a bigger host; the wy56 heavy leg (compareAges [56,60], salary
-  $120,000, spouse SS $0) re-ran on the rebuilt bundle under Node 20
-  (598,921 ms): every figure identical to the 19ea743-base run —
-  retire-56 ending $15,524,955.88, retire-60 $18,513,081.03,
-  lifetimeTax $739,369.67 both, winners wealth retire-60 / net cost
-  retire-56 / all-in tax retire-56, deltas +$2,988,125.15 / $0
-  (log `parity10-wy56.log`). The envelope gained the `comparisonScope`
-  block (`"limited"`) and contract 164 — that is the only change.
-  Transport note: the bun CLI and both bundle legs print byte-identical
-  stdout (pretty JSON); the direct leg prints the same envelope as
-  compact JSON and MCP returns it inside SSE framing — both agree
-  canonically (re-serialized JSON identical), not byte-wise.
+  $18,513,081.03, winners wealth retire-60 / net cost retire-60 /
+  all-in tax retire-58. Net cost ties exactly at $1,273,829.35 for
+  both ages (the same tie the E8 review documented); the crown
+  breaks it toward the higher-wealth age. The heavy work-years
+  input (spouse SS $18,000, compareAges [58,60,63], salary $200,000)
+  still cannot run on the 6 GB VM — preserved as
+  `parity4/retirement_work_years.heavy.json` for a bigger host; the
+  wy56 heavy leg (compareAges [56,60], salary $120,000, spouse SS
+  $0) re-ran on the rebuilt bundle under Node 20 (580,957 ms; it
+  needs `--max-old-space-size=4096` — the default ~2 GB V8 heap is
+  too small for this leg on this VM): retire-56 ending
+  $15,524,955.88, retire-60 $18,513,081.03, lifetimeTax $739,369.67
+  both, winners wealth retire-60 / net cost retire-60 / all-in tax
+  retire-56, deltas +$2,988,125.15 / $0
+  (log `parity11-wy56-rerun.log`). Two figures moved vs the
+  19ea743-base run — the net-cost winner (retire-56 → retire-60,
+  the same exact-tie break as the 2-age leg) and the retire-56
+  all-in tax ($235,422.38 → $235,966.97); both were confirmed
+  against a fresh direct-engine run on the new base (canonical
+  MATCH), so they are engine evolutions, not bundle drift.
+  The envelope carries contract 165 (was 164) and the
+  `comparisonScope` block (`"limited"`), and the bundle now ships
+  the ninth tool, `retirement_dynamic_withdrawal` — those are the
+  only changes vs the parity10 bundle. Transport note: the bun CLI
+  and both bundle legs print byte-identical stdout (pretty JSON);
+  the direct leg prints the same envelope as compact JSON and MCP
+  returns it inside SSE framing — both agree canonically
+  (re-serialized JSON identical), not byte-wise.
 - Sample isolation: rebuilding from a repo copy with every sample
   figure rewritten to $0.01 gives a byte-identical bundle, and that
   bundle prices the fictional household identically.
 - Clean environment: copying only the `.mjs` to an empty directory
-  (no repo source, no `node_modules`, no Bun on PATH) runs all 8
+  (no repo source, no `node_modules`, no Bun on PATH) runs all 9
   tools plus a stdin calculation, byte-identical to the bun CLI.
 - Scrub: zero matches over every added file and the added lines of
   every changed file. The bundle itself carries exactly four

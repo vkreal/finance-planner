@@ -11,10 +11,10 @@
 // of failing; see README "Test commands" for how to make the SDK
 // resolvable.
 //
-// NOTE on schemas: the seven financial tools carry a `required`
+// NOTE on schemas: the eight financial tools carry a `required`
 // array with the six essential keys. retirement_describe_capabilities
 // takes no inputs, so its schema carries no `required` array at all —
-// the test pins that split rather than demanding `required` on all 8.
+// the test pins that split rather than demanding `required` on all 9.
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";

@@ -137,6 +137,25 @@ function normalRandom(rng) {
     v = rng();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
+var MAX_MONTE_CARLO_RUNS = 1e4;
+function validateMonteCarloSeed(seed) {
+  if (!Number.isInteger(seed)) {
+    throw new RangeError(`Monte Carlo seed must be a finite integer, got ${seed}.`);
+  }
+}
+function validateMonteCarloRunCount(runCount, maxRuns = MAX_MONTE_CARLO_RUNS) {
+  if (!Number.isInteger(runCount) || runCount < 1 || runCount > maxRuns) {
+    throw new RangeError(`Monte Carlo run count must be a whole number from 1 to ${maxRuns}, got ${runCount}.`);
+  }
+}
+function validateMonteCarloReturn(expected, vol) {
+  if (!Number.isFinite(expected)) {
+    throw new RangeError(`Monte Carlo expected return must be a finite number, got ${expected}.`);
+  }
+  if (!Number.isFinite(vol) || vol < 0) {
+    throw new RangeError(`Monte Carlo volatility must be a finite number at or above 0, got ${vol}.`);
+  }
+}
 var GUARDRAILS_CUT_DEFAULT = 120;
 var GUARDRAILS_RAISE_DEFAULT = 80;
 var GUARDRAILS_ADJUSTMENT_DEFAULT = 10;
@@ -234,6 +253,15 @@ function simulateDetailed(inputs, returns) {
     balances.push(bal);
   }
   return { balances, grossWithdrawals, netWithdrawals };
+}
+function neverRunsOutFromDetailed(det, inputs) {
+  for (let i = 0;i < det.netWithdrawals.length; i++) {
+    if (inputs.currentAge + i < inputs.retirementAge)
+      continue;
+    if ((det.netWithdrawals[i] ?? 0) > (det.balances[i] ?? 0))
+      return false;
+  }
+  return true;
 }
 function runNeverRunsOut(inputs, returns) {
   const years = horizonYears(inputs.currentAge, inputs.endAge);
@@ -339,6 +367,7 @@ function runHistorical(inputs, stocksPct) {
   const allReturns = historicalRealReturns(stocksPct);
   const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
   const runs = [];
+  let neverOut = 0;
   for (let idx = 0;idx < HISTORICAL.length; idx++) {
     const sy = HISTORICAL[idx]?.year ?? 0;
     if (sy + planYears - 1 > lastYear)
@@ -353,12 +382,13 @@ function runHistorical(inputs, stocksPct) {
       grossWithdrawals: det.grossWithdrawals,
       netWithdrawals: det.netWithdrawals
     });
+    if (neverRunsOutFromDetailed(det, inputs))
+      neverOut++;
   }
   if (runs.length === 0)
     return null;
   const endings = runs.map((r) => r.ending);
   const successes = endings.filter((e) => e > 0).length;
-  const neverOut = runs.filter((r) => runNeverRunsOut(inputs, r.returns)).length;
   const worst = runs.reduce((a, b) => b.ending < a.ending ? b : a, runs[0] ?? { startYear: 0, path: [], ending: 0, returns: [], grossWithdrawals: [], netWithdrawals: [] });
   const chart = [];
   for (let i = 0;i <= planYears; i++) {
@@ -393,6 +423,9 @@ function runHistorical(inputs, stocksPct) {
 var MONTE_CARLO_TAB_SEED_DEFAULT = 12345;
 var MONTE_CARLO_TAB_RUNS = 1000;
 function runMonteCarlo(inputs, expected, vol, seed, runCount = MONTE_CARLO_TAB_RUNS) {
+  validateMonteCarloRunCount(runCount);
+  validateMonteCarloSeed(seed);
+  validateMonteCarloReturn(expected, vol);
   const planYears = horizonYears(inputs.currentAge, inputs.endAge);
   if (planYears <= 0)
     return null;
@@ -410,7 +443,7 @@ function runMonteCarlo(inputs, expected, vol, seed, runCount = MONTE_CARLO_TAB_R
     paths.push(det.balances);
     runsGross.push(det.grossWithdrawals);
     endings.push(det.balances[det.balances.length - 1] ?? 0);
-    if (runNeverRunsOut(inputs, returns))
+    if (neverRunsOutFromDetailed(det, inputs))
       neverOut++;
   }
   const sortedEndings = [...endings].sort((a, b) => a - b);
@@ -501,6 +534,25 @@ function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, 
   const needed = Math.ceil(targetPct / 100 * runReturns.length - 0.000000001);
   const allowedFail = runReturns.length - needed;
   const feasible = (cents) => {
+    const firstYearGross = Math.min(cents, ...base.guardrailsCutPct < 100 ? [
+      Math.round(cents * (1 - base.guardrailsAdjustmentPct / 100))
+    ] : [], ...base.guardrailsRaisePct > 100 ? [
+      Math.round(cents * (1 + base.guardrailsAdjustmentPct / 100))
+    ] : []);
+    const firstYearNet = firstYearGross - firstYearIncome;
+    if (firstYearNet > 0) {
+      let lo = 0;
+      let hi = sortedRetBals.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if ((sortedRetBals[mid] ?? 0) < firstYearNet)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      if (sortedRetBals.length - lo < needed)
+        return false;
+    }
     const inp = { ...base, spendingCents: cents };
     let succ = 0;
     let fail = 0;
@@ -519,6 +571,7 @@ function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, 
   };
   const preYears = Math.max(0, Math.min(planYears, base.retirementAge - base.currentAge));
   const eventualIncome = eventualIncomeCents(base);
+  const retBals = [];
   let maxRetBal = 0;
   for (const returns of runReturns) {
     let b = base.startCents;
@@ -527,14 +580,22 @@ function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, 
       if (b < 0)
         b = 0;
     }
+    retBals.push(b);
     if (b > maxRetBal)
       maxRetBal = b;
   }
-  const scanSteps = Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)));
+  const sortedRetBals = [...retBals].sort((a, b) => a - b);
+  const firstRetiredAge = Math.max(base.currentAge, base.retirementAge);
+  const firstYearIncome = incomeCentsAt(base, firstRetiredAge);
+  const cutFactor = 1 - Math.max(0, base.guardrailsAdjustmentPct) / 100;
+  const raiseFactor = base.guardrailsRaisePct > 100 ? 1 + base.guardrailsAdjustmentPct / 100 : 1;
+  const scanSteps = base.guardrailsCutPct < 100 && cutFactor > 0 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * cutFactor)) + 1)) : base.guardrailsCutPct < 100 ? capSteps : raiseFactor > 0 && raiseFactor < 1 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * raiseFactor)) + 1)) : raiseFactor <= 0 ? capSteps : Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)));
   let best = 0;
-  for (let k = 1;k <= scanSteps; k++) {
-    if (feasible(k * STEP))
+  for (let k = scanSteps;k >= 1; k--) {
+    if (feasible(k * STEP)) {
       best = k;
+      break;
+    }
   }
   const winner = evaluatePlan({ ...base, spendingCents: best * STEP }, stocksPct, expected, vol, engine, mcSeed);
   if (!winner)
@@ -551,6 +612,8 @@ function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, 
   });
 }
 function solveMaxSpending(base, stocksPct, expected, vol, engine, targetPct, mcSeed = MONTE_CARLO_TAB_SEED_DEFAULT) {
+  validateMonteCarloSeed(mcSeed);
+  validateMonteCarloReturn(expected, vol);
   if (base.retirementAge >= base.endAge)
     return null;
   const approximate = engine === "montecarlo";
@@ -758,6 +821,16 @@ var TAX_LAW_2026 = {
 var TAX_LAW_YEARS = [TAX_LAW_2025, TAX_LAW_2026];
 var EARLIEST_LAW = TAX_LAW_YEARS[0];
 var CURRENT_LAW = TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1];
+function deepFreezeLaw(value) {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value))
+      deepFreezeLaw(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+for (const law of TAX_LAW_YEARS)
+  deepFreezeLaw(law);
 function lawForYear(year) {
   for (const law of TAX_LAW_YEARS) {
     if (law.year === year)
@@ -765,6 +838,35 @@ function lawForYear(year) {
   }
   return year < EARLIEST_LAW.year ? EARLIEST_LAW : CURRENT_LAW;
 }
+function lawProvenanceForYear(year) {
+  const law = lawForYear(year);
+  if (law.year === year) {
+    return {
+      lawYear: year,
+      status: "exact",
+      published: true,
+      isProjection: false,
+      note: `Priced under the published ${year} law row.`
+    };
+  }
+  if (year > law.year) {
+    return {
+      lawYear: law.year,
+      status: "carried-forward",
+      published: false,
+      isProjection: true,
+      note: `No published ${year} law row exists yet; priced on the ` + `${law.year} row carried forward in today's dollars — a ` + `projection under current law, not published ${year} law, ` + `and no future legislation is assumed.`
+    };
+  }
+  return {
+    lawYear: law.year,
+    status: "carried-backward",
+    published: false,
+    isProjection: false,
+    note: `No published ${year} law row exists; priced under the ` + `earliest published row (${law.year}), never under a later ` + `year's law.`
+  };
+}
+var TAX_LAW_2027_NOTE = "2027 federal figures are published (IRS Rev. Proc. 2026-35, " + "IR-2026-133), but no 2027 law row is adopted: the CMS half " + "(2027 Part B premium + IRMAA tiers) is not yet published, " + "and the law table updates only when both halves exist. A " + "2027 year prices on the 2026 row carried forward.";
 var SALT_SCHEDULE_FIRST_YEAR = 2025;
 var SALT_REVERSION_YEAR = 2030;
 var SALT_SCHEDULE = {
@@ -6194,9 +6296,179 @@ function jointDivisor(ownerAge, spouseAge) {
   const row = JOINT_LIFE_TABLE[o] ?? JOINT_LIFE_TABLE[120] ?? [];
   return row[s - 20] ?? row[row.length - 1] ?? 2;
 }
+function r2law(n) {
+  return Math.round(n * 100) / 100;
+}
+function fullRetirementAgeMonths(birthYear) {
+  if (birthYear >= 1960)
+    return 67 * 12;
+  if (birthYear >= 1955)
+    return 66 * 12 + (birthYear - 1954) * 2;
+  if (birthYear >= 1943)
+    return 66 * 12;
+  if (birthYear >= 1938)
+    return 65 * 12 + (birthYear - 1937) * 2;
+  return 65 * 12;
+}
+function ssBenefitFactor(claimAge, birthYear) {
+  const fraMonths = fullRetirementAgeMonths(birthYear);
+  const diff = Math.round(claimAge * 12) - fraMonths;
+  if (diff < 0) {
+    const early = -diff;
+    const reduction = Math.min(early, 36) * (5 / 9 / 100) + Math.max(0, early - 36) * (5 / 12 / 100);
+    return 1 - reduction;
+  }
+  if (diff > 0) {
+    const delayed = Math.min(diff, 70 * 12 - fraMonths);
+    return 1 + Math.max(0, delayed) * (2 / 3 / 100);
+  }
+  return 1;
+}
+function ssAnnualAtClaimAge(anchorAnnual, anchorAge, claimAge, birthYear) {
+  if (anchorAge == null || anchorAge === claimAge || anchorAnnual <= 0) {
+    return anchorAnnual;
+  }
+  const anchorFactor = ssBenefitFactor(anchorAge, birthYear);
+  if (anchorFactor <= 0)
+    return anchorAnnual;
+  const pia = anchorAnnual / anchorFactor;
+  return r2law(pia * ssBenefitFactor(claimAge, birthYear));
+}
+function survivorFraMonths(birthYear) {
+  if (birthYear >= 1962)
+    return 67 * 12;
+  if (birthYear >= 1957)
+    return 66 * 12 + (birthYear - 1956) * 2;
+  if (birthYear >= 1945)
+    return 66 * 12;
+  if (birthYear >= 1940)
+    return 65 * 12 + (birthYear - 1939) * 2;
+  if (birthYear >= 1912)
+    return 65 * 12;
+  return 62 * 12;
+}
+function survivorReductionFactor(claimAge, birthYear) {
+  const fraMonths = survivorFraMonths(birthYear);
+  const claimMonths = Math.max(60 * 12, Math.round(claimAge * 12));
+  if (claimMonths >= fraMonths)
+    return 1;
+  const spanMonths = fraMonths - 60 * 12;
+  if (spanMonths <= 0)
+    return 1;
+  const earlyMonths = fraMonths - claimMonths;
+  return 1 - 0.285 * earlyMonths / spanMonths;
+}
 
 function r2(n) {
   return Math.round(n * 100) / 100;
+}
+function capitalLossAllowanceCap(filingStatus) {
+  return 3000;
+}
+function applyLossLedger(carryIn, ownLongTermResult, filingStatus, taxableIncomeBeforeAllowance, waIn) {
+  const stIn = Math.max(0, carryIn.st);
+  const ltIn = Math.max(0, carryIn.lt);
+  const waStIn = Math.min(stIn, Math.max(0, waIn?.st ?? 0));
+  const waLtIn = Math.min(ltIn, Math.max(0, waIn?.lt ?? 0));
+  const ltNet = ownLongTermResult - ltIn;
+  let remainingStLoss = stIn;
+  let remainingLtLoss = 0;
+  let pricedGain = 0;
+  if (ltNet >= 0) {
+    pricedGain = Math.max(0, ltNet - remainingStLoss);
+    remainingStLoss = Math.max(0, remainingStLoss - ltNet);
+  } else {
+    remainingLtLoss = -ltNet;
+  }
+  const totalLoss = remainingStLoss + remainingLtLoss;
+  const allowance = totalLoss > 0 ? Math.min(capitalLossAllowanceCap(filingStatus), totalLoss) : 0;
+  const allowanceUsed = Math.min(allowance, Math.max(0, taxableIncomeBeforeAllowance));
+  const stConsumedByAllowance = Math.min(allowanceUsed, remainingStLoss);
+  const ltConsumedByAllowance = allowanceUsed - stConsumedByAllowance;
+  const carryOut = {
+    st: r2(remainingStLoss - stConsumedByAllowance),
+    lt: r2(remainingLtLoss - ltConsumedByAllowance)
+  };
+  const absorbedByGains = r2(Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowanceUsed));
+  const ltAbsorbedByGains = Math.max(0, ltIn - remainingLtLoss);
+  const stAbsorbedByGains = Math.max(0, stIn - remainingStLoss);
+  const waLtAbsorbed = ltIn > 0 ? waLtIn * ltAbsorbedByGains / ltIn : 0;
+  const waStAbsorbed = stIn > 0 ? waStIn * stAbsorbedByGains / stIn : 0;
+  const waStRemainder = waStIn - waStAbsorbed;
+  const waLtRemainder = waLtIn - waLtAbsorbed;
+  const waStUsedByAllowance = remainingStLoss > 0 ? waStRemainder * stConsumedByAllowance / remainingStLoss : 0;
+  const waLtUsedByAllowance = remainingLtLoss > 0 ? waLtRemainder * ltConsumedByAllowance / remainingLtLoss : 0;
+  const waCarryOut = {
+    st: r2(Math.max(0, waStRemainder - waStUsedByAllowance)),
+    lt: r2(Math.max(0, waLtRemainder - waLtUsedByAllowance))
+  };
+  return {
+    netResult: r2(totalLoss > 0 ? -totalLoss : pricedGain),
+    allowance: r2(allowance),
+    allowanceUsed: r2(allowanceUsed),
+    absorbedByGains,
+    waAbsorbedByGains: r2(waStAbsorbed + waLtAbsorbed),
+    carryOut,
+    waCarryOut
+  };
+}
+
+function sellFromTiers(tiers, amount, order) {
+  if (amount <= 0)
+    return 0;
+  const ranked = tiers.map((t) => ({ tier: t, ratio: t.bal > 0 ? t.basis / t.bal : null })).filter((o) => o.ratio != null).sort((a, b) => order === "highest" ? b.ratio - a.ratio : a.ratio - b.ratio);
+  let remaining = amount;
+  let gains = 0;
+  for (const { tier: t } of ranked) {
+    if (remaining <= 0)
+      break;
+    const take = Math.min(remaining, t.bal);
+    if (take <= 0)
+      continue;
+    const ratio = t.basis / t.bal;
+    gains += take * (1 - ratio);
+    t.basis = Math.max(0, t.basis - take * ratio);
+    t.bal -= take;
+    remaining -= take;
+  }
+  return gains;
+}
+function reinvestYieldIntoTiers(tiers, amount) {
+  if (amount <= 0 || tiers.length === 0)
+    return;
+  const ranked = tiers.map((t) => ({ tier: t, ratio: t.bal > 0 ? t.basis / t.bal : 1 })).sort((a, b) => a.ratio - b.ratio);
+  let remaining = amount;
+  for (const { tier: t } of ranked) {
+    if (remaining <= 0)
+      break;
+    const room = Math.max(0, t.bal - t.basis);
+    const add = Math.min(room, remaining);
+    t.basis += add;
+    remaining -= add;
+  }
+  if (remaining > 0) {
+    const first = ranked[0];
+    if (first === undefined) {
+      throw new Error("reinvestYieldIntoTiers: empty ranking for a non-empty ledger");
+    }
+    first.tier.basis += remaining;
+  }
+}
+
+function r22(n) {
+  return Math.round(n * 100) / 100;
+}
+function grossUpWithheld(taxToPay, shelter, capacity) {
+  const e = Math.max(0, shelter);
+  const h = Math.max(0, capacity);
+  const w = Math.max(0, taxToPay);
+  const wantPenalty = w <= e ? 0 : r22((w - e) / 9);
+  const wantTotal = w + wantPenalty;
+  if (wantTotal <= h + 0.005) {
+    return { tax: w, penalty: wantPenalty, total: wantTotal };
+  }
+  const cappedPenalty = h <= e ? 0 : r22((h - e) * 0.1);
+  return { tax: h - cappedPenalty, penalty: cappedPenalty, total: h };
 }
 function ssTaxableAmount(benefits, provisionalIncome, filingStatus, deflationFactor) {
   if (benefits <= 0)
@@ -6212,6 +6484,50 @@ function ssTaxableAmount(benefits, provisionalIncome, filingStatus, deflationFac
   const base = Math.min(0.5 * benefits, 0.5 * (t2 - t1));
   return Math.min(0.85 * benefits, base + 0.85 * (provisionalIncome - t2));
 }
+function bracketWalkCents(taxableOrdinary, law, fs) {
+  const ordinaryTiCents = Math.round(taxableOrdinary * 100);
+  const tops = law.brackets[fs];
+  const layers = [];
+  let prevCents = 0;
+  let ordinaryTaxCents = 0;
+  for (let i = 0;i < tops.length; i++) {
+    const top = tops[i] ?? Infinity;
+    const topCents = Number.isFinite(top) ? top * 100 : Infinity;
+    if (ordinaryTiCents <= prevCents)
+      break;
+    const amountCents = Math.min(ordinaryTiCents, topCents) - prevCents;
+    const ratePct = law.rates[i] ?? 0;
+    const taxCents = Math.floor((amountCents * ratePct + 50) / 100);
+    layers.push({
+      ratePct,
+      from: prevCents / 100,
+      to: Number.isFinite(top) ? top : null,
+      amount: amountCents / 100,
+      tax: taxCents / 100
+    });
+    ordinaryTaxCents += taxCents;
+    prevCents = topCents;
+  }
+  return { ordinaryTaxCents, layers };
+}
+function bracketInputsAreCentQuantized(taxableOrdinary, law, fs) {
+  if (Math.abs(taxableOrdinary * 100 - Math.round(taxableOrdinary * 100)) > 0.000001)
+    return false;
+  for (const top of law.brackets[fs]) {
+    if (Number.isFinite(top) && Math.abs(top - Math.round(top)) > 0.000000001)
+      return false;
+  }
+  return true;
+}
+function ltcgStaircaseTaxCents(at15, at20) {
+  const at15Cents = at15 * 100;
+  const at20Cents = at20 * 100;
+  if (Math.abs(at15Cents - Math.round(at15Cents)) > 0.000001)
+    return null;
+  if (Math.abs(at20Cents - Math.round(at20Cents)) > 0.000001)
+    return null;
+  return Math.floor((15 * Math.round(at15Cents) + 20 * Math.round(at20Cents) + 50) / 100);
+}
 function bracketTax(taxableOrdinary, law, fs) {
   const tops = law.brackets[fs];
   let tax = 0;
@@ -6225,6 +6541,33 @@ function bracketTax(taxableOrdinary, law, fs) {
     prev = top;
   }
   return tax;
+}
+function ordinaryBracket(taxableOrdinary, law, fs) {
+  if (bracketInputsAreCentQuantized(taxableOrdinary, law, fs)) {
+    const { ordinaryTaxCents, layers } = bracketWalkCents(taxableOrdinary, law, fs);
+    return { ordinaryTax: ordinaryTaxCents / 100, layers };
+  }
+  const ordinaryTax = bracketTax(taxableOrdinary, law, fs);
+  const layers = [];
+  {
+    let prev = 0;
+    for (let i = 0;i < law.brackets[fs].length; i++) {
+      const top = law.brackets[fs][i] ?? Infinity;
+      if (taxableOrdinary <= prev)
+        break;
+      const amount = Math.min(taxableOrdinary, top) - prev;
+      const ratePct = law.rates[i] ?? 0;
+      layers.push({
+        ratePct,
+        from: r22(prev),
+        to: Number.isFinite(top) ? top : null,
+        amount: r22(amount),
+        tax: r22(amount * (ratePct / 100))
+      });
+      prev = top;
+    }
+  }
+  return { ordinaryTax, layers };
 }
 function marginalRate(taxableOrdinary, law, fs) {
   const tops = law.brackets[fs];
@@ -6278,7 +6621,7 @@ function irmaaAnnualPerPerson(tier, law) {
   const t = law.irmaaTiers[tier] ?? law.irmaaTiers[0];
   if (!t)
     return 0;
-  return r2((t.partBTotalMonthly - law.partBStandardMonthly + t.partDSurchargeMonthly) * 12);
+  return r22((t.partBTotalMonthly - law.partBStandardMonthly + t.partDSurchargeMonthly) * 12);
 }
 function waCapitalGainsTax(args) {
   const waGains = Math.max(0, args.ltcg);
@@ -6290,61 +6633,11 @@ function waCapitalGainsTax(args) {
   const above = taxableGains - atBase;
   const tax = args.law.waRatePct / 100 * atBase + (args.law.waRatePct + args.law.waAdditionalRatePct) / 100 * above;
   return {
-    waGains: r2(waGains),
-    standardDeduction: r2(args.law.waStandardDeduction),
-    charitableDeduction: r2(charitableDeduction),
-    taxableGains: r2(taxableGains),
-    tax: r2(tax)
-  };
-}
-function capitalLossAllowanceCap(filingStatus) {
-  return 3000;
-}
-function applyLossLedger(carryIn, ownLongTermResult, filingStatus, taxableIncomeBeforeAllowance, waIn) {
-  const stIn = Math.max(0, carryIn.st);
-  const ltIn = Math.max(0, carryIn.lt);
-  const waStIn = Math.min(stIn, Math.max(0, waIn?.st ?? 0));
-  const waLtIn = Math.min(ltIn, Math.max(0, waIn?.lt ?? 0));
-  const ltNet = ownLongTermResult - ltIn;
-  let remainingStLoss = stIn;
-  let remainingLtLoss = 0;
-  let pricedGain = 0;
-  if (ltNet >= 0) {
-    pricedGain = Math.max(0, ltNet - remainingStLoss);
-    remainingStLoss = Math.max(0, remainingStLoss - ltNet);
-  } else {
-    remainingLtLoss = -ltNet;
-  }
-  const totalLoss = remainingStLoss + remainingLtLoss;
-  const allowance = totalLoss > 0 ? Math.min(capitalLossAllowanceCap(filingStatus), totalLoss) : 0;
-  const allowanceUsed = Math.min(allowance, Math.max(0, taxableIncomeBeforeAllowance));
-  const stConsumedByAllowance = Math.min(allowanceUsed, remainingStLoss);
-  const ltConsumedByAllowance = allowanceUsed - stConsumedByAllowance;
-  const carryOut = {
-    st: r2(remainingStLoss - stConsumedByAllowance),
-    lt: r2(remainingLtLoss - ltConsumedByAllowance)
-  };
-  const absorbedByGains = r2(Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowanceUsed));
-  const ltAbsorbedByGains = Math.max(0, ltIn - remainingLtLoss);
-  const stAbsorbedByGains = Math.max(0, stIn - remainingStLoss);
-  const waLtAbsorbed = ltIn > 0 ? waLtIn * ltAbsorbedByGains / ltIn : 0;
-  const waStAbsorbed = stIn > 0 ? waStIn * stAbsorbedByGains / stIn : 0;
-  const waStRemainder = waStIn - waStAbsorbed;
-  const waLtRemainder = waLtIn - waLtAbsorbed;
-  const waStUsedByAllowance = remainingStLoss > 0 ? waStRemainder * stConsumedByAllowance / remainingStLoss : 0;
-  const waLtUsedByAllowance = remainingLtLoss > 0 ? waLtRemainder * ltConsumedByAllowance / remainingLtLoss : 0;
-  const waCarryOut = {
-    st: r2(Math.max(0, waStRemainder - waStUsedByAllowance)),
-    lt: r2(Math.max(0, waLtRemainder - waLtUsedByAllowance))
-  };
-  return {
-    netResult: r2(totalLoss > 0 ? -totalLoss : pricedGain),
-    allowance: r2(allowance),
-    allowanceUsed: r2(allowanceUsed),
-    absorbedByGains,
-    waAbsorbedByGains: r2(waStAbsorbed + waLtAbsorbed),
-    carryOut,
-    waCarryOut
+    waGains: r22(waGains),
+    standardDeduction: r22(args.law.waStandardDeduction),
+    charitableDeduction: r22(charitableDeduction),
+    taxableGains: r22(taxableGains),
+    tax: r22(tax)
   };
 }
 function educationCreditsFor(args) {
@@ -6401,11 +6694,11 @@ function educationCreditsFor(args) {
   if (winner.benefit <= 0)
     return none;
   return {
-    aotc: r2(winner.aotc),
-    llc: r2(winner.llc),
+    aotc: r22(winner.aotc),
+    llc: r22(winner.llc),
     choice: winner.aotc > 0 ? "aotc" : "llc",
-    nonrefundableApplied: r2(winner.nonrefundableApplied),
-    refundable: r2(winner.refundable)
+    nonrefundableApplied: r22(winner.nonrefundableApplied),
+    refundable: r22(winner.refundable)
   };
 }
 function amtFor(args) {
@@ -6426,13 +6719,14 @@ function amtFor(args) {
   const twentySpace = Math.max(0, law.ltcg20Floor[fs] - args.ordinaryStack - at0);
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  tentative += 0.15 * at15 + 0.2 * at20;
+  const staircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  tentative += staircaseCents != null ? staircaseCents / 100 : 0.15 * at15 + 0.2 * at20;
   const owed = Math.max(0, tentative - Math.max(0, args.regularTax));
   return {
-    amti: r2(amti),
-    exemption: r2(exemption),
-    tentativeTax: r2(tentative),
-    owed: r2(owed)
+    amti: r22(amti),
+    exemption: r22(exemption),
+    tentativeTax: r22(tentative),
+    owed: r22(owed)
   };
 }
 function priceYear(input) {
@@ -6442,7 +6736,7 @@ function priceYear(input) {
   const interestIncome = input.interestIncome ?? 0;
   const ordinaryDividends = input.ordinaryDividends ?? 0;
   const capitalLossAllowance = input.capitalLossAllowance ?? 0;
-  const gainsStack = Math.max(0, input.ltcg) + (input.qualifiedDividends ?? 0);
+  const gainsStack = Math.max(0, input.ltcg) + Math.max(0, input.qualifiedDividends ?? 0);
   const agiExclSs = input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome + ordinaryDividends - capitalLossAllowance;
   const provisional = agiExclSs + input.taxExemptInterest + 0.5 * input.ssBenefits;
   const ssTaxable = ssTaxableAmount(input.ssBenefits, provisional, fs, defl);
@@ -6472,8 +6766,9 @@ function priceYear(input) {
   const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
   const deductionTrioApplies = input.calendarYear >= DEDUCTION_2026.firstYear;
   const charitableEntered = Math.max(0, input.itemizedCharitable ?? 0);
-  const charitableFloor = deductionTrioApplies ? DEDUCTION_2026.charitableFloorRatePct / 100 * agi : 0;
-  const itemizedCharitableAllowed = Math.min(Math.max(0, charitableEntered - charitableFloor), CHARITABLE_CEILING.ratePct / 100 * agi);
+  const contributionBase = Math.max(0, agi);
+  const charitableFloor = deductionTrioApplies ? DEDUCTION_2026.charitableFloorRatePct / 100 * contributionBase : 0;
+  const itemizedCharitableAllowed = Math.min(Math.max(0, charitableEntered - charitableFloor), CHARITABLE_CEILING.ratePct / 100 * contributionBase);
   const itemizedBefore68 = Math.max(0, input.itemizedMortgageInterest ?? 0) + itemizedSaltAllowed + itemizedCharitableAllowed + Math.max(0, input.itemizedOther ?? 0);
   const taxableWithout68 = Math.max(0, agi - itemizedBefore68 - seniorDeduction);
   let section68Reduction = 0;
@@ -6499,33 +6794,15 @@ function priceYear(input) {
   const taxableIncome = Math.max(0, agi - deductions);
   const gainsInTi = Math.min(gainsStack, taxableIncome);
   const ordinaryTi = taxableIncome - gainsInTi;
-  const ordinaryTax = bracketTax(ordinaryTi, law, fs);
-  const bracketLayers = [];
-  {
-    let prev = 0;
-    for (let i = 0;i < law.brackets[fs].length; i++) {
-      const top = law.brackets[fs][i] ?? Infinity;
-      if (ordinaryTi <= prev)
-        break;
-      const amount = Math.min(ordinaryTi, top) - prev;
-      const ratePct = law.rates[i] ?? 0;
-      bracketLayers.push({
-        ratePct,
-        from: r2(prev),
-        to: Number.isFinite(top) ? top : null,
-        amount: r2(amount),
-        tax: r2(amount * (ratePct / 100))
-      });
-      prev = top;
-    }
-  }
+  const { ordinaryTax, layers: bracketLayers } = ordinaryBracket(ordinaryTi, law, fs);
   const zeroSpace = Math.max(0, law.ltcgZeroTop[fs] - ordinaryTi);
   const at0 = Math.min(gainsInTi, zeroSpace);
   const afterZero = gainsInTi - at0;
   const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryTi - at0);
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
-  const ltcgTax = 0.15 * at15 + 0.2 * at20;
+  const ltcgStaircaseCents = ltcgStaircaseTaxCents(at15, at20);
+  const ltcgTax = ltcgStaircaseCents != null ? ltcgStaircaseCents / 100 : 0.15 * at15 + 0.2 * at20;
   const niitBase = Math.max(0, gainsStack + interestIncome + ordinaryDividends - (input.ltcg < 0 ? capitalLossAllowance : 0));
   const niit = law.niitRate / 100 * Math.min(niitBase, Math.max(0, agi - law.niitThreshold[fs] * defl));
   const education = educationCreditsFor({
@@ -6558,29 +6835,91 @@ function priceYear(input) {
     deflationFactor: defl
   }) : null;
   const stateTax = wa ? wa.tax : input.stateRatePct / 100 * taxableIncome;
+  const drawSplitSupplied = input.extraPreTaxDrawPrimary != null || input.extraPreTaxDrawSpouse != null;
+  const drawHeadroom = Math.max(0, input.extraPreTaxDraw);
+  const drawP = drawSplitSupplied ? Math.min(Math.max(0, input.extraPreTaxDrawPrimary ?? 0), drawHeadroom) : 0;
+  const drawS = drawSplitSupplied ? Math.min(Math.max(0, input.extraPreTaxDrawSpouse ?? 0), Math.max(0, drawHeadroom - drawP)) : 0;
+  const shelterForDraw = (elig, sep, ownerAge) => {
+    if (elig == null)
+      return 0;
+    if (sep != null && (sep < 55 || ownerAge < sep))
+      return 0;
+    return elig;
+  };
+  let earlyWithdrawalPenalty = 0;
+  let earlyWithdrawalEligibilityUnknown = false;
+  if (input.extraPreTaxDraw > 0) {
+    if (!drawSplitSupplied) {
+      if (input.agePrimary < 59.5 || input.ageSpouse != null && input.ageSpouse < 59.5) {
+        earlyWithdrawalEligibilityUnknown = true;
+      }
+    } else {
+      if (drawP > 0 && input.agePrimary < 59.5) {
+        if (input.pretax401kEligiblePrimary == null) {
+          earlyWithdrawalEligibilityUnknown = true;
+        } else {
+          const ineligibleP = Math.max(0, drawP - shelterForDraw(input.pretax401kEligiblePrimary, input.separationAgePrimary, input.agePrimary));
+          if (ineligibleP > 0) {
+            earlyWithdrawalPenalty = r22(earlyWithdrawalPenalty + r22(ineligibleP * 0.1));
+          }
+        }
+      }
+      if (drawS > 0 && input.ageSpouse != null && input.ageSpouse < 59.5) {
+        if (input.pretax401kEligibleSpouse == null) {
+          earlyWithdrawalEligibilityUnknown = true;
+        } else {
+          const ineligibleS = Math.max(0, drawS - shelterForDraw(input.pretax401kEligibleSpouse, input.separationAgeSpouse, input.ageSpouse));
+          if (ineligibleS > 0) {
+            earlyWithdrawalPenalty = r22(earlyWithdrawalPenalty + r22(ineligibleS * 0.1));
+          }
+        }
+      }
+      if (drawP + drawS < input.extraPreTaxDraw) {
+        if (input.agePrimary < 59.5 || input.ageSpouse != null && input.ageSpouse < 59.5) {
+          earlyWithdrawalEligibilityUnknown = true;
+        }
+      }
+    }
+  }
+  const lawProvenance = lawProvenanceForYear(input.calendarYear);
+  const stateTaxProvenance = wa ? {
+    kind: "wa-excise",
+    residenceState: "WA",
+    ratePct: null,
+    note: "Washington capital-gains excise (RCW 82.87) on the year's Washington long-term gains, priced instead of the flat rate — the two never stack."
+  } : {
+    kind: "flat-rate-estimate",
+    residenceState: input.residenceState ?? null,
+    ratePct: input.stateRatePct,
+    note: `Estimate only: the caller-supplied ${input.stateRatePct}% rate applied to federal taxable income. Other states may differ in taxable-income definitions, deductions, credits, retirement-income exclusions, and marginal rates — this is not an exact state tax return.`
+  };
   return {
-    provisionalIncome: r2(provisional),
-    ssTaxable: r2(ssTaxable),
-    agi: r2(agi),
-    magi: r2(magi),
-    acaMagi: r2(acaMagi),
-    standardDeduction: r2(standardDeduction),
-    seniorDeduction: r2(seniorDeduction),
-    itemizedDeduction: r2(itemizedDeduction),
-    itemizedSaltAllowed: r2(itemizedSaltAllowed),
-    itemizedSaltCap: r2(saltCapApplied),
-    itemizedCharitableAllowed: r2(itemizedCharitableAllowed),
-    section68Reduction: r2(section68Reduction),
-    nonItemizerCharitableDeduction: r2(nonItemizerCharitableDeduction),
+    provisionalIncome: r22(provisional),
+    ssTaxable: r22(ssTaxable),
+    agi: r22(agi),
+    magi: r22(magi),
+    acaMagi: r22(acaMagi),
+    standardDeduction: r22(standardDeduction),
+    seniorDeduction: r22(seniorDeduction),
+    itemizedDeduction: r22(itemizedDeduction),
+    itemizedSaltAllowed: r22(itemizedSaltAllowed),
+    itemizedSaltCap: r22(saltCapApplied),
+    itemizedCharitableAllowed: r22(itemizedCharitableAllowed),
+    section68Reduction: r22(section68Reduction),
+    nonItemizerCharitableDeduction: r22(nonItemizerCharitableDeduction),
     deductionTaken,
-    deductions: r2(deductions),
-    taxableIncome: r2(taxableIncome),
-    taxableIncomeBeforeLossAllowance: r2(Math.max(0, agi - deductions + capitalLossAllowance)),
-    ordinaryTax: r2(ordinaryTax),
-    ltcgTax: r2(ltcgTax),
-    niit: r2(niit),
-    federalTax: r2(federalTax),
-    stateTax: r2(stateTax),
+    deductions: r22(deductions),
+    taxableIncome: r22(taxableIncome),
+    taxableIncomeBeforeLossAllowance: r22(Math.max(0, agi - deductions + capitalLossAllowance)),
+    ordinaryTax: r22(ordinaryTax),
+    ltcgTax: r22(ltcgTax),
+    niit: r22(niit),
+    federalTax: r22(federalTax),
+    stateTax: r22(stateTax),
+    earlyWithdrawalPenalty,
+    earlyWithdrawalEligibilityUnknown,
+    lawProvenance,
+    stateTaxProvenance,
     waGains: wa ? wa.waGains : 0,
     waStandardDeduction: wa ? wa.standardDeduction : 0,
     waCharitableDeduction: wa ? wa.charitableDeduction : 0,
@@ -6596,16 +6935,22 @@ function priceYear(input) {
     amtOwed: amt.owed,
     marginalBracketPct: marginalRate(ordinaryTi, law, fs),
     irmaaTier: irmaaTierFor(magi, fs, law, input.calendarYear, input.inflationPct),
-    baseStandardDeduction: r2(law.standardDeduction[fs]),
-    age65AddonTotal: r2(law.age65Addon[fs] * count65),
+    baseStandardDeduction: r22(law.standardDeduction[fs]),
+    age65AddonTotal: r22(law.age65Addon[fs] * count65),
     count65,
-    ordinaryTaxableIncome: r2(ordinaryTi),
-    gainsInTaxableIncome: r2(gainsInTi),
+    ordinaryTaxableIncome: r22(ordinaryTi),
+    gainsInTaxableIncome: r22(gainsInTi),
     bracketLayers,
-    gainsAt0: r2(at0),
-    gainsAt15: r2(at15),
-    gainsAt20: r2(at20)
+    gainsAt0: r22(at0),
+    gainsAt15: r22(at15),
+    gainsAt20: r22(at20)
   };
+}
+function acaBelow100Note(coverageYear) {
+  if (coverageYear >= 2026) {
+    return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The former §36B(c)(1)(B) exception for lawfully present immigrants ineligible for Medicaid was repealed by OBBBA §71302 for tax years after 2025, so no statutory exception is priced for this coverage year. Treas. Reg. §1.36B-2(b)(6) survives that repeal — a household the Exchange estimated at 100%–400% of the poverty line keeps a credit when actual income lands below 100%, provided advance payments were made — but it is not modeled here, because the engine never receives the Exchange's estimate. Medicaid eligibility is not modeled.";
+  }
+  return "Below 100% of the poverty line: no premium credit under the standard §36B income test. The pre-OBBBA §36B(c)(1)(B) exception (a lawfully present immigrant ineligible for Medicaid treated as at 100% FPL) is not modeled, so this result prices the standard test only. Treas. Reg. §1.36B-2(b)(6) (a household the Exchange estimated at 100%–400% of the poverty line keeps a credit when actual income lands below 100%, provided advance payments were made) is likewise not modeled. Medicaid eligibility is not modeled.";
 }
 function acaCreditFor(args) {
   const fpl = fplFor(args.householdSize, args.coverageYear - 1);
@@ -6615,8 +6960,20 @@ function acaCreditFor(args) {
   const fplCents = Math.round(fpl * 100);
   const hasCliff = args.coverageYear >= 2026;
   const overCliff = hasCliff && args.magi > cliff;
-  if (overCliff || magiCents < fplCents) {
-    return { credit: 0, pctFpl: r2(pctFpl), applicablePct: 0, fpl, cliff, overCliff };
+  const below100Fpl = magiCents < fplCents;
+  const under138Fpl = magiCents * 100 < 138 * fplCents;
+  if (overCliff || below100Fpl) {
+    return {
+      credit: 0,
+      pctFpl: r22(pctFpl),
+      applicablePct: 0,
+      fpl,
+      cliff,
+      overCliff,
+      below100Fpl,
+      under138Fpl,
+      eligibilityNote: below100Fpl ? acaBelow100Note(args.coverageYear) : null
+    };
   }
   const bands = acaTableFor(args.tableYear ?? args.coverageYear, {
     projected: args.projected ?? false
@@ -6637,12 +6994,15 @@ function acaCreditFor(args) {
   }
   const expected = applicablePct / 100 * args.magi;
   return {
-    credit: r2(Math.max(0, args.benchmarkAnnual - expected)),
-    pctFpl: r2(pctFpl),
-    applicablePct: r2(applicablePct),
+    credit: r22(Math.max(0, args.benchmarkAnnual - expected)),
+    pctFpl: r22(pctFpl),
+    applicablePct: r22(applicablePct),
     fpl,
     cliff,
-    overCliff: false
+    overCliff: false,
+    below100Fpl: false,
+    under138Fpl,
+    eligibilityNote: null
   };
 }
 function rmdForYear(args) {
@@ -6653,7 +7013,7 @@ function rmdForYear(args) {
   const useJoint = args.spouseSoleBeneficiary && args.ageSpouse != null && args.agePrimary - args.ageSpouse > 10;
   const divisor = useJoint ? jointDivisor(args.agePrimary, args.ageSpouse ?? args.agePrimary) : uniformDivisor(args.agePrimary);
   return {
-    rmd: r2(args.priorDec31PreTax / divisor),
+    rmd: r22(args.priorDec31PreTax / divisor),
     divisor,
     table: useJoint ? "joint" : "uniform"
   };
@@ -6664,7 +7024,7 @@ function uniformRmdFor(args) {
     return { rmd: 0, divisor: null };
   }
   const divisor = uniformDivisor(args.age);
-  return { rmd: r2(args.priorDec31PreTax / divisor), divisor };
+  return { rmd: r22(args.priorDec31PreTax / divisor), divisor };
 }
 var NO_CEILINGS = {
   bracketTopPct: null,
@@ -6784,26 +7144,12 @@ function effectiveDrawOrder(inputs, agePrimary) {
   }
   return inputs.drawOrder;
 }
-function sellFromTiers(tiers, amount, order) {
-  if (amount <= 0)
-    return 0;
-  const ranked = tiers.map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : null })).filter((o) => o.ratio != null).sort((a, b) => order === "highest" ? b.ratio - a.ratio : a.ratio - b.ratio);
-  let remaining = amount;
-  let gains = 0;
-  for (const { i } of ranked) {
-    if (remaining <= 0)
-      break;
-    const t = tiers[i];
-    const take = Math.min(remaining, t.bal);
-    if (take <= 0)
-      continue;
-    const ratio = t.basis / t.bal;
-    gains += take * (1 - ratio);
-    t.basis = Math.max(0, t.basis - take * ratio);
-    t.bal -= take;
-    remaining -= take;
+function tierAt(tiers, index) {
+  const tier = tiers[index];
+  if (tier === undefined) {
+    throw new Error(`tier index ${index} out of range for a ${tiers.length}-tier ledger`);
   }
-  return gains;
+  return tier;
 }
 function buyIntoTiers(tiers, amount) {
   if (amount <= 0)
@@ -6819,35 +7165,15 @@ function buyIntoTiers(tiers, amount) {
 function stepUpTiers(tiers, amount) {
   if (amount <= 0)
     return;
-  const ranked = tiers.map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 })).sort((a, b) => a.ratio - b.ratio);
+  const ranked = tiers.map((t) => ({ tier: t, ratio: t.bal > 0 ? t.basis / t.bal : 1 })).sort((a, b) => a.ratio - b.ratio);
   let remaining = amount;
-  for (const { i } of ranked) {
+  for (const { tier: t } of ranked) {
     if (remaining <= 0)
       break;
-    const t = tiers[i];
     const room = Math.max(0, t.bal - t.basis);
     const add = Math.min(room, remaining);
     t.basis += add;
     remaining -= add;
-  }
-}
-function reinvestYieldIntoTiers(tiers, amount) {
-  if (amount <= 0 || tiers.length === 0)
-    return;
-  const ranked = tiers.map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 })).sort((a, b) => a.ratio - b.ratio);
-  let remaining = amount;
-  for (const { i } of ranked) {
-    if (remaining <= 0)
-      break;
-    const t = tiers[i];
-    const room = Math.max(0, t.bal - t.basis);
-    const add = Math.min(room, remaining);
-    t.basis += add;
-    remaining -= add;
-  }
-  if (remaining > 0) {
-    const host = tiers[ranked[0].i];
-    host.basis += remaining;
   }
 }
 function clampTierLedgerToBalance(tiers, settledBalance) {
@@ -6915,6 +7241,214 @@ function resolveAcaHouseholdSchedule(src) {
   }
   return null;
 }
+function cloneRothAccountLedger(led) {
+  return {
+    balance: led.balance,
+    contributions: led.contributions,
+    lots: led.lots.map((l) => ({ ...l })),
+    firstYear: led.firstYear,
+    known: led.known
+  };
+}
+function cloneRothOwnerLedger(led) {
+  return {
+    ira: cloneRothAccountLedger(led.ira),
+    employer: cloneRothAccountLedger(led.employer)
+  };
+}
+function initRothAccountLedger(balance, contributions, lots, firstYear) {
+  const bal = Math.max(0, balance);
+  const known = contributions != null && lots != null || bal <= 0;
+  let contrib = contributions == null ? 0 : Math.min(Math.max(0, contributions), bal);
+  const kept = [];
+  if (lots != null) {
+    let room = Math.max(0, bal - contrib);
+    for (const raw of [...lots].sort((a, b) => a.year - b.year)) {
+      if (room <= 0)
+        break;
+      const taxable = Math.max(0, raw.taxableAmount);
+      const nontaxable = Math.max(0, raw.nontaxableAmount);
+      const total = taxable + nontaxable;
+      if (total <= 0)
+        continue;
+      const take = Math.min(total, room);
+      const takeTaxable = Math.min(taxable, take);
+      kept.push({
+        year: raw.year,
+        taxable: takeTaxable,
+        nontaxable: take - takeTaxable
+      });
+      room -= take;
+    }
+  }
+  if (contributions == null)
+    contrib = 0;
+  return {
+    balance: bal,
+    contributions: contrib,
+    lots: kept,
+    firstYear: firstYear ?? null,
+    known
+  };
+}
+function splitRothBasisAcrossAccounts(basis, iraBalance, employerBalance) {
+  if (basis == null)
+    return { ira: null, employer: null };
+  const total = Math.max(0, iraBalance) + Math.max(0, employerBalance);
+  if (total <= 0)
+    return { ira: 0, employer: 0 };
+  const iraShare = Math.max(0, iraBalance) / total;
+  return {
+    ira: Math.max(0, basis) * iraShare,
+    employer: Math.max(0, basis) * (1 - iraShare)
+  };
+}
+function debitRothAccountLedger(led, amount, ctx) {
+  const take = Math.min(Math.max(0, amount), Math.max(0, led.balance));
+  if (take <= 0)
+    return { drawn: 0, income: 0, penalty: 0, unknown: false };
+  led.balance = Math.max(0, led.balance - take);
+  let remaining = take;
+  let income = 0;
+  let penalty = 0;
+  let unknown = false;
+  if (!led.known) {
+    if (led.contributions > 0) {
+      const fromContrib = Math.min(remaining, led.contributions);
+      led.contributions -= fromContrib;
+      remaining -= fromContrib;
+    }
+    if (remaining > 0)
+      unknown = true;
+    clearEmptyRothAccountLedger(led);
+    return { drawn: take, income: 0, penalty: 0, unknown };
+  }
+  if (remaining > 0 && led.contributions > 0) {
+    const fromContrib = Math.min(remaining, led.contributions);
+    led.contributions -= fromContrib;
+    remaining -= fromContrib;
+  }
+  for (const lot of led.lots) {
+    if (remaining <= 0)
+      break;
+    const lotTotal = lot.taxable + lot.nontaxable;
+    if (lotTotal <= 0)
+      continue;
+    const fromLot = Math.min(remaining, lotTotal);
+    const fromTaxable = Math.min(fromLot, lot.taxable);
+    const fromNontaxable = fromLot - fromTaxable;
+    lot.taxable = Math.max(0, lot.taxable - fromTaxable);
+    lot.nontaxable = Math.max(0, lot.nontaxable - fromNontaxable);
+    if (fromTaxable > 0 && ctx.age < 59.5 && ctx.year < lot.year + 5) {
+      penalty = r22(penalty + r22(fromTaxable * 0.1));
+    }
+    remaining -= fromLot;
+  }
+  led.lots = led.lots.filter((l) => l.taxable + l.nontaxable > 0);
+  if (remaining > 0) {
+    const lotsSum = led.lots.reduce((s, l) => s + l.taxable + l.nontaxable, 0);
+    const earnings = Math.max(0, led.balance + remaining - led.contributions - lotsSum);
+    const fromEarnings = Math.min(remaining, earnings);
+    if (fromEarnings > 0) {
+      const qualified = ctx.age >= 59.5 && led.firstYear != null && ctx.year >= led.firstYear + 5;
+      if (!qualified) {
+        income = r22(income + fromEarnings);
+        if (ctx.age < 59.5) {
+          penalty = r22(penalty + r22(fromEarnings * 0.1));
+        }
+        if (led.firstYear == null)
+          unknown = true;
+      }
+      remaining -= fromEarnings;
+    }
+  }
+  clearEmptyRothAccountLedger(led);
+  return { drawn: take, income: r22(income), penalty: r22(penalty), unknown };
+}
+function shrinkRothAccountLedgerBalance(led, amount) {
+  const left = Math.max(0, amount);
+  const take = Math.min(left, Math.max(0, led.balance));
+  if (take <= 0) {
+    clearEmptyRothAccountLedger(led);
+    return left;
+  }
+  led.balance = Math.max(0, led.balance - take);
+  let remaining = take;
+  if (remaining > 0 && led.contributions > 0) {
+    const fromContrib = Math.min(remaining, led.contributions);
+    led.contributions -= fromContrib;
+    remaining -= fromContrib;
+  }
+  for (const lot of led.lots) {
+    if (remaining <= 0)
+      break;
+    const lotTotal = lot.taxable + lot.nontaxable;
+    if (lotTotal <= 0)
+      continue;
+    const fromLot = Math.min(remaining, lotTotal);
+    const fromTaxable = Math.min(fromLot, lot.taxable);
+    lot.taxable = Math.max(0, lot.taxable - fromTaxable);
+    lot.nontaxable = Math.max(0, lot.nontaxable - (fromLot - fromTaxable));
+    remaining -= fromLot;
+  }
+  led.lots = led.lots.filter((l) => l.taxable + l.nontaxable > 0);
+  clearEmptyRothAccountLedger(led);
+  return left - take;
+}
+function clearEmptyRothAccountLedger(led) {
+  if (led.balance > 0)
+    return;
+  led.contributions = 0;
+  if (led.known)
+    led.lots = [];
+}
+function debitRothOwnerLedger(owner, amount, ctx) {
+  const first = debitRothAccountLedger(owner.ira, amount, ctx);
+  const second = first.drawn < amount ? debitRothAccountLedger(owner.employer, amount - first.drawn, ctx) : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  return {
+    drawn: first.drawn + second.drawn,
+    income: r22(first.income + second.income),
+    penalty: r22(first.penalty + second.penalty),
+    unknown: first.unknown || second.unknown
+  };
+}
+function debitRothLedgers(ledP, ledS, amount, ctx) {
+  const first = debitRothOwnerLedger(ledP, amount, {
+    year: ctx.year,
+    age: ctx.agePrimary
+  });
+  const second = first.drawn < amount && ctx.ageSpouse != null ? debitRothOwnerLedger(ledS, amount - first.drawn, {
+    year: ctx.year,
+    age: ctx.ageSpouse
+  }) : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  return {
+    drawn: first.drawn + second.drawn,
+    income: r22(first.income + second.income),
+    penalty: r22(first.penalty + second.penalty),
+    unknown: first.unknown || second.unknown
+  };
+}
+function mergeRothOwnerLedgers(a, b) {
+  const mergeAccount = (x, y) => {
+    const xEmpty = x.balance <= 0;
+    const yEmpty = y.balance <= 0;
+    const firstYear = xEmpty ? yEmpty ? null : y.firstYear : yEmpty ? x.firstYear : x.firstYear == null ? y.firstYear : y.firstYear == null ? x.firstYear : Math.min(x.firstYear, y.firstYear);
+    return {
+      balance: x.balance + y.balance,
+      contributions: r22(x.contributions + y.contributions),
+      lots: [
+        ...xEmpty ? [] : x.lots,
+        ...yEmpty ? [] : y.lots
+      ].map((l) => ({ ...l })).sort((m, n) => m.year - n.year),
+      firstYear,
+      known: (x.known || xEmpty) && (y.known || yEmpty)
+    };
+  };
+  return {
+    ira: mergeAccount(a.ira, b.ira),
+    employer: mergeAccount(a.employer, b.employer)
+  };
+}
 var FAFSA_PARENT_ASSET_RATE = 0.0564;
 var FAFSA_PUBLIC_COA_BENCHMARK = 40000;
 function effectiveSsPrimaryAnnual(inputs) {
@@ -6922,6 +7456,71 @@ function effectiveSsPrimaryAnnual(inputs) {
 }
 function effectiveSsSpouseAnnual(inputs) {
   return inputs.ssSpouseNoBenefit ? 0 : inputs.ssSpouseAnnual;
+}
+function survivorBenefitAnnualEnhanced(args) {
+  const { deceasedAnchorAnnual, deceasedAnchorAge } = args;
+  if (deceasedAnchorAnnual <= 0 || deceasedAnchorAge == null) {
+    return r22(args.ownAnnualThisYear);
+  }
+  const anchorFactor = ssBenefitFactor(deceasedAnchorAge, args.deceasedBirthYear);
+  if (anchorFactor <= 0)
+    return r22(args.ownAnnualThisYear);
+  const pia = deceasedAnchorAnnual / anchorFactor;
+  const claimAge = Math.min(70, Math.max(60, Math.round(args.survivorClaimAge)));
+  if (args.survivorAge < claimAge)
+    return r22(args.ownAnnualThisYear);
+  const reduction = survivorReductionFactor(claimAge, args.survivorBirthYear);
+  let survivorBenefit;
+  if (args.deceasedDeathAge >= deceasedAnchorAge) {
+    const fraYears = fullRetirementAgeMonths(args.deceasedBirthYear) / 12;
+    const base = deceasedAnchorAge < fraYears ? pia : deceasedAnchorAnnual;
+    const cap = Math.max(deceasedAnchorAnnual, 0.825 * pia);
+    survivorBenefit = Math.min(base * reduction, cap);
+  } else {
+    const fraYears = fullRetirementAgeMonths(args.deceasedBirthYear) / 12;
+    const drcYears = Math.min(Math.max(0, args.deceasedDeathAge - fraYears), Math.max(0, 70 - fraYears));
+    survivorBenefit = pia * (1 + 0.08 * drcYears) * reduction;
+  }
+  return r22(Math.max(args.ownAnnualThisYear, survivorBenefit));
+}
+function settleFirstRmdDeferral(state, args) {
+  const who = args.who;
+  const pending = who === "primary" ? state.pendingPrimary : state.pendingSpouse;
+  const had = who === "primary" ? state.hadPrimary : state.hadSpouse;
+  const isFirst = args.computed > 0 && !had;
+  if (args.computed > 0 || args.rmdAgeReached === true) {
+    if (who === "primary")
+      state.hadPrimary = true;
+    else
+      state.hadSpouse = true;
+  }
+  let pay = args.computed;
+  let deferredThisYear = 0;
+  let deferredPaid = 0;
+  if (args.deferElected && isFirst && !args.deathYearForPerson) {
+    deferredThisYear = args.computed;
+    pay = 0;
+    if (who === "primary")
+      state.pendingPrimary = pending + args.computed;
+    else
+      state.pendingSpouse = pending + args.computed;
+  } else {
+    deferredPaid = pending;
+    pay = args.computed + pending;
+    if (who === "primary")
+      state.pendingPrimary = 0;
+    else
+      state.pendingSpouse = 0;
+  }
+  if (args.carryIn > 0) {
+    deferredPaid += args.carryIn;
+    pay += args.carryIn;
+  }
+  return {
+    pay: r22(pay),
+    deferredThisYear: r22(deferredThisYear),
+    deferredPaid: r22(deferredPaid)
+  };
 }
 var ROTH_COMPARE_STRATEGIES = [
   { id: "none", name: "Do Nothing", ceilings: null },
@@ -6965,7 +7564,7 @@ function deriveSpendFromCashSleeveStartDollars(inputs) {
   if (pct <= 0)
     return 0;
   const tiersActive = inputs.taxableBasisBlank !== true && Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0;
-  if (tiersActive) {
+  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
     const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce((s, t) => s + Math.max(0, t.sharePct), 0);
     for (const t of rawTiers) {
@@ -6981,9 +7580,9 @@ function deriveSpendFromCashSleeveStartDollars(inputs) {
 }
 function acaEmbeddedNetPremiumFor(inputs) {
   const spouseAcaEndAge = inputs.acaSpouseEndAge ?? 65;
-  const survOn = inputs.survivorEnabled === true && inputs.survivorDeathYear != null;
+  const survDeathYear = inputs.survivorEnabled === true && inputs.survivorDeathYear != null ? inputs.survivorDeathYear : null;
+  const survOn = survDeathYear != null;
   const survWho = inputs.survivorWho ?? "primary";
-  const survDeathYear = survOn ? inputs.survivorDeathYear : null;
   const retirementYear = inputs.birthYearPrimary + inputs.retirementAge;
   for (let year = inputs.startYear;year - inputs.birthYearPrimary <= inputs.endAgePrimary; year++) {
     const age = year - inputs.birthYearPrimary;
@@ -7007,7 +7606,7 @@ function acaEmbeddedNetPremiumFor(inputs) {
       benchmarkAnnual: benchmark,
       projected: true
     }).credit;
-    return r2(Math.max(0, benchmark - credit));
+    return r22(Math.max(0, benchmark - credit));
   }
   return null;
 }
@@ -7016,11 +7615,27 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   const years = [];
   let pretaxP = inputs.pretaxStart;
   let pretaxS = inputs.pretaxSpouseStart ?? 0;
-  const survOn = inputs.survivorEnabled === true && inputs.survivorDeathYear != null;
+  let eligP = inputs.pretax401kEligiblePrimary == null ? null : Math.min(Math.max(0, inputs.pretax401kEligiblePrimary), Math.max(0, pretaxP));
+  let eligS = inputs.pretax401kEligibleSpouse == null ? null : Math.min(Math.max(0, inputs.pretax401kEligibleSpouse), Math.max(0, pretaxS));
+  const survDeathYear = inputs.survivorEnabled === true && inputs.survivorDeathYear != null ? inputs.survivorDeathYear : null;
+  const survOn = survDeathYear != null;
   const survWho = inputs.survivorWho ?? "primary";
-  const survDeathYear = survOn ? inputs.survivorDeathYear : null;
   let survCombined = false;
   let roth = inputs.rothStart;
+  const rothIraTotal = inputs.rothIraStart ?? Math.max(0, inputs.rothStart - (inputs.rothEmployerStart ?? 0));
+  const rothEmployerTotal = inputs.rothEmployerStart ?? 0;
+  const rothIraSpouse = Math.min(Math.max(0, inputs.rothIraStartSpouse ?? 0), Math.max(0, rothIraTotal));
+  const rothEmployerSpouse = Math.min(Math.max(0, inputs.rothEmployerStartSpouse ?? 0), Math.max(0, rothEmployerTotal));
+  const rothBasisSplitP = splitRothBasisAcrossAccounts(inputs.rothContributionBasisPrimary, Math.max(0, rothIraTotal - rothIraSpouse), Math.max(0, rothEmployerTotal - rothEmployerSpouse));
+  const rothBasisSplitS = splitRothBasisAcrossAccounts(inputs.rothContributionBasisSpouse, rothIraSpouse, rothEmployerSpouse);
+  let rothLedP = {
+    ira: initRothAccountLedger(Math.max(0, rothIraTotal - rothIraSpouse), rothBasisSplitP.ira, inputs.rothConversionLotsPrimary, inputs.firstRothYearPrimary),
+    employer: initRothAccountLedger(Math.max(0, rothEmployerTotal - rothEmployerSpouse), rothBasisSplitP.employer, [], inputs.firstDesignatedRothYearPrimary)
+  };
+  let rothLedS = {
+    ira: initRothAccountLedger(rothIraSpouse, rothBasisSplitS.ira, inputs.rothConversionLotsSpouse, inputs.firstRothYearSpouse),
+    employer: initRothAccountLedger(rothEmployerSpouse, rothBasisSplitS.employer, [], inputs.firstDesignatedRothYearSpouse)
+  };
   let taxable = inputs.taxableStart;
   let hsa = inputs.hsaStart;
   const lookbackByYear = new Map;
@@ -7045,7 +7660,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   let taxableBasisDollars = basisPctClamped * inputs.taxableStart;
   const tiersActive = driftOn && Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0;
   let tierState = null;
-  if (tiersActive) {
+  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
     const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce((s, t) => s + Math.max(0, t.sharePct), 0);
     let cashTierClaimed = false;
@@ -7070,6 +7685,11 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   let lifetimePenalty = 0;
   let lifetimeIrmaa = 0;
   let lifetimeAcaKept = 0;
+  const irmaaLookbackMissingYears = [];
+  const acaBelow100FplYears = [];
+  const cliffCapInoperativeYears = [];
+  const earlyWithdrawalUnknownYears = [];
+  const rothBasisUnknownYears = [];
   let lifetimeEducationRefundable = 0;
   let pendingEduRefund = 0;
   let lifetimeAmt = 0;
@@ -7084,6 +7704,12 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   let giftOutflowApplied = false;
   let acaBunchCounter = 0;
   let priorYearReturnPct = null;
+  const deferralState = {
+    hadPrimary: inputs.firstRmdAlreadyPricedPrimary === true || (inputs.firstRmdDeferredCarryPrimary ?? 0) > 0 || inputs.startYear - inputs.birthYearPrimary > Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary)),
+    hadSpouse: inputs.firstRmdAlreadyPricedSpouse === true || (inputs.firstRmdDeferredCarrySpouse ?? 0) > 0 || inputs.birthYearSpouse != null && inputs.startYear - inputs.birthYearSpouse > Math.ceil(rmdAgeForBirthYear(inputs.birthYearSpouse)),
+    pendingPrimary: 0,
+    pendingSpouse: 0
+  };
   for (let year = inputs.startYear;year - inputs.birthYearPrimary <= inputs.endAgePrimary; year++) {
     const age = year - inputs.birthYearPrimary;
     const spouseAge = inputs.birthYearSpouse != null ? year - inputs.birthYearSpouse : null;
@@ -7091,12 +7717,35 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     const isDeathYear = survOn && year === survDeathYear;
     const isSurvivorYear = survOn && survDeathYear != null && year > survDeathYear;
     if (survOn && survDeathYear != null && year > survDeathYear && !survCombined) {
+      const pretaxPBeforeCombine = pretaxP;
+      const pretaxSBeforeCombine = pretaxS;
       if (survWho === "primary") {
         pretaxS += pretaxP;
         pretaxP = 0;
       } else {
         pretaxP += pretaxS;
         pretaxS = 0;
+      }
+      const combinedEligibilityUnknown = eligP == null && pretaxPBeforeCombine > 0 || eligS == null && pretaxSBeforeCombine > 0;
+      if (survWho === "primary") {
+        eligS = combinedEligibilityUnknown ? null : (eligS ?? 0) + (eligP ?? 0);
+        eligP = null;
+      } else {
+        eligP = combinedEligibilityUnknown ? null : (eligP ?? 0) + (eligS ?? 0);
+        eligS = null;
+      }
+      if (survWho === "primary") {
+        rothLedS = mergeRothOwnerLedgers(rothLedS, rothLedP);
+        rothLedP = {
+          ira: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+          employer: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true }
+        };
+      } else {
+        rothLedP = mergeRothOwnerLedgers(rothLedP, rothLedS);
+        rothLedS = {
+          ira: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true },
+          employer: { balance: 0, contributions: 0, lots: [], firstYear: null, known: true }
+        };
       }
       survCombined = true;
     }
@@ -7121,7 +7770,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       return {
         ltcg: led.netResult,
         capitalLossAllowance: led.allowance,
-        waGainsBase: r2(grossGains - led.waAbsorbedByGains)
+        waGainsBase: r22(grossGains - led.waAbsorbedByGains)
       };
     };
     const priorP = pretaxP;
@@ -7133,6 +7782,12 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     let divisorS = null;
     let tableP = null;
     let tableS = null;
+    let rmdDeferredP = 0;
+    let rmdDeferredS = 0;
+    let rmdDeferredPaidP = 0;
+    let rmdDeferredPaidS = 0;
+    const carryP = year === inputs.startYear ? inputs.firstRmdDeferredCarryPrimary ?? 0 : 0;
+    const carryS = year === inputs.startYear ? inputs.firstRmdDeferredCarrySpouse ?? 0 : 0;
     if (survCombined) {
       const combinedPrior = survWho === "primary" ? priorS : priorP;
       const u = survivorAge != null && survivorBirthYear != null ? uniformRmdFor({
@@ -7141,13 +7796,51 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         birthYear: survivorBirthYear
       }) : { rmd: 0, divisor: null };
       if (survWho === "primary") {
-        rmdS = u.rmd;
+        const settled = settleFirstRmdDeferral(deferralState, {
+          who: "spouse",
+          computed: u.rmd,
+          deferElected: inputs.firstRmdDeferralSpouse === true,
+          deathYearForPerson: false,
+          carryIn: carryS,
+          rmdAgeReached: survivorAge != null && survivorBirthYear != null && survivorAge >= Math.ceil(rmdAgeForBirthYear(survivorBirthYear))
+        });
+        rmdS = settled.pay;
+        rmdDeferredS = settled.deferredThisYear;
+        rmdDeferredPaidS = settled.deferredPaid;
         divisorS = u.divisor;
         tableS = u.divisor != null ? "uniform" : null;
       } else {
-        rmdP = u.rmd;
+        const settled = settleFirstRmdDeferral(deferralState, {
+          who: "primary",
+          computed: u.rmd,
+          deferElected: inputs.firstRmdDeferralPrimary === true,
+          deathYearForPerson: false,
+          carryIn: carryP,
+          rmdAgeReached: survivorAge != null && survivorBirthYear != null && survivorAge >= Math.ceil(rmdAgeForBirthYear(survivorBirthYear))
+        });
+        rmdP = settled.pay;
+        rmdDeferredP = settled.deferredThisYear;
+        rmdDeferredPaidP = settled.deferredPaid;
         divisorP = u.divisor;
         tableP = u.divisor != null ? "uniform" : null;
+      }
+      const deceasedCarry = survWho === "primary" ? carryP : carryS;
+      if (deceasedCarry > 0) {
+        const settledD = settleFirstRmdDeferral(deferralState, {
+          who: survWho === "primary" ? "primary" : "spouse",
+          computed: 0,
+          deferElected: false,
+          deathYearForPerson: false,
+          carryIn: deceasedCarry,
+          rmdAgeReached: false
+        });
+        if (survWho === "primary") {
+          rmdS = r22(rmdS + settledD.pay);
+          rmdDeferredPaidP = settledD.deferredPaid;
+        } else {
+          rmdP = r22(rmdP + settledD.pay);
+          rmdDeferredPaidS = settledD.deferredPaid;
+        }
       }
     } else {
       const rp = rmdForYear({
@@ -7157,7 +7850,17 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         birthYearPrimary: inputs.birthYearPrimary,
         spouseSoleBeneficiary: inputs.spouseSoleBeneficiary
       });
-      rmdP = rp.rmd;
+      const settledP = settleFirstRmdDeferral(deferralState, {
+        who: "primary",
+        computed: rp.rmd,
+        deferElected: inputs.firstRmdDeferralPrimary === true,
+        deathYearForPerson: isDeathYear && survWho === "primary",
+        carryIn: carryP,
+        rmdAgeReached: age >= Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary))
+      });
+      rmdP = settledP.pay;
+      rmdDeferredP = settledP.deferredThisYear;
+      rmdDeferredPaidP = settledP.deferredPaid;
       divisorP = rp.divisor;
       tableP = rp.table;
       if (spouseAge != null && inputs.birthYearSpouse != null) {
@@ -7168,20 +7871,50 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           birthYearPrimary: inputs.birthYearSpouse,
           spouseSoleBeneficiary: inputs.primarySoleBeneficiaryOfSpouse === true
         });
-        rmdS = rs.rmd;
+        const settledS = settleFirstRmdDeferral(deferralState, {
+          who: "spouse",
+          computed: rs.rmd,
+          deferElected: inputs.firstRmdDeferralSpouse === true,
+          deathYearForPerson: isDeathYear && survWho === "spouse",
+          carryIn: carryS,
+          rmdAgeReached: spouseAge != null && inputs.birthYearSpouse != null && spouseAge >= Math.ceil(rmdAgeForBirthYear(inputs.birthYearSpouse))
+        });
+        rmdS = settledS.pay;
+        rmdDeferredS = settledS.deferredThisYear;
+        rmdDeferredPaidS = settledS.deferredPaid;
         divisorS = rs.divisor;
         tableS = rs.table;
       }
     }
-    const rmd = r2(rmdP + rmdS);
+    const rmd = r22(rmdP + rmdS);
     const rmdDivisor = divisorP ?? divisorS;
     const rmdTable = tableP ?? tableS;
     const pretaxPAfterRmd = Math.max(0, pretaxP - rmdP);
     const pretaxSAfterRmd = Math.max(0, pretaxS - rmdS);
     const pretaxAfterRmd = pretaxPAfterRmd + pretaxSAfterRmd;
+    const eligPAfterRmd = eligP == null ? null : Math.max(0, eligP - rmdP);
+    const eligSAfterRmd = eligS == null ? null : Math.max(0, eligS - rmdS);
     const ssPrimaryThisYear = inputs.ssPrimaryStartAge != null && age >= inputs.ssPrimaryStartAge ? effectiveSsPrimaryAnnual(inputs) : 0;
     const ssSpouseThisYear = inputs.ssSpouseStartAge != null && spouseAge != null && spouseAge >= inputs.ssSpouseStartAge ? effectiveSsSpouseAnnual(inputs) : 0;
-    const ssBenefits = isSurvivorYear ? Math.max(ssPrimaryThisYear, ssSpouseThisYear) : ssPrimaryThisYear + ssSpouseThisYear;
+    const survivorClaimAgeInput = inputs.survivorClaimAge != null ? Math.min(70, Math.max(60, Math.round(inputs.survivorClaimAge))) : null;
+    const deceasedBirthYear = survWho === "primary" ? inputs.birthYearPrimary : inputs.birthYearSpouse;
+    const survivorEnhanced = isSurvivorYear && survivorClaimAgeInput != null && survivorBirthYear != null && survivorAge != null && deceasedBirthYear != null;
+    let ssBenefits;
+    if (survivorEnhanced) {
+      const deceasedIsPrimary = survWho === "primary";
+      ssBenefits = survivorBenefitAnnualEnhanced({
+        deceasedAnchorAnnual: deceasedIsPrimary ? effectiveSsPrimaryAnnual(inputs) : effectiveSsSpouseAnnual(inputs),
+        deceasedAnchorAge: deceasedIsPrimary ? inputs.ssPrimaryStartAge : inputs.ssSpouseStartAge,
+        deceasedBirthYear,
+        deceasedDeathAge: (survDeathYear ?? year) - deceasedBirthYear,
+        survivorBirthYear,
+        survivorAge,
+        survivorClaimAge: survivorClaimAgeInput,
+        ownAnnualThisYear: deceasedIsPrimary ? ssSpouseThisYear : ssPrimaryThisYear
+      });
+    } else {
+      ssBenefits = isSurvivorYear ? Math.max(ssPrimaryThisYear, ssSpouseThisYear) : ssPrimaryThisYear + ssSpouseThisYear;
+    }
     const retirementYear = inputs.birthYearPrimary + inputs.retirementAge;
     const inAcaScope = year >= retirementYear;
     const primaryOnAca = inAcaScope && age < 65 && !(isSurvivorYear && survWho === "primary");
@@ -7285,7 +8018,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       }
       if (spendCashPct > 0 && sleeveDollars > 0) {
         if (tierState != null && cashTierIndex >= 0) {
-          sleeveDollars = Math.max(0, tierState[cashTierIndex].bal);
+          sleeveDollars = Math.max(0, tierAt(tierState, cashTierIndex).bal);
         } else if (taxable > 0) {
           const removedGift = taxable - Math.max(0, taxable - (inputs.giftOutflowAmount ?? 0));
           sleeveDollars = Math.max(0, sleeveDollars - Math.max(0, removedGift - Math.max(0, taxable - sleeveDollars)));
@@ -7296,12 +8029,12 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     }
     const divYieldPct = Math.max(0, inputs.taxableDividendYieldPct ?? 0);
     const intYieldPct = Math.max(0, inputs.taxableInterestYieldPct ?? 0);
-    const dividendIncome = divYieldPct > 0 ? r2(taxable * divYieldPct / 100) : 0;
-    const interestIncome = intYieldPct > 0 ? r2(taxable * intYieldPct / 100) : 0;
+    const dividendIncome = divYieldPct > 0 ? r22(taxable * divYieldPct / 100) : 0;
+    const interestIncome = intYieldPct > 0 ? r22(taxable * intYieldPct / 100) : 0;
     const yieldTotal = dividendIncome + interestIncome;
     const dividendQualifiedPct = Math.min(100, Math.max(0, inputs.taxableDividendQualifiedPct ?? 100));
-    const qualifiedDividendIncome = r2(dividendIncome * dividendQualifiedPct / 100);
-    const nonQualifiedDividendIncome = r2(dividendIncome - qualifiedDividendIncome);
+    const qualifiedDividendIncome = r22(dividendIncome * dividendQualifiedPct / 100);
+    const nonQualifiedDividendIncome = r22(dividendIncome - qualifiedDividendIncome);
     const injectedLtcg = inputs.saleGainAge != null && age === inputs.saleGainAge ? Math.max(0, inputs.saleGainAmount ?? 0) : 0;
     if (driftOn && injectedLtcg > 0 && taxable > 0) {
       if (tiersActive && tierState) {
@@ -7351,8 +8084,8 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     }
     let conversion = already + additional;
     const personsOnMedicare = isSurvivorYear ? survivorAge != null && survivorAge >= (survWho === "primary" ? spouseAcaEndAge : 65) ? 1 : 0 : (age >= 65 ? 1 : 0) + (spouseAge != null && spouseAge >= spouseAcaEndAge ? 1 : 0);
-    const healthMedicarePremium = healthMedicarePerPersonDollars != null ? r2(healthMedicarePerPersonDollars * personsOnMedicare) : 0;
-    const healthGrossYear = r2(healthGrossAca + healthMedicarePremium);
+    const healthMedicarePremium = healthMedicarePerPersonDollars != null ? r22(healthMedicarePerPersonDollars * personsOnMedicare) : 0;
+    const healthGrossYear = r22(healthGrossAca + healthMedicarePremium);
     let irmaaPaid = 0;
     let irmaaPaidTier = null;
     const lookbackEntry = lookbackByYear.get(year - 2);
@@ -7360,7 +8093,11 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       const law = lawForYear(year);
       const tier = irmaaTierFor(lookbackEntry.magi, lookbackEntry.filingStatus, law, year, inputs.inflationPct);
       irmaaPaidTier = tier;
-      irmaaPaid = r2(irmaaAnnualPerPerson(tier, law) * personsOnMedicare);
+      irmaaPaid = r22(irmaaAnnualPerPerson(tier, law) * personsOnMedicare);
+    }
+    const irmaaSurchargeKnown = personsOnMedicare === 0 || lookbackEntry != null;
+    if (personsOnMedicare > 0 && lookbackEntry == null) {
+      irmaaLookbackMissingYears.push(year);
     }
     const priceWith = (ltcg, extra, conv) => priceYear({
       calendarYear: year,
@@ -7390,14 +8127,14 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     const spendNeedBase = age >= inputs.retirementAge ? inputs.annualSpending : 0;
     const retiredYear = age >= inputs.retirementAge;
     const spendNeedYear = flexSpendingNeed(spendNeedBase, priorYearReturnPct, inputs.flexCutPct, inputs.flexFloorPct);
-    const settleRound = (additionalArg, pretaxDrawCapArg, fbGainsIn, fbPretaxIn, fbCreditIn) => {
+    const settleRound = (additionalArg, pretaxDrawCapArg, fbGainsIn, fbPretaxIn, fbRothIn, fbHsaIn, fbCreditIn) => {
       const conv = already + additionalArg;
       const startRatio = taxable > 0 ? basisYearStart / taxable : 0;
       const drawGainRate = driftOn ? 1 - startRatio : gainPct;
-      let priced = priceWith(fbGainsIn, fbPretaxIn, conv);
+      let priced = priceWith(fbGainsIn, fbPretaxIn + fbRothIn + fbHsaIn, conv);
       let federalTax = priced.federalTax;
       let stateTax = priced.stateTax;
-      const spendNeed = premiumReconcile ? Math.max(0, r2(spendNeedYear - premiumEmbeddedDollars + Math.max(0, benchmark - fbCreditIn))) : healthActive && retiredYear ? r2(spendNeedYear + healthMedicarePremium + (healthAcaThisYear ? Math.max(0, healthGrossAca - Math.min(fbCreditIn, healthGrossAca)) : 0)) : spendNeedYear;
+      const spendNeed = premiumReconcile ? Math.max(0, r22(spendNeedYear - premiumEmbeddedDollars + Math.max(0, benchmark - fbCreditIn))) : healthActive && retiredYear ? r22(spendNeedYear + healthMedicarePremium + (healthAcaThisYear ? Math.max(0, healthGrossAca - Math.min(fbCreditIn, healthGrossAca)) : 0)) : spendNeedYear;
       const cashIn = rmd + ssBenefits + inputs.otherOrdinaryAnnual + inputs.taxExemptInterestAnnual;
       const surplusCash = Math.max(0, cashIn - spendNeed);
       let spendDeficit = Math.max(0, spendNeed - cashIn);
@@ -7418,41 +8155,114 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       let overflowTax = 0;
       let withheldFromConversion = withheld;
       const convOwnerAge = survCombined ? survivorAge ?? age : age;
+      const hsaOwnerAge = survCombined ? survivorAge ?? age : age;
+      const shelterForConv = (elig, sep, ownerAge) => {
+        if (elig == null)
+          return 0;
+        if (sep != null && (sep < 55 || ownerAge == null || ownerAge < sep))
+          return 0;
+        return elig;
+      };
+      const convFromP = Math.min(additionalArg, Math.max(0, pretaxPAfterRmd));
+      const convFromS = Math.max(0, additionalArg - convFromP);
+      const convEligShare = Math.min(convFromP, shelterForConv(eligPAfterRmd, inputs.separationAgePrimary, age)) + Math.min(convFromS, shelterForConv(eligSAfterRmd, inputs.separationAgeSpouse, spouseAge));
+      let convEligShelterRemaining = convEligShare;
       if (withheld > 0 && convOwnerAge < 59.5) {
-        const grossedPenalty = r2(withheld / 9);
-        const grossedTotal = withheld + grossedPenalty;
-        if (grossedTotal <= additionalArg + 0.005) {
-          penalty = grossedPenalty;
-          withheldFromConversion = grossedTotal;
-        } else if (additionalArg > 0) {
-          penalty = r2(additionalArg * 0.1);
-          withheldFromConversion = additionalArg;
-          overflowTax = r2(withheld - (additionalArg - penalty));
-        } else {
-          withheldFromConversion = 0;
-          overflowTax = withheld;
-        }
+        const g = grossUpWithheld(withheld, convEligShare, additionalArg);
+        penalty = g.penalty;
+        withheldFromConversion = g.total;
+        overflowTax = r22(withheld - g.tax);
+        convEligShelterRemaining = Math.max(0, convEligShare - g.total);
       } else {
         overflowTax = Math.max(0, withheld - additionalArg);
         withheldFromConversion = Math.min(withheld, additionalArg);
+        convEligShelterRemaining = Math.max(0, convEligShare - withheldFromConversion);
       }
       const rothIn = Math.max(0, additionalArg - withheldFromConversion);
       let pretaxBalP = pretaxPAfterRmd;
       let pretaxBalS = pretaxSAfterRmd;
+      let eligBalP = eligPAfterRmd;
+      let eligBalS = eligSAfterRmd;
+      const debitEligP = (amount) => {
+        if (eligBalP != null)
+          eligBalP = Math.max(0, eligBalP - amount);
+      };
+      const debitEligS = (amount) => {
+        if (eligBalS != null)
+          eligBalS = Math.max(0, eligBalS - amount);
+      };
+      const shelterP = (ownerAge) => {
+        if (eligBalP == null)
+          return 0;
+        const sep = inputs.separationAgePrimary;
+        if (sep != null && (sep < 55 || ownerAge < sep))
+          return 0;
+        return eligBalP;
+      };
+      const shelterS = (ownerAge) => {
+        if (eligBalS == null)
+          return 0;
+        const sep = inputs.separationAgeSpouse;
+        if (sep != null && (sep < 55 || ownerAge < sep))
+          return 0;
+        return eligBalS;
+      };
+      let spendPenalty = 0;
+      let spendEligUnknown = false;
       {
         const fromP = Math.min(additionalArg, Math.max(0, pretaxBalP));
         pretaxBalP -= fromP;
         pretaxBalS -= additionalArg - fromP;
+        debitEligP(fromP);
+        debitEligS(additionalArg - fromP);
       }
       let rothBal = roth + rothIn;
+      let sRothLedP = cloneRothOwnerLedger(rothLedP);
+      let sRothLedS = cloneRothOwnerLedger(rothLedS);
+      let appendedLotP = null;
+      let appendedLotS = null;
+      if (rothIn > 0) {
+        const shareP = additionalArg > 0 ? rothIn * convFromP / additionalArg : rothIn;
+        const shareS = Math.max(0, rothIn - shareP);
+        const appendLot = (led, share) => {
+          if (share <= 0)
+            return null;
+          const existing = led.ira.lots.find((l) => l.year === year);
+          if (existing) {
+            existing.taxable = existing.taxable + share;
+            return existing;
+          }
+          const lot = { year, taxable: share, nontaxable: 0 };
+          led.ira.lots.push(lot);
+          led.ira.lots.sort((a, b) => a.year - b.year);
+          return lot;
+        };
+        appendedLotP = appendLot(sRothLedP, shareP);
+        appendedLotS = appendLot(sRothLedS, shareS);
+        sRothLedP.ira.balance = sRothLedP.ira.balance + shareP;
+        sRothLedS.ira.balance = sRothLedS.ira.balance + shareS;
+      }
+      const earliestRothLotYear = (() => {
+        const yrs = [...sRothLedP.ira.lots, ...sRothLedS.ira.lots].map((l) => l.year);
+        return yrs.length > 0 ? Math.min(...yrs) : null;
+      })();
+      const rothAgeP = isSurvivorYear ? survWho === "spouse" ? survivorAge : null : age;
+      const rothAgeS = isSurvivorYear ? survWho === "primary" ? survivorAge : null : spouseAge;
       let taxableBal = taxable - fromTaxable;
+      let hsaBal = hsa;
       let fundTaxTaxable = fromTaxable;
       let fundTaxPretax = withheldFromConversion;
       let fundTaxRoth = 0;
+      let fundTaxHsa = 0;
       let fundSpendTaxable = 0;
       let fundSpendRoth = 0;
       let createdFbGains = 0;
       let createdFbPretax = 0;
+      let createdFbRoth = 0;
+      let createdFbHsa = 0;
+      let hsaAddlTax = 0;
+      let rothSpendEarnings = 0;
+      let spendRothUnknown = false;
       let basisBal = basisYearStart;
       let sTiers = null;
       let pricedGains = 0;
@@ -7465,7 +8275,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         if (spendCashPct <= 0 || amount <= 0 || sleeveBal <= 0)
           return;
         if (sTiers && cashTierIndex >= 0) {
-          sleeveBal = Math.max(0, sTiers[cashTierIndex].bal);
+          sleeveBal = Math.max(0, tierAt(sTiers, cashTierIndex).bal);
         } else {
           const nonCash = Math.max(0, poolBefore - sleeveBal);
           sleeveBal = Math.max(0, sleeveBal - Math.max(0, amount - nonCash));
@@ -7485,7 +8295,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           return 0;
         if (!driftOn) {
           sleeveDebit(amount, taxableBal);
-          return r2(amount * drawGainRate);
+          return r22(amount * drawGainRate);
         }
         if (sTiers) {
           const g = sellFromTiers(sTiers, amount, "highest");
@@ -7497,11 +8307,11 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         if (taxableBal <= 0) {
           basisBal = 0;
           sleeveDebit(amount, taxableBal);
-          return r2(amount * drawGainRate);
+          return r22(amount * drawGainRate);
         }
         basisBal = Math.max(0, basisBal - amount * (basisBal / taxableBal));
         sleeveDebit(amount, taxableBal);
-        return r2(amount * drawGainRate);
+        return r22(amount * drawGainRate);
       };
       const basisIn = (amount) => {
         if (!driftOn || amount <= 0)
@@ -7513,6 +8323,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         basisBal += amount;
       };
       let unpaidTaxAmt = 0;
+      let taxableTaxLegs = 0;
       const debitUnpaid = (amount) => {
         let rest = amount;
         const fromT = Math.min(rest, Math.max(0, taxableBal));
@@ -7520,6 +8331,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         taxableBal -= fromT;
         rest -= fromT;
         fundTaxTaxable += fromT;
+        taxableTaxLegs += fromT;
         const fromP = Math.min(rest, Math.max(0, pretaxBalP));
         pretaxBalP -= fromP;
         rest -= fromP;
@@ -7528,11 +8340,35 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         rest -= fromS;
         fundTaxPretax += fromP + fromS;
         createdFbPretax += fromP + fromS;
+        debitEligP(fromP);
+        debitEligS(fromS);
         if (rest > 0) {
-          const fromR = Math.min(rest, Math.max(0, rothBal));
-          rothBal = Math.max(0, rothBal - rest);
+          const out = debitRothLedgers(sRothLedP, sRothLedS, rest, {
+            year,
+            agePrimary: rothAgeP ?? age,
+            ageSpouse: rothAgeS
+          });
+          const fromR = out.drawn;
+          rothBal = Math.max(0, rothBal - fromR);
           fundTaxRoth += fromR;
           rest -= fromR;
+          createdFbRoth = r22(createdFbRoth + out.income);
+          if (out.unknown)
+            spendRothUnknown = true;
+        }
+        if (rest > 0) {
+          const hsaAvail = Math.max(0, hsaBal);
+          if (hsaAvail > 0) {
+            const addlRate = hsaOwnerAge < 65 ? 0.2 : 0;
+            const want = addlRate > 0 ? rest / (1 - addlRate) : rest;
+            const fromH = Math.min(want, hsaAvail);
+            hsaBal -= fromH;
+            const addl = r22(fromH * addlRate);
+            hsaAddlTax = r22(hsaAddlTax + addl);
+            fundTaxHsa += fromH;
+            createdFbHsa = r22(createdFbHsa + fromH);
+            rest -= fromH - fromH * addlRate;
+          }
         }
         return Math.max(0, rest);
       };
@@ -7544,7 +8380,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         let take = Math.min(want, spendDeficit, sleeveBal, Math.max(0, taxableBal));
         if (take > 0) {
           if (sTiers && cashTierIndex >= 0) {
-            const t = sTiers[cashTierIndex];
+            const t = tierAt(sTiers, cashTierIndex);
             take = Math.min(take, Math.max(0, t.bal));
             t.bal -= take;
             t.basis = Math.max(0, t.basis - take);
@@ -7578,9 +8414,9 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           const balanceAvail = Math.max(0, pretaxBalP) + Math.max(0, pretaxBalS);
           if (cliffCapOnDraws || pretaxDrawCapArg != null) {
             let drawCap = Infinity;
-            if (cliffCapOnDraws) {
-              const gainsSoFar = (sTiers ? r2(pricedGains) : r2(taxableDrawn * drawGainRate)) + fbGainsIn;
-              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn, 0).acaMagi;
+            if (cliffCapOnDraws && acaTargetDollars != null) {
+              const gainsSoFar = (sTiers ? r22(pricedGains) : r22(taxableDrawn * drawGainRate)) + fbGainsIn;
+              const baseAcaMagi = priceWith(gainsSoFar, fbPretaxIn + fbRothIn + fbHsaIn, 0).acaMagi;
               drawCap = Math.max(0, acaTargetDollars - baseAcaMagi);
             }
             if (pretaxDrawCapArg != null) {
@@ -7591,31 +8427,112 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
             extraDraw = Math.min(balanceAvail, spendDeficit);
           }
           const fromP = Math.min(extraDraw, Math.max(0, pretaxBalP));
+          const fromS = extraDraw - fromP;
           pretaxBalP -= fromP;
-          pretaxBalS -= extraDraw - fromP;
+          pretaxBalS -= fromS;
           spendDeficit -= extraDraw;
+          if (fromP > 0 && age < 59.5) {
+            if (eligBalP == null) {
+              spendEligUnknown = true;
+            } else {
+              const ineligibleP = Math.max(0, fromP - shelterP(age));
+              if (ineligibleP > 0) {
+                const p = r22(ineligibleP * 0.1);
+                spendPenalty = r22(spendPenalty + p);
+                penalty = r22(penalty + p);
+              }
+            }
+          }
+          if (fromS > 0 && spouseAge != null && spouseAge < 59.5) {
+            if (eligBalS == null) {
+              spendEligUnknown = true;
+            } else {
+              const ineligibleS = Math.max(0, fromS - shelterS(spouseAge));
+              if (ineligibleS > 0) {
+                const p = r22(ineligibleS * 0.1);
+                spendPenalty = r22(spendPenalty + p);
+                penalty = r22(penalty + p);
+              }
+            }
+          }
+          debitEligP(fromP);
+          debitEligS(fromS);
         } else {
-          const drawR = Math.min(Math.max(0, rothBal), spendDeficit);
-          rothBal -= drawR;
+          const out = debitRothLedgers(sRothLedP, sRothLedS, spendDeficit, {
+            year,
+            agePrimary: rothAgeP ?? age,
+            ageSpouse: rothAgeS
+          });
+          const drawR = out.drawn;
+          rothBal = Math.max(0, rothBal - drawR);
           fundSpendRoth += drawR;
           spendDeficit -= drawR;
+          rothSpendEarnings = r22(rothSpendEarnings + out.income);
+          if (out.penalty > 0) {
+            spendPenalty = r22(spendPenalty + out.penalty);
+            penalty = r22(penalty + out.penalty);
+          }
+          if (out.unknown)
+            spendRothUnknown = true;
         }
       }
-      const realizedGains = sTiers ? r2(pricedGains) : r2(taxableDrawn * drawGainRate);
+      const realizedGains = sTiers ? r22(pricedGains) : r22(taxableDrawn * drawGainRate);
       const pricedGainsTotal = realizedGains + fbGainsIn;
-      const pricedExtraTotal = extraDraw + fbPretaxIn;
+      const pricedExtraTotal = extraDraw + fbPretaxIn + rothSpendEarnings + fbRothIn + fbHsaIn;
       if (pricedGainsTotal !== 0 || pricedExtraTotal > 0) {
         const repriced = priceWith(pricedGainsTotal, pricedExtraTotal, conv);
-        const delta = r2(repriced.federalTax + repriced.stateTax - (federalTax + stateTax));
+        const delta = r22(repriced.federalTax + repriced.stateTax - (federalTax + stateTax));
         priced = repriced;
         federalTax = repriced.federalTax;
         stateTax = repriced.stateTax;
         if (delta > 0) {
-          const pay = Math.min(delta, Math.max(0, taxableBal));
+          let topUpTax = 0;
+          let topUpTotal = 0;
+          if (inputs.payTaxFrom === "conversion" && convOwnerAge < 59.5 && additionalArg > 0) {
+            const headroom = Math.max(0, additionalArg - withheldFromConversion);
+            if (headroom > 0) {
+              const wantTax = Math.min(delta, r22((9 * headroom + convEligShelterRemaining) / 10));
+              const topUpCapacity = Math.min(headroom, Math.max(0, rothBal));
+              const g = grossUpWithheld(wantTax, convEligShelterRemaining, topUpCapacity);
+              const topUpPenalty = g.penalty;
+              if (g.tax > 0) {
+                topUpTax = r22(g.tax);
+                topUpTotal = r22(topUpTax + topUpPenalty);
+                penalty = r22(penalty + topUpPenalty);
+                withheldFromConversion = r22(withheldFromConversion + topUpTotal);
+                rothBal = Math.max(0, rothBal - topUpTotal);
+                fundTaxPretax = r22(fundTaxPretax + topUpTotal);
+                let shrinkLeft = topUpTotal;
+                for (const [led, lot] of [
+                  [sRothLedP, appendedLotP],
+                  [sRothLedS, appendedLotS]
+                ]) {
+                  if (shrinkLeft <= 0)
+                    break;
+                  if (lot != null) {
+                    const s = Math.min(shrinkLeft, lot.taxable);
+                    lot.taxable = r22(lot.taxable - s);
+                    led.ira.balance = Math.max(0, led.ira.balance - s);
+                    shrinkLeft = r22(shrinkLeft - s);
+                  }
+                }
+                if (shrinkLeft > 0) {
+                  shrinkLeft = r22(shrinkRothAccountLedgerBalance(sRothLedP.ira, shrinkLeft));
+                  if (shrinkLeft > 0) {
+                    shrinkLeft = r22(shrinkRothAccountLedgerBalance(sRothLedS.ira, shrinkLeft));
+                  }
+                }
+                clearEmptyRothAccountLedger(sRothLedP.ira);
+                clearEmptyRothAccountLedger(sRothLedS.ira);
+              }
+            }
+          }
+          const pay = Math.min(delta - topUpTax, Math.max(0, taxableBal));
           createdFbGains += basisOut(pay);
           taxableBal -= pay;
           fundTaxTaxable += pay;
-          const rest = delta - pay;
+          taxableTaxLegs += pay;
+          const rest = delta - topUpTax - pay;
           if (rest > 0)
             unpaidTaxAmt += debitUnpaid(rest);
         } else if (delta < 0) {
@@ -7623,6 +8540,16 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           basisIn(-delta);
           fundTaxTaxable += delta;
         }
+      }
+      if (spendPenalty > 0) {
+        const payPen = Math.min(spendPenalty, Math.max(0, taxableBal));
+        createdFbGains += basisOut(payPen);
+        taxableBal -= payPen;
+        fundTaxTaxable += payPen;
+        taxableTaxLegs += payPen;
+        const restPen = r22(spendPenalty - payPen);
+        if (restPen > 0)
+          unpaidTaxAmt += debitUnpaid(restPen);
       }
       const surplusLeft = surplusCash - taxFromCash;
       if (surplusLeft > 0) {
@@ -7643,33 +8570,49 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         benchmarkAnnual: benchmark,
         projected: true
       }).credit : 0;
+      penalty = r22(penalty + hsaAddlTax);
       return {
         priced,
         federalTax,
         stateTax,
         penalty,
         feedbackCredit: fbCreditIn,
-        createdFbCredit: r2(createdFbCredit),
-        realizedGains: r2(realizedGains + fbGainsIn),
+        createdFbCredit: r22(createdFbCredit),
+        realizedGains: r22(realizedGains + fbGainsIn),
         feedbackGains: fbGainsIn,
         feedbackPretax: fbPretaxIn,
-        createdFbGains: r2(createdFbGains),
-        createdFbPretax: r2(createdFbPretax),
+        feedbackRoth: fbRothIn,
+        createdFbRoth: r22(createdFbRoth),
+        feedbackHsa: fbHsaIn,
+        createdFbHsa: r22(createdFbHsa),
+        rothEarningsIncome: r22(rothSpendEarnings + fbRothIn),
+        rothBasisUnknown: spendRothUnknown,
+        createdFbGains: r22(createdFbGains),
+        createdFbPretax: r22(createdFbPretax),
         taxableDrawn,
+        taxableTaxLegs,
         taxableBasisEnd: sTiers ? sTiers.reduce((s, t) => s + t.basis, 0) : basisBal,
         tierEnd: sTiers,
         extraDraw,
         pretaxBalP,
         pretaxBalS,
+        eligBalP,
+        eligBalS,
+        earlyWithdrawalEligibilityUnknown: spendEligUnknown,
+        rothLedP: sRothLedP,
+        rothLedS: sRothLedS,
+        earliestRothLotYear,
         rothBal,
         taxableBal,
+        hsaBal,
         spendNeed,
-        spendDeficit: r2(spendDeficit),
-        unpaidTax: r2(unpaidTaxAmt),
+        spendDeficit: r22(spendDeficit),
+        unpaidTax: r22(unpaidTaxAmt),
         taxFromCash,
         fundTaxTaxable,
         fundTaxPretax,
         fundTaxRoth,
+        fundTaxHsa,
         fundSpendTaxable,
         fundSpendRoth,
         cashSpend: cashSpendAmt,
@@ -7680,26 +8623,40 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     const settleYearOnce = (additionalArg, pretaxDrawCapArg, fbCreditIn) => {
       let fbGains = 0;
       let fbPretax = 0;
+      let fbRoth = 0;
+      let fbHsa = 0;
       let best = null;
       let bestMismatch = Infinity;
       let bestConverged = false;
       let bestMismatchGainsCents = 0;
       let bestMismatchPretaxCents = 0;
+      let bestMismatchRothCents = 0;
+      let bestMismatchHsaCents = 0;
+      let roundsUsed = 0;
+      let innerStop = "iteration-limit";
       const seenAssumed = new Set;
       for (let round = 0;round < SETTLEMENT_MAX_ROUNDS; round++) {
-        const key = `${r2(fbGains)}|${r2(fbPretax)}`;
-        if (seenAssumed.has(key))
+        const key = `${r22(fbGains)}|${r22(fbPretax)}|${r22(fbRoth)}|${r22(fbHsa)}`;
+        if (seenAssumed.has(key)) {
+          innerStop = "repeated-assumption";
           break;
+        }
         seenAssumed.add(key);
-        const s = settleRound(additionalArg, pretaxDrawCapArg, fbGains, fbPretax, fbCreditIn);
+        roundsUsed = round + 1;
+        const s = settleRound(additionalArg, pretaxDrawCapArg, fbGains, fbPretax, fbRoth, fbHsa, fbCreditIn);
         const mismatchGains = Math.abs(s.createdFbGains - fbGains);
         const mismatchPretax = Math.abs(s.createdFbPretax - fbPretax);
-        const mismatch = mismatchGains + mismatchPretax;
-        if (s.createdFbGains === r2(fbGains) && s.createdFbPretax === r2(fbPretax)) {
+        const mismatchRoth = Math.abs(s.createdFbRoth - fbRoth);
+        const mismatchHsa = Math.abs(s.createdFbHsa - fbHsa);
+        const mismatch = mismatchGains + mismatchPretax + mismatchRoth + mismatchHsa;
+        if (s.createdFbGains === r22(fbGains) && s.createdFbPretax === r22(fbPretax) && s.createdFbRoth === r22(fbRoth) && s.createdFbHsa === r22(fbHsa)) {
           best = s;
           bestConverged = true;
           bestMismatchGainsCents = 0;
           bestMismatchPretaxCents = 0;
+          bestMismatchRothCents = 0;
+          bestMismatchHsaCents = 0;
+          innerStop = "converged";
           break;
         }
         if (mismatch < bestMismatch) {
@@ -7707,47 +8664,121 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           best = s;
           bestMismatchGainsCents = Math.round(mismatchGains * 100);
           bestMismatchPretaxCents = Math.round(mismatchPretax * 100);
+          bestMismatchRothCents = Math.round(mismatchRoth * 100);
+          bestMismatchHsaCents = Math.round(mismatchHsa * 100);
         }
         fbGains = s.createdFbGains;
         fbPretax = s.createdFbPretax;
+        fbRoth = s.createdFbRoth;
+        fbHsa = s.createdFbHsa;
       }
-      const kept = best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, fbCreditIn);
+      const kept = best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, 0, 0, fbCreditIn);
+      const fallbackRounds = best != null ? roundsUsed : 1;
+      const fallbackStop = best != null ? innerStop : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0 && kept.createdFbHsa === 0 ? "converged" : "iteration-limit";
       return {
         ...kept,
-        settlementConverged: best != null ? bestConverged : kept.createdFbGains === 0 && kept.createdFbPretax === 0,
-        settlementMismatchCents: best != null ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents } : {
+        settlementConverged: best != null ? bestConverged : kept.createdFbGains === 0 && kept.createdFbPretax === 0 && kept.createdFbRoth === 0 && kept.createdFbHsa === 0,
+        settlementMismatchCents: best != null ? { gains: bestMismatchGainsCents, pretax: bestMismatchPretaxCents, roth: bestMismatchRothCents, hsa: bestMismatchHsaCents, acaCredit: 0 } : {
           gains: Math.round(Math.abs(kept.createdFbGains) * 100),
-          pretax: Math.round(Math.abs(kept.createdFbPretax) * 100)
-        }
+          pretax: Math.round(Math.abs(kept.createdFbPretax) * 100),
+          roth: Math.round(Math.abs(kept.createdFbRoth) * 100),
+          hsa: Math.round(Math.abs(kept.createdFbHsa) * 100),
+          acaCredit: 0
+        },
+        settlementRounds: fallbackRounds,
+        settlementInnerStopReason: fallbackStop
       };
     };
     const settleYear = (additionalArg, pretaxDrawCapArg) => {
       if (!premiumReconcile && !healthAcaThisYear) {
-        return settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
+        const s = settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
+        return {
+          ...s,
+          settlementPasses: 1,
+          settlementStopReason: s.settlementInnerStopReason
+        };
       }
-      let assumed = premiumReconcile ? premiumInitialCredit : 0;
-      let best = null;
-      let bestCreditDiff = Infinity;
-      const seenCredits = new Set;
-      for (let pass = 0;pass < 8; pass++) {
-        if (seenCredits.has(assumed))
-          break;
-        seenCredits.add(assumed);
-        const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
-        const diff = Math.abs(s.createdFbCredit - assumed);
-        if (s.createdFbCredit === r2(assumed)) {
-          return s;
+      const iterateCreditFrom = (seed) => {
+        let assumed = seed;
+        let best = null;
+        let bestCreditDiff = Infinity;
+        let passesUsed = 0;
+        let outerStop = "iteration-limit";
+        const seenCredits = new Set;
+        for (let pass = 0;pass < 8; pass++) {
+          if (seenCredits.has(assumed)) {
+            outerStop = "repeated-assumption";
+            break;
+          }
+          seenCredits.add(assumed);
+          passesUsed = pass + 1;
+          const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
+          const diff = Math.abs(s.createdFbCredit - assumed);
+          if (s.createdFbCredit === r22(assumed)) {
+            return { converged: true, settlement: s, passes: passesUsed };
+          }
+          if (diff < bestCreditDiff) {
+            bestCreditDiff = diff;
+            best = s;
+          }
+          assumed = s.createdFbCredit;
         }
-        if (diff < bestCreditDiff) {
-          bestCreditDiff = diff;
-          best = s;
+        return {
+          converged: false,
+          settlement: best,
+          passes: passesUsed,
+          stopReason: outerStop
+        };
+      };
+      const first = iterateCreditFrom(premiumReconcile ? premiumInitialCredit : 0);
+      if (first.converged) {
+        if (first.settlement.createdFbCredit === 0) {
+          const cliffCredit = benchmark != null && acaCliffDollars != null ? acaCreditFor({
+            magi: acaCliffDollars,
+            householdSize,
+            coverageYear: year,
+            benchmarkAnnual: benchmark,
+            projected: true
+          }).credit : 0;
+          if (cliffCredit > 0) {
+            const second = iterateCreditFrom(cliffCredit);
+            if (second.converged && second.settlement.createdFbCredit > 0) {
+              return {
+                ...second.settlement,
+                settlementMismatchCents: {
+                  ...second.settlement.settlementMismatchCents,
+                  acaCredit: 0
+                },
+                settlementPasses: second.passes,
+                settlementStopReason: "converged"
+              };
+            }
+          }
         }
-        assumed = s.createdFbCredit;
+        return {
+          ...first.settlement,
+          settlementMismatchCents: {
+            ...first.settlement.settlementMismatchCents,
+            acaCredit: 0
+          },
+          settlementPasses: first.passes,
+          settlementStopReason: "converged"
+        };
       }
-      const kept = best ?? settleYearOnce(additionalArg, pretaxDrawCapArg, premiumReconcile ? premiumInitialCredit : 0);
-      return { ...kept, settlementConverged: false };
+      const kept = first.settlement ?? settleYearOnce(additionalArg, pretaxDrawCapArg, premiumReconcile ? premiumInitialCredit : 0);
+      const keptAcaCreditCents = Math.round(Math.abs(kept.createdFbCredit - kept.feedbackCredit) * 100);
+      return {
+        ...kept,
+        settlementConverged: false,
+        settlementMismatchCents: {
+          ...kept.settlementMismatchCents,
+          acaCredit: keptAcaCreditCents
+        },
+        settlementPasses: first.settlement != null ? first.passes : 1,
+        settlementStopReason: first.settlement != null ? first.stopReason : "iteration-limit"
+      };
     };
-    const respectsCeilings = (p) => {
+    const respectsCeilings = (p, additionalToJudge) => {
       const ceilings = yearCeilings;
       if (!ceilings)
         return true;
@@ -7774,11 +8805,11 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       if (p.magi > magiCap + 0.005)
         return false;
       if (ceilings.acaCliffCap) {
-        if (acaCliffDollars != null) {
+        if (acaCliffDollars != null && acaTargetDollars != null) {
           if (p.acaMagi > acaTargetDollars + 0.005)
             return false;
-        } else if (ceilings.bracketTopPct == null && ceilings.irmaaTierCap == null && !ceilings.ltcgZeroCap && ceilings.magiCap == null && conversion > 0) {
-          if (additional > 0)
+        } else if (ceilings.bracketTopPct == null && ceilings.irmaaTierCap == null && !ceilings.ltcgZeroCap && ceilings.magiCap == null && already + additionalToJudge > 0) {
+          if (additionalToJudge > 0)
             return false;
         }
       }
@@ -7787,13 +8818,13 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     let settled = settleYear(additional);
     if (yearCeilings && ceilingsActive(yearCeilings) && inWindow) {
       for (let pass = 1;pass < 6; pass++) {
-        if (additional <= 0 || respectsCeilings(settled.priced))
+        if (additional <= 0 || respectsCeilings(settled.priced, additional))
           break;
         const target = fillConversion({
           base: {
             ...fillBase,
             ...ledgerFields(settled.realizedGains + injectedLtcg),
-            extraPreTaxDraw: settled.extraDraw + settled.feedbackPretax
+            extraPreTaxDraw: settled.extraDraw + settled.feedbackPretax + settled.rothEarningsIncome + settled.feedbackHsa
           },
           ceilings: yearCeilings,
           maxConversion: pretaxAfterRmd + already,
@@ -7810,9 +8841,9 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         settled = settleYear(additional);
       }
     }
-    if (yearCeilings && ceilingsActive(yearCeilings) && inWindow && additional > 0 && !respectsCeilings(settled.priced)) {
+    if (yearCeilings && ceilingsActive(yearCeilings) && inWindow && additional > 0 && !respectsCeilings(settled.priced, additional)) {
       const atZero = settleYear(0);
-      if (respectsCeilings(atZero.priced)) {
+      if (respectsCeilings(atZero.priced, 0)) {
         let lo = 0;
         let hi = Math.round(additional * 100);
         let bestAdd = 0;
@@ -7820,7 +8851,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(mid / 100);
-          if (respectsCeilings(candidate.priced)) {
+          if (respectsCeilings(candidate.priced, mid / 100)) {
             lo = mid;
             bestAdd = mid / 100;
             best = candidate;
@@ -7843,13 +8874,14 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       if (candidateTotal <= 0)
         return true;
       const stepStart = Math.max(0, candidateTotal - 100);
-      const below = priceWith(candidate.realizedGains, candidate.extraDraw + candidate.feedbackPretax, stepStart);
+      const below = priceWith(candidate.realizedGains, candidate.extraDraw + candidate.feedbackPretax + candidate.rothEarningsIncome + candidate.feedbackHsa, stepStart);
       const stepRate = (candidate.federalTax + candidate.stateTax - (below.federalTax + below.stateTax)) * 100 / (candidateTotal - stepStart);
       return stepRate <= guardrailTargetPct + 0.005;
     };
-    if (yearCeilings?.irmaaTierCap != null && inWindow && !bunchZero && !eraZeroFill && !forceZeroConversion && respectsCeilings(settled.priced)) {
+    if (yearCeilings?.irmaaTierCap != null && inWindow && !bunchZero && !eraZeroFill && !forceZeroConversion && respectsCeilings(settled.priced, additional)) {
       const lawG = lawForYear(year);
-      const tierTop = irmaaTierUpTo(yearCeilings.irmaaTierCap, effFilingStatus, lawG, year, inputs.inflationPct);
+      const irmaaTierCap = yearCeilings.irmaaTierCap;
+      const tierTop = irmaaTierUpTo(irmaaTierCap, effFilingStatus, lawG, year, inputs.inflationPct);
       const maxAdditional = Math.max(0, Math.min(pretaxAfterRmd, preserveRoom));
       const atOtherCap = (() => {
         let taxableCap = Infinity;
@@ -7874,7 +8906,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         return false;
       })();
       if (Number.isFinite(tierTop) && settled.priced.magi < tierTop - 0.005 && additional < maxAdditional && !atOtherCap) {
-        const tierOk = (p) => irmaaTierFor(p.magi, effFilingStatus, lawG, year, inputs.inflationPct) <= yearCeilings.irmaaTierCap;
+        const tierOk = (p) => irmaaTierFor(p.magi, effFilingStatus, lawG, year, inputs.inflationPct) <= irmaaTierCap;
         let lo = 0;
         let hi = Math.round((maxAdditional - additional) * 100);
         let bestAdd = additional;
@@ -7882,7 +8914,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional + mid / 100);
-          if (respectsCeilings(candidate.priced) && tierOk(candidate.priced) && guardrailStepOk(candidate, already + additional + mid / 100)) {
+          if (respectsCeilings(candidate.priced, additional + mid / 100) && tierOk(candidate.priced) && guardrailStepOk(candidate, already + additional + mid / 100)) {
             lo = mid;
             bestAdd = additional + mid / 100;
             best = candidate;
@@ -7897,7 +8929,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         }
       }
     }
-    if (yearCeilings?.acaCliffCap === true && acaCliffDollars != null && settled.extraDraw > 0 && settled.priced.acaMagi > acaTargetDollars + 0.005) {
+    if (yearCeilings?.acaCliffCap === true && acaCliffDollars != null && acaTargetDollars != null && settled.extraDraw > 0 && settled.priced.acaMagi > acaTargetDollars + 0.005) {
       const atZeroDraw = settleYear(additional, 0);
       if (atZeroDraw.priced.acaMagi <= acaTargetDollars + 0.005) {
         let lo = 0;
@@ -7928,7 +8960,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         }
       }
     }
-    if (yearCeilings?.acaCliffCap === true && acaCliffDollars != null && inWindow && !bunchZero && !eraZeroFill && !forceZeroConversion && respectsCeilings(settled.priced) && settled.priced.acaMagi < acaTargetDollars - 0.005) {
+    if (yearCeilings?.acaCliffCap === true && acaCliffDollars != null && acaTargetDollars != null && inWindow && !bunchZero && !eraZeroFill && !forceZeroConversion && respectsCeilings(settled.priced, additional) && settled.priced.acaMagi < acaTargetDollars - 0.005) {
       const maxAdditional = Math.max(0, Math.min(pretaxAfterRmd, preserveRoom));
       const atOtherCap = (() => {
         const lawC = lawForYear(year);
@@ -7965,7 +8997,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional + mid / 100);
-          if (candidate.priced.acaMagi <= acaTargetDollars + 0.005 && respectsCeilings(candidate.priced) && guardrailStepOk(candidate, already + additional + mid / 100)) {
+          if (candidate.priced.acaMagi <= acaTargetDollars + 0.005 && respectsCeilings(candidate.priced, additional + mid / 100) && guardrailStepOk(candidate, already + additional + mid / 100)) {
             lo = mid;
             bestAdd = additional + mid / 100;
             best = candidate;
@@ -7988,11 +9020,20 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     const realizedGains = settled.realizedGains;
     const extraDraw = settled.extraDraw;
     const feedbackPretax = settled.feedbackPretax;
+    const feedbackHsa = settled.feedbackHsa;
     let pretaxBalP = settled.pretaxBalP;
     let pretaxBalS = settled.pretaxBalS;
+    let eligEndP = settled.eligBalP;
+    let eligEndS = settled.eligBalS;
     let rothBal = settled.rothBal;
+    rothLedP = settled.rothLedP;
+    rothLedS = settled.rothLedS;
+    let rothEarningsIncome = settled.rothEarningsIncome;
+    let rothBasisUnknownYear = settled.rothBasisUnknown;
     let taxableBal = settled.taxableBal;
+    hsa = settled.hsaBal;
     let gainsHarvested = 0;
+    let harvestPaySaleGains = 0;
     let fundHarvestTaxTaxable = 0;
     let fundHarvestTaxPretax = 0;
     let fundHarvestTaxRoth = 0;
@@ -8005,7 +9046,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         taxableBasisDollars = Math.max(0, settled.taxableBasisEnd);
       }
     } else {
-      taxableBasisDollars = Math.max(0, taxableBasisDollars - settled.taxableDrawn * basisPctClamped + yieldTotal);
+      taxableBasisDollars = Math.max(0, taxableBasisDollars - (settled.taxableDrawn + settled.taxableTaxLegs) * basisPctClamped + yieldTotal);
     }
     if (spendCashPct > 0) {
       sleeveDollars = Math.min(Math.max(0, settled.sleeveEnd), Math.max(0, taxableBal));
@@ -8032,11 +9073,11 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         if (yearCeilings?.magiCap != null) {
           magiLimit = Math.min(magiLimit, yearCeilings.magiCap);
         }
-        const acaLimit = yearCeilings?.acaCliffCap === true && acaCliffDollars != null ? acaTargetDollars : Infinity;
+        const acaLimit = yearCeilings?.acaCliffCap === true && acaCliffDollars != null && acaTargetDollars != null ? acaTargetDollars : Infinity;
         const settledAt15 = priced.gainsAt15;
         const settledAt20 = priced.gainsAt20;
         const harvestFits = (h) => {
-          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax, conversion);
+          const p = priceWith(realizedGains + h, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion);
           return p.gainsAt15 <= settledAt15 + 0.005 && p.gainsAt20 <= settledAt20 + 0.005 && p.taxableIncome <= taxableLimit + 0.005 && p.magi <= magiLimit + 0.005 && p.acaMagi <= acaLimit + 0.005;
         };
         if (harvestFits(0)) {
@@ -8052,62 +9093,160 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
           }
           if (lo > 0) {
             gainsHarvested = lo / 100;
-            const hp = priceWith(realizedGains + gainsHarvested, extraDraw + feedbackPretax, conversion);
-            const delta = r2(hp.federalTax + hp.stateTax - (federalTax + stateTax));
-            priced = hp;
-            federalTax = hp.federalTax;
-            stateTax = hp.stateTax;
-            if (delta > 0) {
-              const pay = Math.min(delta, Math.max(0, taxableBal));
-              if (pay > 0 && taxableBal > 0) {
-                if (tiersActive && tierState) {
-                  sellFromTiers(tierState, pay, "highest");
-                  taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
-                } else {
-                  taxableBasisDollars = Math.max(0, taxableBasisDollars - pay * (taxableBasisDollars / taxableBal));
+            const hp = priceWith(realizedGains + gainsHarvested, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion);
+            const settledFederalTax = federalTax;
+            const settledStateTax = stateTax;
+            const delta0 = r22(hp.federalTax + hp.stateTax - (settledFederalTax + settledStateTax));
+            if (delta0 > 0) {
+              const balPre = taxableBal;
+              const basisPre = taxableBasisDollars;
+              const tiersPre = tiersActive && tierState ? tierState.map((t) => ({ ...t })) : null;
+              const pretaxPPre = pretaxBalP;
+              const pretaxSPre = pretaxBalS;
+              const rothPre = rothBal;
+              const rothLedPreP = cloneRothOwnerLedger(rothLedP);
+              const rothLedPreS = cloneRothOwnerLedger(rothLedS);
+              const harvestRothAgeP = isSurvivorYear ? survWho === "spouse" ? survivorAge : null : age;
+              const harvestRothAgeS = isSurvivorYear ? survWho === "primary" ? survivorAge : null : spouseAge;
+              const legsFor = (delta) => {
+                const pay = Math.min(delta, Math.max(0, balPre));
+                let paySaleGains = 0;
+                let tierCopy = null;
+                if (pay > 0 && balPre > 0) {
+                  if (tiersPre) {
+                    tierCopy = tiersPre.map((t) => ({ ...t }));
+                    stepUpTiers(tierCopy, gainsHarvested);
+                    paySaleGains = r22(sellFromTiers(tierCopy, pay, "highest"));
+                  } else {
+                    const ratioPost = (basisPre + gainsHarvested) / balPre;
+                    paySaleGains = r22(pay * (1 - ratioPost));
+                  }
                 }
+                let rest = delta - pay;
+                const fromP = Math.min(rest, Math.max(0, pretaxPPre));
+                rest -= fromP;
+                const fromS = Math.min(rest, Math.max(0, pretaxSPre));
+                rest -= fromS;
+                const preTaxLeg = fromP + fromS;
+                const fromR = Math.min(rest, Math.max(0, rothPre));
+                const unpaid = Math.max(0, rest - fromR);
+                const rothTrial = debitRothLedgers(cloneRothOwnerLedger(rothLedPreP), cloneRothOwnerLedger(rothLedPreS), fromR, {
+                  year,
+                  agePrimary: harvestRothAgeP ?? age,
+                  ageSpouse: harvestRothAgeS
+                });
+                return {
+                  pay,
+                  paySaleGains,
+                  tierCopy,
+                  fromP,
+                  fromS,
+                  preTaxLeg,
+                  fromR,
+                  unpaid,
+                  rest,
+                  rothEarningsIncome: rothTrial.income,
+                  rothUnknown: rothTrial.unknown
+                };
+              };
+              let delta = delta0;
+              let legs = legsFor(delta);
+              let bestDelta = delta;
+              let bestLegs = legs;
+              let bestPriced = hp;
+              let bestDiff = Infinity;
+              const seenDeltas = new Set;
+              for (let iter = 0;iter < 100; iter++) {
+                const p = priceWith(realizedGains + gainsHarvested + legs.paySaleGains, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa + legs.preTaxLeg + legs.rothEarningsIncome, conversion);
+                const newDelta = r22(p.federalTax + p.stateTax - (settledFederalTax + settledStateTax));
+                const diff = Math.abs(newDelta - delta);
+                if (diff < bestDiff) {
+                  bestDiff = diff;
+                  bestDelta = delta;
+                  bestLegs = legs;
+                  bestPriced = p;
+                }
+                if (diff <= 0.01)
+                  break;
+                if (seenDeltas.has(newDelta))
+                  break;
+                seenDeltas.add(newDelta);
+                delta = newDelta;
+                legs = legsFor(delta);
+              }
+              priced = bestPriced;
+              federalTax = bestPriced.federalTax;
+              stateTax = bestPriced.stateTax;
+              harvestPaySaleGains = bestLegs.paySaleGains;
+              const pay = bestLegs.pay;
+              if (pay > 0 && balPre > 0) {
+                if (bestLegs.tierCopy) {
+                  tierState = bestLegs.tierCopy;
+                  taxableBasisDollars = tierState.reduce((sum, t) => sum + t.basis, 0);
+                } else {
+                  const basisRemoved = pay - bestLegs.paySaleGains;
+                  taxableBasisDollars = Math.max(0, basisPre + gainsHarvested - basisRemoved);
+                }
+              } else if (tiersActive && tierState) {
+                stepUpTiers(tierState, gainsHarvested);
+                taxableBasisDollars = tierState.reduce((sum, t) => sum + t.basis, 0);
+              } else {
+                taxableBasisDollars = basisPre + gainsHarvested;
               }
               taxableBal -= pay;
               fundHarvestTaxTaxable += pay;
               if (spendCashPct > 0 && sleeveDollars > 0 && pay > 0) {
                 if (tiersActive && tierState && cashTierIndex >= 0) {
-                  sleeveDollars = Math.max(0, tierState[cashTierIndex].bal);
+                  sleeveDollars = Math.max(0, tierAt(tierState, cashTierIndex).bal);
                 } else if (taxableBal + pay > 0) {
                   const poolBeforePay = taxableBal + pay;
                   sleeveDollars = Math.max(0, sleeveDollars - Math.max(0, pay - Math.max(0, poolBeforePay - sleeveDollars)));
                 }
               }
-              let rest = delta - pay;
-              const fromP = Math.min(rest, Math.max(0, pretaxBalP));
-              pretaxBalP -= fromP;
-              rest -= fromP;
-              const fromS = Math.min(rest, Math.max(0, pretaxBalS));
-              pretaxBalS -= fromS;
-              rest -= fromS;
-              fundHarvestTaxPretax += fromP + fromS;
-              if (rest > 0) {
-                const fromR = Math.min(rest, Math.max(0, rothBal));
-                fundHarvestTaxRoth += fromR;
-                rothBal = Math.max(0, rothBal - rest);
-                unpaidTaxYear = r2(unpaidTaxYear + Math.max(0, rest - fromR));
+              const restAfterPretax = bestDelta - pay - bestLegs.fromP - bestLegs.fromS;
+              pretaxBalP -= bestLegs.fromP;
+              pretaxBalS -= bestLegs.fromS;
+              fundHarvestTaxPretax += bestLegs.fromP + bestLegs.fromS;
+              if (eligEndP != null)
+                eligEndP = Math.max(0, eligEndP - bestLegs.fromP);
+              if (eligEndS != null)
+                eligEndS = Math.max(0, eligEndS - bestLegs.fromS);
+              if (restAfterPretax > 0) {
+                fundHarvestTaxRoth += bestLegs.fromR;
+                const harvestRothOut = debitRothLedgers(rothLedP, rothLedS, restAfterPretax, {
+                  year,
+                  agePrimary: harvestRothAgeP ?? age,
+                  ageSpouse: harvestRothAgeS
+                });
+                rothBal = Math.max(0, rothBal - harvestRothOut.drawn);
+                rothEarningsIncome = r22(rothEarningsIncome + harvestRothOut.income);
+                if (harvestRothOut.unknown)
+                  rothBasisUnknownYear = true;
+                unpaidTaxYear = r22(unpaidTaxYear + bestLegs.unpaid);
               }
-            } else if (delta < 0) {
-              taxableBal += -delta;
-              fundHarvestTaxTaxable += delta;
+              taxableBasisDollars = Math.min(taxableBasisDollars, Math.max(0, taxableBal));
+            } else {
+              priced = hp;
+              federalTax = hp.federalTax;
+              stateTax = hp.stateTax;
+              if (delta0 < 0) {
+                taxableBal += -delta0;
+                fundHarvestTaxTaxable += delta0;
+                if (tiersActive && tierState) {
+                  buyIntoTiers(tierState, -delta0);
+                  taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+                } else {
+                  taxableBasisDollars += -delta0;
+                }
+              }
               if (tiersActive && tierState) {
-                buyIntoTiers(tierState, -delta);
+                stepUpTiers(tierState, gainsHarvested);
                 taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
               } else {
-                taxableBasisDollars += -delta;
+                taxableBasisDollars += gainsHarvested;
               }
+              taxableBasisDollars = Math.min(taxableBasisDollars, Math.max(0, taxableBal));
             }
-            if (tiersActive && tierState) {
-              stepUpTiers(tierState, gainsHarvested);
-              taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
-            } else {
-              taxableBasisDollars += gainsHarvested;
-            }
-            taxableBasisDollars = Math.min(taxableBasisDollars, Math.max(0, taxableBal));
           }
         }
       }
@@ -8115,7 +9254,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     if (spendCashPct > 0) {
       sleeveDollars = Math.min(sleeveDollars, Math.max(0, taxableBal));
     }
-    const grossGains = realizedGains + injectedLtcg + gainsHarvested;
+    const grossGains = realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains;
     const ledFinal = ledgerOn || grossGains < 0 ? applyLossLedger({ st: carryInSt, lt: carryInLt }, grossGains, effFilingStatus, priced.taxableIncomeBeforeLossAllowance, { st: carryInWaSt, lt: carryInWaLt }) : null;
     if (ledFinal) {
       lossCarrySt = ledFinal.carryOut.st;
@@ -8137,8 +9276,19 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       acaCreditKept = healthAcaCapThisYear ? Math.min(acaResult.credit, healthGrossAca) : acaResult.credit;
       acaPriced = true;
     }
-    const acaUnder138 = acaPriced && acaResult != null && acaResult.pctFpl < 138;
-    const healthPremiumNetYear = healthActive && retiredYear ? r2(healthMedicarePremium + (healthAcaThisYear ? Math.max(0, healthGrossAca - Math.min(settled.createdFbCredit, healthGrossAca)) : 0)) : 0;
+    const acaUnder138 = acaPriced && acaResult != null && acaResult.under138Fpl;
+    const acaBelow100Fpl = acaPriced && acaResult != null && acaResult.below100Fpl;
+    if (acaBelow100Fpl)
+      acaBelow100FplYears.push(year);
+    if (yearCeilings?.acaCliffCap === true && acaCliffDollars != null && priced.acaMagi > acaCliffDollars + 0.005 && conversion <= 0 && extraDraw <= 0) {
+      cliffCapInoperativeYears.push(year);
+    }
+    const earlyWithdrawalEligibilityUnknown = settled.earlyWithdrawalEligibilityUnknown === true;
+    if (earlyWithdrawalEligibilityUnknown)
+      earlyWithdrawalUnknownYears.push(year);
+    if (rothBasisUnknownYear)
+      rothBasisUnknownYears.push(year);
+    const healthPremiumNetYear = healthActive && retiredYear ? r22(healthMedicarePremium + (healthAcaThisYear ? Math.max(0, healthGrossAca - Math.min(settled.createdFbCredit, healthGrossAca)) : 0)) : 0;
     const healthPremiumGrossYear = healthActive && retiredYear ? healthGrossYear : 0;
     const funding = (() => {
       const spendNeedY = settled.spendNeed;
@@ -8160,34 +9310,36 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       const taxableSpendY = settled.fundSpendTaxable;
       const taxableTaxY = settled.fundTaxTaxable + fundHarvestTaxTaxable;
       const rothDrawY = settled.fundSpendRoth + settled.fundTaxRoth + fundHarvestTaxRoth;
+      const hsaDrawY = settled.fundTaxHsa;
       return {
-        spending: r2(spendNeedY - healthPremiumNetYear),
-        federalTax: r2(federalTax + penalty),
-        stateTax: r2(stateTax),
-        irmaa: r2(irmaaPaid),
-        healthPremium: r2(healthPremiumNetYear),
-        ss: r2(ssApplied),
-        rmd: r2(rmdApplied),
-        otherIncome: r2(otherApplied),
-        taxExempt: r2(taxExemptApplied),
-        interestYield: r2(interestApplied),
-        dividendYield: r2(dividendApplied),
-        pretaxDraw: r2(pretaxDrawY),
-        taxableSoldForSpending: r2(taxableSpendY),
-        taxableSoldForTax: r2(taxableTaxY),
-        cashSpend: r2(settled.cashSpend),
-        rothDraw: r2(rothDrawY),
+        spending: r22(spendNeedY - healthPremiumNetYear),
+        federalTax: r22(federalTax + penalty),
+        stateTax: r22(stateTax),
+        irmaa: r22(irmaaPaid),
+        healthPremium: r22(healthPremiumNetYear),
+        ss: r22(ssApplied),
+        rmd: r22(rmdApplied),
+        otherIncome: r22(otherApplied),
+        taxExempt: r22(taxExemptApplied),
+        interestYield: r22(interestApplied),
+        dividendYield: r22(dividendApplied),
+        pretaxDraw: r22(pretaxDrawY),
+        taxableSoldForSpending: r22(taxableSpendY),
+        taxableSoldForTax: r22(taxableTaxY),
+        cashSpend: r22(settled.cashSpend),
+        rothDraw: r22(rothDrawY),
+        hsaDraw: r22(hsaDrawY),
         salarySurplus: 0,
-        conversion: r2(conversion),
-        harvestSold: r2(gainsHarvested),
-        spendShortfall: r2(settled.spendDeficit),
-        unpaidTax: r2(unpaidTaxYear)
+        conversion: r22(conversion),
+        harvestSold: r22(gainsHarvested),
+        spendShortfall: r22(settled.spendDeficit),
+        unpaidTax: r22(unpaidTaxYear)
       };
     })();
     let effectiveMarginalPct = null;
     if (conversion > 0) {
-      const plus = priceWith(realizedGains, extraDraw + feedbackPretax, conversion + 100);
-      effectiveMarginalPct = r2(plus.federalTax + plus.stateTax - (federalTax + stateTax));
+      const plus = priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion + 100);
+      effectiveMarginalPct = r22(plus.federalTax + plus.stateTax - (federalTax + stateTax));
     }
     lookbackByYear.set(year, {
       year,
@@ -8199,8 +9351,18 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     priorYearReturnPct = seriesPct != null ? seriesPct : inputs.expectedReturnPct;
     pretaxP = Math.max(0, pretaxBalP) * yearGrowth;
     pretaxS = Math.max(0, pretaxBalS) * yearGrowth;
+    eligP = eligEndP == null ? null : Math.max(0, eligEndP) * yearGrowth;
+    eligS = eligEndS == null ? null : Math.max(0, eligEndS) * yearGrowth;
     const pretax = pretaxP + pretaxS;
-    roth = Math.max(0, rothBal) * yearGrowth;
+    const growRothAccount = (led) => {
+      led.balance = Math.max(0, led.balance) * yearGrowth;
+      clearEmptyRothAccountLedger(led);
+    };
+    growRothAccount(rothLedP.ira);
+    growRothAccount(rothLedP.employer);
+    growRothAccount(rothLedS.ira);
+    growRothAccount(rothLedS.employer);
+    roth = rothLedP.ira.balance + rothLedP.employer.balance + rothLedS.ira.balance + rothLedS.employer.balance;
     taxable = Math.max(0, taxableBal) * yearGrowth;
     hsa = Math.max(0, hsa) * yearGrowth;
     if (driftOn) {
@@ -8216,17 +9378,23 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       }
     }
     if (spendCashPct > 0) {
-      sleeveDollars = tierState != null && cashTierIndex >= 0 ? Math.max(0, tierState[cashTierIndex].bal) : Math.min(sleeveDollars, Math.max(0, taxable));
+      sleeveDollars = tierState != null && cashTierIndex >= 0 ? Math.max(0, tierAt(tierState, cashTierIndex).bal) : Math.min(sleeveDollars, Math.max(0, taxable));
     }
     const warnings = [];
     if (!leanDetail) {
+      if (!irmaaSurchargeKnown) {
+        warnings.push({
+          kind: "irmaa",
+          text: `IRMAA for ${year} is not priced — no MAGI on record for ${year - 2} (the two-year lookback year), so the $0 surcharge shown is unknown, not a computed $0. Supply that year's MAGI and filing status to price it; the plan's lifetime IRMAA and net cost exclude this unknown amount.`
+        });
+      }
       if (priced.irmaaTier > 0 && priceAgePrimary >= 63) {
         const law = lawForYear(year);
         const floor = priced.irmaaTier - 1 < law.irmaaTiers.length ? irmaaTierUpTo(priced.irmaaTier - 1, effFilingStatus, law, year, inputs.inflationPct) + 1 : 0;
         const perPersonAnnual = irmaaAnnualPerPerson(priced.irmaaTier, law);
         if (priced.magi - floor <= 2500) {
           const bothOnMedicareAtPremium = !isSurvivorYear && age + 2 >= 65 && spouseAge != null && spouseAge + 2 >= spouseAcaEndAge;
-          const framing = bothOnMedicareAtPremium ? `≈${fmtDollars(perPersonAnnual)}/yr for each person on Medicare — ≈${fmtDollars(r2(perPersonAnnual * 2))}/yr for the household` : `≈${fmtDollars(perPersonAnnual)}/yr for each person on Medicare`;
+          const framing = bothOnMedicareAtPremium ? `≈${fmtDollars(perPersonAnnual)}/yr for each person on Medicare — ≈${fmtDollars(r22(perPersonAnnual * 2))}/yr for the household` : `≈${fmtDollars(perPersonAnnual)}/yr for each person on Medicare`;
           warnings.push({
             kind: "irmaa",
             text: `Just over the IRMAA Tier ${priced.irmaaTier} line — MAGI ${fmtDollars(priced.magi)} sets Tier ${priced.irmaaTier} premiums two years later (${framing}).`
@@ -8245,10 +9413,15 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
             text: `Close to the ACA cliff — ACA MAGI ${fmtDollars(priced.acaMagi)} vs the 400% FPL line at ${fmtDollars(acaResult.cliff)}; $1 over loses the whole year's credit.`
           });
         }
-        if (acaUnder138) {
+        if (acaBelow100Fpl) {
           warnings.push({
             kind: "aca",
-            text: `Priced at ${acaResult.pctFpl.toFixed(0)}% of the poverty line — under 138% FPL, at that income coverage routes to Medicaid rather than a marketplace plan in most states, so the credit shown for this year is flagged rather than a marketplace result.`
+            text: `Priced at ${acaResult.fpl > 0 ? Math.floor(priced.acaMagi / acaResult.fpl * 100 + 0.000000001) : 0}% of the poverty line — under 100% FPL, so the premium credit is $0 under the standard §36B income test. ${acaResult.eligibilityNote ?? ""}`
+          });
+        } else if (acaUnder138) {
+          warnings.push({
+            kind: "aca",
+            text: `Priced at ${acaResult.fpl > 0 ? Math.floor(priced.acaMagi / acaResult.fpl * 100 + 0.000000001) : 0}% of the poverty line — under 138% FPL, at that income coverage routes to Medicaid rather than a marketplace plan in most states, so the credit shown for this year is flagged rather than a marketplace result.`
           });
         }
       }
@@ -8296,7 +9469,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
     if (yearCeilings && !leanDetail) {
       const lawY = lawForYear(year);
       const fsY = effFilingStatus;
-      const nextPriced = conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax, conversion + 100) : null;
+      const nextPriced = conversion > 0 ? priceWith(realizedGains, extraDraw + feedbackPretax + rothEarningsIncome + feedbackHsa, conversion + 100) : null;
       const addCap = (kind, label, cap, actual, nextActual) => {
         if (!Number.isFinite(cap))
           return;
@@ -8304,9 +9477,9 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         fillCaps.push({
           kind,
           label,
-          cap: r2(cap),
-          actual: r2(actual),
-          room: r2(cap - actual),
+          cap: r22(cap),
+          actual: r22(actual),
+          room: r22(cap - actual),
           bound
         });
         if (bound && fillBoundLabel == null)
@@ -8318,9 +9491,9 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         fillCaps.push({
           kind: "preserve",
           label: `Pre-tax reserve — ${fmtDollars(preserveFloor)} never converted`,
-          cap: r2(preserveFloor),
-          actual: r2(postConversion),
-          room: r2(postConversion - preserveFloor),
+          cap: r22(preserveFloor),
+          actual: r22(postConversion),
+          room: r22(postConversion - preserveFloor),
           bound
         });
         if (bound && fillBoundLabel == null) {
@@ -8382,40 +9555,48 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       fillOutcome = "no-room-under-ceilings";
     }
     const detail = {
-      priorPretaxBalance: r2(priorPretaxBalance),
+      priorPretaxBalance: r22(priorPretaxBalance),
       rmdDivisor,
       rmdTable,
-      priorPretaxPrimary: r2(priorP),
-      priorPretaxSpouse: r2(priorS),
-      rmdPrimary: r2(rmdP),
-      rmdSpouse: r2(rmdS),
+      priorPretaxPrimary: r22(priorP),
+      priorPretaxSpouse: r22(priorS),
+      rmdPrimary: r22(rmdP),
+      rmdSpouse: r22(rmdS),
       rmdDivisorPrimary: divisorP,
       rmdDivisorSpouse: divisorS,
       rmdTablePrimary: tableP,
       rmdTableSpouse: tableS,
+      rmdDeferredPrimary: r22(rmdDeferredP),
+      rmdDeferredSpouse: r22(rmdDeferredS),
+      rmdDeferredPaidPrimary: r22(rmdDeferredPaidP),
+      rmdDeferredPaidSpouse: r22(rmdDeferredPaidS),
+      survivorSsMode: isSurvivorYear ? survivorEnhanced ? "enhanced" : "simplified" : null,
+      survivorClaimAge: isSurvivorYear ? survivorClaimAgeInput : null,
       filingStatus: effFilingStatus,
       isDeathYear,
       isSurvivorYear,
-      otherOrdinary: r2(inputs.otherOrdinaryAnnual),
-      extraPreTaxDraw: r2(extraDraw + feedbackPretax),
-      pretaxSpendingDraw: r2(extraDraw),
-      pretaxTaxDebit: r2(feedbackPretax),
-      ltcg: r2(realizedGains + injectedLtcg + gainsHarvested),
-      ltcgNet: ledFinal ? ledFinal.netResult : r2(realizedGains + injectedLtcg + gainsHarvested),
-      capitalLossAllowance: ledFinal ? ledFinal.allowance : Math.min(capitalLossAllowanceCap(effFilingStatus), Math.max(0, -(realizedGains + injectedLtcg + gainsHarvested))),
-      dividendIncome: r2(dividendIncome),
-      interestIncome: r2(interestIncome),
+      otherOrdinary: r22(inputs.otherOrdinaryAnnual),
+      extraPreTaxDraw: r22(extraDraw + feedbackPretax),
+      pretaxSpendingDraw: r22(extraDraw),
+      pretaxTaxDebit: r22(feedbackPretax),
+      hsaTaxDebit: r22(feedbackHsa),
+      rothEarningsIncome: r22(rothEarningsIncome),
+      ltcg: r22(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains),
+      ltcgNet: ledFinal ? ledFinal.netResult : r22(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains),
+      capitalLossAllowance: ledFinal ? ledFinal.allowance : Math.min(capitalLossAllowanceCap(effFilingStatus), Math.max(0, -(realizedGains + injectedLtcg + gainsHarvested + harvestPaySaleGains))),
+      dividendIncome: r22(dividendIncome),
+      interestIncome: r22(interestIncome),
       qualifiedDividends: qualifiedDividendIncome,
-      cashSpend: r2(settled.cashSpend),
-      cashSleeveEnd: r2(spendCashPct > 0 ? sleeveDollars : 0),
-      spendingBase: r2(spendNeedBase),
-      flexCut: r2(spendNeedBase - spendNeedYear),
-      acaPremiumEmbedded: premiumReconcile ? r2(premiumEmbeddedDollars) : 0,
-      acaPremiumNet: premiumReconcile ? r2(Math.max(0, benchmark - settled.feedbackCredit)) : 0,
-      acaPremiumAdjustment: premiumReconcile ? r2(Math.max(0, benchmark - settled.feedbackCredit) - premiumEmbeddedDollars) : 0,
-      gainsHarvested: r2(gainsHarvested),
-      taxableBasisDollars: r2(taxableBasisDollars),
-      drawGains: r2(realizedGains),
+      cashSpend: r22(settled.cashSpend),
+      cashSleeveEnd: r22(spendCashPct > 0 ? sleeveDollars : 0),
+      spendingBase: r22(spendNeedBase),
+      flexCut: r22(spendNeedBase - spendNeedYear),
+      acaPremiumEmbedded: premiumReconcile ? r22(premiumEmbeddedDollars) : 0,
+      acaPremiumNet: premiumReconcile ? r22(Math.max(0, benchmark - settled.feedbackCredit)) : 0,
+      acaPremiumAdjustment: premiumReconcile ? r22(Math.max(0, benchmark - settled.feedbackCredit) - premiumEmbeddedDollars) : 0,
+      gainsHarvested: r22(gainsHarvested),
+      taxableBasisDollars: r22(taxableBasisDollars),
+      drawGains: r22(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,
       waTaxableGains: priced.waTaxableGains,
@@ -8434,18 +9615,18 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       amtExemption: priced.amtExemption,
       amtTentativeTax: priced.amtTentativeTax,
       amtOwed: priced.amtOwed,
-      lossCarryInSt: r2(carryInSt),
-      lossCarryInLt: r2(carryInLt),
+      lossCarryInSt: r22(carryInSt),
+      lossCarryInLt: r22(carryInLt),
       lossAbsorbed: ledFinal ? ledFinal.absorbedByGains : 0,
       lossWaAbsorbed: ledFinal ? ledFinal.waAbsorbedByGains : 0,
       lossAllowance: ledFinal ? ledFinal.allowance : 0,
       lossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
       lossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,
-      lossCarryInWaSt: r2(carryInWaSt),
-      lossCarryInWaLt: r2(carryInWaLt),
+      lossCarryInWaSt: r22(carryInWaSt),
+      lossCarryInWaLt: r22(carryInWaLt),
       lossCarryOutWaSt: ledFinal ? ledFinal.waCarryOut.st : 0,
       lossCarryOutWaLt: ledFinal ? ledFinal.waCarryOut.lt : 0,
-      taxExemptInterest: r2(inputs.taxExemptInterestAnnual),
+      taxExemptInterest: r22(inputs.taxExemptInterestAnnual),
       provisionalIncome: priced.provisionalIncome,
       ssTaxable: priced.ssTaxable,
       agi: priced.agi,
@@ -8464,7 +9645,9 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       ordinaryTax: priced.ordinaryTax,
       ltcgTax: priced.ltcgTax,
       niit: priced.niit,
-      stateTax: r2(stateTax),
+      stateTax: r22(stateTax),
+      lawProvenance: priced.lawProvenance,
+      stateTaxProvenance: priced.stateTaxProvenance,
       fill: {
         inWindow,
         windowStartAge: inputs.windowStartAge,
@@ -8478,92 +9661,116 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         premiumYear: year + 2,
         paidTier: irmaaPaidTier,
         paidSourceYear: irmaaPaidTier != null ? year - 2 : null,
-        paidSourceMagi: irmaaPaidTier != null && lookbackEntry != null ? r2(lookbackEntry.magi) : null,
+        paidSourceMagi: irmaaPaidTier != null && lookbackEntry != null ? r22(lookbackEntry.magi) : null,
         paidSourceFilingStatus: irmaaPaidTier != null && lookbackEntry != null ? lookbackEntry.filingStatus : null,
-        personsOnMedicare
+        personsOnMedicare,
+        lookbackYear: year - 2,
+        lookbackAvailable: lookbackEntry != null,
+        surchargeKnown: irmaaSurchargeKnown
       },
       aca: {
         active: acaActive,
         priced: acaPriced,
         householdSize,
         benchmark,
-        fpl: acaResult ? acaResult.fpl : acaCliffDollars != null ? r2(acaCliffDollars / 4) : null,
+        fpl: acaResult ? acaResult.fpl : acaCliffDollars != null ? r22(acaCliffDollars / 4) : null,
         cliff: acaResult ? acaResult.cliff : acaCliffDollars,
         pctFpl: acaResult ? acaResult.pctFpl : null,
         applicablePct: acaResult ? acaResult.applicablePct : null,
-        overCliff: acaResult ? acaResult.overCliff : false
+        overCliff: acaResult ? acaResult.overCliff : false,
+        below100Fpl: acaBelow100Fpl,
+        eligibilityNote: acaResult ? acaResult.eligibilityNote : null
       }
     };
     years.push({
       year,
       agePrimary: age,
       ageSpouse: spouseAge,
-      conversion: r2(conversion),
-      conversionAlready: r2(already),
-      gainsHarvested: r2(gainsHarvested),
-      rmd: r2(rmd),
-      ssBenefits: r2(ssBenefits),
-      ssPctTaxed: ssBenefits > 0 ? r2(priced.ssTaxable / ssBenefits * 100) : 0,
+      conversion: r22(conversion),
+      conversionAlready: r22(already),
+      gainsHarvested: r22(gainsHarvested),
+      rmd: r22(rmd),
+      ssBenefits: r22(ssBenefits),
+      ssPctTaxed: ssBenefits > 0 ? r22(priced.ssTaxable / ssBenefits * 100) : 0,
       agi: priced.agi,
       magi: priced.magi,
       acaMagi: priced.acaMagi,
       taxableIncome: priced.taxableIncome,
       acaActive,
       bracketPct: priced.marginalBracketPct,
-      federalTax: r2(federalTax),
-      stateTax: r2(stateTax),
-      penalty: r2(penalty),
+      federalTax: r22(federalTax),
+      stateTax: r22(stateTax),
+      penalty: r22(penalty),
       educationRefundable: priced.educationRefundable,
       amtOwed: priced.amtOwed,
       effectiveMarginalPct,
       irmaaTierSet: priced.irmaaTier,
-      irmaaPaid: r2(irmaaPaid),
-      acaCreditKept: r2(acaCreditKept),
+      irmaaPaid: r22(irmaaPaid),
+      irmaaSurchargeKnown,
+      acaCreditKept: r22(acaCreditKept),
       acaPriced,
       acaUnder138,
-      healthPremiumGross: r2(healthPremiumGrossYear),
-      healthPremiumNet: r2(healthPremiumNetYear),
-      pretaxEnd: r2(pretax),
-      pretaxPrimaryEnd: r2(pretaxP),
-      pretaxSpouseEnd: r2(pretaxS),
+      acaBelow100Fpl,
+      earlyWithdrawalEligibilityUnknown,
+      rothBasisUnknown: rothBasisUnknownYear,
+      rothEarningsIncome: r22(rothEarningsIncome),
+      healthPremiumGross: r22(healthPremiumGrossYear),
+      healthPremiumNet: r22(healthPremiumNetYear),
+      pretaxEnd: r22(pretax),
+      pretaxPrimaryEnd: r22(pretaxP),
+      pretaxSpouseEnd: r22(pretaxS),
       filingStatus: effFilingStatus,
       isDeathYear,
       isSurvivorYear,
-      rothEnd: r2(roth),
-      taxableEnd: r2(taxable),
-      hsaEnd: r2(hsa),
-      fiveYearClockYear: conversion > 0 ? year + 5 : null,
+      rothEnd: r22(roth),
+      taxableEnd: r22(taxable),
+      hsaEnd: r22(hsa),
+      fiveYearClockYear: (() => {
+        if (rothLedP.ira.known && rothLedS.ira.known) {
+          return settled.earliestRothLotYear != null ? settled.earliestRothLotYear + 5 : null;
+        }
+        return conversion > 0 ? year + 5 : null;
+      })(),
       warnings,
       detail,
       funding,
-      spendShortfall: r2(settled.spendDeficit),
-      unpaidTax: r2(unpaidTaxYear),
+      spendShortfall: r22(settled.spendDeficit),
+      unpaidTax: r22(unpaidTaxYear),
       settlementConverged: settled.settlementConverged,
       settlementMismatchCents: settled.settlementMismatchCents,
-      ceilingBreached: yearCeilings != null && ceilingsActive(yearCeilings) && !respectsCeilings(priced)
+      settlementRounds: settled.settlementRounds,
+      settlementPasses: settled.settlementPasses,
+      settlementStopReason: settled.settlementStopReason,
+      settlementInnerStopReason: settled.settlementInnerStopReason,
+      ceilingBreached: yearCeilings != null && ceilingsActive(yearCeilings) && !respectsCeilings(priced, additional)
     });
   }
   const endingPretaxTotal = pretaxP + pretaxS;
   const endingPreserved = Math.min(endingPretaxTotal, Math.max(0, inputs.preservePretax ?? 0));
-  const endingAfterTaxWealth = endingPreserved * (1 - (inputs.preserveExitRatePct ?? inputs.heirRatePct) / 100) + (endingPretaxTotal - endingPreserved) * (1 - inputs.heirRatePct / 100) + roth + taxable + hsa;
+  const endingAfterTaxWealth = endingPreserved * (1 - (inputs.preserveExitRatePct ?? inputs.heirRatePct) / 100) + (endingPretaxTotal - endingPreserved) * (1 - inputs.heirRatePct / 100) + roth + taxable + hsa - lifetimeUnpaidTax;
   return {
     years,
-    lifetimeFederalTax: r2(lifetimeFederalTax),
-    lifetimeStateTax: r2(lifetimeStateTax),
-    lifetimePenalty: r2(lifetimePenalty),
-    lifetimeIrmaa: r2(lifetimeIrmaa),
-    lifetimeAcaKept: r2(lifetimeAcaKept),
-    lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
-    lifetimeAmt: r2(lifetimeAmt),
-    lifetimeSsCollected: r2(lifetimeSsCollected),
-    lifetimeHealthPremiumGross: r2(lifetimeHealthPremiumGross),
-    lifetimeHealthPremiumNet: r2(lifetimeHealthPremiumNet),
-    lifetimeUnpaidTax: r2(lifetimeUnpaidTax),
-    endingPretax: r2(endingPretaxTotal),
-    endingRoth: r2(roth),
-    endingTaxable: r2(taxable),
-    endingHsa: r2(hsa),
-    endingAfterTaxWealth: r2(endingAfterTaxWealth)
+    lifetimeFederalTax: r22(lifetimeFederalTax),
+    lifetimeStateTax: r22(lifetimeStateTax),
+    lifetimePenalty: r22(lifetimePenalty),
+    lifetimeIrmaa: r22(lifetimeIrmaa),
+    lifetimeAcaKept: r22(lifetimeAcaKept),
+    irmaaLookbackMissingYears,
+    acaBelow100FplYears,
+    cliffCapInoperativeYears,
+    earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears,
+    lifetimeEducationRefundable: r22(lifetimeEducationRefundable),
+    lifetimeAmt: r22(lifetimeAmt),
+    lifetimeSsCollected: r22(lifetimeSsCollected),
+    lifetimeHealthPremiumGross: r22(lifetimeHealthPremiumGross),
+    lifetimeHealthPremiumNet: r22(lifetimeHealthPremiumNet),
+    lifetimeUnpaidTax: r22(lifetimeUnpaidTax),
+    endingPretax: r22(endingPretaxTotal),
+    endingRoth: r22(roth),
+    endingTaxable: r22(taxable),
+    endingHsa: r22(hsa),
+    endingAfterTaxWealth: r22(endingAfterTaxWealth)
   };
 }
 function fmtDollars(n) {
@@ -8602,43 +9809,8 @@ function impliedYieldPctsFromTaxReturn(stored, taxablePoolDollars) {
 
 var DEFAULT_HEIR_RATE_PCT = 22;
 
-function r22(n) {
+function r23(n) {
   return Math.round(n * 100) / 100;
-}
-function fullRetirementAgeMonths(birthYear) {
-  if (birthYear >= 1960)
-    return 67 * 12;
-  if (birthYear >= 1955)
-    return 66 * 12 + (birthYear - 1954) * 2;
-  if (birthYear >= 1943)
-    return 66 * 12;
-  if (birthYear >= 1938)
-    return 65 * 12 + (birthYear - 1937) * 2;
-  return 65 * 12;
-}
-function ssBenefitFactor(claimAge, birthYear) {
-  const fraMonths = fullRetirementAgeMonths(birthYear);
-  const diff = Math.round(claimAge * 12) - fraMonths;
-  if (diff < 0) {
-    const early = -diff;
-    const reduction = Math.min(early, 36) * (5 / 9 / 100) + Math.max(0, early - 36) * (5 / 12 / 100);
-    return 1 - reduction;
-  }
-  if (diff > 0) {
-    const delayed = Math.min(diff, 70 * 12 - fraMonths);
-    return 1 + Math.max(0, delayed) * (2 / 3 / 100);
-  }
-  return 1;
-}
-function ssAnnualAtClaimAge(anchorAnnual, anchorAge, claimAge, birthYear) {
-  if (anchorAge == null || anchorAge === claimAge || anchorAnnual <= 0) {
-    return anchorAnnual;
-  }
-  const anchorFactor = ssBenefitFactor(anchorAge, birthYear);
-  if (anchorFactor <= 0)
-    return anchorAnnual;
-  const pia = anchorAnnual / anchorFactor;
-  return r22(pia * ssBenefitFactor(claimAge, birthYear));
 }
 function enteredClaimInfo(inputs) {
   return {
@@ -8651,21 +9823,21 @@ function enteredClaimInfo(inputs) {
   };
 }
 function netCostBreakdown(result, heirRatePct, opts) {
-  const tax = r22(result.lifetimeFederalTax + result.lifetimeStateTax);
-  const penalty = r22(result.lifetimePenalty);
-  const irmaa = r22(result.lifetimeIrmaa);
-  const acaCredit = r22(result.lifetimeAcaKept);
-  const healthPremium = r22(result.lifetimeHealthPremiumGross ?? 0);
-  const healthPremiumNet = r22(result.lifetimeHealthPremiumNet ?? 0);
-  const educationRefundable = r22(result.lifetimeEducationRefundable);
-  const amt = r22(result.lifetimeAmt);
+  const tax = r23(result.lifetimeFederalTax + result.lifetimeStateTax);
+  const penalty = r23(result.lifetimePenalty);
+  const irmaa = r23(result.lifetimeIrmaa);
+  const acaCredit = r23(result.lifetimeAcaKept);
+  const healthPremium = r23(result.lifetimeHealthPremiumGross ?? 0);
+  const healthPremiumNet = r23(result.lifetimeHealthPremiumNet ?? 0);
+  const educationRefundable = r23(result.lifetimeEducationRefundable);
+  const amt = r23(result.lifetimeAmt);
   const floor = Math.max(0, opts?.preservePretax ?? 0);
   const exitRatePct = opts?.preserveExitRatePct ?? heirRatePct;
-  const preservedPretax = r22(Math.min(result.endingPretax, floor));
-  const excessPretax = r22(result.endingPretax - preservedPretax);
-  const terminalPreserved = r22(preservedPretax * (exitRatePct / 100));
-  const terminalExcess = r22(excessPretax * (heirRatePct / 100));
-  const terminal = r22(terminalPreserved + terminalExcess);
+  const preservedPretax = r23(Math.min(result.endingPretax, floor));
+  const excessPretax = r23(result.endingPretax - preservedPretax);
+  const terminalPreserved = r23(preservedPretax * (exitRatePct / 100));
+  const terminalExcess = r23(excessPretax * (heirRatePct / 100));
+  const terminal = r23(terminalPreserved + terminalExcess);
   return {
     tax,
     penalty,
@@ -8680,8 +9852,8 @@ function netCostBreakdown(result, heirRatePct, opts) {
     terminalPreserved,
     excessPretax,
     terminalExcess,
-    netCost: r22(tax + penalty + irmaa + healthPremium - acaCredit - educationRefundable + terminal),
-    ssCollected: r22(result.lifetimeSsCollected)
+    netCost: r23(tax + penalty + irmaa + healthPremium - acaCredit - educationRefundable + terminal),
+    ssCollected: r23(result.lifetimeSsCollected)
   };
 }
 function planNetCost(result, inputs) {
@@ -8689,6 +9861,185 @@ function planNetCost(result, inputs) {
     preservePretax: inputs.preservePretax ?? 0,
     preserveExitRatePct: inputs.preserveExitRatePct ?? inputs.heirRatePct
   });
+}
+var SETTLEMENT_TOLERANCE_CENTS = 2;
+function assessCandidateIntegrity(result) {
+  const nonConvergedYearList = [];
+  let maxMismatchGainsCents = 0;
+  let maxMismatchPretaxCents = 0;
+  let maxMismatchAcaCreditCents = 0;
+  const acaMismatchYears = [];
+  let ceilingBreachedYears = 0;
+  let ceilingBreachedAtZeroConversionYears = 0;
+  let spendShortfallTotal = 0;
+  const convertingBreachedYears = [];
+  for (const y of result.years) {
+    const mismatch = y.settlementMismatchCents ?? { gains: 0, pretax: 0, roth: 0, hsa: 0, acaCredit: 0 };
+    const conversion = y.conversion ?? 0;
+    if (!y.settlementConverged)
+      nonConvergedYearList.push(y.year);
+    maxMismatchGainsCents = Math.max(maxMismatchGainsCents, mismatch.gains ?? 0);
+    maxMismatchPretaxCents = Math.max(maxMismatchPretaxCents, mismatch.pretax ?? 0);
+    const acaCredit = mismatch.acaCredit ?? 0;
+    if (acaCredit > 0)
+      acaMismatchYears.push(y.year);
+    maxMismatchAcaCreditCents = Math.max(maxMismatchAcaCreditCents, acaCredit);
+    if (y.ceilingBreached) {
+      ceilingBreachedYears++;
+      if (conversion <= 0)
+        ceilingBreachedAtZeroConversionYears++;
+      else
+        convertingBreachedYears.push(y.year);
+    }
+    spendShortfallTotal += y.spendShortfall ?? 0;
+  }
+  const reasons = [];
+  if (maxMismatchGainsCents > SETTLEMENT_TOLERANCE_CENTS || maxMismatchPretaxCents > SETTLEMENT_TOLERANCE_CENTS) {
+    reasons.push(`unresolved settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` + `(gains ${maxMismatchGainsCents}¢, pre-tax ${maxMismatchPretaxCents}¢)`);
+  }
+  if (maxMismatchAcaCreditCents > SETTLEMENT_TOLERANCE_CENTS) {
+    reasons.push(`unresolved ACA credit settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` + `(ACA credit ${maxMismatchAcaCreditCents}¢ in ${acaMismatchYears.join(", ")})`);
+  }
+  if (convertingBreachedYears.length > 0) {
+    reasons.push(`ceiling still breached with conversion above $0 in ${convertingBreachedYears.join(", ")} ` + `(the final clamp should have reduced the conversion to $0 or compliance)`);
+  }
+  const unpaidTaxTotal = r23(result.lifetimeUnpaidTax ?? 0);
+  if (unpaidTaxTotal > 0) {
+    reasons.push(`unpaid tax of ${fmtDollars2(unpaidTaxTotal)}: assessed tax the balances could not pay`);
+  }
+  spendShortfallTotal = r23(spendShortfallTotal);
+  if (spendShortfallTotal > 0) {
+    reasons.push(`unfunded spending of ${fmtDollars2(spendShortfallTotal)}: the plan cannot fund its own spending need`);
+  }
+  const status = reasons.length > 0 ? "invalid" : nonConvergedYearList.length > 0 ? "valid-with-benign-residual" : "valid";
+  return {
+    status,
+    nonConvergedYears: nonConvergedYearList.length,
+    nonConvergedYearList,
+    maxMismatchGainsCents,
+    maxMismatchPretaxCents,
+    maxMismatchAcaCreditCents,
+    ceilingBreachedYears,
+    ceilingBreachedAtZeroConversionYears,
+    unpaidTaxTotal,
+    spendShortfallTotal,
+    reasons
+  };
+}
+var OPTIMIZER_OBJECTIVE = "Lowest lifetime net cost first: lifetime federal + state tax + pre-59½ penalties + IRMAA surcharges + gross health premiums − ACA premium credit kept − refundable education credit + terminal tax on the ending pre-tax balance. Exact net-cost ties break toward the highest ending after-tax wealth. Best among the candidates actually tested — not a mathematical global optimum.";
+function describeOptimizerSearchScope(inputs, opts) {
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(inputs.birthYearPrimary));
+  const stops = [...new Set([65, rmdAge - 1, inputs.endAgePrimary])].filter((s) => s >= inputs.windowStartAge);
+  const ceilingFamilies = [
+    "every federal bracket top",
+    "every IRMAA tier ceiling, and bracket × IRMAA combinations",
+    "ACA-cliff caps (alone and with the 12% / 22% brackets)",
+    "MAGI-cap steps ($150,000–$500,000)"
+  ];
+  const variants = [
+    "marginal-rate guardrail variants (bracket ceilings)",
+    "ACA bunching variants (non-cliff ceilings)",
+    ...harvestGatePasses(inputs) ? ["gain-harvest twins of every conversion candidate"] : [],
+    "Do Nothing as the benchmark"
+  ];
+  const heldFixed = [];
+  if (!opts.searchOrders)
+    heldFixed.push(`draw order (held at the plan order, ${drawOrderLabel(inputs.drawOrder)})`);
+  if (!opts.claimingAgesSearched) {
+    const parts = [];
+    if (inputs.ssPrimaryStartAge != null)
+      parts.push(`primary claims at ${inputs.ssPrimaryStartAge}`);
+    if (inputs.ssSpouseStartAge != null)
+      parts.push(`spouse claims at ${inputs.ssSpouseStartAge}`);
+    heldFixed.push(parts.length > 0 ? `claiming ages (held at the entered ages: ${parts.join(", ")})` : "claiming ages (no benefit entered, so none searched)");
+  }
+  const description = `Conversion ceilings: ${ceilingFamilies.join("; ")}. ` + `Conversion windows: stop at ${stops.join(", ")} (stop at 65 / stop the year before RMDs begin / keep topping up through the RMD years). ` + (opts.searchOrders ? "Draw orders: all six permutations searched. " : `Draw orders: held at the plan order (${drawOrderLabel(inputs.drawOrder)}). `) + (opts.claimingAgesSearched && opts.combosTested > 1 ? `Claiming ages: searched jointly with the conversion strategies (${opts.combosTested} combinations). ` : "Claiming ages: held at the entered ages. ") + `Variants: ${variants.join("; ")}.`;
+  return {
+    description,
+    windowStopAges: stops,
+    ceilingFamilies,
+    drawOrdersSearched: opts.searchOrders,
+    drawOrderLabels: opts.searchOrders ? ALL_DRAW_ORDERS.map((o) => drawOrderLabel(o)) : [drawOrderLabel(inputs.drawOrder)],
+    claimingAgesSearched: opts.claimingAgesSearched,
+    claimingAgeCombinations: opts.claimingAgesSearched ? opts.combosTested : 1,
+    variants,
+    heldFixed
+  };
+}
+function pickNetCostWinner(validSorted) {
+  return validSorted[0] ?? null;
+}
+function pickEndingWealthWinner(validSorted) {
+  let best = null;
+  for (const s of validSorted) {
+    if (best == null || s.result.endingAfterTaxWealth > best.result.endingAfterTaxWealth) {
+      best = s;
+    }
+  }
+  return best;
+}
+function crownOptimizerWinners(sortedAll) {
+  if (sortedAll.length === 0) {
+    throw new RangeError("crownOptimizerWinners needs at least one scored candidate — an empty list has no winner to crown.");
+  }
+  const valid = sortedAll.filter((s) => s.integrity?.status !== "invalid");
+  const invalid = sortedAll.length - valid.length;
+  const rawFirst = sortedAll[0];
+  const excludedInvalidWinner = rawFirst.integrity?.status === "invalid" ? { candidate: rawFirst, integrity: rawFirst.integrity } : null;
+  const netCostWinner = pickNetCostWinner(valid);
+  const wealthWinner = pickEndingWealthWinner(valid);
+  if (netCostWinner == null || wealthWinner == null) {
+    return {
+      winnerByNetCost: rawFirst,
+      winnerByEndingWealth: pickEndingWealthWinner(sortedAll) ?? rawFirst,
+      selectedWinner: rawFirst,
+      validCandidatesTested: 0,
+      invalidCandidatesTested: invalid,
+      excludedInvalidWinner,
+      winnerQualified: false,
+      winnersDiffer: (pickEndingWealthWinner(sortedAll)?.spec.key ?? rawFirst.spec.key) !== rawFirst.spec.key
+    };
+  }
+  return {
+    winnerByNetCost: netCostWinner,
+    winnerByEndingWealth: wealthWinner,
+    selectedWinner: netCostWinner,
+    validCandidatesTested: valid.length,
+    invalidCandidatesTested: invalid,
+    excludedInvalidWinner,
+    winnerQualified: true,
+    winnersDiffer: wealthWinner.spec.key !== netCostWinner.spec.key
+  };
+}
+function crownCompareWinners(entries) {
+  const sorted = entries.map((e, i) => ({ e, i })).sort((a, b) => a.e.netCostCents !== b.e.netCostCents ? a.e.netCostCents - b.e.netCostCents : a.e.endingAfterTaxWealthCents !== b.e.endingAfterTaxWealthCents ? b.e.endingAfterTaxWealthCents - a.e.endingAfterTaxWealthCents : a.i - b.i).map((x) => x.e);
+  const valid = sorted.filter((e) => e.integrity.status !== "invalid");
+  const invalid = sorted.length - valid.length;
+  const rawFirst = sorted[0];
+  const excludedInvalidWinner = rawFirst.integrity.status === "invalid" ? { name: rawFirst.name, integrity: rawFirst.integrity } : null;
+  const netCostWinner = valid[0] ?? null;
+  const wealthWinner = valid.reduce((best, e) => best == null || e.endingAfterTaxWealthCents > best.endingAfterTaxWealthCents ? e : best, null);
+  if (netCostWinner == null || wealthWinner == null) {
+    const rawWealthWinner = sorted.reduce((best, e) => e.endingAfterTaxWealthCents > best.endingAfterTaxWealthCents ? e : best, rawFirst);
+    return {
+      winnerByNetCost: rawFirst,
+      winnerByEndingWealth: rawWealthWinner,
+      validCandidatesTested: 0,
+      invalidCandidatesTested: invalid,
+      excludedInvalidWinner,
+      winnerQualified: false,
+      winnersDiffer: rawWealthWinner.name !== rawFirst.name
+    };
+  }
+  return {
+    winnerByNetCost: netCostWinner,
+    winnerByEndingWealth: wealthWinner,
+    validCandidatesTested: valid.length,
+    invalidCandidatesTested: invalid,
+    excludedInvalidWinner,
+    winnerQualified: true,
+    winnersDiffer: wealthWinner.name !== netCostWinner.name
+  };
 }
 function harvestGatePasses(inputs) {
   if (!(inputs.taxableStart > 0))
@@ -8703,8 +10054,17 @@ function harvestGatePasses(inputs) {
 var HARVEST_NAME_PHRASE = "gain harvesting into the 0% bracket";
 function fmtDollars2(n) {
   const neg = n < 0;
-  const abs = Math.abs(Math.round(n));
-  let digits = String(abs);
+  const abs = Math.abs(n);
+  if (abs > 0 && abs < 0.5) {
+    const cents = Math.round(abs * 100);
+    if (cents === 0) {
+      return neg ? "−<$0.01" : "<$0.01";
+    }
+    const s = `$0.${String(cents).padStart(2, "0")}`;
+    return neg ? `−${s}` : s;
+  }
+  const rounded = Math.round(abs);
+  let digits = String(rounded);
   let grouped = "";
   while (digits.length > 3) {
     grouped = `,${digits.slice(-3)}${grouped}`;
@@ -8886,7 +10246,7 @@ function scoreAllCandidates(inputs, claimAges = enteredClaimInfo(inputs), opts) 
   const orders = opts?.searchOrders === false ? [inputs.drawOrder] : ALL_DRAW_ORDERS;
   const planOrderKey = drawOrderKey(inputs.drawOrder);
   const scored = [];
-  const dnResult = simulateRothPlan(inputs, {
+  const dnResult = simulateRothPlan(structuredClone(inputs), {
     id: "none",
     name: "Do Nothing",
     ceilings: null
@@ -8899,10 +10259,11 @@ function scoreAllCandidates(inputs, claimAges = enteredClaimInfo(inputs), opts) 
     },
     result: dnResult,
     cost: planNetCost(dnResult, inputs),
+    integrity: assessCandidateIntegrity(dnResult),
     claimAges
   });
   for (const spec of buildOptimizerCandidates(inputs, orders)) {
-    const candidateInputs = spec.windowStopAge === inputs.windowStopAge && drawOrderKey(spec.drawOrder) === planOrderKey ? inputs : { ...inputs, windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
+    const candidateInputs = spec.windowStopAge === inputs.windowStopAge && drawOrderKey(spec.drawOrder) === planOrderKey ? structuredClone(inputs) : { ...structuredClone(inputs), windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
     const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), undefined, {
       leanDetail: true
     });
@@ -8910,6 +10271,7 @@ function scoreAllCandidates(inputs, claimAges = enteredClaimInfo(inputs), opts) 
       spec,
       result,
       cost: planNetCost(result, inputs),
+      integrity: assessCandidateIntegrity(result),
       claimAges
     });
   }
@@ -8919,12 +10281,28 @@ function scoreAllCandidates(inputs, claimAges = enteredClaimInfo(inputs), opts) 
 function runOptimizer(inputs, opts) {
   const scored = scoreAllCandidates(inputs, enteredClaimInfo(inputs), opts);
   const doNothing = scored.find((s) => s.spec.key === DO_NOTHING_SPEC.key) ?? scored[0];
-  const winner = scored[0];
+  const crowned = crownOptimizerWinners(scored);
+  const winner = crowned.selectedWinner;
+  const runnersUp = scored.filter((s) => s.integrity?.status !== "invalid" && s !== winner).slice(0, 3);
   return {
     candidatesTested: scored.length,
+    validCandidatesTested: crowned.validCandidatesTested,
+    invalidCandidatesTested: crowned.invalidCandidatesTested,
     doNothing,
     winner,
-    runnersUp: scored.slice(1, 4),
+    selectedWinner: crowned.selectedWinner,
+    winnerByNetCost: crowned.winnerByNetCost,
+    winnerByEndingWealth: crowned.winnerByEndingWealth,
+    winnersDiffer: crowned.winnersDiffer,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    objective: OPTIMIZER_OBJECTIVE,
+    searchScope: describeOptimizerSearchScope(inputs, {
+      searchOrders: opts?.searchOrders !== false,
+      claimingAgesSearched: false,
+      combosTested: 1
+    }),
+    runnersUp,
     scored
   };
 }
@@ -9010,6 +10388,30 @@ function screenSpecs(inputs) {
   }
   return specs;
 }
+function claimAgeRowSurvivorAnnual(inputs, claimAges) {
+  const simple = Math.max(claimAges.primaryAnnual, claimAges.spouseAnnual);
+  const claimAge = inputs.survivorClaimAge;
+  if (!inputs.survivorEnabled || inputs.survivorDeathYear == null || claimAge == null) {
+    return simple;
+  }
+  const deceasedIsPrimary = (inputs.survivorWho ?? "primary") === "primary";
+  const deceasedBirthYear = deceasedIsPrimary ? inputs.birthYearPrimary : inputs.birthYearSpouse;
+  const survivorBirthYear = deceasedIsPrimary ? inputs.birthYearSpouse : inputs.birthYearPrimary;
+  if (deceasedBirthYear == null || survivorBirthYear == null) {
+    return simple;
+  }
+  const survivorOwnAge = deceasedIsPrimary ? claimAges.spouseAge : claimAges.primaryAge;
+  return survivorBenefitAnnualEnhanced({
+    deceasedAnchorAnnual: deceasedIsPrimary ? claimAges.primaryAnnual : claimAges.spouseAnnual,
+    deceasedAnchorAge: deceasedIsPrimary ? claimAges.primaryAge : claimAges.spouseAge,
+    deceasedBirthYear,
+    deceasedDeathAge: inputs.survivorDeathYear - deceasedBirthYear,
+    survivorBirthYear,
+    survivorAge: Math.max(claimAge, survivorOwnAge ?? claimAge),
+    survivorClaimAge: claimAge,
+    ownAnnualThisYear: deceasedIsPrimary ? claimAges.spouseAnnual : claimAges.primaryAnnual
+  });
+}
 function computeJointOptimizer(inputs) {
   const combos = claimAgeCombos(inputs);
   const first = combos[0];
@@ -9048,7 +10450,7 @@ function computeJointOptimizer(inputs) {
   const specs = screenSpecs(inputs);
   info.screenStrategiesPerCombo = specs.length + 1;
   const screened = combos.map((combo) => {
-    const dnResult = simulateRothPlan(combo.inputs, {
+    const dnResult = simulateRothPlan(structuredClone(combo.inputs), {
       id: "none",
       name: "Do Nothing",
       ceilings: null
@@ -9056,7 +10458,7 @@ function computeJointOptimizer(inputs) {
     const doNothingCost = planNetCost(dnResult, inputs).netCost;
     let best = doNothingCost;
     for (const spec of specs) {
-      const candidateInputs = spec.windowStopAge === combo.inputs.windowStopAge ? combo.inputs : { ...combo.inputs, windowStopAge: spec.windowStopAge };
+      const candidateInputs = spec.windowStopAge === combo.inputs.windowStopAge ? structuredClone(combo.inputs) : { ...structuredClone(combo.inputs), windowStopAge: spec.windowStopAge };
       const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), undefined, {
         leanDetail: true
       });
@@ -9075,12 +10477,18 @@ function computeJointOptimizer(inputs) {
   }
   scoredAll.sort(compareJointCandidates);
   const eligible = floor == null ? scoredAll : scoredAll.filter((s) => s.claimAges.primaryAge == null || s.claimAges.primaryAge >= floor);
-  const winner = eligible[0] ?? scoredAll[0];
+  const crowned = crownOptimizerWinners(eligible.length > 0 ? eligible : scoredAll);
+  const winner = crowned.selectedWinner;
+  const winnerByNetCost = crowned.winnerByNetCost;
+  const winnerByEndingWealth = crowned.winnerByEndingWealth;
   const doNothing = scoredAll.filter((s) => s.spec.key === DO_NOTHING_SPEC.key).sort(compareJointCandidates)[0] ?? winner;
+  const runnerPool = eligible.length > 0 ? eligible : scoredAll;
   const runnersUp = [];
-  for (const s of eligible) {
+  for (const s of runnerPool) {
     if (runnersUp.length >= 3)
       break;
+    if (s.integrity?.status === "invalid")
+      continue;
     if (s.spec.key === winner.spec.key && s.claimAges.primaryAge === winner.claimAges.primaryAge && s.claimAges.spouseAge === winner.claimAges.spouseAge) {
       continue;
     }
@@ -9100,7 +10508,7 @@ function computeJointOptimizer(inputs) {
       claimAgeTable.push({
         primaryAge: age,
         primaryAnnual: best.claimAges.primaryAnnual,
-        survivorAnnual: Math.max(best.claimAges.primaryAnnual, best.claimAges.spouseAnnual),
+        survivorAnnual: claimAgeRowSurvivorAnnual(inputs, best.claimAges),
         belowFloor: floor != null && age < floor,
         isWinner: best === winner,
         best
@@ -9114,8 +10522,22 @@ function computeJointOptimizer(inputs) {
   info.claimAgeTableEmpty = claimAgeTable.length === 0;
   return {
     candidatesTested: scoredAll.length,
+    validCandidatesTested: crowned.validCandidatesTested,
+    invalidCandidatesTested: crowned.invalidCandidatesTested,
     doNothing,
     winner,
+    selectedWinner: crowned.selectedWinner,
+    winnerByNetCost,
+    winnerByEndingWealth,
+    winnersDiffer: crowned.winnersDiffer,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    objective: OPTIMIZER_OBJECTIVE,
+    searchScope: describeOptimizerSearchScope(inputs, {
+      searchOrders: false,
+      claimingAgesSearched: true,
+      combosTested: combos.length
+    }),
     runnersUp,
     scored: scoredAll,
     jointSearch: info,
@@ -9137,7 +10559,18 @@ function jointInputsKey(inputs) {
     }
     return v;
   };
-  return JSON.stringify(sortValue(inputs));
+  const nonFiniteReplacer = (_key, value) => {
+    if (typeof value === "number") {
+      if (Number.isNaN(value))
+        return { __c7NonFinite__: "NaN" };
+      if (value === Infinity)
+        return { __c7NonFinite__: "Infinity" };
+      if (value === -Infinity)
+        return { __c7NonFinite__: "-Infinity" };
+    }
+    return value;
+  };
+  return JSON.stringify(sortValue(inputs), nonFiniteReplacer);
 }
 function runJointOptimizer(inputs) {
   const key = jointInputsKey(inputs);
@@ -9159,15 +10592,30 @@ function pricePlaygroundYear(inp) {
   const ageSpouse = joint ? inp.ageSpouse : null;
   const law = lawForYear(inp.taxYear);
   const inflationPct = inp.inflationPct != null && Number.isFinite(inp.inflationPct) && inp.inflationPct > -100 ? inp.inflationPct : 0;
-  const ssBenefits = r22(inp.ssPrimary + (joint ? inp.ssSpouse : 0));
+  const ssBenefits = r23(inp.ssPrimary + (joint ? inp.ssSpouse : 0));
   const spendingDraw = Math.max(0, inp.spendingDraw ?? 0);
-  const moneyOut = r22(inp.conversion + spendingDraw);
+  const moneyOut = r23(inp.conversion + spendingDraw);
   const cashDraw = Math.max(0, inp.cashDraw ?? 0);
   const rothDraw = Math.max(0, inp.rothDraw ?? 0);
-  const qualifiedDividends = r22(Math.min(Math.max(0, inp.qualifiedDividends), Math.max(0, inp.ordinaryDividends)));
-  const nonQualifiedDividends = r22(Math.max(0, inp.ordinaryDividends - qualifiedDividends));
-  const otherOrdinaryTotal = r22(inp.interest + nonQualifiedDividends + inp.otherOrdinary);
-  const stockGain = r22(inp.stockSold - inp.stockBasis);
+  const rothEmployerBal = Math.max(0, inp.rothEmployerBalance ?? 0);
+  const rothIraBal = inp.rothIraBalance != null ? Math.max(0, inp.rothIraBalance) : inp.rothBalance != null ? Math.max(0, inp.rothBalance - rothEmployerBal) : Math.max(0, rothDraw - rothEmployerBal);
+  const rothBasisSplit = splitRothBasisAcrossAccounts(inp.rothContributionBasis, rothIraBal, rothEmployerBal);
+  const pgRothLedger = {
+    ira: initRothAccountLedger(rothIraBal, rothBasisSplit.ira, inp.rothConversionLots, inp.firstRothYear),
+    employer: initRothAccountLedger(rothEmployerBal, rothBasisSplit.employer, [], inp.firstDesignatedRothYear)
+  };
+  const pgRothOut = rothDraw > 0 ? debitRothOwnerLedger(pgRothLedger, rothDraw, {
+    year: inp.taxYear,
+    age: inp.agePrimary
+  }) : { drawn: 0, income: 0, penalty: 0, unknown: false };
+  const rothEarningsIncome = r23(pgRothOut.income);
+  const rothPenalty = r23(pgRothOut.penalty);
+  const rothBasisUnknown = pgRothOut.unknown;
+  const rothAssumedQualified = rothDraw > 0 && inp.rothContributionBasis == null && inp.rothConversionLots == null;
+  const qualifiedDividends = r23(Math.min(Math.max(0, inp.qualifiedDividends), Math.max(0, inp.ordinaryDividends)));
+  const nonQualifiedDividends = r23(Math.max(0, inp.ordinaryDividends - qualifiedDividends));
+  const otherOrdinaryTotal = r23(inp.interest + nonQualifiedDividends + inp.otherOrdinary);
+  const stockGain = r23(inp.stockSold - inp.stockBasis);
   const carryInSt = Math.max(0, inp.capitalLossCarryInSt ?? 0);
   const carryInLt = Math.max(0, inp.capitalLossCarryInLt ?? 0);
   const carryInStWa = Math.max(0, inp.capitalLossCarryInStWa ?? 0);
@@ -9184,7 +10632,7 @@ function pricePlaygroundYear(inp) {
     return {
       ltcg: led.netResult,
       capitalLossAllowance: led.allowance,
-      waGainsBase: r22(grossGains - led.waAbsorbedByGains)
+      waGainsBase: r23(grossGains - led.waAbsorbedByGains)
     };
   };
   let ltcgNet = stockGain;
@@ -9198,7 +10646,7 @@ function pricePlaygroundYear(inp) {
   }
   const spouseBalanceCounted = countedSpousePretax(inp);
   const hasSpouseBalance = spouseBalanceCounted != null;
-  const totalPretaxBalance = inp.pretaxBalance == null && !hasSpouseBalance ? null : r22((inp.pretaxBalance ?? 0) + (spouseBalanceCounted ?? 0));
+  const totalPretaxBalance = inp.pretaxBalance == null && !hasSpouseBalance ? null : r23((inp.pretaxBalance ?? 0) + (spouseBalanceCounted ?? 0));
   let rmdPrimary = 0;
   let rmdSpouse = 0;
   let rmdDivisor = null;
@@ -9229,21 +10677,69 @@ function pricePlaygroundYear(inp) {
       rmdTable = rs.table;
     }
   }
-  const rmdGross = r22(rmdPrimary + rmdSpouse);
+  const dState = {
+    hadPrimary: (inp.firstRmdDeferredCarryPrimary ?? 0) > 0 || !(inp.pretaxBalance != null && Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary)) === inp.agePrimary),
+    hadSpouse: (inp.firstRmdDeferredCarrySpouse ?? 0) > 0 || !(hasSpouseBalance && ageSpouse != null && Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse)) === ageSpouse),
+    pendingPrimary: 0,
+    pendingSpouse: 0
+  };
+  const settledP = settleFirstRmdDeferral(dState, {
+    who: "primary",
+    computed: rmdPrimary,
+    deferElected: inp.firstRmdDeferralPrimary === true,
+    deathYearForPerson: false,
+    carryIn: Math.max(0, inp.firstRmdDeferredCarryPrimary ?? 0),
+    rmdAgeReached: inp.agePrimary >= Math.ceil(rmdAgeForBirthYear(inp.taxYear - inp.agePrimary))
+  });
+  const settledS = settleFirstRmdDeferral(dState, {
+    who: "spouse",
+    computed: rmdSpouse,
+    deferElected: inp.firstRmdDeferralSpouse === true,
+    deathYearForPerson: false,
+    carryIn: Math.max(0, inp.firstRmdDeferredCarrySpouse ?? 0),
+    rmdAgeReached: ageSpouse != null && ageSpouse >= Math.ceil(rmdAgeForBirthYear(inp.taxYear - ageSpouse))
+  });
+  rmdPrimary = settledP.pay;
+  rmdSpouse = settledS.pay;
+  const rmdGross = r23(rmdPrimary + rmdSpouse);
   const rmdAlreadyReceived = Math.min(rmdGross, Math.max(0, inp.rmdAlreadyReceived ?? 0));
-  const rmd = r22(rmdGross - rmdAlreadyReceived);
+  const rmd = r23(rmdGross - rmdAlreadyReceived);
   const dependentMagiForAca = Math.max(0, inp.dependentMagiForAca ?? 0);
+  const pgPrimaryBalance = Math.max(0, inp.pretaxBalance ?? 0);
+  const pgSpouseBalance = Math.max(0, spouseBalanceCounted ?? 0);
+  const pgEligP0 = totalPretaxBalance == null || inp.pretax401kEligiblePrimary == null ? null : Math.min(Math.max(0, inp.pretax401kEligiblePrimary), pgPrimaryBalance);
+  const pgEligS0 = totalPretaxBalance == null || inp.pretax401kEligibleSpouse == null ? null : Math.min(Math.max(0, inp.pretax401kEligibleSpouse), pgSpouseBalance);
+  const pgEligP1 = pgEligP0 == null ? null : Math.max(0, pgEligP0 - rmdPrimary);
+  const pgEligS1 = pgEligS0 == null ? null : Math.max(0, pgEligS0 - rmdSpouse);
+  const pgConvFromP = Math.min(Math.max(0, inp.conversion), Math.max(0, pgPrimaryBalance - rmdPrimary));
+  const pgConvFromS = Math.max(0, Math.max(0, inp.conversion) - pgConvFromP);
+  const pgEligP2 = pgEligP1 == null ? null : Math.max(0, pgEligP1 - pgConvFromP);
+  const pgEligS2 = pgEligS1 == null ? null : Math.max(0, pgEligS1 - pgConvFromS);
+  const pgDrawAvailP = Math.max(0, pgPrimaryBalance - rmdPrimary - pgConvFromP);
+  const pgDrawAvailS = Math.max(0, pgSpouseBalance - rmdSpouse - pgConvFromS);
+  const pgDrawP = totalPretaxBalance == null ? undefined : Math.min(spendingDraw, pgDrawAvailP);
+  const pgDrawS = totalPretaxBalance == null ? undefined : Math.min(Math.max(0, spendingDraw - (pgDrawP ?? 0)), pgDrawAvailS);
+  const pgSplitShort = totalPretaxBalance == null ? 0 : Math.max(0, spendingDraw - (pgDrawP ?? 0) - (pgDrawS ?? 0));
+  const pgSplitShortUnknown = pgSplitShort > 0 && (inp.agePrimary < 59.5 || ageSpouse != null && ageSpouse < 59.5);
   const base = {
     calendarYear: inp.taxYear,
     filingStatus: fs,
     agePrimary: inp.agePrimary,
     ageSpouse,
-    otherOrdinary: inp.otherOrdinary,
+    otherOrdinary: r23((inp.otherOrdinary ?? 0) + rothEarningsIncome),
     interestIncome: inp.interest,
     ordinaryDividends: nonQualifiedDividends,
     rmd,
-    conversion: moneyOut,
-    extraPreTaxDraw: 0,
+    conversion: inp.conversion,
+    extraPreTaxDraw: spendingDraw,
+    ...totalPretaxBalance != null ? {
+      pretax401kEligiblePrimary: pgEligP2,
+      pretax401kEligibleSpouse: pgEligS2,
+      separationAgePrimary: inp.separationAgePrimary ?? null,
+      separationAgeSpouse: inp.separationAgeSpouse ?? null,
+      extraPreTaxDrawPrimary: pgDrawP ?? 0,
+      extraPreTaxDrawSpouse: pgDrawS ?? 0
+    } : {},
     ssBenefits,
     taxExemptInterest: inp.taxExemptInterest,
     ltcg: ltcgNet,
@@ -9313,11 +10809,11 @@ function pricePlaygroundYear(inp) {
       }
     }
   }
-  const ltcgPriced = r22(Math.max(0, ltcgNet) + qualifiedDividends);
+  const ltcgPriced = r23(Math.max(0, ltcgNet) + qualifiedDividends);
   const capitalLoss = Math.max(0, -ltcgNet);
-  const prefTyped = r22(ltcgNet + qualifiedDividends);
+  const prefTyped = r23(ltcgNet + qualifiedDividends);
   const priced = priceYear(base);
-  const pricedZero = priceYear({ ...base, conversion: spendingDraw });
+  const pricedZero = priceYear({ ...base, conversion: 0 });
   let lossCarryOutSt = 0;
   let lossCarryOutLt = 0;
   let lossCarryOutStWa = 0;
@@ -9339,7 +10835,7 @@ function pricePlaygroundYear(inp) {
     landingBracketTop = topLayer.to;
     if (topLayer.to != null) {
       const room = topLayer.to - priced.ordinaryTaxableIncome;
-      landingRoomLeft = r22(Math.max(0, room));
+      landingRoomLeft = r23(Math.max(0, room));
       landingExactlyFilled = Math.abs(room) < 0.01;
     }
   }
@@ -9358,9 +10854,12 @@ function pricePlaygroundYear(inp) {
     overCliff: false,
     positionDollars: null,
     credit: null,
-    applicablePct: null
+    applicablePct: null,
+    below100Fpl: false,
+    under138Fpl: false,
+    eligibilityNote: null
   };
-  const acaHouseholdMagi = r22(priced.acaMagi + dependentMagiForAca);
+  const acaHouseholdMagi = r23(priced.acaMagi + dependentMagiForAca);
   if (acaApplies && inp.acaHouseholdSize != null) {
     const res = acaCreditFor({
       magi: acaHouseholdMagi,
@@ -9376,9 +10875,12 @@ function pricePlaygroundYear(inp) {
       cliff: res.cliff,
       pctFpl: res.pctFpl,
       overCliff: res.overCliff,
-      positionDollars: r22(res.cliff - acaHouseholdMagi),
+      positionDollars: r23(res.cliff - acaHouseholdMagi),
       credit: inp.acaBenchmarkAnnual != null ? res.credit : null,
-      applicablePct: inp.acaBenchmarkAnnual != null ? res.applicablePct : null
+      applicablePct: inp.acaBenchmarkAnnual != null ? res.applicablePct : null,
+      below100Fpl: res.below100Fpl,
+      under138Fpl: res.under138Fpl,
+      eligibilityNote: res.eligibilityNote
     };
   }
   const premiumYear = inp.taxYear + 2;
@@ -9392,11 +10894,11 @@ function pricePlaygroundYear(inp) {
     personsOnMedicare,
     tier,
     premiumYear,
-    monthlyPerPerson: r22(annualPerPerson / 12),
+    monthlyPerPerson: r23(annualPerPerson / 12),
     annualPerPerson,
-    annualHousehold: r22(annualPerPerson * personsOnMedicare),
+    annualHousehold: r23(annualPerPerson * personsOnMedicare),
     nextTierLine: Number.isFinite(nextTierRaw) ? nextTierRaw : null,
-    roomToNextTier: Number.isFinite(nextTierRaw) ? r22(Math.max(0, nextTierRaw - priced.magi)) : null
+    roomToNextTier: Number.isFinite(nextTierRaw) ? r23(Math.max(0, nextTierRaw - priced.magi)) : null
   };
   const pricedWithoutGains = priceYear({
     ...base,
@@ -9405,7 +10907,7 @@ function pricePlaygroundYear(inp) {
     capitalLossAllowance: 0
   });
   const hasGainsTyped = stockGain !== 0 || qualifiedDividends !== 0;
-  const withoutAcaHouseholdMagi = r22(pricedWithoutGains.acaMagi + dependentMagiForAca);
+  const withoutAcaHouseholdMagi = r23(pricedWithoutGains.acaMagi + dependentMagiForAca);
   let withoutAcaOverCliff = false;
   let withoutAcaPosition = null;
   let withoutAcaCredit = null;
@@ -9419,7 +10921,7 @@ function pricePlaygroundYear(inp) {
       projected: acaProjected
     });
     withoutAcaOverCliff = resW.overCliff;
-    withoutAcaPosition = r22(resW.cliff - withoutAcaHouseholdMagi);
+    withoutAcaPosition = r23(resW.cliff - withoutAcaHouseholdMagi);
     withoutAcaCredit = inp.acaBenchmarkAnnual != null ? resW.credit : null;
   }
   const gainsPhrase = prefTyped < 0 ? `the ${fmtDollars2(-prefTyped)} loss` : `the ${fmtDollars2(prefTyped)} gain`;
@@ -9511,46 +11013,51 @@ function pricePlaygroundYear(inp) {
   let saleAfterTax = null;
   if (inp.stockSold > 0) {
     const proceeds = Math.round(inp.stockSold);
-    const totalTax = Math.round(priced.federalTax) + Math.round(priced.stateTax);
+    const totalTax = Math.round(priced.federalTax) + Math.round(priced.stateTax) + Math.round(priced.earlyWithdrawalPenalty) + Math.round(rothPenalty);
     const leftover = proceeds - totalTax;
+    const penaltyPriced = Math.round(priced.earlyWithdrawalPenalty) > 0 || Math.round(rothPenalty) > 0;
+    const taxNoun = penaltyPriced ? "federal + state tax and the early-withdrawal penalty" : "federal + state tax";
+    const taxNounCap = penaltyPriced ? "Federal + state tax and the early-withdrawal penalty" : "Federal + state tax";
+    const taxVerb = penaltyPriced ? "come" : "comes";
     saleAfterTax = {
       proceeds,
       totalTax,
       leftover,
-      text: leftover >= 0 ? `Sale brought in ${fmtDollars2(proceeds)}. After this year's total tax of ${fmtDollars2(totalTax)}, ${fmtDollars2(leftover)} of it is left.` : `Sale brought in ${fmtDollars2(proceeds)}. This year's total tax is ${fmtDollars2(totalTax)} — ${fmtDollars2(-leftover)} more than the sale brought in.`
+      text: leftover >= 0 ? `Sale brought in ${fmtDollars2(proceeds)}. After ${taxNoun} of ${fmtDollars2(totalTax)}, ${fmtDollars2(leftover)} of it is left.` : `Sale brought in ${fmtDollars2(proceeds)}. ${taxNounCap} ${taxVerb} to ${fmtDollars2(totalTax)} — ${fmtDollars2(-leftover)} more than the sale brought in.`
     };
   }
   const yieldReinvested = inp.yieldReinvested === true;
-  const reinvestedYield = yieldReinvested ? r22(inp.interest + inp.ordinaryDividends) : 0;
-  const cashIn = r22(inp.interest + inp.ordinaryDividends - reinvestedYield + inp.otherOrdinary + inp.taxExemptInterest + ssBenefits + rmd + spendingDraw + cashDraw + rothDraw + inp.stockSold);
-  const totalTaxBill = r22(priced.federalTax + priced.stateTax);
-  let netTaxBill = r22(totalTaxBill - priced.educationRefundable);
+  const reinvestedYield = yieldReinvested ? r23(inp.interest + inp.ordinaryDividends) : 0;
+  const cashIn = r23(inp.interest + inp.ordinaryDividends - reinvestedYield + inp.otherOrdinary + inp.taxExemptInterest + ssBenefits + rmd + spendingDraw + cashDraw + rothDraw + inp.stockSold);
+  const earlyWithdrawalPenalty = priced.earlyWithdrawalPenalty;
+  const totalTaxBill = r23(priced.federalTax + priced.stateTax + earlyWithdrawalPenalty + rothPenalty);
+  let netTaxBill = r23(totalTaxBill - priced.educationRefundable);
   let settlementPriced = false;
   if (inp.aptcTaken != null) {
     const settlementCliff = inp.taxYear >= 2026 ? aca.cliff : null;
     const settlementOverCliff = settlementCliff != null && aca.overCliff;
     const cappedCredit = aca.credit == null ? null : inp.acaEnrollmentPremiumAnnual == null ? aca.credit : Math.min(aca.credit, inp.acaEnrollmentPremiumAnnual);
-    const finalCredit = settlementOverCliff ? 0 : cappedCredit == null ? null : r22(Math.max(0, cappedCredit - (inp.acaCoverageReduction ?? 0)));
+    const finalCredit = settlementOverCliff ? 0 : cappedCredit == null ? null : r23(Math.max(0, cappedCredit - (inp.acaCoverageReduction ?? 0)));
     const acaInPlay = !inp.onMedicarePrimary || inp.filingStatus === "mfj" && !inp.onMedicareSpouse;
     const effectiveFinalCredit = finalCredit != null ? finalCredit : acaInPlay ? null : 0;
-    const creditStillDue = effectiveFinalCredit != null ? r22(Math.max(0, effectiveFinalCredit - inp.aptcTaken)) : null;
-    const excessAptcRepayment = effectiveFinalCredit == null ? null : inp.taxYear >= 2026 ? r22(Math.max(0, inp.aptcTaken - effectiveFinalCredit)) : inp.aptcTaken <= effectiveFinalCredit ? 0 : null;
+    const creditStillDue = effectiveFinalCredit != null ? r23(Math.max(0, effectiveFinalCredit - inp.aptcTaken)) : null;
+    const excessAptcRepayment = effectiveFinalCredit == null ? null : inp.taxYear >= 2026 ? r23(Math.max(0, inp.aptcTaken - effectiveFinalCredit)) : inp.aptcTaken <= effectiveFinalCredit ? 0 : null;
     if (excessAptcRepayment != null) {
-      netTaxBill = r22(totalTaxBill - (creditStillDue ?? 0) + excessAptcRepayment - priced.educationRefundable);
+      netTaxBill = r23(totalTaxBill - (creditStillDue ?? 0) + excessAptcRepayment - priced.educationRefundable);
       settlementPriced = true;
     }
   }
-  const cashLeftAfterTax = r22(cashIn - netTaxBill);
+  const cashLeftAfterTax = r23(cashIn - netTaxBill);
   const healthGrossAcaPg = inp.healthPremiumAcaAnnual != null && aca.applies ? Math.max(0, inp.healthPremiumAcaAnnual) : 0;
   const healthMedicarePersonsPg = (inp.onMedicarePrimary ? 1 : 0) + (joint && inp.onMedicareSpouse ? 1 : 0);
-  const healthGrossMedicarePg = inp.healthPremiumMedicarePerPerson != null ? r22(Math.max(0, inp.healthPremiumMedicarePerPerson) * healthMedicarePersonsPg) : 0;
-  const healthPremiumGross = r22(healthGrossAcaPg + healthGrossMedicarePg);
+  const healthGrossMedicarePg = inp.healthPremiumMedicarePerPerson != null ? r23(Math.max(0, inp.healthPremiumMedicarePerPerson) * healthMedicarePersonsPg) : 0;
+  const healthPremiumGross = r23(healthGrossAcaPg + healthGrossMedicarePg);
   const healthCreditTowardPremium = settlementPriced ? Math.max(0, inp.aptcTaken ?? 0) : Math.min(aca.credit ?? 0, healthGrossAcaPg);
-  const healthPremiumNet = r22(healthGrossMedicarePg + (healthGrossAcaPg > 0 ? Math.max(0, healthGrossAcaPg - healthCreditTowardPremium) : 0));
-  const irmaaPayableAnnual = r22(Math.max(0, inp.irmaaPayableAnnual ?? 0));
-  const cashLeftAfterHealthPremium = r22(cashLeftAfterTax - healthPremiumNet - irmaaPayableAnnual);
+  const healthPremiumNet = r23(healthGrossMedicarePg + (healthGrossAcaPg > 0 ? Math.max(0, healthGrossAcaPg - healthCreditTowardPremium) : 0));
+  const irmaaPayableAnnual = r23(Math.max(0, inp.irmaaPayableAnnual ?? 0));
+  const cashLeftAfterHealthPremium = r23(cashLeftAfterTax - healthPremiumNet - irmaaPayableAnnual);
   const annualSpending = inp.annualSpending ?? null;
-  const cashLeftVsSpending = annualSpending == null ? null : r22(cashLeftAfterHealthPremium - annualSpending);
+  const cashLeftVsSpending = annualSpending == null ? null : r23(cashLeftAfterHealthPremium - annualSpending);
   return {
     interest: inp.interest,
     ordinaryDividends: inp.ordinaryDividends,
@@ -9563,20 +11070,24 @@ function pricePlaygroundYear(inp) {
     rmdPrimary,
     rmdSpouse,
     rmdAlreadyReceived,
+    rmdDeferredPrimary: settledP.deferredThisYear,
+    rmdDeferredSpouse: settledS.deferredThisYear,
+    rmdDeferredPaidPrimary: settledP.deferredPaid,
+    rmdDeferredPaidSpouse: settledS.deferredPaid,
     dependentMagiForAca,
     rmdDivisor,
     rmdTable,
     ssBenefits,
     ssTaxable: priced.ssTaxable,
-    ssPctTaxed: ssBenefits > 0 ? r22(priced.ssTaxable / ssBenefits * 100) : 0,
+    ssPctTaxed: ssBenefits > 0 ? r23(priced.ssTaxable / ssBenefits * 100) : 0,
     taxExemptInterest: inp.taxExemptInterest,
     conversion: inp.conversion,
     stockGain,
     qualifiedDividends,
     ordinaryDividendsEntered: inp.ordinaryDividends,
     qualifiedDividendsEntered: inp.qualifiedDividends,
-    qualifiedDividendsWasClamped: r22(Math.max(0, inp.qualifiedDividends)) > qualifiedDividends,
-    qualifiedDividendsExcess: r22(Math.max(0, Math.max(0, inp.qualifiedDividends) - qualifiedDividends)),
+    qualifiedDividendsWasClamped: r23(Math.max(0, inp.qualifiedDividends)) > qualifiedDividends,
+    qualifiedDividendsExcess: r23(Math.max(0, Math.max(0, inp.qualifiedDividends) - qualifiedDividends)),
     ltcgNet,
     ltcgPriced,
     capitalLoss,
@@ -9617,16 +11128,20 @@ function pricePlaygroundYear(inp) {
     gainsAt0: priced.gainsAt0,
     gainsAt15: priced.gainsAt15,
     gainsAt20: priced.gainsAt20,
-    gainsZeroRoomLeft: r22(Math.max(0, law.ltcgZeroTop[fs] - priced.ordinaryTaxableIncome - priced.gainsAt0)),
+    gainsZeroRoomLeft: r23(Math.max(0, law.ltcgZeroTop[fs] - priced.ordinaryTaxableIncome - priced.gainsAt0)),
     ordinaryTax: priced.ordinaryTax,
     ltcgTax: priced.ltcgTax,
     niit: priced.niit,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
+    lawProvenance: priced.lawProvenance,
+    stateTaxProvenance: priced.stateTaxProvenance,
     waGains: priced.waGains,
     waStandardDeduction: priced.waStandardDeduction,
     waTaxableGains: priced.waTaxableGains,
-    totalTax: r22(priced.federalTax + priced.stateTax),
+    totalTax: r23(priced.federalTax + priced.stateTax),
+    earlyWithdrawalPenalty,
+    earlyWithdrawalEligibilityUnknown: priced.earlyWithdrawalEligibilityUnknown || pgSplitShortUnknown,
     netTaxBill,
     cashIn,
     cashLeftAfterTax,
@@ -9634,6 +11149,10 @@ function pricePlaygroundYear(inp) {
     reinvestedYield,
     cashDraw,
     rothDraw,
+    rothEarningsIncome,
+    rothPenalty,
+    rothBasisUnknown,
+    rothAssumedQualified,
     spendingDraw,
     inflationPct,
     healthPremiumGross,
@@ -9646,8 +11165,8 @@ function pricePlaygroundYear(inp) {
     landingBracketTop,
     landingRoomLeft,
     landingExactlyFilled,
-    conversionFederalCost: r22(priced.federalTax - pricedZero.federalTax),
-    conversionTotalCost: r22(priced.federalTax + priced.stateTax - (pricedZero.federalTax + pricedZero.stateTax)),
+    conversionFederalCost: r23(priced.federalTax - pricedZero.federalTax),
+    conversionTotalCost: r23(priced.federalTax + priced.stateTax - (pricedZero.federalTax + pricedZero.stateTax)),
     conversionExceedsBalance: totalPretaxBalance != null && moneyOut > totalPretaxBalance - rmdGross + 0.005,
     aca,
     irmaa,
@@ -9669,10 +11188,35 @@ function planInputsFromSaved(saved, startYear) {
     endAgePrimary: saved.endAge ?? 95,
     pretaxStart: dollars(saved.pretaxCents),
     pretaxSpouseStart: dollars(saved.pretaxSpouseCents ?? null),
+    pretax401kEligiblePrimary: saved.pretax401kEligiblePrimaryCents == null ? null : dollars(saved.pretax401kEligiblePrimaryCents),
+    pretax401kEligibleSpouse: saved.pretax401kEligibleSpouseCents == null ? null : dollars(saved.pretax401kEligibleSpouseCents),
+    separationAgePrimary: saved.separationAgePrimary ?? null,
+    separationAgeSpouse: saved.separationAgeSpouse ?? null,
     survivorEnabled: saved.survivorEnabled ?? false,
     survivorWho: saved.survivorWho ?? "primary",
     survivorDeathYear: saved.survivorDeathYear ?? null,
+    survivorClaimAge: saved.survivorClaimAge ?? null,
+    firstRmdDeferralPrimary: saved.firstRmdDeferralPrimary ?? undefined,
+    firstRmdDeferralSpouse: saved.firstRmdDeferralSpouse ?? undefined,
     rothStart: dollars(saved.rothCents),
+    rothIraStart: saved.rothIraCents == null ? null : dollars(saved.rothIraCents),
+    rothEmployerStart: saved.rothEmployerCents == null ? null : dollars(saved.rothEmployerCents),
+    rothContributionBasisPrimary: saved.rothContributionBasisPrimaryCents == null ? null : dollars(saved.rothContributionBasisPrimaryCents),
+    rothContributionBasisSpouse: saved.rothContributionBasisSpouseCents == null ? null : dollars(saved.rothContributionBasisSpouseCents),
+    rothConversionLotsPrimary: saved.rothConversionLotsPrimary == null ? null : saved.rothConversionLotsPrimary.map((l) => ({
+      year: l.year,
+      taxableAmount: l.taxableAmountCents / 100,
+      nontaxableAmount: l.nontaxableAmountCents / 100
+    })),
+    rothConversionLotsSpouse: saved.rothConversionLotsSpouse == null ? null : saved.rothConversionLotsSpouse.map((l) => ({
+      year: l.year,
+      taxableAmount: l.taxableAmountCents / 100,
+      nontaxableAmount: l.nontaxableAmountCents / 100
+    })),
+    firstRothYearPrimary: saved.firstRothYearPrimary ?? null,
+    firstRothYearSpouse: saved.firstRothYearSpouse ?? null,
+    firstDesignatedRothYearPrimary: saved.firstDesignatedRothYearPrimary ?? null,
+    firstDesignatedRothYearSpouse: saved.firstDesignatedRothYearSpouse ?? null,
     taxableStart: dollars(saved.taxableCents),
     hsaStart: dollars(saved.hsaCents),
     taxableBasisPct: saved.taxableBasisPct ?? 100,
@@ -9715,6 +11259,11 @@ function planInputsFromSaved(saved, startYear) {
     acaBenchmarkSingle: saved.acaBenchmarkSingleCents == null ? null : saved.acaBenchmarkSingleCents / 100,
     acaBenchmarkFamily: saved.acaBenchmarkFamilyCents == null ? null : saved.acaBenchmarkFamilyCents / 100,
     acaSpouseEndAge: saved.acaSpouseEndAge ?? null,
+    irmaaLookbackSeed: saved.irmaaLookbackSeedCents == null ? null : saved.irmaaLookbackSeedCents.filter((s) => s != null && Number.isInteger(s.year) && s.year >= 1900 && s.year <= 2200 && Number.isFinite(s.magiCents) && s.magiCents >= 0 && (s.filingStatus === "mfj" || s.filingStatus === "single" || s.filingStatus === "hoh")).map((s) => ({
+      year: s.year,
+      magi: s.magiCents / 100,
+      filingStatus: s.filingStatus
+    })),
     healthPremiumAcaHousehold: saved.healthPremiumAcaHouseholdCents == null ? null : saved.healthPremiumAcaHouseholdCents / 100,
     healthPremiumAcaSingle: saved.healthPremiumAcaSingleCents == null ? null : saved.healthPremiumAcaSingleCents / 100,
     healthPremiumMedicarePerPerson: saved.healthPremiumMedicarePerPersonCents == null ? null : saved.healthPremiumMedicarePerPersonCents / 100,
@@ -9839,7 +11388,12 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
       ok: false,
       reason: "The compare needs at least one scenario — name a strategy to price.",
       baselineName: null,
-      scenarios: []
+      scenarios: [],
+      winnerByNetCost: null,
+      winnerByEndingWealth: null,
+      winnerQualified: false,
+      excludedInvalidWinner: null,
+      winnersDiffer: false
     };
   }
   const built = [];
@@ -9850,7 +11404,12 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
         ok: false,
         reason: "The compare needs a birth year before it can price a plan — enter it in the base plan and run again.",
         baselineName: null,
-        scenarios: []
+        scenarios: [],
+        winnerByNetCost: null,
+        winnerByEndingWealth: null,
+        winnerQualified: false,
+        excludedInvalidWinner: null,
+        winnersDiffer: false
       };
     }
     built.push(b);
@@ -9861,7 +11420,12 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
       ok: false,
       reason: `No scenario is named "${baselineName}" — the baseline must be one of the scenarios in the run.`,
       baselineName: null,
-      scenarios: []
+      scenarios: [],
+      winnerByNetCost: null,
+      winnerByEndingWealth: null,
+      winnerQualified: false,
+      excludedInvalidWinner: null,
+      winnersDiffer: false
     };
   }
   const priced = built.map((b) => {
@@ -9887,6 +11451,10 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
         acaCreditCents: toCents(y.acaCreditKept),
         educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
+        irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+        acaBelow100Fpl: y.acaBelow100Fpl,
+        earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+        rothBasisUnknown: y.rothBasisUnknown,
         healthPremiumCents: toCents(y.healthPremiumNet),
         healthPremiumGrossCents: toCents(y.healthPremiumGross),
         conversionCents: toCents(y.conversion),
@@ -9896,11 +11464,31 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
         extraPreTaxDrawCents: toCents(y.detail.extraPreTaxDraw),
         settlementConverged: y.settlementConverged,
         settlementMismatchCents: y.settlementMismatchCents,
-        ceilingBreached: y.ceilingBreached
+        settlementRounds: y.settlementRounds,
+        settlementPasses: y.settlementPasses,
+        settlementStopReason: y.settlementStopReason,
+        settlementInnerStopReason: y.settlementInnerStopReason,
+        ceilingBreached: y.ceilingBreached,
+        ssCollectedCents: toCents(y.ssBenefits),
+        rmdPrimaryCents: toCents(y.detail.rmdPrimary),
+        rmdSpouseCents: toCents(y.detail.rmdSpouse),
+        rmdDeferredPrimaryCents: toCents(y.detail.rmdDeferredPrimary),
+        rmdDeferredSpouseCents: toCents(y.detail.rmdDeferredSpouse),
+        rmdDeferredPaidPrimaryCents: toCents(y.detail.rmdDeferredPaidPrimary),
+        rmdDeferredPaidSpouseCents: toCents(y.detail.rmdDeferredPaidSpouse),
+        survivorSsMode: y.detail.survivorSsMode,
+        survivorClaimAge: y.detail.survivorClaimAge,
+        lawProvenance: y.detail.lawProvenance,
+        stateTaxProvenance: y.detail.stateTaxProvenance
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
       acaCreditCents: toCents(cost.acaCredit),
+      irmaaLookbackMissingYears: result.irmaaLookbackMissingYears,
+      acaBelow100FplYears: result.acaBelow100FplYears,
+      cliffCapInoperativeYears: result.cliffCapInoperativeYears,
+      earlyWithdrawalUnknownYears: result.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: result.rothBasisUnknownYears,
       healthPremiumCents: toCents(cost.healthPremium),
       healthPremiumNetCents: toCents(cost.healthPremiumNet),
       educationRefundableCents: toCents(cost.educationRefundable),
@@ -9908,6 +11496,7 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
       terminalCents: toCents(cost.terminal),
       ssCollectedCents: toCents(cost.ssCollected),
       unpaidTaxCents: toCents(result.lifetimeUnpaidTax),
+      integrity: assessCandidateIntegrity(result),
       endingPretaxCents: toCents(result.endingPretax),
       endingRothCents: toCents(result.endingRoth),
       endingTaxableCents: toCents(result.endingTaxable),
@@ -9916,10 +11505,21 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
     };
   });
   const basePriced = priced.find((p) => p.built === baseline) ?? priced[0];
+  const crowned = crownCompareWinners(priced.map((p) => ({
+    name: p.built.name,
+    netCostCents: p.netCostCents,
+    endingAfterTaxWealthCents: p.endingAfterTaxWealthCents,
+    integrity: p.integrity
+  })));
   return {
     ok: true,
     reason: `Priced ${priced.length} scenario${priced.length === 1 ? "" : "s"} as fixed strategies against the baseline "${baseline.name}". Deltas are scenario − baseline, in cents: a negative net-cost delta means the scenario costs less than the baseline; a positive ACA-credit delta means it keeps more premium credit.`,
     baselineName: baseline.name,
+    winnerByNetCost: crowned.winnerByNetCost.name,
+    winnerByEndingWealth: crowned.winnerByEndingWealth.name,
+    winnerQualified: crowned.winnerQualified,
+    excludedInvalidWinner: crowned.excludedInvalidWinner,
+    winnersDiffer: crowned.winnersDiffer,
     scenarios: priced.map((p) => ({
       name: p.built.name,
       strategyDescription: p.built.strategyDescription,
@@ -9932,6 +11532,11 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
       penaltyCents: p.penaltyCents,
       irmaaCents: p.irmaaCents,
       acaCreditCents: p.acaCreditCents,
+      irmaaLookbackMissingYears: p.irmaaLookbackMissingYears,
+      acaBelow100FplYears: p.acaBelow100FplYears,
+      cliffCapInoperativeYears: p.cliffCapInoperativeYears,
+      earlyWithdrawalUnknownYears: p.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: p.rothBasisUnknownYears,
       healthPremiumCents: p.healthPremiumCents,
       healthPremiumNetCents: p.healthPremiumNetCents,
       educationRefundableCents: p.educationRefundableCents,
@@ -9939,6 +11544,7 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
       terminalCents: p.terminalCents,
       ssCollectedCents: p.ssCollectedCents,
       unpaidTaxCents: p.unpaidTaxCents,
+      integrity: p.integrity,
       endingPretaxCents: p.endingPretaxCents,
       endingRothCents: p.endingRothCents,
       endingTaxableCents: p.endingTaxableCents,
@@ -9950,11 +11556,548 @@ function runRothCompare(base, scenarios, startYear, baselineName, taxReturnActua
     }))
   };
 }
+function dynamicPhaseForYear(args) {
+  if (args.isSurvivorYear)
+    return "survivor";
+  if (args.agePrimary >= args.rmdAge)
+    return "rmd";
+  if (args.ssStartAge != null && args.agePrimary >= args.ssStartAge)
+    return "ss";
+  if (args.agePrimary >= 65)
+    return "bridge";
+  if (args.agePrimary < 59.5)
+    return "early";
+  return "aca";
+}
+function dynamicPolicySet(rmdStopAge, endAge) {
+  const fills = [
+    { key: "fill12", name: "Fill 12%", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 }, guardrail: false },
+    { key: "fill12g", name: "Fill 12% (guardrail)", ceilings: { ...NO_CEILINGS, bracketTopPct: 12 }, guardrail: true },
+    { key: "fill22", name: "Fill 22%", ceilings: { ...NO_CEILINGS, bracketTopPct: 22 }, guardrail: false },
+    { key: "fill22g", name: "Fill 22% (guardrail)", ceilings: { ...NO_CEILINGS, bracketTopPct: 22 }, guardrail: true },
+    { key: "fill22-irmaa1", name: "Fill 22% capped at IRMAA Tier 1", ceilings: { ...NO_CEILINGS, bracketTopPct: 22, irmaaTierCap: 1 }, guardrail: false },
+    { key: "fill-aca", name: "Fill capped at ACA cliff", ceilings: { ...NO_CEILINGS, acaCliffCap: true }, guardrail: false }
+  ];
+  const stops = [...new Set([65, rmdStopAge, endAge])];
+  const out = [];
+  for (const order of ALL_DRAW_ORDERS) {
+    out.push({
+      key: `do-nothing|${drawOrderKey(order)}`,
+      name: "Do Nothing",
+      ceilings: null,
+      guardrail: false,
+      windowStopAge: endAge,
+      drawOrder: order
+    });
+  }
+  for (const fill of fills) {
+    for (const stop of stops) {
+      for (const order of ALL_DRAW_ORDERS) {
+        out.push({
+          key: `${fill.key}|stop${stop}|${drawOrderKey(order)}`,
+          name: `${fill.name} · stop ${stop}`,
+          ceilings: fill.ceilings,
+          guardrail: fill.guardrail,
+          windowStopAge: stop,
+          drawOrder: order
+        });
+      }
+    }
+  }
+  return out;
+}
+function dynamicTerminalTax(args) {
+  const floor = Math.max(0, args.preservePretax ?? 0);
+  const exitRatePct = args.preserveExitRatePct ?? args.heirRatePct;
+  const preservedPretax = r23(Math.min(args.endingPretax, floor));
+  const excessPretax = r23(args.endingPretax - preservedPretax);
+  const terminalPreserved = r23(preservedPretax * exitRatePct / 100);
+  const terminalExcess = r23(excessPretax * args.heirRatePct / 100);
+  return {
+    terminal: r23(terminalPreserved + terminalExcess),
+    preservedPretax,
+    terminalPreserved,
+    excessPretax,
+    terminalExcess
+  };
+}
+function trackTaxableBasisEnd(args) {
+  const basisConsumed = Math.max(0, args.taxableSold - args.drawGains);
+  const sweepIn = args.taxableEnd / args.growthFactor - args.taxableStart + args.taxableSold;
+  return r23(Math.max(0, args.basisStart - basisConsumed + sweepIn + args.yieldReinvested));
+}
+function trackEligibleEnd(args) {
+  if (args.eligibleStart == null)
+    return null;
+  const outflows = args.pretaxStart - args.pretaxEnd / args.growthFactor;
+  return r23(Math.min(Math.max(0, args.pretaxEnd), Math.max(0, (args.eligibleStart - outflows) * args.growthFactor)));
+}
+function dynamicReanchorInputs(base, state, year, policy, annualSpending) {
+  const taxableBasisPct = state.taxable > 0 ? state.taxableBasis / state.taxable * 100 : 100;
+  return {
+    ...base,
+    startYear: year,
+    pretaxStart: state.pretaxP,
+    pretaxSpouseStart: state.pretaxS,
+    rothStart: state.roth,
+    taxableStart: state.taxable,
+    taxableBasisPct,
+    hsaStart: state.hsa,
+    annualSpending,
+    windowStopAge: policy.windowStopAge,
+    drawOrder: [...policy.drawOrder],
+    pretax401kEligiblePrimary: state.eligP,
+    pretax401kEligibleSpouse: state.eligS,
+    rothContributionBasisPrimary: state.rothContribP,
+    rothContributionBasisSpouse: state.rothContribS,
+    rothConversionLotsPrimary: state.rothLotsP.length > 0 ? state.rothLotsP : null,
+    rothConversionLotsSpouse: state.rothLotsS.length > 0 ? state.rothLotsS : null,
+    irmaaLookbackSeed: state.irmaaLookback,
+    firstRmdDeferralPrimary: state.firstRmdPricedP ? false : base.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: state.firstRmdPricedS ? false : base.firstRmdDeferralSpouse,
+    firstRmdDeferredCarryPrimary: state.rmdDeferredPendingP,
+    firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS
+  };
+}
+function dynamicDebitRothDraw(contrib, lots, draw) {
+  if (draw <= 0)
+    return { contrib, lots };
+  let remaining = draw;
+  let nextContrib = contrib;
+  if (nextContrib != null && nextContrib > 0) {
+    const take = Math.min(nextContrib, remaining);
+    nextContrib -= take;
+    remaining -= take;
+  }
+  const nextLots = [];
+  for (const lot of lots) {
+    if (remaining <= 0) {
+      nextLots.push(lot);
+      continue;
+    }
+    const lotTotal = lot.taxableAmount + lot.nontaxableAmount;
+    const take = Math.min(lotTotal, remaining);
+    remaining -= take;
+    const left = lotTotal - take;
+    if (left > 0.005) {
+      const taxableShare = lotTotal > 0 ? lot.taxableAmount / lotTotal : 1;
+      nextLots.push({
+        year: lot.year,
+        taxableAmount: r23(left * taxableShare),
+        nontaxableAmount: r23(left * (1 - taxableShare))
+      });
+    }
+  }
+  return { contrib: nextContrib, lots: nextLots };
+}
+function dynamicRowFromYear(y, policy, taxableBasisEnd, rmdAge, ssStartAge) {
+  const f = y.funding;
+  const d = y.detail;
+  return {
+    year: y.year,
+    agePrimary: y.agePrimary,
+    ageSpouse: y.ageSpouse,
+    phase: dynamicPhaseForYear({
+      agePrimary: y.agePrimary,
+      isSurvivorYear: y.isSurvivorYear,
+      rmdAge,
+      ssStartAge
+    }),
+    policyKey: policy.key,
+    policyName: policy.name,
+    drawOrder: drawOrderKey(policy.drawOrder),
+    windowStopAge: policy.windowStopAge,
+    spending: f.spending,
+    ss: f.ss,
+    rmd: f.rmd,
+    rmdPrimary: d.rmdPrimary,
+    rmdSpouse: d.rmdSpouse,
+    pretaxDraw: f.pretaxDraw,
+    taxableSoldForSpending: f.taxableSoldForSpending,
+    taxableSoldForTax: f.taxableSoldForTax,
+    rothDraw: f.rothDraw,
+    conversion: f.conversion,
+    federalTax: y.federalTax,
+    stateTax: y.stateTax,
+    penalty: y.penalty,
+    irmaa: y.irmaaPaid,
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+    acaCreditKept: y.acaCreditKept,
+    healthPremiumGross: y.healthPremiumGross,
+    magi: y.magi,
+    acaMagi: y.acaMagi,
+    acaCliff: d.aca.cliff,
+    taxableIncome: y.taxableIncome,
+    bracketPct: y.bracketPct,
+    pretaxEnd: y.pretaxEnd,
+    pretaxPrimaryEnd: y.pretaxPrimaryEnd,
+    pretaxSpouseEnd: y.pretaxSpouseEnd,
+    rothEnd: y.rothEnd,
+    taxableEnd: y.taxableEnd,
+    taxableBasisEnd,
+    hsaEnd: y.hsaEnd,
+    settlementConverged: y.settlementConverged,
+    spendShortfall: f.spendShortfall,
+    unpaidTax: f.unpaidTax,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
+    netCostYear: r23(y.federalTax + y.stateTax + y.penalty + y.irmaaPaid + y.healthPremiumGross - y.acaCreditKept - y.educationRefundable)
+  };
+}
+function dynamicYieldForYear(args) {
+  const div = Math.max(0, args.dividendYieldPct ?? 0);
+  const int = Math.max(0, args.interestYieldPct ?? 0);
+  return r23(args.taxableStart * div / 100) + r23(args.taxableStart * int / 100);
+}
+function priceFixedDynamicPolicies(base, policies) {
+  const scored = [];
+  for (const policy of policies) {
+    const inputs = {
+      ...base,
+      windowStopAge: policy.windowStopAge,
+      drawOrder: [...policy.drawOrder]
+    };
+    const result = simulateRothPlan(inputs, { id: `dyn-${policy.key}`, name: policy.name, ceilings: policy.ceilings, guardrail: policy.guardrail }, undefined, { leanDetail: true });
+    const integrity = assessCandidateIntegrity(result);
+    if (integrity.status === "invalid")
+      continue;
+    const cost = planNetCost(result, inputs);
+    scored.push({
+      policy,
+      netCost: cost.netCost,
+      netCostExTerminal: r23(cost.netCost - cost.terminal),
+      endingWealth: result.endingAfterTaxWealth,
+      endingPretax: result.endingPretax,
+      endingRoth: result.endingRoth,
+      endingTaxable: result.endingTaxable,
+      endingHsa: result.endingHsa,
+      conversionsTotal: r23(result.years.reduce((s, y) => s + y.funding.conversion, 0)),
+      lifetimeAcaCreditKept: result.lifetimeAcaKept,
+      lifetimeRmd: r23(result.years.reduce((s, y) => s + y.funding.rmd, 0)),
+      integrityStatus: integrity.status,
+      result
+    });
+  }
+  scored.sort((a, b) => a.netCost - b.netCost || b.endingWealth - a.endingWealth || (a.policy.key < b.policy.key ? -1 : a.policy.key > b.policy.key ? 1 : 0));
+  return { best: scored[0] ?? null, scored };
+}
+var DYNAMIC_SEARCH_LIMITS = "Greedy roll-forward over up to 114 fixed-fill policies per year (Do Nothing, Fill 12%/22% ± guardrail, Fill 22% IRMAA-1, Fill ACA-cliff × windows stop-65 / stop-year-before-RMD / through-RMD × all six draw orders), each priced over the remaining horizon by the shared engine; one year committed at a time; no per-year conversion amounts finer than a ceiling fill; no bunching, gain-harvest, or claiming-age search. No global-optimality claim.";
+var DYNAMIC_FLOOR_EPSILON = 0.1;
+function dynamicResultFromRows(args) {
+  const { rows, base } = args;
+  const last = rows[rows.length - 1];
+  const lifetimeNetCostExTerminal = r23(rows.reduce((s, r) => s + r.netCostYear, 0));
+  const terminal = dynamicTerminalTax({
+    endingPretax: last?.pretaxEnd ?? 0,
+    heirRatePct: base.heirRatePct,
+    preservePretax: base.preservePretax,
+    preserveExitRatePct: base.preserveExitRatePct
+  });
+  const endingWealth = r23((last?.pretaxEnd ?? 0) + (last?.rothEnd ?? 0) + (last?.taxableEnd ?? 0) + (last?.hsaEnd ?? 0));
+  const unrealizedGains = Math.max(0, r23((last?.taxableEnd ?? 0) - (last?.taxableBasisEnd ?? 0)));
+  const heirTaxWithoutStepUp = r23(unrealizedGains * base.heirRatePct / 100);
+  const endingAfterTaxWealth = r23(endingWealth - terminal.terminal);
+  return {
+    ok: true,
+    years: rows,
+    policiesEvaluatedPerYear: args.policiesEvaluatedPerYear,
+    lifetimeNetCost: r23(lifetimeNetCostExTerminal + terminal.terminal),
+    lifetimeFederalTax: r23(rows.reduce((s, r) => s + r.federalTax, 0)),
+    lifetimeStateTax: r23(rows.reduce((s, r) => s + r.stateTax, 0)),
+    lifetimePenalty: r23(rows.reduce((s, r) => s + r.penalty, 0)),
+    lifetimeIrmaa: r23(rows.reduce((s, r) => s + r.irmaa, 0)),
+    irmaaLookbackMissingYears: rows.filter((r) => !r.irmaaSurchargeKnown).map((r) => r.year),
+    lifetimeAcaCreditKept: r23(rows.reduce((s, r) => s + r.acaCreditKept, 0)),
+    lifetimeHealthPremiumGross: r23(rows.reduce((s, r) => s + r.healthPremiumGross, 0)),
+    lifetimeRmd: r23(rows.reduce((s, r) => s + r.rmd, 0)),
+    firstRmdYear: rows.find((r) => r.rmd > 0)?.year ?? null,
+    conversionsTotal: r23(rows.reduce((s, r) => s + r.conversion, 0)),
+    spendShortfallTotal: r23(rows.reduce((s, r) => s + r.spendShortfall, 0)),
+    unpaidTaxTotal: r23(rows.reduce((s, r) => s + r.unpaidTax, 0)),
+    endingPretax: last?.pretaxEnd ?? 0,
+    endingRoth: last?.rothEnd ?? 0,
+    endingTaxable: last?.taxableEnd ?? 0,
+    endingHsa: last?.hsaEnd ?? 0,
+    endingWealth,
+    terminal,
+    endingAfterTaxWealth,
+    stepUp: {
+      unrealizedGains,
+      heirTaxWithoutStepUp,
+      wealthWithStepUp: endingAfterTaxWealth,
+      wealthWithoutStepUp: r23(endingAfterTaxWealth - heirTaxWithoutStepUp)
+    },
+    bestFixed: args.bestFixed,
+    floorBound: args.floorBound,
+    greedyNetCost: args.greedyNetCost,
+    greedyEndingWealth: args.greedyEndingWealth,
+    greedyYears: args.greedyYears,
+    valid: rows.every((r) => r.settlementConverged && r.spendShortfall === 0 && r.unpaidTax === 0),
+    searchLimits: DYNAMIC_SEARCH_LIMITS
+  };
+}
+function dynamicRowsFromFixedMarch(result, policy, base, basisStart) {
+  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const ssStartAge = base.ssPrimaryStartAge ?? null;
+  const rows = [];
+  let basis = basisStart;
+  let taxableStart = base.taxableStart;
+  for (const y of result.years) {
+    const sold = y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+    basis = trackTaxableBasisEnd({
+      taxableStart,
+      basisStart: basis,
+      taxableSold: sold,
+      drawGains: y.detail.drawGains,
+      taxableEnd: y.taxableEnd,
+      growthFactor,
+      yieldReinvested: dynamicYieldForYear({
+        taxableStart,
+        dividendYieldPct: base.taxableDividendYieldPct,
+        interestYieldPct: base.taxableInterestYieldPct
+      })
+    });
+    rows.push(dynamicRowFromYear(y, policy, basis, rmdAge, ssStartAge));
+    taxableStart = y.taxableEnd;
+  }
+  return rows;
+}
+function runDynamicOptimizer(base, opts) {
+  const annualSpending = opts?.annualSpending ?? base.annualSpending;
+  const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
+  const rmdAgeSpouse = base.birthYearSpouse != null ? Math.ceil(rmdAgeForBirthYear(base.birthYearSpouse)) : null;
+  const policies = opts?.policies ?? dynamicPolicySet(rmdAge - 1, base.endAgePrimary);
+  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
+  const ssStartAge = base.ssPrimaryStartAge ?? null;
+  const state = {
+    pretaxP: base.pretaxStart,
+    pretaxS: base.pretaxSpouseStart ?? 0,
+    roth: base.rothStart,
+    taxable: base.taxableStart,
+    taxableBasis: base.taxableBasisPct / 100 * base.taxableStart,
+    hsa: base.hsaStart,
+    eligP: base.pretax401kEligiblePrimary ?? null,
+    eligS: base.pretax401kEligibleSpouse ?? null,
+    rothContribP: base.rothContributionBasisPrimary ?? null,
+    rothContribS: base.rothContributionBasisSpouse ?? null,
+    rothLotsP: (base.rothConversionLotsPrimary ?? []).map((l) => ({ ...l })),
+    rothLotsS: (base.rothConversionLotsSpouse ?? []).map((l) => ({ ...l })),
+    rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
+    rmdDeferredPendingS: base.firstRmdDeferredCarrySpouse ?? 0,
+    firstRmdPricedP: false,
+    firstRmdPricedS: false,
+    irmaaLookback: [...base.irmaaLookbackSeed ?? []]
+  };
+  const rows = [];
+  let sunkNetCost = 0;
+  for (let year = base.startYear;; year++) {
+    const agePrimary = year - base.birthYearPrimary;
+    if (agePrimary > base.endAgePrimary)
+      break;
+    let best = null;
+    for (const policy of policies) {
+      const reanchored = dynamicReanchorInputs(base, state, year, policy, annualSpending);
+      const result = simulateRothPlan(reanchored, { id: `dyn-${policy.key}`, name: policy.name, ceilings: policy.ceilings, guardrail: policy.guardrail }, undefined, { leanDetail: true });
+      const integrity = assessCandidateIntegrity(result);
+      if (integrity.status === "invalid")
+        continue;
+      const cost = planNetCost(result, reanchored);
+      const total = r23(sunkNetCost + cost.netCost);
+      if (best == null || total < best.total - 0.005 || Math.abs(total - best.total) <= 0.005 && (result.endingAfterTaxWealth > best.result.endingAfterTaxWealth + 0.005 || Math.abs(result.endingAfterTaxWealth - best.result.endingAfterTaxWealth) <= 0.005 && policy.key < best.policy.key)) {
+        best = { policy, total, result, reanchored };
+      }
+    }
+    if (best == null) {
+      return {
+        ok: false,
+        reason: `No valid policy priced for ${year}: every candidate in the dynamic set was invalid (unsettled, shortfall, or unpaid tax).`,
+        years: rows,
+        policiesEvaluatedPerYear: policies.length,
+        lifetimeNetCost: 0,
+        lifetimeFederalTax: 0,
+        lifetimeStateTax: 0,
+        lifetimePenalty: 0,
+        lifetimeIrmaa: 0,
+        irmaaLookbackMissingYears: [],
+        lifetimeAcaCreditKept: 0,
+        lifetimeHealthPremiumGross: 0,
+        lifetimeRmd: 0,
+        firstRmdYear: null,
+        conversionsTotal: 0,
+        spendShortfallTotal: 0,
+        unpaidTaxTotal: 0,
+        endingPretax: 0,
+        endingRoth: 0,
+        endingTaxable: 0,
+        endingHsa: 0,
+        endingWealth: 0,
+        terminal: dynamicTerminalTax({ endingPretax: 0, heirRatePct: base.heirRatePct }),
+        endingAfterTaxWealth: 0,
+        stepUp: { unrealizedGains: 0, heirTaxWithoutStepUp: 0, wealthWithStepUp: 0, wealthWithoutStepUp: 0 },
+        bestFixed: null,
+        floorBound: false,
+        greedyNetCost: 0,
+        greedyEndingWealth: 0,
+        greedyYears: [],
+        valid: false,
+        searchLimits: DYNAMIC_SEARCH_LIMITS
+      };
+    }
+    const y0 = best.result.years[0];
+    if (!y0) {
+      return {
+        ok: false,
+        reason: `The winning remaining-horizon march for ${year} priced no years.`,
+        years: rows,
+        policiesEvaluatedPerYear: policies.length,
+        lifetimeNetCost: 0,
+        lifetimeFederalTax: 0,
+        lifetimeStateTax: 0,
+        lifetimePenalty: 0,
+        lifetimeIrmaa: 0,
+        irmaaLookbackMissingYears: [],
+        lifetimeAcaCreditKept: 0,
+        lifetimeHealthPremiumGross: 0,
+        lifetimeRmd: 0,
+        firstRmdYear: null,
+        conversionsTotal: 0,
+        spendShortfallTotal: 0,
+        unpaidTaxTotal: 0,
+        endingPretax: 0,
+        endingRoth: 0,
+        endingTaxable: 0,
+        endingHsa: 0,
+        endingWealth: 0,
+        terminal: dynamicTerminalTax({ endingPretax: 0, heirRatePct: base.heirRatePct }),
+        endingAfterTaxWealth: 0,
+        stepUp: { unrealizedGains: 0, heirTaxWithoutStepUp: 0, wealthWithStepUp: 0, wealthWithoutStepUp: 0 },
+        bestFixed: null,
+        floorBound: false,
+        greedyNetCost: 0,
+        greedyEndingWealth: 0,
+        greedyYears: [],
+        valid: false,
+        searchLimits: DYNAMIC_SEARCH_LIMITS
+      };
+    }
+    const sold = y0.funding.taxableSoldForSpending + y0.funding.taxableSoldForTax;
+    const basisEnd = trackTaxableBasisEnd({
+      taxableStart: state.taxable,
+      basisStart: state.taxableBasis,
+      taxableSold: sold,
+      drawGains: y0.detail.drawGains,
+      taxableEnd: y0.taxableEnd,
+      growthFactor,
+      yieldReinvested: dynamicYieldForYear({
+        taxableStart: state.taxable,
+        dividendYieldPct: base.taxableDividendYieldPct,
+        interestYieldPct: base.taxableInterestYieldPct
+      })
+    });
+    const row = dynamicRowFromYear(y0, best.policy, basisEnd, rmdAge, ssStartAge);
+    rows.push(row);
+    sunkNetCost = r23(sunkNetCost + row.netCostYear);
+    state.irmaaLookback.push({
+      year,
+      magi: y0.magi,
+      filingStatus: y0.isSurvivorYear ? "single" : base.filingStatus
+    });
+    const eligP = trackEligibleEnd({
+      eligibleStart: state.eligP,
+      pretaxStart: state.pretaxP,
+      pretaxEnd: y0.pretaxPrimaryEnd,
+      growthFactor
+    });
+    const eligS = trackEligibleEnd({
+      eligibleStart: state.eligS,
+      pretaxStart: state.pretaxS,
+      pretaxEnd: y0.pretaxSpouseEnd,
+      growthFactor
+    });
+    let rothDrawLeft = y0.funding.rothDraw;
+    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft);
+    rothDrawLeft = Math.max(0, rothDrawLeft - ((state.rothContribP ?? 0) - (debitP.contrib ?? 0)) - (state.rothLotsP.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0) - debitP.lots.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0)));
+    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft);
+    let lotsP = debitP.lots;
+    let lotsS = debitS.lots;
+    if (y0.funding.conversion > 0) {
+      const primaryConverted = Math.min(y0.funding.conversion, Math.max(0, state.pretaxP - y0.detail.rmdPrimary));
+      const spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+      if (primaryConverted > 0.005) {
+        lotsP = [...lotsP, { year, taxableAmount: r23(primaryConverted), nontaxableAmount: 0 }];
+      }
+      if (spouseConverted > 0.005) {
+        lotsS = [...lotsS, { year, taxableAmount: r23(spouseConverted), nontaxableAmount: 0 }];
+      }
+    }
+    state.pretaxP = y0.pretaxPrimaryEnd;
+    state.pretaxS = y0.pretaxSpouseEnd;
+    state.roth = y0.rothEnd;
+    state.taxable = y0.taxableEnd;
+    state.taxableBasis = basisEnd;
+    state.hsa = y0.hsaEnd;
+    state.eligP = eligP;
+    state.eligS = eligS;
+    state.rothContribP = debitP.contrib;
+    state.rothContribS = debitS.contrib;
+    state.rothLotsP = lotsP;
+    state.rothLotsS = lotsS;
+    state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
+    state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
+    const ageSpouse = base.birthYearSpouse != null ? year - base.birthYearSpouse : null;
+    if (y0.detail.rmdPrimary > 0 || y0.detail.rmdDeferredPrimary > 0 || agePrimary >= rmdAge) {
+      state.firstRmdPricedP = true;
+    }
+    if (y0.detail.rmdSpouse > 0 || y0.detail.rmdDeferredSpouse > 0 || ageSpouse != null && rmdAgeSpouse != null && ageSpouse >= rmdAgeSpouse) {
+      state.firstRmdPricedS = true;
+    }
+  }
+  const greedyRows = rows;
+  const greedyTerminal = dynamicTerminalTax({
+    endingPretax: greedyRows[greedyRows.length - 1]?.pretaxEnd ?? 0,
+    heirRatePct: base.heirRatePct,
+    preservePretax: base.preservePretax,
+    preserveExitRatePct: base.preserveExitRatePct
+  });
+  const greedyNetCost = r23(sunkNetCost + greedyTerminal.terminal);
+  const greedyEndingWealth = r23((greedyRows[greedyRows.length - 1]?.pretaxEnd ?? 0) + (greedyRows[greedyRows.length - 1]?.rothEnd ?? 0) + (greedyRows[greedyRows.length - 1]?.taxableEnd ?? 0) + (greedyRows[greedyRows.length - 1]?.hsaEnd ?? 0) - greedyTerminal.terminal);
+  const fixed = priceFixedDynamicPolicies({ ...base, annualSpending }, policies);
+  const bestFixed = fixed.best ? {
+    policyKey: fixed.best.policy.key,
+    policyName: fixed.best.policy.name,
+    netCost: fixed.best.netCost,
+    endingWealth: fixed.best.endingWealth
+  } : null;
+  if (bestFixed && fixed.best && bestFixed.netCost < greedyNetCost - DYNAMIC_FLOOR_EPSILON) {
+    const floorRows = dynamicRowsFromFixedMarch(fixed.best.result, fixed.best.policy, { ...base, annualSpending }, base.taxableBasisPct / 100 * base.taxableStart);
+    return dynamicResultFromRows({
+      rows: floorRows,
+      base: { ...base, annualSpending },
+      bestFixed,
+      floorBound: true,
+      greedyNetCost,
+      greedyEndingWealth,
+      greedyYears: greedyRows,
+      policiesEvaluatedPerYear: policies.length
+    });
+  }
+  return dynamicResultFromRows({
+    rows: greedyRows,
+    base: { ...base, annualSpending },
+    bestFixed,
+    floorBound: false,
+    greedyNetCost,
+    greedyEndingWealth,
+    greedyYears: greedyRows,
+    policiesEvaluatedPerYear: policies.length
+  });
+}
 
-function r23(n) {
+function r24(n) {
   return Math.round(n * 100) / 100;
 }
-function contributionStack(age, salary, employer401k, employerHsa, filingStatus, law, priorYearWages, medicareAgePrimary, defl) {
+function contributionStack(age, salary, employer401k, employerHsaTyped, filingStatus, law, priorYearWages, medicareAgePrimary, defl, hsaOpts) {
   const empty = {
     deferral: 0,
     catchUp: 0,
@@ -9963,11 +12106,33 @@ function contributionStack(age, salary, employer401k, employerHsa, filingStatus,
     employer401k: 0,
     ownHsa: 0,
     employerHsa: 0,
+    employerHsaRequested: 0,
     hsaBucket: 0,
-    hsaLimit: 0
+    hsaLimit: 0,
+    hsaCoverage: "self-only",
+    hsaEligible: false,
+    assumptions: []
   };
+  const employerHsa = Math.max(0, employerHsaTyped);
+  const assumptions = [];
+  const coverageExplicit = hsaOpts?.coverage ?? null;
+  const hsaCoverage = coverageExplicit ?? (filingStatus === "mfj" ? "family" : "self-only");
+  if (coverageExplicit == null) {
+    assumptions.push("HSA coverage not stated: the family limit is assumed for joint filers and the self-only limit otherwise — filing status alone does not establish HDHP coverage. Enter the HDHP coverage (self-only / family / none) to price the actual limit.");
+  }
+  const medicareGated = medicareAgePrimary != null && age >= medicareAgePrimary;
+  const hsaEligible = hsaCoverage !== "none" && hsaOpts?.eligible !== false && !medicareGated;
+  if (hsaOpts?.eligible == null && hsaEligible) {
+    assumptions.push("HSA eligibility not stated: assumed eligible (qualifying HDHP coverage with no disqualifying coverage). Medicare enrollment ends eligibility from the enrollment age when one is entered; enter eligibility explicitly when it is known.");
+  }
   if (salary <= 0)
-    return empty;
+    return {
+      ...empty,
+      hsaCoverage,
+      hsaEligible,
+      assumptions,
+      employerHsaRequested: r24(hsaEligible ? employerHsa : 0)
+    };
   const elective = law.elective401kLimit / 100;
   const deferral = Math.min(elective, salary);
   let catchUp = 0;
@@ -9975,28 +12140,33 @@ function contributionStack(age, salary, employer401k, employerHsa, filingStatus,
     const bandLimit = (age >= 60 && age <= 63 ? law.catchUp60to63Limit : law.catchUp50Limit) / 100;
     catchUp = Math.max(0, Math.min(bandLimit, salary - deferral));
   }
-  const hsaLimit = (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 + (age >= 55 ? law.hsaCatchUp55 / 100 * (defl ?? 1) : 0);
-  const hsaEligible = !(medicareAgePrimary != null && age >= medicareAgePrimary);
+  const statutoryHsaLimit = (hsaCoverage === "family" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 + (age >= 55 ? law.hsaCatchUp55 / 100 * (defl ?? 1) : 0);
+  const hsaLimit = hsaEligible ? statutoryHsaLimit : 0;
   const employerHsaLanded = hsaEligible ? employerHsa : 0;
   const ownHsa = hsaEligible ? Math.max(0, Math.min(hsaLimit - employerHsa, salary - deferral - catchUp)) : 0;
   const box3ThisYear = salary - ownHsa;
   const wageBasis = priorYearWages != null ? priorYearWages : box3ThisYear;
-  const catchUpIsRoth = law.year >= 2026 && wageBasis > law.rothCatchUpWageThreshold / 100;
+  const catchUpIsRoth = catchUp > 0 && law.year >= 2026 && wageBasis > law.rothCatchUpWageThreshold / 100;
   const additionsCap = Math.min(law.overall415cLimit / 100, salary);
   const employerLanded = Math.min(employer401k, Math.max(0, additionsCap - deferral));
   const megaRoom = Math.max(0, additionsCap - deferral - employerLanded);
   const mega = Math.max(0, Math.min(megaRoom, salary - deferral - catchUp - ownHsa));
   const hsaBucket = Math.min(hsaLimit, ownHsa + employerHsaLanded);
+  const employerHsaAccepted = Math.max(0, Math.min(employerHsaLanded, hsaLimit - ownHsa));
   return {
-    deferral: r23(deferral),
-    catchUp: r23(catchUp),
+    deferral: r24(deferral),
+    catchUp: r24(catchUp),
     catchUpIsRoth,
-    mega: r23(mega),
-    employer401k: r23(employerLanded),
-    ownHsa: r23(ownHsa),
-    employerHsa: r23(employerHsaLanded),
-    hsaBucket: r23(hsaBucket),
-    hsaLimit: r23(hsaLimit)
+    mega: r24(mega),
+    employer401k: r24(employerLanded),
+    ownHsa: r24(ownHsa),
+    employerHsa: r24(employerHsaAccepted),
+    employerHsaRequested: r24(employerHsaLanded),
+    hsaBucket: r24(hsaBucket),
+    hsaLimit: r24(hsaLimit),
+    hsaCoverage,
+    hsaEligible,
+    assumptions
   };
 }
 function payrollTaxBreakdown(ficaWages, filingStatus, law, defl = 1) {
@@ -10006,11 +12176,14 @@ function payrollTaxBreakdown(ficaWages, filingStatus, law, defl = 1) {
   const ss = law.payrollSsRatePct / 100 * Math.min(ficaWages, law.ssWageBase / 100);
   const medicare = law.payrollMedicareRatePct / 100 * ficaWages;
   const additional = law.payrollAdditionalMedicareRatePct / 100 * Math.max(0, ficaWages - law.payrollAdditionalMedicareThreshold[filingStatus] * defl);
+  const socialSecurity = r24(ss);
+  const medicareTax = r24(medicare);
+  const additionalMedicare = r24(additional);
   return {
-    socialSecurity: r23(ss),
-    medicare: r23(medicare),
-    additionalMedicare: r23(additional),
-    total: r23(ss + medicare + additional)
+    socialSecurity,
+    medicare: medicareTax,
+    additionalMedicare,
+    total: r24(socialSecurity + medicareTax + additionalMedicare)
   };
 }
 function initTaxableLedger(plan) {
@@ -10068,25 +12241,7 @@ function consumeLedgerSale(ledger, grownBalance, drawn) {
   return gain;
 }
 function sellFromLedgerTiers(tiers, amount) {
-  if (amount <= 0)
-    return 0;
-  const ranked = tiers.map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : null })).filter((o) => o.ratio != null).sort((a, b) => b.ratio - a.ratio);
-  let remaining = amount;
-  let gains = 0;
-  for (const { i } of ranked) {
-    if (remaining <= 0)
-      break;
-    const t = tiers[i];
-    const take = Math.min(remaining, t.bal);
-    if (take <= 0)
-      continue;
-    const ratio = t.basis / t.bal;
-    gains += take * (1 - ratio);
-    t.basis = Math.max(0, t.basis - take * ratio);
-    t.bal -= take;
-    remaining -= take;
-  }
-  return gains;
+  return sellFromTiers(tiers, amount, "highest");
 }
 function stepUpLedgerForYield(ledger, _grownBalance, yieldTotal) {
   if (yieldTotal <= 0)
@@ -10095,20 +12250,7 @@ function stepUpLedgerForYield(ledger, _grownBalance, yieldTotal) {
     ledger.basis = Math.max(0, ledger.basis + yieldTotal);
     return;
   }
-  const ranked = ledger.tiers.map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 })).sort((a, b) => a.ratio - b.ratio);
-  let remaining = yieldTotal;
-  for (const { i } of ranked) {
-    if (remaining <= 0)
-      break;
-    const t = ledger.tiers[i];
-    const room = Math.max(0, t.bal - t.basis);
-    const add = Math.min(room, remaining);
-    t.basis += add;
-    remaining -= add;
-  }
-  if (remaining > 0 && ranked.length > 0) {
-    ledger.tiers[ranked[0].i].basis += remaining;
-  }
+  reinvestYieldIntoTiers(ledger.tiers, yieldTotal);
   ledger.basis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
 }
 function landSurplusInLedger(ledger, grownBalance, surplus) {
@@ -10165,13 +12307,14 @@ function rebuildRolledBasisFields(plan, ledger, finalBalance) {
     taxableTiers: plan.taxableTiers
   };
 }
-function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx, lossCtx) {
+function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx, lossCtx, deferralState) {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
   const defl = deflationFactor(calendarYear, law.year, plan.inflationPct);
-  const stack = contributionStack(age, job.salary, job.employer401k, job.employerHsa, plan.filingStatus, law, priorYearWages, job.medicareAgePrimary ?? null, defl);
+  const effectivePriorYearWages = priorYearWages ?? job.priorYearWages ?? null;
+  const stack = contributionStack(age, job.salary, job.employer401k, job.employerHsa, plan.filingStatus, law, effectivePriorYearWages, job.medicareAgePrimary ?? null, defl, { coverage: job.hsaCoverage ?? null, eligible: job.hsaEligible ?? null });
   const catchUpPreTax = stack.catchUpIsRoth ? 0 : stack.catchUp;
-  const taxableWages = r23(job.salary - stack.deferral - catchUpPreTax - stack.ownHsa);
+  const taxableWages = r24(job.salary - stack.deferral - catchUpPreTax - stack.ownHsa);
   const ageSpouse = plan.birthYearSpouse != null ? calendarYear - plan.birthYearSpouse : null;
   const priorPretaxPrimary = pretaxCtx?.priorPrimary ?? plan.pretaxStart;
   const priorPretaxSpouse = pretaxCtx?.priorSpouse ?? (plan.pretaxSpouseStart ?? 0);
@@ -10189,16 +12332,40 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
     birthYearPrimary: plan.birthYearSpouse,
     spouseSoleBeneficiary: plan.primarySoleBeneficiaryOfSpouse === true
   }) : { rmd: 0, divisor: null, table: null };
-  const rmdTotal = r23(rmdPrimaryRes.rmd + rmdSpouseRes.rmd);
+  const dState = deferralState ?? {
+    hadPrimary: plan.firstRmdAlreadyPricedPrimary === true || (plan.firstRmdDeferredCarryPrimary ?? 0) > 0 || age > Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
+    hadSpouse: plan.firstRmdAlreadyPricedSpouse === true || (plan.firstRmdDeferredCarrySpouse ?? 0) > 0 || ageSpouse != null && plan.birthYearSpouse != null && ageSpouse > Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse)),
+    pendingPrimary: Math.max(0, plan.firstRmdDeferredCarryPrimary ?? 0),
+    pendingSpouse: Math.max(0, plan.firstRmdDeferredCarrySpouse ?? 0)
+  };
+  const settledP = settleFirstRmdDeferral(dState, {
+    who: "primary",
+    computed: rmdPrimaryRes.rmd,
+    deferElected: plan.firstRmdDeferralPrimary === true,
+    deathYearForPerson: false,
+    carryIn: 0,
+    rmdAgeReached: age >= Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary))
+  });
+  const settledS = settleFirstRmdDeferral(dState, {
+    who: "spouse",
+    computed: rmdSpouseRes.rmd,
+    deferElected: plan.firstRmdDeferralSpouse === true,
+    deathYearForPerson: false,
+    carryIn: 0,
+    rmdAgeReached: ageSpouse != null && plan.birthYearSpouse != null && ageSpouse >= Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse))
+  });
+  const rmdPrimary = settledP.pay;
+  const rmdSpouse = settledS.pay;
+  const rmdTotal = r24(rmdPrimary + rmdSpouse);
   const openingBalance = taxableCtx?.openingBalance ?? plan.taxableStart;
-  const interestIncome = r23(Math.max(0, openingBalance) * Math.max(0, plan.taxableInterestYieldPct ?? 0) / 100);
-  const dividendIncome = r23(Math.max(0, openingBalance) * Math.max(0, plan.taxableDividendYieldPct ?? 0) / 100);
+  const interestIncome = r24(Math.max(0, openingBalance) * Math.max(0, plan.taxableInterestYieldPct ?? 0) / 100);
+  const dividendIncome = r24(Math.max(0, openingBalance) * Math.max(0, plan.taxableDividendYieldPct ?? 0) / 100);
   const dividendQualifiedPct = Math.min(100, Math.max(0, plan.taxableDividendQualifiedPct ?? 100));
-  const qualifiedDividendIncome = r23(dividendIncome * dividendQualifiedPct / 100);
-  const nonQualifiedDividendIncome = r23(dividendIncome - qualifiedDividendIncome);
+  const qualifiedDividendIncome = r24(dividendIncome * dividendQualifiedPct / 100);
+  const nonQualifiedDividendIncome = r24(dividendIncome - qualifiedDividendIncome);
   const ssPrimaryThisYear = plan.ssPrimaryStartAge != null && age >= plan.ssPrimaryStartAge ? plan.ssPrimaryNoBenefit ? 0 : plan.ssPrimaryAnnual : 0;
   const ssSpouseThisYear = plan.ssSpouseStartAge != null && ageSpouse != null && ageSpouse >= plan.ssSpouseStartAge ? plan.ssSpouseNoBenefit ? 0 : plan.ssSpouseAnnual : 0;
-  const ssBenefits = r23(ssPrimaryThisYear + ssSpouseThisYear);
+  const ssBenefits = r24(ssPrimaryThisYear + ssSpouseThisYear);
   const lossCarryInSt = Math.max(0, lossCtx?.st ?? plan.capitalLossCarryInSt ?? 0);
   const lossCarryInLt = Math.max(0, lossCtx?.lt ?? plan.capitalLossCarryInLt ?? 0);
   const lossCarryInWaSt = Math.min(lossCarryInSt, Math.max(0, lossCtx?.waSt ?? plan.capitalLossCarryInStWa ?? 0));
@@ -10215,7 +12382,7 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
     return {
       ltcg: led.netResult,
       capitalLossAllowance: led.allowance,
-      waGainsBase: r23(grossGains - led.waAbsorbedByGains)
+      waGainsBase: r24(grossGains - led.waAbsorbedByGains)
     };
   };
   const priceWithGain = (grossLtcg) => {
@@ -10247,11 +12414,11 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
       educationStudents: (plan.educationStudents ?? []).filter((e) => e.year === calendarYear)
     });
   };
-  const ficaWages = r23(job.salary - stack.ownHsa);
+  const ficaWages = r24(job.salary - stack.ownHsa);
   const payroll = payrollTaxBreakdown(Math.max(0, ficaWages), plan.filingStatus, law, defl);
   const fica = payroll.total;
   const ownContributions = stack.deferral + stack.catchUp + stack.mega + stack.ownHsa;
-  const surplusOf = (p) => r23(job.salary - p.federalTax - p.stateTax - fica - plan.annualSpending - ownContributions + ssBenefits + rmdTotal);
+  const surplusOf = (p) => r24(job.salary - p.federalTax - p.stateTax - fica - plan.annualSpending - ownContributions + ssBenefits + rmdTotal + plan.taxExemptInterestAnnual);
   let priced = priceWithGain(0);
   let surplus = surplusOf(priced);
   let ltcg = 0;
@@ -10275,6 +12442,10 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
     }
   }
   const ledFinal = lossLedgerOn || ltcg < 0 ? applyLossLedger({ st: lossCarryInSt, lt: lossCarryInLt }, ltcg, plan.filingStatus, priced.taxableIncomeBeforeLossAllowance, { st: lossCarryInWaSt, lt: lossCarryInWaLt }) : null;
+  const assumptions = [...stack.assumptions];
+  if (effectivePriorYearWages == null && stack.catchUp > 0 && law.year >= 2026) {
+    assumptions.push(`First modeled year: the §414(v)(7) Roth catch-up test used this year's Box-3 wages ($${ficaWages.toLocaleString("en-US")}) as a proxy for the prior calendar year's wages from the plan sponsor. Enter prior-year wages to price the actual classification.`);
+  }
   return {
     age,
     calendarYear,
@@ -10284,6 +12455,9 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
     magi: priced.magi,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
+    lawYearUsed: law.year,
+    lawStatus: lawProvenanceForYear(calendarYear).status,
+    stateTaxKind: priced.stateTaxProvenance.kind,
     ficaWages,
     fica,
     payrollTax: payroll.total,
@@ -10294,29 +12468,34 @@ function priceOneWorkYear(plan, job, age, priorYearWages, taxableCtx, pretaxCtx,
     dividendIncome,
     ssBenefits,
     rmd: rmdTotal,
-    rmdPrimary: rmdPrimaryRes.rmd,
-    rmdSpouse: rmdSpouseRes.rmd,
+    rmdPrimary,
+    rmdSpouse,
     rmdDivisorPrimary: rmdPrimaryRes.divisor,
     rmdDivisorSpouse: rmdSpouseRes.divisor,
     rmdTablePrimary: rmdPrimaryRes.table,
     rmdTableSpouse: rmdSpouseRes.table,
-    ltcg: r23(ltcg),
-    capitalLossCarryInSt: r23(lossCarryInSt),
-    capitalLossCarryInLt: r23(lossCarryInLt),
-    netCapitalResult: ledFinal ? ledFinal.netResult : r23(ltcg),
+    rmdDeferredPrimary: settledP.deferredThisYear,
+    rmdDeferredSpouse: settledS.deferredThisYear,
+    rmdDeferredPaidPrimary: settledP.deferredPaid,
+    rmdDeferredPaidSpouse: settledS.deferredPaid,
+    ltcg: r24(ltcg),
+    capitalLossCarryInSt: r24(lossCarryInSt),
+    capitalLossCarryInLt: r24(lossCarryInLt),
+    netCapitalResult: ledFinal ? ledFinal.netResult : r24(ltcg),
     capitalLossAllowance: ledFinal ? ledFinal.allowance : 0,
     capitalLossAllowanceUsed: ledFinal ? ledFinal.allowanceUsed : 0,
     capitalLossAbsorbedByGains: ledFinal ? ledFinal.absorbedByGains : 0,
     capitalLossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
     capitalLossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,
-    capitalLossCarryInWaSt: r23(lossCarryInWaSt),
-    capitalLossCarryInWaLt: r23(lossCarryInWaLt),
+    capitalLossCarryInWaSt: r24(lossCarryInWaSt),
+    capitalLossCarryInWaLt: r24(lossCarryInWaLt),
     capitalLossWaAbsorbedByGains: ledFinal ? ledFinal.waAbsorbedByGains : 0,
     capitalLossCarryOutWaSt: ledFinal ? ledFinal.waCarryOut.st : 0,
     capitalLossCarryOutWaLt: ledFinal ? ledFinal.waCarryOut.lt : 0,
     surplus,
     educationRefundable: priced.educationRefundable,
-    shortfall: 0
+    shortfall: 0,
+    assumptions
   };
 }
 function rollWorkYears(plan, job, quitAge) {
@@ -10324,18 +12503,23 @@ function rollWorkYears(plan, job, quitAge) {
   const effectiveStart = Math.max(plan.windowStartAge, currentAge);
   const count = job.salary > 0 ? Math.max(0, Math.floor(quitAge) - effectiveStart) : 0;
   const startLedger = initTaxableLedger(plan);
+  const startRothIra = plan.rothIraStart ?? Math.max(0, plan.rothStart - (plan.rothEmployerStart ?? 0));
+  const startRothEmployer = plan.rothEmployerStart ?? 0;
   const startBalances = {
-    pretax: r23(plan.pretaxStart + (plan.pretaxSpouseStart ?? 0)),
+    pretax: r24(plan.pretaxStart + (plan.pretaxSpouseStart ?? 0)),
     pretaxPrimary: plan.pretaxStart,
     pretaxSpouse: plan.pretaxSpouseStart ?? 0,
     roth: plan.rothStart,
+    rothIra: startRothIra,
+    rothEmployer: startRothEmployer,
     taxable: plan.taxableStart,
-    taxableBasis: r23(startLedger.basis),
+    taxableBasis: r24(startLedger.basis),
     hsa: plan.hsaStart
   };
   if (count === 0) {
     return {
       lines: [],
+      assumptions: [],
       totals: {
         years: 0,
         grossSalary: 0,
@@ -10368,6 +12552,8 @@ function rollWorkYears(plan, job, quitAge) {
   let pretaxPrimary = plan.pretaxStart;
   let pretaxSpouse = plan.pretaxSpouseStart ?? 0;
   let roth = plan.rothStart;
+  let rothIra = startRothIra;
+  let rothEmployer = startRothEmployer;
   let taxable = plan.taxableStart;
   let hsa = plan.hsaStart;
   const lines = [];
@@ -10391,14 +12577,22 @@ function rollWorkYears(plan, job, quitAge) {
     shortfall: 0,
     banked: 0
   };
-  let priorYearWages = null;
+  let priorYearWages = job.priorYearWages ?? null;
   const ledger = initTaxableLedger(plan);
+  let firstMegaYear = null;
+  let firstCatchUpRothYear = null;
   let pendingEduRefund = 0;
   let eduRefundsDeposited = 0;
   let lossCarrySt = Math.max(0, plan.capitalLossCarryInSt ?? 0);
   let lossCarryLt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
   let lossCarryWaSt = Math.min(lossCarrySt, Math.max(0, plan.capitalLossCarryInStWa ?? 0));
   let lossCarryWaLt = Math.min(lossCarryLt, Math.max(0, plan.capitalLossCarryInLtWa ?? 0));
+  const deferralState = {
+    hadPrimary: plan.firstRmdAlreadyPricedPrimary === true || (plan.firstRmdDeferredCarryPrimary ?? 0) > 0 || effectiveStart > Math.ceil(rmdAgeForBirthYear(plan.birthYearPrimary)),
+    hadSpouse: plan.firstRmdAlreadyPricedSpouse === true || (plan.firstRmdDeferredCarrySpouse ?? 0) > 0 || plan.birthYearSpouse != null && plan.birthYearPrimary + effectiveStart - plan.birthYearSpouse > Math.ceil(rmdAgeForBirthYear(plan.birthYearSpouse)),
+    pendingPrimary: Math.max(0, plan.firstRmdDeferredCarryPrimary ?? 0),
+    pendingSpouse: Math.max(0, plan.firstRmdDeferredCarrySpouse ?? 0)
+  };
   for (let i = 0;i < count; i++) {
     const age = effectiveStart + i;
     if (pendingEduRefund > 0) {
@@ -10408,7 +12602,7 @@ function rollWorkYears(plan, job, quitAge) {
       pendingEduRefund = 0;
     }
     const openingTaxable = taxable;
-    const yieldTotal = r23(Math.max(0, openingTaxable) * Math.max(0, plan.taxableInterestYieldPct ?? 0) / 100) + r23(Math.max(0, openingTaxable) * Math.max(0, plan.taxableDividendYieldPct ?? 0) / 100);
+    const yieldTotal = r24(Math.max(0, openingTaxable) * Math.max(0, plan.taxableInterestYieldPct ?? 0) / 100) + r24(Math.max(0, openingTaxable) * Math.max(0, plan.taxableDividendYieldPct ?? 0) / 100);
     const grownTaxable = openingTaxable * growth;
     if (ledger.tiers) {
       for (const t of ledger.tiers)
@@ -10419,13 +12613,13 @@ function rollWorkYears(plan, job, quitAge) {
       openingBalance: openingTaxable,
       grownBalance: grownTaxable,
       ledger
-    }, { priorPrimary: pretaxPrimary, priorSpouse: pretaxSpouse }, { st: lossCarrySt, lt: lossCarryLt, waSt: lossCarryWaSt, waLt: lossCarryWaLt });
+    }, { priorPrimary: pretaxPrimary, priorSpouse: pretaxSpouse }, { st: lossCarrySt, lt: lossCarryLt, waSt: lossCarryWaSt, waLt: lossCarryWaLt }, deferralState);
     priorYearWages = pricedLine.ficaWages;
     lossCarrySt = pricedLine.capitalLossCarryOutSt;
     lossCarryLt = pricedLine.capitalLossCarryOutLt;
     lossCarryWaSt = pricedLine.capitalLossCarryOutWaSt;
     lossCarryWaLt = pricedLine.capitalLossCarryOutWaLt;
-    pendingEduRefund = r23(pricedLine.educationRefundable);
+    pendingEduRefund = r24(pricedLine.educationRefundable);
     const s = pricedLine.stack;
     const catchUpPreTax = s.catchUpIsRoth ? 0 : s.catchUp;
     const catchUpRoth = s.catchUpIsRoth ? s.catchUp : 0;
@@ -10433,9 +12627,17 @@ function rollWorkYears(plan, job, quitAge) {
     const rothIn = catchUpRoth + s.mega;
     pretaxPrimary = Math.max(0, pretaxPrimary - pricedLine.rmdPrimary) * growth + pretaxIn;
     pretaxSpouse = Math.max(0, pretaxSpouse - pricedLine.rmdSpouse) * growth;
-    roth = roth * growth + rothIn;
+    rothIra = rothIra * growth + s.mega;
+    rothEmployer = rothEmployer * growth + catchUpRoth;
+    roth = rothIra + rothEmployer;
+    if (s.mega > 0 && firstMegaYear == null) {
+      firstMegaYear = plan.birthYearPrimary + age;
+    }
+    if (catchUpRoth > 0 && firstCatchUpRothYear == null) {
+      firstCatchUpRothYear = plan.birthYearPrimary + age;
+    }
     const rawTaxable = grownTaxable + pricedLine.surplus;
-    const shortfall = rawTaxable < 0 ? r23(-rawTaxable) : 0;
+    const shortfall = rawTaxable < 0 ? r24(-rawTaxable) : 0;
     if (pricedLine.surplus >= 0) {
       landSurplusInLedger(ledger, grownTaxable, pricedLine.surplus);
     } else {
@@ -10468,72 +12670,102 @@ function rollWorkYears(plan, job, quitAge) {
     pendingEduRefund = 0;
   }
   totals.surplusBanked += eduRefundsDeposited;
-  totals.grossSalary = r23(totals.grossSalary);
-  totals.federal = r23(totals.federal);
-  totals.state = r23(totals.state);
-  totals.fica = r23(totals.fica);
-  totals.payrollTax = r23(totals.payrollTax);
-  totals.payrollSocialSecurity = r23(totals.payrollSocialSecurity);
-  totals.payrollMedicare = r23(totals.payrollMedicare);
-  totals.payrollAdditionalMedicare = r23(totals.payrollAdditionalMedicare);
-  totals.pretaxContributions = r23(totals.pretaxContributions);
-  totals.rothContributions = r23(totals.rothContributions);
-  totals.hsaContributions = r23(totals.hsaContributions);
-  totals.totalContributions = r23(totals.pretaxContributions + totals.rothContributions + totals.hsaContributions);
-  totals.employeeContributions = r23(totals.employeeContributions);
-  totals.employerContributions = r23(totals.employerContributions);
-  totals.surplusBanked = r23(totals.surplusBanked);
-  totals.shortfall = r23(totals.shortfall);
-  totals.banked = r23(totals.totalContributions + totals.surplusBanked);
+  totals.grossSalary = r24(totals.grossSalary);
+  totals.federal = r24(totals.federal);
+  totals.state = r24(totals.state);
+  totals.fica = r24(totals.fica);
+  totals.payrollTax = r24(totals.payrollTax);
+  totals.payrollSocialSecurity = r24(totals.payrollSocialSecurity);
+  totals.payrollMedicare = r24(totals.payrollMedicare);
+  totals.payrollAdditionalMedicare = r24(totals.payrollAdditionalMedicare);
+  totals.pretaxContributions = r24(totals.pretaxContributions);
+  totals.rothContributions = r24(totals.rothContributions);
+  totals.hsaContributions = r24(totals.hsaContributions);
+  totals.totalContributions = r24(totals.pretaxContributions + totals.rothContributions + totals.hsaContributions);
+  totals.employeeContributions = r24(totals.employeeContributions);
+  totals.employerContributions = r24(totals.employerContributions);
+  totals.surplusBanked = r24(totals.surplusBanked);
+  totals.shortfall = r24(totals.shortfall);
+  totals.banked = r24(totals.totalContributions + totals.surplusBanked);
   const balances = {
-    pretax: r23(pretaxPrimary + pretaxSpouse),
-    pretaxPrimary: r23(pretaxPrimary),
-    pretaxSpouse: r23(pretaxSpouse),
-    roth: r23(roth),
-    taxable: r23(taxable),
-    taxableBasis: r23(ledger.basis),
-    hsa: r23(hsa)
+    pretax: r24(pretaxPrimary + pretaxSpouse),
+    pretaxPrimary: r24(pretaxPrimary),
+    pretaxSpouse: r24(pretaxSpouse),
+    roth: r24(roth),
+    rothIra: r24(rothIra),
+    rothEmployer: r24(rothEmployer),
+    taxable: r24(taxable),
+    taxableBasis: r24(ledger.basis),
+    hsa: r24(hsa)
   };
   const basisFields = rebuildRolledBasisFields(plan, ledger, balances.taxable);
   const rolledInputs = {
     ...plan,
-    capitalLossCarryInSt: r23(lossCarrySt),
-    capitalLossCarryInLt: r23(lossCarryLt),
-    capitalLossCarryInStWa: r23(lossCarryWaSt),
-    capitalLossCarryInLtWa: r23(lossCarryWaLt),
+    capitalLossCarryInSt: r24(lossCarrySt),
+    capitalLossCarryInLt: r24(lossCarryLt),
+    capitalLossCarryInStWa: r24(lossCarryWaSt),
+    capitalLossCarryInLtWa: r24(lossCarryWaLt),
+    firstRmdDeferredCarryPrimary: r24(deferralState.pendingPrimary),
+    firstRmdDeferredCarrySpouse: r24(deferralState.pendingSpouse),
+    firstRmdAlreadyPricedPrimary: deferralState.hadPrimary,
+    firstRmdAlreadyPricedSpouse: deferralState.hadSpouse,
     taxableBasisPct: basisFields.taxableBasisPct,
     taxableTiers: basisFields.taxableTiers,
-    irmaaLookbackSeed: lines.map((l) => ({
-      year: l.calendarYear,
-      magi: l.magi,
-      filingStatus: plan.filingStatus
-    })),
+    irmaaLookbackSeed: [
+      ...(plan.irmaaLookbackSeed ?? []).filter((s) => !lines.some((l) => l.calendarYear === s.year)),
+      ...lines.map((l) => ({
+        year: l.calendarYear,
+        magi: l.magi,
+        filingStatus: plan.filingStatus
+      }))
+    ],
     startYear: plan.birthYearPrimary + Math.floor(quitAge),
     retirementAge: Math.floor(quitAge),
     windowStartAge: Math.floor(quitAge),
     pretaxStart: Math.max(0, balances.pretaxPrimary),
     pretaxSpouseStart: Math.max(0, balances.pretaxSpouse),
     rothStart: Math.max(0, balances.roth),
+    rothIraStart: Math.max(0, balances.rothIra),
+    rothEmployerStart: Math.max(0, r24(balances.roth - Math.max(0, balances.rothIra))),
+    rothContributionBasisPrimary: plan.rothContributionBasisPrimary == null ? null : r24(plan.rothContributionBasisPrimary + totals.rothContributions),
+    firstRothYearPrimary: plan.firstRothYearPrimary ?? firstMegaYear,
+    firstDesignatedRothYearPrimary: plan.firstDesignatedRothYearPrimary ?? firstCatchUpRothYear,
     taxableStart: Math.max(0, balances.taxable),
     hsaStart: Math.max(0, balances.hsa),
     convertedAlreadyThisYear: 0
   };
-  return { lines, totals, balances, rolledInputs };
+  const assumptions = [];
+  for (const line of lines) {
+    for (const a of line.assumptions) {
+      if (!assumptions.includes(a))
+        assumptions.push(a);
+    }
+  }
+  const medicareAge = job.medicareAgePrimary;
+  if (medicareAge != null && lines.some((l) => l.age >= medicareAge)) {
+    const partialYearNote = "Medicare enrollment is priced by whole year (HSA-eligible until the enrollment age, $0 limit from it); a mid-year enrollment's prorated limit and the last-month rule are not modeled.";
+    if (!assumptions.includes(partialYearNote))
+      assumptions.push(partialYearNote);
+  }
+  return { lines, totals, assumptions, balances, rolledInputs };
+}
+function workYearsCompareCacheKey(quitAge, roll) {
+  return roll.totals.years === 0 ? `no-work:${quitAge}` : `roll:${jointInputsKey(roll.rolledInputs)}`;
 }
 function runWorkYearsCompare(plan, job, quitAges) {
   const cache = new Map;
   return quitAges.map((quitAge) => {
     const roll = rollWorkYears(plan, job, quitAge);
-    const key = roll.totals.years === 0 ? `no-work:${quitAge}` : `${quitAge}:${roll.balances.pretax}:${roll.balances.roth}:${roll.balances.taxable}:${roll.balances.hsa}:${roll.rolledInputs.capitalLossCarryInSt ?? 0}:${roll.rolledInputs.capitalLossCarryInLt ?? 0}:${roll.rolledInputs.capitalLossCarryInStWa ?? 0}:${roll.rolledInputs.capitalLossCarryInLtWa ?? 0}`;
+    const key = workYearsCompareCacheKey(quitAge, roll);
     let entry = cache.get(key);
     if (!entry) {
       entry = { roll, optimizer: runJointOptimizer(roll.rolledInputs) };
       cache.set(key, entry);
     }
     const opt = entry.optimizer;
-    const workTax = r23(roll.totals.federal + roll.totals.state + roll.totals.fica);
+    const workTax = r24(roll.totals.federal + roll.totals.state + roll.totals.fica);
     const claim67 = opt.claimAgeTable.find((row) => row.primaryAge === 67) ?? null;
-    const endingNominal = r23(opt.winner.result.endingPretax + opt.winner.result.endingRoth + opt.winner.result.endingTaxable + opt.winner.result.endingHsa);
+    const endingNominal = r24(opt.winner.result.endingPretax + opt.winner.result.endingRoth + opt.winner.result.endingTaxable + opt.winner.result.endingHsa);
     return {
       quitAge,
       workYears: roll.totals.years,
@@ -10541,18 +12773,100 @@ function runWorkYearsCompare(plan, job, quitAges) {
       optimizer: opt,
       workTax,
       payrollTax: roll.totals.payrollTax,
-      totalTax: r23(opt.winner.cost.tax + workTax),
+      totalTax: r24(opt.winner.cost.tax + workTax),
       shortfall: roll.totals.shortfall,
-      allInTax: r23(opt.winner.cost.netCost + workTax),
-      claim67AllInTax: claim67 == null ? null : r23(claim67.best.cost.netCost + workTax),
+      allInTax: r24(opt.winner.cost.netCost + workTax),
+      assumptions: roll.assumptions,
+      claim67AllInTax: claim67 == null ? null : r24(claim67.best.cost.netCost + workTax),
       endingNominal,
-      endingAfterTax: opt.winner.result.endingAfterTaxWealth
+      endingAfterTax: opt.winner.result.endingAfterTaxWealth,
+      irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
+      acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
+      cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
+      earlyWithdrawalUnknownYears: opt.winner.result.earlyWithdrawalUnknownYears,
+      rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears
     };
   });
 }
 
 var ADAPTER_VERSION = "assistant-api 0.1.0";
-var API_CONTRACT_VERSION_REPORTED = 164;
+var API_CONTRACT_VERSION_REPORTED = 165;
+var FIELD_ORDER = [
+  "pretax",
+  "taxable",
+  "roth",
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear",
+  "hsa",
+  "monthlySpending",
+  "currentAge",
+  "spouseAge",
+  "retirementAge",
+  "endAge",
+  "filingStatus",
+  "householdSize",
+  "taxableBasisPct",
+  "taxableDividendYieldPct",
+  "taxableInterestYieldPct",
+  "expectedRealReturnPct",
+  "volatilityPct",
+  "stocksPct",
+  "strategy",
+  "minimumAnnualSpending",
+  "socialSecurityAnnual",
+  "spouseSocialSecurityAnnual",
+  "socialSecurityStartAge",
+  "spouseSocialSecurityStartAge",
+  "state",
+  "stateRatePct",
+  "acaBenchmarkCouple",
+  "acaBenchmarkSingle",
+  "acaBenchmarkFamily",
+  "priorYearMagi",
+  "healthPremiumAcaHouseholdAnnual",
+  "healthPremiumAcaSingleAnnual",
+  "healthPremiumMedicarePerPersonAnnual",
+  "spendingIncludesHealthPremiums",
+  "otherOrdinaryAnnual",
+  "taxExemptInterestAnnual",
+  "salaryAnnual",
+  "employer401kAnnual",
+  "employerHsaAnnual",
+  "hsaCoverage",
+  "hsaEligible",
+  "medicareAgePrimary",
+  "priorYearWagesAnnual",
+  "taxYear",
+  "interestAnnual",
+  "ordinaryDividendsAnnual",
+  "qualifiedDividendsAnnual",
+  "conversionAnnual",
+  "spendingDrawAnnual",
+  "cashDrawAnnual",
+  "rothDrawAnnual",
+  "stockSoldAnnual",
+  "stockBasisAnnual",
+  "pretaxPriorYearEndAnnual",
+  "pretaxSpousePriorYearEndAnnual",
+  "rmdAlreadyReceivedAnnual",
+  "primarySoleBeneficiaryOfSpouse",
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "firstRmdDeferredCarryPrimaryAnnual",
+  "firstRmdDeferredCarrySpouseAnnual",
+  "survivorEnabled",
+  "survivorWho",
+  "survivorDeathYear",
+  "survivorClaimAge",
+  "mcSeed",
+  "mcRuns",
+  "compareAges",
+  "comparisonScope"
+];
 
 var _a;
 function $constructor(name, initializer, params) {
@@ -14906,6 +17220,16 @@ var RetirementQuestionInputs = strictObject({
   pretax: dollars,
   taxable: dollars,
   roth: dollars,
+  rothIra: dollars.optional(),
+  rothEmployer: dollars.optional(),
+  rothContributionBasis: dollars.optional(),
+  rothConversionLots: array(strictObject({
+    year: number2().int().finite().min(1900).max(2200),
+    taxableAmount: dollars,
+    nontaxableAmount: dollars
+  })).max(64).optional(),
+  firstRothYear: number2().int().finite().min(1900).max(2200).optional(),
+  firstDesignatedRothYear: number2().int().finite().min(1900).max(2200).optional(),
   hsa: dollars,
   monthlySpending: number2().finite().gt(0).max(200000),
   currentAge: age,
@@ -14931,6 +17255,11 @@ var RetirementQuestionInputs = strictObject({
   acaBenchmarkCouple: dollars.optional(),
   acaBenchmarkSingle: dollars.optional(),
   acaBenchmarkFamily: dollars.optional(),
+  priorYearMagi: array(strictObject({
+    taxYear: number2().int().finite().min(1900).max(2200),
+    magi: dollars,
+    filingStatus: _enum(["mfj", "single", "hoh"])
+  })).max(40).optional(),
   healthPremiumAcaHouseholdAnnual: dollars.optional(),
   healthPremiumAcaSingleAnnual: dollars.optional(),
   healthPremiumMedicarePerPersonAnnual: dollars.optional(),
@@ -14940,8 +17269,12 @@ var RetirementQuestionInputs = strictObject({
   salaryAnnual: dollars.optional(),
   employer401kAnnual: dollars.optional(),
   employerHsaAnnual: dollars.optional(),
+  hsaCoverage: _enum(["self-only", "family", "none"]).optional(),
+  hsaEligible: boolean2().optional(),
+  medicareAgePrimary: number2().int().finite().min(0).max(120).nullable().optional(),
+  priorYearWagesAnnual: dollars.optional(),
   taxYear: union(TAX_YEAR_LIST.map((year) => literal(year)), {
-    error: `taxYear must be one of ${TAX_YEAR_LIST.join(", ")} (the available law years)`
+    error: `taxYear must be one of ${TAX_YEAR_LIST.join(", ")} (the available law years). The app's single-year action prices other years on the newest published row carried forward instead — this tool rejects them`
   }).optional(),
   interestAnnual: dollars.optional(),
   ordinaryDividendsAnnual: dollars.optional(),
@@ -14956,279 +17289,19 @@ var RetirementQuestionInputs = strictObject({
   pretaxSpousePriorYearEndAnnual: dollars.optional(),
   rmdAlreadyReceivedAnnual: dollars.optional(),
   primarySoleBeneficiaryOfSpouse: boolean2().optional(),
+  firstRmdDeferralPrimary: boolean2().optional(),
+  firstRmdDeferralSpouse: boolean2().optional(),
+  firstRmdDeferredCarryPrimaryAnnual: dollars.optional(),
+  firstRmdDeferredCarrySpouseAnnual: dollars.optional(),
+  survivorEnabled: boolean2().optional(),
+  survivorWho: _enum(["primary", "spouse"]).optional(),
+  survivorDeathYear: number2().int().finite().min(1900).max(2100).optional(),
+  survivorClaimAge: number2().int().finite().min(60).max(70).optional(),
   mcSeed: number2().int().finite().optional(),
   mcRuns: number2().int().finite().min(10).max(5000).optional(),
   compareAges: array(age).min(2).max(5).optional(),
   comparisonScope: _enum(["limited", "full"]).optional()
 });
-
-var REQUIRED_INPUTS_GLOBAL = [
-  "pretax",
-  "taxable",
-  "roth",
-  "hsa",
-  "monthlySpending",
-  "currentAge"
-];
-var FIELD_ORDER = [
-  "pretax",
-  "taxable",
-  "roth",
-  "hsa",
-  "monthlySpending",
-  "currentAge",
-  "spouseAge",
-  "retirementAge",
-  "endAge",
-  "filingStatus",
-  "householdSize",
-  "taxableBasisPct",
-  "taxableDividendYieldPct",
-  "taxableInterestYieldPct",
-  "expectedRealReturnPct",
-  "volatilityPct",
-  "stocksPct",
-  "strategy",
-  "minimumAnnualSpending",
-  "socialSecurityAnnual",
-  "spouseSocialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityStartAge",
-  "state",
-  "stateRatePct",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "healthPremiumAcaHouseholdAnnual",
-  "healthPremiumAcaSingleAnnual",
-  "healthPremiumMedicarePerPersonAnnual",
-  "spendingIncludesHealthPremiums",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "salaryAnnual",
-  "employer401kAnnual",
-  "employerHsaAnnual",
-  "taxYear",
-  "interestAnnual",
-  "ordinaryDividendsAnnual",
-  "qualifiedDividendsAnnual",
-  "conversionAnnual",
-  "spendingDrawAnnual",
-  "cashDrawAnnual",
-  "rothDrawAnnual",
-  "stockSoldAnnual",
-  "stockBasisAnnual",
-  "pretaxPriorYearEndAnnual",
-  "pretaxSpousePriorYearEndAnnual",
-  "rmdAlreadyReceivedAnnual",
-  "primarySoleBeneficiaryOfSpouse",
-  "mcSeed",
-  "mcRuns",
-  "compareAges",
-  "comparisonScope"
-];
-var SIM_OPTIONAL_INPUTS = [
-  "retirementAge",
-  "endAge",
-  "spouseAge",
-  "stocksPct",
-  "expectedRealReturnPct",
-  "volatilityPct",
-  "strategy",
-  "minimumAnnualSpending",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge"
-];
-var COMPARE_OPTIONAL_INPUTS = [
-  "retirementAge",
-  "endAge",
-  "spouseAge",
-  "filingStatus",
-  "householdSize",
-  "stocksPct",
-  "expectedRealReturnPct",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge",
-  "taxableBasisPct",
-  "taxableDividendYieldPct",
-  "taxableInterestYieldPct",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "healthPremiumAcaHouseholdAnnual",
-  "healthPremiumAcaSingleAnnual",
-  "healthPremiumMedicarePerPersonAnnual",
-  "spendingIncludesHealthPremiums",
-  "stateRatePct",
-  "state",
-  "comparisonScope"
-];
-var TAX_YEAR_OPTIONAL_INPUTS = [
-  "spouseAge",
-  "filingStatus",
-  "householdSize",
-  "socialSecurityAnnual",
-  "socialSecurityStartAge",
-  "spouseSocialSecurityAnnual",
-  "spouseSocialSecurityStartAge",
-  "otherOrdinaryAnnual",
-  "taxExemptInterestAnnual",
-  "acaBenchmarkCouple",
-  "acaBenchmarkSingle",
-  "acaBenchmarkFamily",
-  "healthPremiumAcaHouseholdAnnual",
-  "healthPremiumAcaSingleAnnual",
-  "healthPremiumMedicarePerPersonAnnual",
-  "spendingIncludesHealthPremiums",
-  "stateRatePct",
-  "state",
-  "taxYear",
-  "interestAnnual",
-  "ordinaryDividendsAnnual",
-  "qualifiedDividendsAnnual",
-  "conversionAnnual",
-  "spendingDrawAnnual",
-  "cashDrawAnnual",
-  "rothDrawAnnual",
-  "stockSoldAnnual",
-  "stockBasisAnnual",
-  "pretaxPriorYearEndAnnual",
-  "pretaxSpousePriorYearEndAnnual",
-  "rmdAlreadyReceivedAnnual",
-  "primarySoleBeneficiaryOfSpouse"
-];
-var PRICED_OPTIONAL = {
-  retirement_calculate: SIM_OPTIONAL_INPUTS.filter((f) => f !== "volatilityPct"),
-  retirement_monte_carlo: [...SIM_OPTIONAL_INPUTS, "mcRuns", "mcSeed"],
-  retirement_max_spending: [
-    ...SIM_OPTIONAL_INPUTS.filter((f) => f !== "minimumAnnualSpending"),
-    "mcSeed"
-  ],
-  retirement_compare_strategies: COMPARE_OPTIONAL_INPUTS,
-  retirement_roth_conversion: COMPARE_OPTIONAL_INPUTS,
-  retirement_work_years: [
-    ...COMPARE_OPTIONAL_INPUTS,
-    "salaryAnnual",
-    "employer401kAnnual",
-    "employerHsaAnnual",
-    "compareAges"
-  ],
-  retirement_tax_year: TAX_YEAR_OPTIONAL_INPUTS
-};
-function pricedBy(field) {
-  const tools = Object.keys(PRICED_OPTIONAL);
-  return tools.filter((t) => PRICED_OPTIONAL[t].includes(field));
-}
-var FIELD_BLURBS = {
-  spouseAge: "the spouse's current age",
-  retirementAge: "the age work income stops",
-  endAge: "the last age the projection runs through",
-  filingStatus: "the federal tax filing status",
-  householdSize: "the household size (drives ACA benchmarks)",
-  taxableBasisPct: "the taxable account's cost-basis share",
-  taxableDividendYieldPct: "the taxable account's dividend yield",
-  taxableInterestYieldPct: "the taxable account's interest yield",
-  expectedRealReturnPct: "the expected real portfolio return",
-  volatilityPct: "the annual portfolio volatility",
-  stocksPct: "the portfolio's stock allocation",
-  strategy: "the spending strategy",
-  minimumAnnualSpending: "the minimum annual spending floor for the spending-adequacy rate",
-  socialSecurityAnnual: "the primary's annual Social Security benefit",
-  spouseSocialSecurityAnnual: "the spouse's annual Social Security benefit",
-  socialSecurityStartAge: "the primary's Social Security claiming age",
-  spouseSocialSecurityStartAge: "the spouse's Social Security claiming age",
-  state: "the state of residence",
-  stateRatePct: "the flat state income-tax rate",
-  acaBenchmarkCouple: "the ACA benchmark premium for a couple",
-  acaBenchmarkSingle: "the ACA benchmark premium for a single filer",
-  acaBenchmarkFamily: "the ACA benchmark premium for a family household",
-  healthPremiumAcaHouseholdAnnual: "the marketplace health premium for a two-person household year",
-  healthPremiumAcaSingleAnnual: "the marketplace health premium for a one-person year",
-  healthPremiumMedicarePerPersonAnnual: "the Medicare base premium per person",
-  spendingIncludesHealthPremiums: "whether monthly spending already includes health insurance premiums",
-  otherOrdinaryAnnual: "other ordinary income per year",
-  taxExemptInterestAnnual: "tax-exempt interest per year",
-  salaryAnnual: "the annual salary while working",
-  employer401kAnnual: "the annual employer 401(k) contribution",
-  employerHsaAnnual: "the annual employer HSA contribution",
-  taxYear: "the tax law year to price under",
-  interestAnnual: "taxable interest for one tax year",
-  ordinaryDividendsAnnual: "total ordinary dividends for one tax year",
-  qualifiedDividendsAnnual: "the qualified portion of one year's ordinary dividends",
-  conversionAnnual: "a Roth conversion amount for one tax year",
-  spendingDrawAnnual: "the draw for spending for one tax year",
-  cashDrawAnnual: "the draw from cash for one tax year",
-  rothDrawAnnual: "the draw from Roth for one tax year",
-  stockSoldAnnual: "taxable shares sold in one tax year",
-  stockBasisAnnual: "the cost basis of the shares sold",
-  pretaxPriorYearEndAnnual: "the primary's pre-tax balance at Dec 31 of the year before the priced year",
-  pretaxSpousePriorYearEndAnnual: "the spouse's pre-tax balance at Dec 31 of the year before the priced year",
-  rmdAlreadyReceivedAnnual: "the part of this year's RMD already received and already counted in the entered income",
-  primarySoleBeneficiaryOfSpouse: "whether the primary is the spouse's sole beneficiary (gates the spouse's RMD table)",
-  mcSeed: "the Monte Carlo random seed",
-  mcRuns: "the number of Monte Carlo simulations",
-  compareAges: "the retirement ages to compare",
-  comparisonScope: "the comparison scope (limited or full candidate set)"
-};
-function conditionalReason(tool, field, s) {
-  const mfj = s.filingStatus === "mfj";
-  if (!mfj && (field === "spouseAge" || field === "spouseSocialSecurityAnnual" || field === "spouseSocialSecurityStartAge")) {
-    return `no spouse is modeled for ${s.filingStatus} filing status, so it prices nothing for this scenario; it is priced by the tax-aware tools on a joint (mfj) return`;
-  }
-  if (field === "stateRatePct") {
-    if (s.residenceState === "WA") {
-      return "WA is priced via the WA excise path, not an income-tax rate; the rate is priced by the tax-aware tools for a non-WA state";
-    }
-    if (s.stateLabel == null) {
-      return "no state was given, so no state tax is modeled; the rate is priced by the tax-aware tools once a non-WA state is given";
-    }
-  }
-  if (field === "socialSecurityStartAge" && s.ssPrimaryAnnual === 0) {
-    return "no primary Social Security benefit was entered, so no claiming age applies; it is priced by every tool once a benefit is entered";
-  }
-  if (field === "spouseSocialSecurityStartAge" && s.ssSpouseAnnual === 0) {
-    return "no spouse Social Security benefit was entered, so no claiming age applies; it is priced by every tool once a benefit is entered";
-  }
-  if (tool === "retirement_tax_year") {
-    if (field === "stockBasisAnnual" && (s.singleYear.stockSold == null || s.singleYear.stockSold === 0)) {
-      return "a cost basis prices only against a sale, and no sale was entered for this year — retirement_tax_year prices it only when stockSoldAnnual is entered";
-    }
-    if (field === "pretaxSpousePriorYearEndAnnual" && !mfj) {
-      return "a spouse RMD is priced only on a joint (mfj) return — retirement_tax_year prices it only for mfj";
-    }
-    if (field === "rmdAlreadyReceivedAnnual" && s.singleYear.pretaxPriorYearEnd == null && s.singleYear.pretaxSpousePriorYearEnd == null) {
-      return "no prior-Dec-31 balance was entered, so there is no computed RMD to net it against — retirement_tax_year prices it only once a prior-Dec-31 balance is entered";
-    }
-    if (field === "primarySoleBeneficiaryOfSpouse" && (!mfj || s.singleYear.pretaxSpousePriorYearEnd == null)) {
-      return "it gates only the spouse's RMD table, and no spouse RMD is priced for this year — retirement_tax_year prices it only when a spouse prior-Dec-31 balance is entered on a joint return";
-    }
-  }
-  return null;
-}
-function ignoredInputsForTool(tool, scenario) {
-  const priced = new Set(PRICED_OPTIONAL[tool]);
-  const out = [];
-  for (const field of scenario.suppliedFields) {
-    if (REQUIRED_INPUTS_GLOBAL.includes(field))
-      continue;
-    const conditional = priced.has(field) ? conditionalReason(tool, field, scenario) : null;
-    if (priced.has(field) && conditional === null)
-      continue;
-    const others = pricedBy(field).filter((t) => t !== tool);
-    const reason = conditional ?? (others.length > 0 ? `${FIELD_BLURBS[field] ?? field}, priced by ${others.join(", ")} — use ${others[0]} for it` : `${FIELD_BLURBS[field] ?? field}; no tool prices this input`);
-    out.push({ field, tool, pricedBy: others, reason });
-  }
-  return out;
-}
-function ignoredInputWarning(entry) {
-  return `Ignored input "${entry.field}" has no effect on ${entry.tool}: ${entry.reason}.`;
-}
 
 var ESSENTIAL_KEYS = [
   "pretax",
@@ -15248,7 +17321,8 @@ var MISSING_INPUT_QUESTIONS = {
   spouseAge: "How old is your spouse?",
   socialSecurityStartAge: "At what age do you plan to start collecting Social Security?",
   spouseSocialSecurityStartAge: "At what age does your spouse plan to start collecting Social Security?",
-  spendingIncludesHealthPremiums: "Does your monthly spending already include health insurance premiums?"
+  spendingIncludesHealthPremiums: "Does your monthly spending already include health insurance premiums?",
+  survivorDeathYear: "In what calendar year does the spouse who dies pass away?"
 };
 function questionsForFields(fields) {
   return fields.map((field) => ({
@@ -15260,7 +17334,11 @@ function dollarsToCents(dollars) {
   if (!Number.isFinite(dollars)) {
     throw new Error("dollarsToCents: non-finite dollar amount");
   }
-  return Math.round(dollars * 100);
+  const cents = Math.round(dollars * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error("dollarsToCents: amount cannot be represented exactly in integer cents");
+  }
+  return cents;
 }
 function blendedVolPct(stocksPct) {
   return stocksPct / 100 * 18 + (1 - stocksPct / 100) * 6;
@@ -15406,6 +17484,9 @@ function normalizeInputs(raw) {
   if (anyPremiumGiven && input.spendingIncludesHealthPremiums === undefined) {
     missing.push("spendingIncludesHealthPremiums");
   }
+  if (input.survivorEnabled === true && input.survivorDeathYear === undefined) {
+    missing.push("survivorDeathYear");
+  }
   if (missing.length > 0) {
     return { ok: false, error: missingInputError(missing) };
   }
@@ -15470,11 +17551,33 @@ function normalizeInputs(raw) {
   record("taxable", taxableDollars, "user", "Provided by caller.");
   record("roth", rothDollars, "user", "Provided by caller.");
   record("hsa", hsaDollars, "user", "Provided by caller.");
+  const rothIraDollars = input.rothIra ?? null;
+  const rothEmployerDollars = input.rothEmployer ?? null;
+  const rothContributionBasisDollars = input.rothContributionBasis ?? null;
+  const rothConversionLots = input.rothConversionLots == null ? null : input.rothConversionLots.map((l) => ({
+    year: l.year,
+    taxableAmount: l.taxableAmount,
+    nontaxableAmount: l.nontaxableAmount
+  }));
+  const firstRothYear = input.firstRothYear ?? null;
+  const firstDesignatedRothYear = input.firstDesignatedRothYear ?? null;
   const portfolioCents = dollarsToCents(pretaxDollars) + dollarsToCents(taxableDollars) + dollarsToCents(rothDollars) + dollarsToCents(hsaDollars);
+  if (!Number.isSafeInteger(portfolioCents)) {
+    return {
+      ok: false,
+      error: invalidInputError("The four account balances together exceed the largest portfolio that can be represented exactly in cents — reduce the balances.", [{ field: "pretax", message: "portfolio total is not a safe integer number of cents" }])
+    };
+  }
   const monthlySpending = input.monthlySpending;
   record("monthlySpending", monthlySpending, "user", "Provided by caller.");
   const annualSpendingCents = Math.round(monthlySpending * 12 * 100);
-  const minimumAnnualSpendingCents = input.minimumAnnualSpending == null || input.minimumAnnualSpending === 0 ? null : Math.round(input.minimumAnnualSpending * 100);
+  if (!Number.isSafeInteger(annualSpendingCents)) {
+    return {
+      ok: false,
+      error: invalidInputError("Monthly spending annualizes past the largest amount that can be represented exactly in cents — reduce the monthly spending.", [{ field: "monthlySpending", message: "annualized spending is not a safe integer number of cents" }])
+    };
+  }
+  const minimumAnnualSpendingCents = input.minimumAnnualSpending == null || input.minimumAnnualSpending === 0 ? null : dollarsToCents(input.minimumAnnualSpending);
   if (input.minimumAnnualSpending === undefined || input.minimumAnnualSpending === 0) {
     record("minimumAnnualSpending", null, "assumption", "No minimum yearly spending given — no spending-adequacy rate is reported.");
   } else {
@@ -15632,6 +17735,20 @@ function normalizeInputs(raw) {
   if (acaBenchmarkCouple === null && acaBenchmarkSingle === null && acaBenchmarkFamily === null) {
     warnings.push("No ACA benchmark provided — ACA premium credits are not modeled (credit $0).");
   }
+  const priorYearMagi = input.priorYearMagi == null || input.priorYearMagi.length === 0 ? null : [...input.priorYearMagi].sort((a, b) => a.taxYear - b.taxYear).reduce((acc, e) => {
+    const i = acc.findIndex((x) => x.taxYear === e.taxYear);
+    const entry = {
+      taxYear: e.taxYear,
+      magi: e.magi,
+      filingStatus: e.filingStatus
+    };
+    if (i >= 0)
+      acc[i] = entry;
+    else
+      acc.push(entry);
+    return acc;
+  }, []);
+  record("priorYearMagi", priorYearMagi, "user", priorYearMagi == null ? "No prior-year returns supplied — a premium year with no recorded lookback prices $0 of IRMAA and is flagged unknown." : "Provided by caller.");
   const healthPremiumAcaHousehold = input.healthPremiumAcaHouseholdAnnual ?? null;
   const healthPremiumAcaSingle = input.healthPremiumAcaSingleAnnual ?? null;
   const healthPremiumMedicarePerPerson = input.healthPremiumMedicarePerPersonAnnual ?? null;
@@ -15722,6 +17839,32 @@ function normalizeInputs(raw) {
   } else {
     record("employerHsaAnnual", employerHsaAnnual, "user", "Provided by caller.");
   }
+  const medicareAgePrimary = input.medicareAgePrimary ?? null;
+  if (input.medicareAgePrimary === undefined) {
+    record("medicareAgePrimary", null, "assumption", "Not provided — no Medicare enrollment is modeled during the work years, so HSA contributions (employee and employer) continue through the work years. Eligibility at 65 is not enrollment.");
+  } else if (input.medicareAgePrimary === null) {
+    record("medicareAgePrimary", null, "user", "Provided by caller: no Medicare enrollment is modeled during the work years.");
+  } else {
+    record("medicareAgePrimary", medicareAgePrimary, "user", "Provided by caller: the engine stops all HSA contributions (employee and employer) in work years at or after this age.");
+  }
+  const hsaCoverage = input.hsaCoverage ?? null;
+  if (input.hsaCoverage === undefined) {
+    record("hsaCoverage", null, "assumption", "Not provided — the HSA limit falls back to filing status (family for joint filers, self-only otherwise), recorded as an assumption on the priced work years.");
+  } else {
+    record("hsaCoverage", hsaCoverage, "user", "Provided by caller.");
+  }
+  const hsaEligible = input.hsaEligible ?? null;
+  if (input.hsaEligible === undefined) {
+    record("hsaEligible", null, "assumption", "Not provided — HSA eligibility is assumed unless Medicare enrollment ends it, recorded as an assumption on the priced work years.");
+  } else {
+    record("hsaEligible", hsaEligible, "user", "Provided by caller.");
+  }
+  const priorYearWagesAnnual = input.priorYearWagesAnnual ?? null;
+  if (input.priorYearWagesAnnual === undefined) {
+    record("priorYearWagesAnnual", null, "assumption", "Not provided — the first modeled work year's §414(v)(7) test uses that year's own Box-3 wages as a proxy for the prior year's, recorded as an assumption on the first priced work year.");
+  } else {
+    record("priorYearWagesAnnual", priorYearWagesAnnual, "user", "Provided by caller.");
+  }
   record("inflationPct", 0, "assumption", "Today's dollars; law rows deflate non-indexed figures at 0%.");
   const singleYear = {
     interest: input.interestAnnual ?? 0,
@@ -15731,12 +17874,23 @@ function normalizeInputs(raw) {
     spendingDraw: input.spendingDrawAnnual ?? 0,
     cashDraw: input.cashDrawAnnual ?? 0,
     rothDraw: input.rothDrawAnnual ?? 0,
+    rothBalance: rothDollars,
+    rothIraBalance: rothIraDollars,
+    rothEmployerBalance: rothEmployerDollars,
+    rothContributionBasis: rothContributionBasisDollars,
+    rothConversionLots,
+    firstRothYear,
+    firstDesignatedRothYear,
     stockSold: input.stockSoldAnnual ?? null,
     stockBasis: input.stockBasisAnnual ?? null,
     pretaxPriorYearEnd: input.pretaxPriorYearEndAnnual ?? null,
     pretaxSpousePriorYearEnd: input.pretaxSpousePriorYearEndAnnual ?? null,
     rmdAlreadyReceived: input.rmdAlreadyReceivedAnnual ?? null,
-    primarySoleBeneficiaryOfSpouse: input.primarySoleBeneficiaryOfSpouse ?? null
+    primarySoleBeneficiaryOfSpouse: input.primarySoleBeneficiaryOfSpouse ?? null,
+    firstRmdDeferralPrimary: input.firstRmdDeferralPrimary ?? null,
+    firstRmdDeferralSpouse: input.firstRmdDeferralSpouse ?? null,
+    firstRmdDeferredCarryPrimary: input.firstRmdDeferredCarryPrimaryAnnual ?? null,
+    firstRmdDeferredCarrySpouse: input.firstRmdDeferredCarrySpouseAnnual ?? null
   };
   const singleYearInputs = [
     ["singleYear.interest", input.interestAnnual, singleYear.interest],
@@ -15802,6 +17956,30 @@ function normalizeInputs(raw) {
       input.primarySoleBeneficiaryOfSpouse,
       singleYear.primarySoleBeneficiaryOfSpouse,
       "Not established whether the primary is the spouse's sole beneficiary — the spouse's RMD prices on the Uniform Lifetime Table."
+    ],
+    [
+      "singleYear.firstRmdDeferralPrimary",
+      input.firstRmdDeferralPrimary,
+      singleYear.firstRmdDeferralPrimary,
+      "No deferral elected for the primary's first RMD — it is paid in its own year."
+    ],
+    [
+      "singleYear.firstRmdDeferralSpouse",
+      input.firstRmdDeferralSpouse,
+      singleYear.firstRmdDeferralSpouse,
+      "No deferral elected for the spouse's first RMD — it is paid in its own year."
+    ],
+    [
+      "singleYear.firstRmdDeferredCarryPrimary",
+      input.firstRmdDeferredCarryPrimaryAnnual,
+      singleYear.firstRmdDeferredCarryPrimary,
+      "No first RMD deferred from a prior year for the primary — $0 carry."
+    ],
+    [
+      "singleYear.firstRmdDeferredCarrySpouse",
+      input.firstRmdDeferredCarrySpouseAnnual,
+      singleYear.firstRmdDeferredCarrySpouse,
+      "No first RMD deferred from a prior year for the spouse — $0 carry."
     ]
   ];
   for (const [field, rawValue, value, omittedNote] of singleYearNullableInputs) {
@@ -15834,6 +18012,21 @@ function normalizeInputs(raw) {
   } else {
     record("comparisonScope", comparisonScope, "user", "Provided by caller.");
   }
+  const survivorEnabled = input.survivorEnabled === true;
+  const survivorWho = input.survivorWho ?? "primary";
+  const survivorDeathYear = input.survivorDeathYear ?? null;
+  const survivorClaimAge = input.survivorClaimAge ?? null;
+  const firstRmdDeferralPrimary = input.firstRmdDeferralPrimary ?? null;
+  const firstRmdDeferralSpouse = input.firstRmdDeferralSpouse ?? null;
+  record("survivorEnabled", survivorEnabled, input.survivorEnabled === undefined ? "assumption" : "user", survivorEnabled ? "Survivor scenario on — one spouse dies in the given year; survivor years price under Single from the year after." : "No survivor scenario — both spouses modeled through the plan horizon.");
+  record("survivorWho", survivorWho, input.survivorWho === undefined ? "assumption" : "user", input.survivorWho === undefined ? "No survivor named — the primary is assumed to be the one who dies." : "Provided by caller.");
+  record("survivorDeathYear", survivorDeathYear, input.survivorDeathYear === undefined ? "assumption" : "user", input.survivorDeathYear === undefined ? "No death year — no survivor scenario is priced." : "Provided by caller.");
+  record("survivorClaimAge", survivorClaimAge, input.survivorClaimAge === undefined ? "assumption" : "user", input.survivorClaimAge === undefined ? "No survivor claiming age entered — survivor years price on the simplified max-of-two-benefits rule." : "Provided by caller.");
+  record("firstRmdDeferralPrimary", firstRmdDeferralPrimary, input.firstRmdDeferralPrimary === undefined ? "assumption" : "user", input.firstRmdDeferralPrimary === undefined ? "No deferral elected for the primary's first RMD — it is paid in its own year." : "Provided by caller.");
+  record("firstRmdDeferralSpouse", firstRmdDeferralSpouse, input.firstRmdDeferralSpouse === undefined ? "assumption" : "user", input.firstRmdDeferralSpouse === undefined ? "No deferral elected for the spouse's first RMD — it is paid in its own year." : "Provided by caller.");
+  if (survivorClaimAge != null && !survivorEnabled) {
+    warnings.push("survivorClaimAge has no effect without a survivor scenario (survivorEnabled + survivorDeathYear) — survivor years price on the simplified max-of-two-benefits rule.");
+  }
   const scenario = {
     portfolioCents,
     annualSpendingCents,
@@ -15853,9 +18046,21 @@ function normalizeInputs(raw) {
     ssPrimaryStartAge,
     ssSpouseAnnual,
     ssSpouseStartAge,
+    firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse,
+    survivorEnabled,
+    survivorWho,
+    survivorDeathYear,
+    survivorClaimAge,
     pretaxDollars,
     taxableDollars,
     rothDollars,
+    rothIraDollars,
+    rothEmployerDollars,
+    rothContributionBasisDollars,
+    rothConversionLots,
+    firstRothYear,
+    firstDesignatedRothYear,
     hsaDollars,
     taxableBasisPct,
     taxableBasisBlank,
@@ -15866,6 +18071,7 @@ function normalizeInputs(raw) {
     acaBenchmarkCouple,
     acaBenchmarkSingle,
     acaBenchmarkFamily,
+    priorYearMagi,
     healthPremiumAcaHousehold,
     healthPremiumAcaSingle,
     healthPremiumMedicarePerPerson,
@@ -15880,6 +18086,10 @@ function normalizeInputs(raw) {
     salaryAnnual,
     employer401kAnnual,
     employerHsaAnnual,
+    hsaCoverage,
+    hsaEligible,
+    medicareAgePrimary,
+    priorYearWagesAnnual,
     inflationPct: 0,
     singleYear,
     mcSeed,
@@ -15928,6 +18138,7 @@ function publicEffectiveInputs(scenario) {
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
+    priorYearMagi: scenario.priorYearMagi == null ? null : scenario.priorYearMagi.map((e) => ({ ...e })),
     healthPremiumAcaHouseholdAnnual: scenario.healthPremiumAcaHousehold,
     healthPremiumAcaSingleAnnual: scenario.healthPremiumAcaSingle,
     healthPremiumMedicarePerPersonAnnual: scenario.healthPremiumMedicarePerPerson,
@@ -15942,6 +18153,10 @@ function publicEffectiveInputs(scenario) {
     salaryAnnual: scenario.salaryAnnual,
     employer401kAnnual: scenario.employer401kAnnual,
     employerHsaAnnual: scenario.employerHsaAnnual,
+    hsaCoverage: scenario.hsaCoverage,
+    hsaEligible: scenario.hsaEligible,
+    medicareAgePrimary: scenario.medicareAgePrimary,
+    priorYearWagesAnnual: scenario.priorYearWagesAnnual,
     inflationPct: scenario.inflationPct,
     singleYear: { ...scenario.singleYear },
     mcSeed: scenario.mcSeed,
@@ -15951,18 +18166,322 @@ function publicEffectiveInputs(scenario) {
   };
 }
 
+var REQUIRED_INPUTS_GLOBAL = [
+  "pretax",
+  "taxable",
+  "roth",
+  "hsa",
+  "monthlySpending",
+  "currentAge"
+];
+var SIM_OPTIONAL_INPUTS = [
+  "retirementAge",
+  "endAge",
+  "spouseAge",
+  "stocksPct",
+  "expectedRealReturnPct",
+  "volatilityPct",
+  "strategy",
+  "minimumAnnualSpending",
+  "socialSecurityAnnual",
+  "socialSecurityStartAge",
+  "spouseSocialSecurityAnnual",
+  "spouseSocialSecurityStartAge"
+];
+var COMPARE_OPTIONAL_INPUTS = [
+  "retirementAge",
+  "endAge",
+  "spouseAge",
+  "filingStatus",
+  "householdSize",
+  "stocksPct",
+  "expectedRealReturnPct",
+  "socialSecurityAnnual",
+  "socialSecurityStartAge",
+  "spouseSocialSecurityAnnual",
+  "spouseSocialSecurityStartAge",
+  "taxableBasisPct",
+  "taxableDividendYieldPct",
+  "taxableInterestYieldPct",
+  "otherOrdinaryAnnual",
+  "taxExemptInterestAnnual",
+  "acaBenchmarkCouple",
+  "acaBenchmarkSingle",
+  "acaBenchmarkFamily",
+  "priorYearMagi",
+  "healthPremiumAcaHouseholdAnnual",
+  "healthPremiumAcaSingleAnnual",
+  "healthPremiumMedicarePerPersonAnnual",
+  "spendingIncludesHealthPremiums",
+  "stateRatePct",
+  "state",
+  "comparisonScope",
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "survivorEnabled",
+  "survivorWho",
+  "survivorDeathYear",
+  "survivorClaimAge",
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear"
+];
+var TAX_YEAR_OPTIONAL_INPUTS = [
+  "spouseAge",
+  "filingStatus",
+  "householdSize",
+  "socialSecurityAnnual",
+  "socialSecurityStartAge",
+  "spouseSocialSecurityAnnual",
+  "spouseSocialSecurityStartAge",
+  "otherOrdinaryAnnual",
+  "taxExemptInterestAnnual",
+  "acaBenchmarkCouple",
+  "acaBenchmarkSingle",
+  "acaBenchmarkFamily",
+  "healthPremiumAcaHouseholdAnnual",
+  "healthPremiumAcaSingleAnnual",
+  "healthPremiumMedicarePerPersonAnnual",
+  "spendingIncludesHealthPremiums",
+  "stateRatePct",
+  "state",
+  "taxYear",
+  "interestAnnual",
+  "ordinaryDividendsAnnual",
+  "qualifiedDividendsAnnual",
+  "conversionAnnual",
+  "spendingDrawAnnual",
+  "cashDrawAnnual",
+  "rothDrawAnnual",
+  "rothIra",
+  "rothEmployer",
+  "rothContributionBasis",
+  "rothConversionLots",
+  "firstRothYear",
+  "firstDesignatedRothYear",
+  "stockSoldAnnual",
+  "stockBasisAnnual",
+  "pretaxPriorYearEndAnnual",
+  "pretaxSpousePriorYearEndAnnual",
+  "rmdAlreadyReceivedAnnual",
+  "primarySoleBeneficiaryOfSpouse",
+  "firstRmdDeferralPrimary",
+  "firstRmdDeferralSpouse",
+  "firstRmdDeferredCarryPrimaryAnnual",
+  "firstRmdDeferredCarrySpouseAnnual"
+];
+var PRICED_OPTIONAL = {
+  retirement_calculate: SIM_OPTIONAL_INPUTS.filter((f) => f !== "volatilityPct"),
+  retirement_monte_carlo: [...SIM_OPTIONAL_INPUTS, "mcRuns", "mcSeed"],
+  retirement_max_spending: [
+    ...SIM_OPTIONAL_INPUTS.filter((f) => f !== "minimumAnnualSpending"),
+    "mcSeed"
+  ],
+  retirement_compare_strategies: COMPARE_OPTIONAL_INPUTS,
+  retirement_roth_conversion: COMPARE_OPTIONAL_INPUTS,
+  retirement_dynamic_withdrawal: COMPARE_OPTIONAL_INPUTS.filter((f) => f !== "comparisonScope"),
+  retirement_work_years: [
+    ...COMPARE_OPTIONAL_INPUTS,
+    "salaryAnnual",
+    "employer401kAnnual",
+    "employerHsaAnnual",
+    "hsaCoverage",
+    "hsaEligible",
+    "medicareAgePrimary",
+    "priorYearWagesAnnual",
+    "compareAges"
+  ],
+  retirement_tax_year: TAX_YEAR_OPTIONAL_INPUTS
+};
+function pricedBy(field) {
+  const tools = Object.keys(PRICED_OPTIONAL);
+  return tools.filter((t) => PRICED_OPTIONAL[t].includes(field));
+}
+var FIELD_BLURBS = {
+  spouseAge: "the spouse's current age",
+  retirementAge: "the age work income stops",
+  endAge: "the last age the projection runs through",
+  filingStatus: "the federal tax filing status",
+  householdSize: "the household size (drives ACA benchmarks)",
+  taxableBasisPct: "the taxable account's cost-basis share",
+  taxableDividendYieldPct: "the taxable account's dividend yield",
+  taxableInterestYieldPct: "the taxable account's interest yield",
+  expectedRealReturnPct: "the expected real portfolio return",
+  volatilityPct: "the annual portfolio volatility",
+  stocksPct: "the portfolio's stock allocation",
+  strategy: "the spending strategy",
+  minimumAnnualSpending: "the minimum annual spending floor for the spending-adequacy rate",
+  socialSecurityAnnual: "the primary's annual Social Security benefit",
+  spouseSocialSecurityAnnual: "the spouse's annual Social Security benefit",
+  socialSecurityStartAge: "the primary's Social Security claiming age",
+  spouseSocialSecurityStartAge: "the spouse's Social Security claiming age",
+  state: "the state of residence",
+  stateRatePct: "the flat state income-tax rate",
+  acaBenchmarkCouple: "the ACA benchmark premium for a couple",
+  acaBenchmarkSingle: "the ACA benchmark premium for a single filer",
+  acaBenchmarkFamily: "the ACA benchmark premium for a family household",
+  priorYearMagi: "prior-year filed returns (MAGI + filing status) for the two-year IRMAA lookback",
+  healthPremiumAcaHouseholdAnnual: "the marketplace health premium for a two-person household year",
+  healthPremiumAcaSingleAnnual: "the marketplace health premium for a one-person year",
+  healthPremiumMedicarePerPersonAnnual: "the Medicare base premium per person",
+  spendingIncludesHealthPremiums: "whether monthly spending already includes health insurance premiums",
+  otherOrdinaryAnnual: "other ordinary income per year",
+  taxExemptInterestAnnual: "tax-exempt interest per year",
+  salaryAnnual: "the annual salary while working",
+  employer401kAnnual: "the annual employer 401(k) contribution",
+  employerHsaAnnual: "the annual employer HSA contribution",
+  hsaCoverage: "the HDHP coverage type the HSA limit prices from",
+  hsaEligible: "whether the primary is an HSA-eligible individual",
+  medicareAgePrimary: "the primary's Medicare enrollment age (HSA contributions stop in work years at or after that age; omitted or null means no enrollment is modeled)",
+  priorYearWagesAnnual: "the prior calendar year's Social Security wages from the plan sponsor",
+  taxYear: "the tax law year to price under",
+  interestAnnual: "taxable interest for one tax year",
+  ordinaryDividendsAnnual: "total ordinary dividends for one tax year",
+  qualifiedDividendsAnnual: "the qualified portion of one year's ordinary dividends",
+  conversionAnnual: "a Roth conversion amount for one tax year",
+  spendingDrawAnnual: "the draw for spending for one tax year",
+  cashDrawAnnual: "the draw from cash for one tax year",
+  rothDrawAnnual: "the draw from Roth for one tax year",
+  rothIra: "the Roth IRA share of the Roth balance",
+  rothEmployer: "the designated Roth employer-plan share of the Roth balance",
+  rothContributionBasis: "the primary owner's regular-contribution basis still sitting in Roth (free to withdraw at any age)",
+  rothConversionLots: "the primary owner's prior conversions still sitting in the Roth IRA, one lot per conversion year (taxable part keys the 5-year §72(t) penalty)",
+  firstRothYear: "the primary owner's first taxable year of any Roth IRA contribution (the qualified-distribution 5-year clock)",
+  firstDesignatedRothYear: "the primary owner's first taxable year of designated Roth contributions to the employer plan (that plan's own 5-year clock)",
+  stockSoldAnnual: "taxable shares sold in one tax year",
+  stockBasisAnnual: "the cost basis of the shares sold",
+  pretaxPriorYearEndAnnual: "the primary's pre-tax balance at Dec 31 of the year before the priced year",
+  pretaxSpousePriorYearEndAnnual: "the spouse's pre-tax balance at Dec 31 of the year before the priced year",
+  rmdAlreadyReceivedAnnual: "the part of this year's RMD already received and already counted in the entered income",
+  primarySoleBeneficiaryOfSpouse: "whether the primary is the spouse's sole beneficiary (gates the spouse's RMD table)",
+  firstRmdDeferralPrimary: "whether to defer the primary's first RMD to April 1 of the following year",
+  firstRmdDeferralSpouse: "whether to defer the spouse's first RMD to April 1 of the following year",
+  firstRmdDeferredCarryPrimaryAnnual: "the primary's first RMD deferred from a prior year (priced on top of the priced year's own RMD)",
+  firstRmdDeferredCarrySpouseAnnual: "the spouse's first RMD deferred from a prior year (priced on top of the priced year's own RMD)",
+  survivorEnabled: "whether the survivor scenario is on (one spouse dies in a given year)",
+  survivorWho: "who dies in the survivor scenario",
+  survivorDeathYear: "the calendar year of death in the survivor scenario",
+  survivorClaimAge: "the survivor's Social Security claiming age for the enhanced survivor benefit (absent = the simplified max-of-two-benefits rule)",
+  mcSeed: "the Monte Carlo random seed",
+  mcRuns: "the number of Monte Carlo simulations",
+  compareAges: "the retirement ages to compare",
+  comparisonScope: "the comparison scope (limited or full candidate set)"
+};
+function conditionalReason(tool, field, s) {
+  const mfj = s.filingStatus === "mfj";
+  if (!mfj && (field === "spouseAge" || field === "spouseSocialSecurityAnnual" || field === "spouseSocialSecurityStartAge")) {
+    return `no spouse is modeled for ${s.filingStatus} filing status, so it prices nothing for this scenario; it is priced by the tax-aware tools on a joint (mfj) return`;
+  }
+  if (field === "stateRatePct") {
+    if (s.residenceState === "WA") {
+      return "WA is priced via the WA excise path, not an income-tax rate; the rate is priced by the tax-aware tools for a non-WA state";
+    }
+    if (s.stateLabel == null) {
+      return "no state was given, so no state tax is modeled; the rate is priced by the tax-aware tools once a non-WA state is given";
+    }
+  }
+  if (field === "socialSecurityStartAge" && s.ssPrimaryAnnual === 0) {
+    return "no primary Social Security benefit was entered, so no claiming age applies; it is priced by every tool once a benefit is entered";
+  }
+  if (field === "spouseSocialSecurityStartAge" && s.ssSpouseAnnual === 0) {
+    return "no spouse Social Security benefit was entered, so no claiming age applies; it is priced by every tool once a benefit is entered";
+  }
+  if (tool === "retirement_work_years" && field === "medicareAgePrimary" && s.salaryAnnual == null) {
+    return "no salary was provided, so the work-years leg does not run and the enrollment age prices nothing for this scenario; retirement_work_years prices it once salaryAnnual is entered";
+  }
+  if (tool === "retirement_tax_year") {
+    if (field === "stockBasisAnnual" && (s.singleYear.stockSold == null || s.singleYear.stockSold === 0)) {
+      return "a cost basis prices only against a sale, and no sale was entered for this year — retirement_tax_year prices it only when stockSoldAnnual is entered";
+    }
+    if (field === "pretaxSpousePriorYearEndAnnual" && !mfj) {
+      return "a spouse RMD is priced only on a joint (mfj) return — retirement_tax_year prices it only for mfj";
+    }
+    if (field === "rmdAlreadyReceivedAnnual" && s.singleYear.pretaxPriorYearEnd == null && s.singleYear.pretaxSpousePriorYearEnd == null) {
+      return "no prior-Dec-31 balance was entered, so there is no computed RMD to net it against — retirement_tax_year prices it only once a prior-Dec-31 balance is entered";
+    }
+    if (field === "primarySoleBeneficiaryOfSpouse" && (!mfj || s.singleYear.pretaxSpousePriorYearEnd == null)) {
+      return "it gates only the spouse's RMD table, and no spouse RMD is priced for this year — retirement_tax_year prices it only when a spouse prior-Dec-31 balance is entered on a joint return";
+    }
+  }
+  return null;
+}
+function ignoredInputsForTool(tool, scenario) {
+  const priced = new Set(PRICED_OPTIONAL[tool]);
+  const out = [];
+  for (const field of scenario.suppliedFields) {
+    if (REQUIRED_INPUTS_GLOBAL.includes(field))
+      continue;
+    const conditional = priced.has(field) ? conditionalReason(tool, field, scenario) : null;
+    if (priced.has(field) && conditional === null)
+      continue;
+    const others = pricedBy(field).filter((t) => t !== tool);
+    const reason = conditional ?? (others.length > 0 ? `${FIELD_BLURBS[field] ?? field}, priced by ${others.join(", ")} — use ${others[0]} for it` : `${FIELD_BLURBS[field] ?? field}; no tool prices this input`);
+    out.push({ field, tool, pricedBy: others, reason });
+  }
+  return out;
+}
+function ignoredInputWarning(entry) {
+  return `Ignored input "${entry.field}" has no effect on ${entry.tool}: ${entry.reason}.`;
+}
+
 function centsToDollars(cents) {
-  return Math.round(cents) / 100;
+  if (!Number.isFinite(cents)) {
+    throw new Error("centsToDollars: non-finite cent amount");
+  }
+  const rounded = Math.round(cents);
+  if (!Number.isSafeInteger(rounded)) {
+    throw new Error("centsToDollars: amount cannot be represented exactly in integer cents");
+  }
+  return rounded / 100;
 }
 function dollarsToCents2(dollars) {
-  return Math.round(dollars * 100);
+  if (!Number.isFinite(dollars)) {
+    throw new Error("dollarsToCents: non-finite dollar amount");
+  }
+  const cents = Math.round(dollars * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error("dollarsToCents: amount cannot be represented exactly in integer cents");
+  }
+  return cents;
 }
-function r24(n) {
+function r25(n) {
   return Math.round(n * 100) / 100;
+}
+function ratePercentToFraction(ratePercent, runs) {
+  return Math.round(ratePercent * runs / 100) / runs;
+}
+function successfulRunsFromRate(ratePercent, runs) {
+  return Math.round(ratePercent * runs / 100);
+}
+function spendingAmountMeaning(strategy) {
+  switch (strategy) {
+    case "percent":
+      return "Initial-year-equivalent spending: the dollars are the solved first-year spend at the solved percent of the starting portfolio; later years scale with the portfolio balance.";
+    case "phased":
+      return "Starting spending before the planned reductions: the dollars are the pre-decline amount; later years fall by the phased schedule.";
+    case "guardrails":
+      return "Base spending: the actual amount may rise or fall on the engine's guardrail triggers.";
+    case "constant":
+    default:
+      return "Fixed annual spending: the same dollar amount in every retired year.";
+  }
+}
+function maxSpendingFeasible(maxSpendingCents, successRatePercent, targetPercent = 85) {
+  return maxSpendingCents > 0 || successRatePercent >= targetPercent;
+}
+var MAX_SPENDING_STEP_CENTS = 1e4;
+function maxSpendingCappedAtPercentBound(percent, maxSpendingCents, startCents) {
+  if (percent === null || startCents <= 0)
+    return false;
+  const maxSteps = Math.floor(startCents * 0.3 / MAX_SPENDING_STEP_CENTS);
+  return maxSteps > 0 && maxSpendingCents / MAX_SPENDING_STEP_CENTS === maxSteps;
 }
 function roundDeep(value) {
   if (typeof value === "number")
-    return r24(value);
+    return r25(value);
   if (Array.isArray(value))
     return value.map(roundDeep);
   if (value !== null && typeof value === "object") {
@@ -16120,10 +18639,27 @@ function buildRothCompareBase(scenario) {
     filingStatus: scenario.filingStatus,
     pretaxCents: dollarsToCents2(scenario.pretaxDollars),
     pretaxSpouseCents: 0,
-    survivorEnabled: false,
-    survivorWho: "primary",
-    survivorDeathYear: null,
+    survivorEnabled: scenario.survivorEnabled,
+    survivorWho: scenario.survivorWho,
+    survivorDeathYear: scenario.survivorDeathYear,
+    survivorClaimAge: scenario.survivorClaimAge,
+    firstRmdDeferralPrimary: scenario.firstRmdDeferralPrimary,
+    firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse,
     rothCents: dollarsToCents2(scenario.rothDollars),
+    rothIraCents: scenario.rothIraDollars == null ? null : dollarsToCents2(scenario.rothIraDollars),
+    rothEmployerCents: scenario.rothEmployerDollars == null ? null : dollarsToCents2(scenario.rothEmployerDollars),
+    rothContributionBasisPrimaryCents: scenario.rothContributionBasisDollars == null ? null : dollarsToCents2(scenario.rothContributionBasisDollars),
+    rothContributionBasisSpouseCents: null,
+    rothConversionLotsPrimary: scenario.rothConversionLots == null ? null : scenario.rothConversionLots.map((l) => ({
+      year: l.year,
+      taxableAmountCents: dollarsToCents2(l.taxableAmount),
+      nontaxableAmountCents: dollarsToCents2(l.nontaxableAmount)
+    })),
+    rothConversionLotsSpouse: null,
+    firstRothYearPrimary: scenario.firstRothYear,
+    firstRothYearSpouse: null,
+    firstDesignatedRothYearPrimary: scenario.firstDesignatedRothYear,
+    firstDesignatedRothYearSpouse: null,
     taxableCents: dollarsToCents2(scenario.taxableDollars),
     taxableExcludeCents: null,
     hsaCents: dollarsToCents2(scenario.hsaDollars),
@@ -16170,6 +18706,11 @@ function buildRothCompareBase(scenario) {
     acaBenchmarkSingleCents: scenario.acaBenchmarkSingle == null ? null : dollarsToCents2(scenario.acaBenchmarkSingle),
     acaBenchmarkFamilyCents: scenario.acaBenchmarkFamily == null ? null : dollarsToCents2(scenario.acaBenchmarkFamily),
     acaSpouseEndAge: null,
+    irmaaLookbackSeedCents: scenario.priorYearMagi == null ? null : scenario.priorYearMagi.map((e) => ({
+      year: e.taxYear,
+      magiCents: dollarsToCents2(e.magi),
+      filingStatus: e.filingStatus
+    })),
     healthPremiumAcaHouseholdCents: scenario.premiumsCharged && scenario.healthPremiumAcaHousehold != null ? dollarsToCents2(scenario.healthPremiumAcaHousehold) : null,
     healthPremiumAcaSingleCents: scenario.premiumsCharged && scenario.healthPremiumAcaSingle != null ? dollarsToCents2(scenario.healthPremiumAcaSingle) : null,
     healthPremiumMedicarePerPersonCents: scenario.premiumsCharged && scenario.healthPremiumMedicarePerPerson != null ? dollarsToCents2(scenario.healthPremiumMedicarePerPerson) : null,
@@ -16212,10 +18753,23 @@ function buildRothPlanInputs(scenario, overrides) {
     endAgePrimary: scenario.endAge,
     pretaxStart: scenario.pretaxDollars,
     pretaxSpouseStart: 0,
-    survivorEnabled: false,
-    survivorWho: "primary",
-    survivorDeathYear: null,
+    survivorEnabled: scenario.survivorEnabled,
+    survivorWho: scenario.survivorWho,
+    survivorDeathYear: scenario.survivorDeathYear,
+    survivorClaimAge: scenario.survivorClaimAge,
+    firstRmdDeferralPrimary: scenario.firstRmdDeferralPrimary ?? undefined,
+    firstRmdDeferralSpouse: scenario.firstRmdDeferralSpouse ?? undefined,
     rothStart: scenario.rothDollars,
+    rothIraStart: scenario.rothIraDollars,
+    rothEmployerStart: scenario.rothEmployerDollars,
+    rothContributionBasisPrimary: scenario.rothContributionBasisDollars,
+    rothContributionBasisSpouse: null,
+    rothConversionLotsPrimary: scenario.rothConversionLots,
+    rothConversionLotsSpouse: null,
+    firstRothYearPrimary: scenario.firstRothYear,
+    firstRothYearSpouse: null,
+    firstDesignatedRothYearPrimary: scenario.firstDesignatedRothYear,
+    firstDesignatedRothYearSpouse: null,
     taxableStart: scenario.taxableDollars,
     hsaStart: scenario.hsaDollars,
     taxableBasisPct: scenario.taxableBasisBlank ? 100 : scenario.taxableBasisPct,
@@ -16245,6 +18799,11 @@ function buildRothPlanInputs(scenario, overrides) {
     acaBenchmarkCouple: scenario.acaBenchmarkCouple,
     acaBenchmarkSingle: scenario.acaBenchmarkSingle,
     acaBenchmarkFamily: scenario.acaBenchmarkFamily,
+    irmaaLookbackSeed: scenario.priorYearMagi == null ? null : scenario.priorYearMagi.map((e) => ({
+      year: e.taxYear,
+      magi: e.magi,
+      filingStatus: e.filingStatus
+    })),
     healthPremiumAcaHousehold: scenario.premiumsCharged ? scenario.healthPremiumAcaHousehold : null,
     healthPremiumAcaSingle: scenario.premiumsCharged ? scenario.healthPremiumAcaSingle : null,
     healthPremiumMedicarePerPerson: scenario.premiumsCharged ? scenario.healthPremiumMedicarePerPerson : null,
@@ -16274,6 +18833,31 @@ function taxAwareAssumptions(scenario) {
   }
   return list;
 }
+function rmdSurvivorSummary(rows) {
+  let deferredTotal = 0;
+  let deferredPaidTotal = 0;
+  const twoRmdYears = [];
+  let survivorSsMode = null;
+  let survivorClaimAge = null;
+  for (const row of rows) {
+    deferredTotal += row.rmdDeferredPrimary + row.rmdDeferredSpouse;
+    const paid = row.rmdDeferredPaidPrimary + row.rmdDeferredPaidSpouse;
+    deferredPaidTotal += paid;
+    if (paid > 0)
+      twoRmdYears.push(row.year);
+    if (row.survivorSsMode != null) {
+      survivorSsMode = row.survivorSsMode;
+      survivorClaimAge = row.survivorClaimAge;
+    }
+  }
+  return {
+    deferredTotal: r25(deferredTotal),
+    deferredPaidTotal: r25(deferredPaidTotal),
+    twoRmdYears,
+    survivorSsMode,
+    survivorClaimAge
+  };
+}
 function mapCompareScenario(s) {
   const conversionsCents = s.years.reduce((sum, y) => sum + y.conversionCents, 0);
   return {
@@ -16287,6 +18871,15 @@ function mapCompareScenario(s) {
     lifetimeStateTax: centsToDollars(s.stateTaxCents),
     acaCreditKept: centsToDollars(s.acaCreditCents),
     irmaaTotal: centsToDollars(s.irmaaCents),
+    irmaaLookbackMissingYears: s.irmaaLookbackMissingYears,
+    acaBelow100FplYears: s.acaBelow100FplYears,
+    cliffCapInoperativeYears: s.cliffCapInoperativeYears,
+    earlyWithdrawalUnknownYears: s.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: s.rothBasisUnknownYears,
+    unpaidTax: centsToDollars(s.unpaidTaxCents),
+    spendShortfall: s.integrity.spendShortfallTotal,
+    integrityStatus: s.integrity.status,
+    integrityReasons: s.integrity.reasons,
     lifetimeHealthPremiumGross: centsToDollars(s.healthPremiumCents),
     lifetimeHealthPremiumNet: centsToDollars(s.healthPremiumNetCents),
     endingPretax: centsToDollars(s.endingPretaxCents),
@@ -16294,7 +18887,16 @@ function mapCompareScenario(s) {
     endingRoth: centsToDollars(s.endingRothCents),
     endingHsa: centsToDollars(s.endingHsaCents),
     conversionsTotal: centsToDollars(conversionsCents),
-    terminalTax: centsToDollars(s.terminalCents)
+    terminalTax: centsToDollars(s.terminalCents),
+    rmdDeferral: rmdSurvivorSummary(s.years.map((y) => ({
+      year: y.year,
+      rmdDeferredPrimary: centsToDollars(y.rmdDeferredPrimaryCents),
+      rmdDeferredSpouse: centsToDollars(y.rmdDeferredSpouseCents),
+      rmdDeferredPaidPrimary: centsToDollars(y.rmdDeferredPaidPrimaryCents),
+      rmdDeferredPaidSpouse: centsToDollars(y.rmdDeferredPaidSpouseCents),
+      survivorSsMode: y.survivorSsMode,
+      survivorClaimAge: y.survivorClaimAge
+    })))
   };
 }
 function yearlyTable(baseline) {
@@ -16309,14 +18911,30 @@ function yearlyTable(baseline) {
     taxableIncome: centsToDollars(y.taxableIncomeCents),
     acaCredit: centsToDollars(y.acaCreditCents),
     irmaa: centsToDollars(y.irmaaCents),
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+    acaBelow100Fpl: y.acaBelow100Fpl,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
     healthPremiumGross: centsToDollars(y.healthPremiumGrossCents),
     healthPremiumNet: centsToDollars(y.healthPremiumCents),
     conversion: centsToDollars(y.conversionCents),
     pretaxOutByChoice: centsToDollars(y.pretaxOutByChoiceCents),
+    ssCollected: centsToDollars(y.ssCollectedCents),
+    rmdPrimary: centsToDollars(y.rmdPrimaryCents),
+    rmdSpouse: centsToDollars(y.rmdSpouseCents),
+    rmdDeferredPrimary: centsToDollars(y.rmdDeferredPrimaryCents),
+    rmdDeferredSpouse: centsToDollars(y.rmdDeferredSpouseCents),
+    rmdDeferredPaidPrimary: centsToDollars(y.rmdDeferredPaidPrimaryCents),
+    rmdDeferredPaidSpouse: centsToDollars(y.rmdDeferredPaidSpouseCents),
+    survivorSsMode: y.survivorSsMode,
+    survivorClaimAge: y.survivorClaimAge,
     settlementConverged: y.settlementConverged,
     settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
     settlementMismatchPretax: centsToDollars(y.settlementMismatchCents.pretax),
-    ceilingBreached: y.ceilingBreached
+    settlementMismatchAcaCredit: centsToDollars(y.settlementMismatchCents.acaCredit ?? 0),
+    ceilingBreached: y.ceilingBreached,
+    lawProvenance: y.lawProvenance,
+    stateTaxProvenance: y.stateTaxProvenance
   }));
   if (rows.length <= 60)
     return rows;
@@ -16345,24 +18963,30 @@ function runCompare(base, scenarios, startYear, baselineName) {
   const mapped = result.scenarios.map(mapCompareScenario);
   const baselineRaw = result.scenarios.find((s) => s.name === result.baselineName) ?? result.scenarios[0];
   const baseline = mapped.find((m) => m.name === result.baselineName) ?? mapped[0];
-  const wealthWinner = pickWinner(mapped, (a, b) => a.endingWealth > b.endingWealth);
-  const costWinner = pickWinner(mapped, (a, b) => a.lifetimeNetCost < b.lifetimeNetCost);
   return {
     ok: true,
     outcome: {
       mapped,
       baseline,
       baselineRaw,
-      winnerByEndingWealth: wealthWinner ? wealthWinner.name : null,
-      winnerByNetCost: costWinner ? costWinner.name : null
+      winnerByEndingWealth: result.winnerByEndingWealth,
+      winnerByNetCost: result.winnerByNetCost,
+      winnerQualified: result.winnerQualified,
+      excludedInvalidWinner: result.excludedInvalidWinner == null ? null : {
+        name: result.excludedInvalidWinner.name,
+        reasons: result.excludedInvalidWinner.integrity.reasons
+      }
     }
   };
+}
+function unqualifiedWinnerWarning(outcome) {
+  return outcome.winnerQualified ? [] : ["No tested candidate was fully valid — treat the winner as unqualified."];
 }
 function deltasVsBaseline(mapped, baseline) {
   return mapped.filter((m) => m.name !== baseline.name).map((m) => ({
     name: m.name,
-    endingWealthDelta: r24(m.endingWealth - baseline.endingWealth),
-    netCostDelta: r24(m.lifetimeNetCost - baseline.lifetimeNetCost)
+    endingWealthDelta: r25(m.endingWealth - baseline.endingWealth),
+    netCostDelta: r25(m.lifetimeNetCost - baseline.lifetimeNetCost)
   }));
 }
 var NET_COST_OBJECTIVE = "Lowest lifetime net cost: lifetime federal + state tax + pre-59½ penalties + IRMAA + terminal tax on ending pre-tax, minus ACA premium credit kept and refundable education credit (plus gross health premium where a premium is entered; the adapter enters none, so $0).";
@@ -16409,28 +19033,46 @@ function mapScoredCandidate(s, retirementAge) {
     strategyDescription: `Retire at ${retirementAge} · ${optimizerCandidateDisplayName(s.spec)}`,
     drawOrder: drawOrderKey(s.spec.drawOrder),
     candidateKey: s.spec.key,
-    endingWealth: r24(s.result.endingAfterTaxWealth),
-    lifetimeNetCost: r24(s.cost.netCost),
-    lifetimeTax: r24(s.cost.tax),
-    lifetimeFederalTax: r24(s.result.lifetimeFederalTax),
-    lifetimeStateTax: r24(s.result.lifetimeStateTax),
-    acaCreditKept: r24(s.cost.acaCredit),
-    irmaaTotal: r24(s.cost.irmaa),
-    lifetimeHealthPremiumGross: r24(s.result.lifetimeHealthPremiumGross),
-    lifetimeHealthPremiumNet: r24(s.result.lifetimeHealthPremiumNet),
-    endingPretax: r24(s.result.endingPretax),
-    endingTaxable: r24(s.result.endingTaxable),
-    endingRoth: r24(s.result.endingRoth),
-    endingHsa: r24(s.result.endingHsa),
-    conversionsTotal: r24(conversionsTotal),
-    terminalTax: r24(s.cost.terminal)
+    endingWealth: r25(s.result.endingAfterTaxWealth),
+    lifetimeNetCost: r25(s.cost.netCost),
+    lifetimeTax: r25(s.cost.tax),
+    lifetimeFederalTax: r25(s.result.lifetimeFederalTax),
+    lifetimeStateTax: r25(s.result.lifetimeStateTax),
+    acaCreditKept: r25(s.cost.acaCredit),
+    irmaaTotal: r25(s.cost.irmaa),
+    irmaaLookbackMissingYears: s.result.irmaaLookbackMissingYears,
+    acaBelow100FplYears: s.result.acaBelow100FplYears,
+    cliffCapInoperativeYears: s.result.cliffCapInoperativeYears,
+    earlyWithdrawalUnknownYears: s.result.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: s.result.rothBasisUnknownYears,
+    unpaidTax: r25(s.result.lifetimeUnpaidTax),
+    spendShortfall: s.integrity?.spendShortfallTotal ?? 0,
+    integrityStatus: s.integrity?.status ?? "valid",
+    integrityReasons: s.integrity?.reasons ?? [],
+    lifetimeHealthPremiumGross: r25(s.result.lifetimeHealthPremiumGross),
+    lifetimeHealthPremiumNet: r25(s.result.lifetimeHealthPremiumNet),
+    endingPretax: r25(s.result.endingPretax),
+    endingTaxable: r25(s.result.endingTaxable),
+    endingRoth: r25(s.result.endingRoth),
+    endingHsa: r25(s.result.endingHsa),
+    conversionsTotal: r25(conversionsTotal),
+    terminalTax: r25(s.cost.terminal),
+    rmdDeferral: rmdSurvivorSummary(s.result.years.map((y) => ({
+      year: y.year,
+      rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+      rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+      rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+      rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+      survivorSsMode: y.detail.survivorSsMode,
+      survivorClaimAge: y.detail.survivorClaimAge
+    })))
   };
 }
 function yearlyConversions(s) {
   return s.result.years.filter((y) => y.conversion > 0).map((y) => ({
     year: y.year,
     agePrimary: y.agePrimary,
-    conversion: r24(y.conversion)
+    conversion: r25(y.conversion)
   }));
 }
 function yearlyTableFromRothYears(years) {
@@ -16438,21 +19080,37 @@ function yearlyTableFromRothYears(years) {
     year: y.year,
     agePrimary: y.agePrimary,
     ageSpouse: y.ageSpouse,
-    federalTax: r24(y.federalTax),
-    stateTax: r24(y.stateTax),
-    penalty: r24(y.penalty),
-    agi: r24(y.agi),
-    taxableIncome: r24(y.taxableIncome),
-    acaCredit: r24(y.acaCreditKept),
-    irmaa: r24(y.irmaaPaid),
-    healthPremiumGross: r24(y.healthPremiumGross),
-    healthPremiumNet: r24(y.healthPremiumNet),
-    conversion: r24(y.conversion),
-    pretaxOutByChoice: r24(y.conversion + y.detail.pretaxSpendingDraw),
+    federalTax: r25(y.federalTax),
+    stateTax: r25(y.stateTax),
+    penalty: r25(y.penalty),
+    agi: r25(y.agi),
+    taxableIncome: r25(y.taxableIncome),
+    acaCredit: r25(y.acaCreditKept),
+    irmaa: r25(y.irmaaPaid),
+    irmaaSurchargeKnown: y.irmaaSurchargeKnown,
+    acaBelow100Fpl: y.acaBelow100Fpl,
+    earlyWithdrawalEligibilityUnknown: y.earlyWithdrawalEligibilityUnknown,
+    rothBasisUnknown: y.rothBasisUnknown,
+    healthPremiumGross: r25(y.healthPremiumGross),
+    healthPremiumNet: r25(y.healthPremiumNet),
+    conversion: r25(y.conversion),
+    pretaxOutByChoice: r25(y.conversion + y.detail.pretaxSpendingDraw),
+    ssCollected: r25(y.ssBenefits),
+    rmdPrimary: r25(y.detail.rmdPrimary),
+    rmdSpouse: r25(y.detail.rmdSpouse),
+    rmdDeferredPrimary: r25(y.detail.rmdDeferredPrimary),
+    rmdDeferredSpouse: r25(y.detail.rmdDeferredSpouse),
+    rmdDeferredPaidPrimary: r25(y.detail.rmdDeferredPaidPrimary),
+    rmdDeferredPaidSpouse: r25(y.detail.rmdDeferredPaidSpouse),
+    survivorSsMode: y.detail.survivorSsMode,
+    survivorClaimAge: y.detail.survivorClaimAge,
     settlementConverged: y.settlementConverged,
     settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
     settlementMismatchPretax: centsToDollars(y.settlementMismatchCents.pretax),
-    ceilingBreached: y.ceilingBreached
+    settlementMismatchAcaCredit: centsToDollars(y.settlementMismatchCents.acaCredit ?? 0),
+    ceilingBreached: y.ceilingBreached,
+    lawProvenance: y.detail.lawProvenance,
+    stateTaxProvenance: y.detail.stateTaxProvenance
   }));
   if (rows.length <= 60)
     return rows;
@@ -16465,8 +19123,38 @@ function yearlyTableFromRothYears(years) {
     picked.push(last);
   return picked;
 }
-var YEARLY_TABLE_WARNING = "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary.";
-var WORK_YEARS_HORIZON_WARNING = "The work-years rows price each quit age as its own plan starting at that quit age with rolled balances, so their ending balances span different horizons and are not like-for-like across quit ages; use the all-in tax and the Roth-compare scenarios for the quit-age decision.";
+var YEARLY_TABLE_WARNING = "The per-year table uses the compare's own yearly rows, which carry tax, credit, IRMAA, health premiums, conversion, and settlement flags but not spending or per-year ending balances; lifetime ending balances are in each scenario's summary. Each row also names the law row it priced under (lawProvenance) and how its state tax was priced (stateTaxProvenance): a flat-rate stateTax is an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return, and a year past the newest published law row prices on that row carried forward, a projection.";
+var WORK_YEARS_COMPARABILITY_NOTE = "Work-years rows are comparable across quit ages: every row is valued at the same terminal age (the plan end age) from the same starting balances — the roll covers the window start through the quit age and the priced plan covers the quit age through the terminal age — so ending after-tax wealth is valued at the same date for every row, and all-in tax covers the same full span (window start through the terminal age) for every row. The retirement-only winners ignore salary, employer contributions, and payroll tax; use the salary-aware winners for the work-longer decision.";
+var MEDICARE_NO_ENROLLMENT_WARNING = "No Medicare enrollment age was provided, so no Medicare enrollment is modeled during the work years: HSA contributions (employee and employer) continue through the work years. Medicare eligibility at 65 is not enrollment — pass medicareAgePrimary to model enrollment.";
+var MEDICARE_NO_ENROLLMENT_NO_HSA_WARNING = "No Medicare enrollment age was provided, so no Medicare enrollment is modeled during the work years. Medicare eligibility at 65 is not enrollment — pass medicareAgePrimary to model enrollment.";
+function irmaaAcaCompareWarnings(scenarios) {
+  const out = [];
+  for (const m of scenarios) {
+    if (m.irmaaLookbackMissingYears.length > 0) {
+      const years = m.irmaaLookbackMissingYears.join(", ");
+      const lookbacks = m.irmaaLookbackMissingYears.map((y) => y - 2).join(", ");
+      out.push(`IRMAA is unknown, not $0, for ${m.name} in ${years}: no MAGI is on record for the two-year lookback year(s) ${lookbacks}, so the $0 surcharge shown for those years is an unavailable computation — the scenario's lifetime IRMAA and net cost exclude the unknown amounts. Supply priorYearMagi entries for ${lookbacks} to price them.`);
+    }
+    if (m.acaBelow100FplYears.length > 0) {
+      const years = m.acaBelow100FplYears.join(", ");
+      out.push(`ACA credit is $0 for ${m.name} in ${years} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.`);
+    }
+    if (m.cliffCapInoperativeYears.length > 0) {
+      const years = m.cliffCapInoperativeYears.join(", ");
+      out.push(`ACA cliff cap is inoperative for ${m.name} in ${years}: mandatory income alone exceeds the cliff even with no conversion and no pre-tax spending draw, so the cap cannot defend the cliff and the credit is $0 in those years. The $0 credit is priced, not missing — do not read those years as a choice to forfeit the credit, and do not expect a different draw order to recover it unless the funding mix itself removes the gains (funding from Roth instead of taxable sales).`);
+    }
+    if (m.earlyWithdrawalUnknownYears.length > 0) {
+      const years = m.earlyWithdrawalUnknownYears.join(", ");
+      out.push(`Early-withdrawal penalty on the pre-tax spending draw is $0 but UNKNOWN for ${m.name} in ${years}: a pre-59½ pre-tax spending draw was priced while that owner's Rule-of-55 eligibility was not entered, so the $0 on that draw is an unanswered question, not a computed $0 — the real §72(t) penalty on the draw depends on how much of it came from an eligible employer plan. A conversion-withholding penalty in the same year, if any, is priced separately and is NOT part of this $0. Enter the eligible balance and separation age to price it.`);
+    }
+    if (m.rothBasisUnknownYears.length > 0) {
+      const years = m.rothBasisUnknownYears.join(", ");
+      out.push(`Roth income and penalty are $0 but UNKNOWN for ${m.name} in ${years}: a Roth spending draw was priced while that owner's Roth basis / clocks were not entered, so the $0 income and $0 penalty on that draw are unanswered questions, not computed $0s — the real tax depends on how much of the draw came from contributions (free), prior conversions (10% §72(t) penalty when under 59½ and inside 5 years), and earnings (ordinary income, plus 10% when under 59½, unless the distribution is qualified). Enter the Roth contribution basis, conversion lots, and first Roth year to price it.`);
+    }
+  }
+  return out;
+}
+var WORK_YEARS_STATE_TAX_NOTE = "Work-years tax totals (workTax, totalTax, allInTax) include flat-rate state tax: an estimate only — the caller-supplied rate on federal taxable income — never an exact state tax return; for a Washington household the totals may instead include a Washington capital-gains excise slice (RCW 82.87) from a deficit-funding Taxable sale. Salary years past the newest published law row price on that row carried forward, a projection; see the yearly table in this response for the retirement years' per-year lawProvenance and stateTaxProvenance — the salary years' per-year provenance is not in this response.";
 function calculateRetirement(scenario) {
   return guard(() => {
     const { inputs, warnings } = toSimInputs(scenario);
@@ -16478,7 +19166,7 @@ function calculateRetirement(scenario) {
     if (hist === null) {
       warnings.push("Historical paths are unavailable for this mix or horizon, so no historical never-out rate is reported.");
     }
-    if (scenario.minimumAnnualSpendingCents != null && scenario.strategy === "constant") {
+    if (scenario.minimumAnnualSpendingCents != null && scenario.strategy === "constant" && scenario.minimumAnnualSpendingCents <= scenario.annualSpendingCents) {
       warnings.push("Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.");
     }
     return respond(scenario, {
@@ -16498,7 +19186,9 @@ function calculateRetirement(scenario) {
         amount: centsToDollars(c)
       })),
       strategy: inputs.strategy,
-      historicalNeverOutRate: hist === null ? null : r24(hist.neverOutSuccessRate / 100),
+      historicalNeverOutRate: hist === null ? null : ratePercentToFraction(hist.neverOutSuccessRate, hist.count),
+      historicalRuns: hist === null ? null : hist.count,
+      historicalSuccessfulRuns: hist === null ? null : successfulRunsFromRate(hist.neverOutSuccessRate, hist.count),
       historicalMedianEnding: hist === null ? null : centsToDollars(hist.medianEnding),
       historicalSpendingAdequacyRate: hist === null || hist.spendingAdequacySuccessRate === null ? null : hist.spendingAdequacySuccessRate / 100,
       minimumAnnualSpending: scenario.minimumAnnualSpendingCents == null ? null : centsToDollars(scenario.minimumAnnualSpendingCents)
@@ -16514,10 +19204,11 @@ function runRetirementMonteCarlo(scenario) {
     }
     const det = simulateDetailed(inputs, flatReturns(scenario));
     const detEnding = centsToDollars(det.balances[det.balances.length - 1] ?? 0);
-    const successRate = r24(mc.neverOutSuccessRate / 100);
+    const successRate = ratePercentToFraction(mc.neverOutSuccessRate, scenario.mcRuns);
+    const successfulRuns = successfulRunsFromRate(mc.neverOutSuccessRate, scenario.mcRuns);
     const detRunsOut = detEnding === 0;
     const mcMostlySucceeds = successRate >= 0.5;
-    if (scenario.minimumAnnualSpendingCents != null && scenario.strategy === "constant") {
+    if (scenario.minimumAnnualSpendingCents != null && scenario.strategy === "constant" && scenario.minimumAnnualSpendingCents <= scenario.annualSpendingCents) {
       warnings.push("Spending adequacy is measured on gross spending, and constant spending never varies — so with the floor at or below yearly spending, adequacy reads 100% even in runs where withdrawals went unfunded. Read it beside the funding rate, never instead of it.");
     }
     if (detRunsOut && mcMostlySucceeds) {
@@ -16527,9 +19218,9 @@ function runRetirementMonteCarlo(scenario) {
     }
     const fullChart = mc.chart.map((row) => ({
       age: row.age,
-      median: r24(row.median),
-      p10: r24(row.p10),
-      p90: r24(row.p90)
+      median: r25(row.median),
+      p10: r25(row.p10),
+      p90: r25(row.p90)
     }));
     let chart = fullChart;
     if (fullChart.length > 41) {
@@ -16545,6 +19236,7 @@ function runRetirementMonteCarlo(scenario) {
     }
     return respond(scenario, {
       successRate,
+      successfulRuns,
       endingP10: centsToDollars(mc.p10),
       endingP50: centsToDollars(mc.p50),
       endingP90: centsToDollars(mc.p90),
@@ -16576,6 +19268,19 @@ function calculateMaxSpending(scenario) {
     const histSolved = solveMaxSpending(inputs, scenario.stocksPct, expected, vol, "historical", 85, scenario.mcSeed);
     const maxAnnual = centsToDollars(solved.maxSpendingCents);
     const histAnnual = histSolved === null ? null : centsToDollars(histSolved.maxSpendingCents);
+    const histRuns = histSolved === null ? null : runHistorical(inputs, scenario.stocksPct)?.count ?? null;
+    const feasible = maxSpendingFeasible(solved.maxSpendingCents, solved.successRate);
+    const cappedAtPercentBound = maxSpendingCappedAtPercentBound(solved.percent, solved.maxSpendingCents, inputs.startCents);
+    const historicalCappedAtPercentBound = histSolved === null ? false : maxSpendingCappedAtPercentBound(histSolved.percent, histSolved.maxSpendingCents, inputs.startCents);
+    if (!feasible) {
+      warnings.push("No spending level meets the 85% success target — not even $0/year. The plan cannot reach 85% success at any spending under these assumptions (seed, 1,000 simulations, model assumptions).");
+    }
+    if (cappedAtPercentBound) {
+      warnings.push("The percent strategy hit the engine's 30%/yr withdrawal bound: this is a capped result, not a true maximum — the solver stopped at the bound, not at a spending the plan fails above.");
+    }
+    if (historicalCappedAtPercentBound) {
+      warnings.push("The percent strategy's historical leg also hit the engine's 30%/yr withdrawal bound: its maximum is a capped result, not a true maximum — the historical solver stopped at the bound, not at a spending the plan fails above.");
+    }
     if (histAnnual !== null) {
       const relDiff = maxAnnual === 0 ? histAnnual > 0 ? Infinity : 0 : Math.abs(histAnnual - maxAnnual) / maxAnnual;
       if (relDiff > 0.2) {
@@ -16585,20 +19290,31 @@ function calculateMaxSpending(scenario) {
       warnings.push("The historical engine could not solve a maximum for this mix or horizon, so no historical cross-check is reported.");
     }
     return respond(scenario, {
-      maxMonthlySpending: r24(maxAnnual / 12),
+      maxMonthlySpending: r25(maxAnnual / 12),
       maxAnnualSpending: maxAnnual,
-      successRate: r24(solved.successRate / 100),
+      successRate: ratePercentToFraction(solved.successRate, MONTE_CARLO_TAB_RUNS),
+      successfulRuns: successfulRunsFromRate(solved.successRate, MONTE_CARLO_TAB_RUNS),
       medianEnding: centsToDollars(solved.medianEnding),
       approximate: solved.approximate,
       runs: MONTE_CARLO_TAB_RUNS,
-      historicalMaxMonthlySpending: histAnnual === null ? null : r24(histAnnual / 12),
+      targetSuccessRate: 0.85,
+      spendingStrategy: inputs.strategy,
+      spendingAmountMeaning: spendingAmountMeaning(inputs.strategy),
+      seed: scenario.mcSeed,
+      feasible,
+      solvedPortfolioWithdrawalPct: solved.percent,
+      cappedAtPercentBound,
+      historicalMaxMonthlySpending: histAnnual === null ? null : r25(histAnnual / 12),
       historicalMaxAnnualSpending: histAnnual,
-      targetSuccessRate: r24(85 / 100),
-      achievedSuccessRate: r24(solved.successRate / 100),
+      achievedSuccessRate: r25(solved.successRate / 100),
       targetAchieved: solved.targetAchieved,
       solutionStatus: solved.solutionStatus,
       historicalTargetAchieved: histSolved === null ? null : histSolved.targetAchieved,
-      historicalSolutionStatus: histSolved === null ? null : histSolved.solutionStatus
+      historicalSolutionStatus: histSolved === null ? null : histSolved.solutionStatus,
+      historicalRuns: histRuns,
+      historicalSuccessfulRuns: histSolved === null || histRuns === null ? null : successfulRunsFromRate(histSolved.successRate, histRuns),
+      historicalSolvedPortfolioWithdrawalPct: histSolved === null ? null : histSolved.percent,
+      historicalCappedAtPercentBound
     }, warnings, [
       assumption("mcRunsEffective", MONTE_CARLO_TAB_RUNS, "engine_constant", "The max-spending solver always runs the engine's fixed 1,000 Monte Carlo simulations; a supplied mcRuns is not used for this tool.")
     ], null, "retirement_max_spending");
@@ -16629,6 +19345,8 @@ function compareWithdrawalStrategies(scenario) {
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: LIMITED_TIE_BREAK,
       excludedCandidateFamilies: full ? [
         "Mid-plan draw-order switches (a second order from a switch age) — one order applies for the whole horizon in each candidate."
@@ -16645,7 +19363,12 @@ function compareWithdrawalStrategies(scenario) {
       deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
       yearly: yearlyTable(outcome.baselineRaw),
       comparisonScope: scope
-    }, [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING], taxAwareAssumptions(scenario), null, "retirement_compare_strategies");
+    }, [
+      ...healthPremiumWarnings(scenario),
+      YEARLY_TABLE_WARNING,
+      ...irmaaAcaCompareWarnings(outcome.mapped),
+      ...unqualifiedWinnerWarning(outcome)
+    ], taxAwareAssumptions(scenario), null, "retirement_compare_strategies");
   });
 }
 function compareRothConversions(scenario) {
@@ -16683,6 +19406,8 @@ function compareRothConversions(scenario) {
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: LIMITED_TIE_BREAK,
       excludedCandidateFamilies: [
         'Every other conversion ceiling (other bracket tops, IRMAA tiers, ACA-cliff caps, MAGI caps) — pass comparisonScope "full" to search them.',
@@ -16698,7 +19423,12 @@ function compareRothConversions(scenario) {
       deltas: deltasVsBaseline(outcome.mapped, outcome.baseline),
       yearly: yearlyTable(outcome.baselineRaw),
       comparisonScope: scope
-    }, [...healthPremiumWarnings(scenario), YEARLY_TABLE_WARNING], taxAwareAssumptions(scenario), null, "retirement_roth_conversion");
+    }, [
+      ...healthPremiumWarnings(scenario),
+      YEARLY_TABLE_WARNING,
+      ...irmaaAcaCompareWarnings(outcome.mapped),
+      ...unqualifiedWinnerWarning(outcome)
+    ], taxAwareAssumptions(scenario), null, "retirement_roth_conversion");
   });
 }
 function compareRothConversionsFull(scenario) {
@@ -16707,7 +19437,7 @@ function compareRothConversionsFull(scenario) {
     const result = runOptimizer(planInputs);
     const winner = result.winner;
     const doNothing = result.doNothing;
-    const wealthWinner = pickWinner(result.scored, (a, b) => a.result.endingAfterTaxWealth > b.result.endingAfterTaxWealth);
+    const wealthWinner = result.winnerByEndingWealth;
     const returned = [];
     const seenKeys = new Set;
     for (const s of [
@@ -16750,10 +19480,15 @@ function compareRothConversionsFull(scenario) {
       searchKind: "optimizer-search",
       evaluatedCandidates: result.candidatesTested,
       candidateNames: mapped.map((m) => m.name),
-      candidateSetDescription: `The engine's full optimizer search at the entered claiming ages: ${result.candidatesTested} candidates priced (bracket / IRMAA / ACA / MAGI ceilings × conversion windows × all six draw orders × guardrail / bunching variants${harvestGate ? " × gain-harvest twins" : ""}), plus the Do Nothing benchmark. The response returns the benchmark, the winner, its runners-up, and the ending-wealth winner when it is none of those; candidatesTested is the full searched count. Still not a global optimum: claiming ages are fixed (see excluded families).`,
+      candidateSetDescription: `The engine's full optimizer search at the entered claiming ages: ${result.candidatesTested} candidates priced. ${result.searchScope.description} The response returns the benchmark, the winner, its runners-up, and the ending-wealth winner when it is none of those; candidatesTested is the full searched count. Still not a global optimum: claiming ages are fixed (see excluded families).`,
       baselineName: baseline.name,
       winnerByNetCost: winnerName,
       winnerByEndingWealth: wealthWinnerName,
+      winnerQualified: result.winnerQualified,
+      excludedInvalidWinner: result.excludedInvalidWinner == null ? null : {
+        name: optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec),
+        reasons: result.excludedInvalidWinner.integrity.reasons
+      },
       tieBreakPolicy: OPTIMIZER_TIE_BREAK,
       excludedCandidateFamilies
     });
@@ -16782,30 +19517,110 @@ function compareRothConversionsFull(scenario) {
           gainsHarvest: winner.spec.gainsHarvest ?? false,
           claimAgePrimary: winner.claimAges.primaryAge,
           claimAgeSpouse: winner.claimAges.spouseAge,
-          netCost: r24(winner.cost.netCost),
-          endingWealth: r24(winner.result.endingAfterTaxWealth),
-          conversionsTotal: r24(winnerTotal),
-          yearlyConversions: winnerConversions
+          netCost: r25(winner.cost.netCost),
+          endingWealth: r25(winner.result.endingAfterTaxWealth),
+          conversionsTotal: r25(winnerTotal),
+          irmaaLookbackMissingYears: winner.result.irmaaLookbackMissingYears,
+          acaBelow100FplYears: winner.result.acaBelow100FplYears,
+          cliffCapInoperativeYears: winner.result.cliffCapInoperativeYears,
+          earlyWithdrawalUnknownYears: winner.result.earlyWithdrawalUnknownYears,
+          rothBasisUnknownYears: winner.result.rothBasisUnknownYears,
+          yearlyConversions: winnerConversions,
+          rmdDeferral: rmdSurvivorSummary(winner.result.years.map((y) => ({
+            year: y.year,
+            rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+            rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+            rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+            rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+            survivorSsMode: y.detail.survivorSsMode,
+            survivorClaimAge: y.detail.survivorClaimAge
+          })))
         },
         runnersUp: result.runnersUp.map((s) => ({
           name: optimizerCandidateDisplayName(s.spec),
           candidateKey: s.spec.key,
-          netCost: r24(s.cost.netCost),
-          endingWealth: r24(s.result.endingAfterTaxWealth),
-          conversionsTotal: r24(s.result.years.reduce((sum, y) => sum + y.conversion, 0))
+          netCost: r25(s.cost.netCost),
+          endingWealth: r25(s.result.endingAfterTaxWealth),
+          conversionsTotal: r25(s.result.years.reduce((sum, y) => sum + y.conversion, 0))
         })),
         doNothing: {
-          netCost: r24(doNothing.cost.netCost),
-          endingWealth: r24(doNothing.result.endingAfterTaxWealth)
+          netCost: r25(doNothing.cost.netCost),
+          endingWealth: r25(doNothing.result.endingAfterTaxWealth),
+          irmaaLookbackMissingYears: doNothing.result.irmaaLookbackMissingYears,
+          acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+          cliffCapInoperativeYears: doNothing.result.cliffCapInoperativeYears,
+          earlyWithdrawalUnknownYears: doNothing.result.earlyWithdrawalUnknownYears,
+          rothBasisUnknownYears: doNothing.result.rothBasisUnknownYears,
+          rmdDeferral: rmdSurvivorSummary(doNothing.result.years.map((y) => ({
+            year: y.year,
+            rmdDeferredPrimary: y.detail.rmdDeferredPrimary,
+            rmdDeferredSpouse: y.detail.rmdDeferredSpouse,
+            rmdDeferredPaidPrimary: y.detail.rmdDeferredPaidPrimary,
+            rmdDeferredPaidSpouse: y.detail.rmdDeferredPaidSpouse,
+            survivorSsMode: y.detail.survivorSsMode,
+            survivorClaimAge: y.detail.survivorClaimAge
+          })))
         },
         candidateFamiliesEvaluated,
-        excludedCandidateFamilies
+        excludedCandidateFamilies,
+        objective: result.objective,
+        validCandidatesTested: result.validCandidatesTested,
+        invalidCandidatesTested: result.invalidCandidatesTested,
+        winnersDiffer: result.winnersDiffer,
+        winnerQualified: result.winnerQualified,
+        wealthWinner: wealthWinner == null || wealthWinner.spec.key === winner.spec.key ? null : {
+          name: optimizerCandidateDisplayName(wealthWinner.spec),
+          candidateKey: wealthWinner.spec.key,
+          netCost: r25(wealthWinner.cost.netCost),
+          endingWealth: r25(wealthWinner.result.endingAfterTaxWealth)
+        },
+        excludedInvalidWinner: result.excludedInvalidWinner == null ? null : {
+          name: optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec),
+          candidateKey: result.excludedInvalidWinner.candidate.spec.key,
+          reasons: result.excludedInvalidWinner.integrity.reasons
+        }
       }
     }, [
       HEALTH_PREMIUM_WARNING,
       YEARLY_TABLE_WARNING,
-      "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else."
+      ...irmaaAcaCompareWarnings([
+        {
+          name: winnerName,
+          irmaaLookbackMissingYears: winner.result.irmaaLookbackMissingYears,
+          acaBelow100FplYears: winner.result.acaBelow100FplYears,
+          cliffCapInoperativeYears: winner.result.cliffCapInoperativeYears,
+          earlyWithdrawalUnknownYears: winner.result.earlyWithdrawalUnknownYears,
+          rothBasisUnknownYears: winner.result.rothBasisUnknownYears
+        },
+        {
+          name: "do-nothing",
+          irmaaLookbackMissingYears: doNothing.result.irmaaLookbackMissingYears,
+          acaBelow100FplYears: doNothing.result.acaBelow100FplYears,
+          cliffCapInoperativeYears: doNothing.result.cliffCapInoperativeYears,
+          earlyWithdrawalUnknownYears: doNothing.result.earlyWithdrawalUnknownYears,
+          rothBasisUnknownYears: doNothing.result.rothBasisUnknownYears
+        }
+      ]),
+      "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+      ...result.excludedInvalidWinner == null ? [] : [
+        `The cheapest candidate the search priced (${optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec)}) was excluded as invalid: ${result.excludedInvalidWinner.integrity.reasons.join("; ")}.${result.winnerQualified ? " The crowned winner is the cheapest valid candidate." : ""}`
+      ],
+      ...!result.winnerQualified ? [
+        "No tested candidate was valid — the crowned winner carries a material unresolved discrepancy, unpaid tax, or unfunded spending. Treat its figures as unqualified."
+      ] : []
     ], taxAwareAssumptions(scenario), null, "retirement_roth_conversion");
+  });
+}
+function dynamicWithdrawal(scenario) {
+  return guard(() => {
+    const planInputs = buildRothPlanInputs(scenario);
+    const result = runDynamicOptimizer(planInputs);
+    if (!result.ok)
+      return engineError(result.reason ?? "The dynamic optimizer could not price this scenario.");
+    return respond(scenario, result, [
+      ...healthPremiumWarnings(scenario),
+      "Dynamic schedule: each year's policy (draw order + conversion fill + window) was chosen by re-pricing the remaining horizon from that year's actual balances. The greedy choice is floored at the best valid fixed policy over the same fixed-policy set (up to 114 policies) — see floorBound and searchLimits in the results."
+    ], taxAwareAssumptions(scenario), null, "retirement_dynamic_withdrawal");
   });
 }
 function compareRetirementAges(scenario) {
@@ -16833,43 +19648,95 @@ function compareRetirementAges(scenario) {
     const outcome = compared.outcome;
     const workYears = [];
     let workYearsWinnerByAllInTax = null;
+    let workYearsWinnerByEndingAfterTaxWealth = null;
     const workYearsWarnings = [];
-    if (scenario.salaryAnnual != null) {
+    const salaryAnnual = scenario.salaryAnnual;
+    const hasSalary = salaryAnnual != null && salaryAnnual !== 0;
+    if (hasSalary) {
       const planInputs = buildRothPlanInputs(scenario, {
         retirementAge: firstAge,
         windowStartAge: firstAge
       });
       const job = {
-        salary: scenario.salaryAnnual,
+        salary: salaryAnnual,
         employer401k: scenario.employer401kAnnual,
         employerHsa: scenario.employerHsaAnnual,
-        medicareAgePrimary: null
+        medicareAgePrimary: scenario.medicareAgePrimary,
+        hsaCoverage: scenario.hsaCoverage,
+        hsaEligible: scenario.hsaEligible,
+        priorYearWages: scenario.priorYearWagesAnnual
       };
       const wyRows = runWorkYearsCompare(planInputs, job, ages);
       workYears.push(...wyRows.map((row) => ({
         quitAge: row.quitAge,
         workYears: row.workYears,
-        workTax: r24(row.workTax),
-        payrollTax: r24(row.payrollTax),
-        totalTax: r24(row.totalTax),
-        shortfall: r24(row.shortfall),
-        allInTax: r24(row.allInTax),
-        claim67AllInTax: row.claim67AllInTax == null ? null : r24(row.claim67AllInTax),
-        endingNominal: r24(row.endingNominal),
-        endingAfterTax: r24(row.endingAfterTax),
+        workTax: r25(row.workTax),
+        payrollTax: r25(row.payrollTax),
+        totalTax: r25(row.totalTax),
+        shortfall: r25(row.shortfall),
+        allInTax: r25(row.allInTax),
+        claim67AllInTax: row.claim67AllInTax == null ? null : r25(row.claim67AllInTax),
+        endingNominal: r25(row.endingNominal),
+        endingAfterTax: r25(row.endingAfterTax),
         winnerStrategy: row.optimizer.winner.spec.name,
         winnerClaimPrimaryAge: row.optimizer.winner.claimAges.primaryAge,
-        winnerClaimSpouseAge: row.optimizer.winner.claimAges.spouseAge
+        winnerClaimSpouseAge: row.optimizer.winner.claimAges.spouseAge,
+        irmaaLookbackMissingYears: row.irmaaLookbackMissingYears,
+        acaBelow100FplYears: row.acaBelow100FplYears,
+        cliffCapInoperativeYears: row.cliffCapInoperativeYears,
+        earlyWithdrawalUnknownYears: row.earlyWithdrawalUnknownYears,
+        rothBasisUnknownYears: row.rothBasisUnknownYears,
+        assumptions: row.assumptions
       })));
+      for (const a of wyRows[0]?.assumptions ?? []) {
+        workYearsWarnings.push(`Work-years assumption: ${a}`);
+      }
       const wyWinner = pickWinner(workYears, (a, b) => a.allInTax < b.allInTax);
       workYearsWinnerByAllInTax = wyWinner ? `retire-${wyWinner.quitAge}` : null;
+      const wyWealthWinner = pickWinner(workYears, (a, b) => a.endingAfterTax > b.endingAfterTax);
+      workYearsWinnerByEndingAfterTaxWealth = wyWealthWinner ? `retire-${wyWealthWinner.quitAge}` : null;
+      workYearsWarnings.push(WORK_YEARS_COMPARABILITY_NOTE);
+      if (scenario.medicareAgePrimary == null) {
+        const pricedHsa = wyRows.reduce((sum, row) => sum + row.roll.totals.hsaContributions, 0);
+        workYearsWarnings.push(pricedHsa > 0 ? MEDICARE_NO_ENROLLMENT_WARNING : MEDICARE_NO_ENROLLMENT_NO_HSA_WARNING);
+      }
     } else {
-      workYearsWarnings.push("Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it.");
+      workYearsWarnings.push(salaryAnnual === 0 ? "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: salaryAnnual is $0, so there is no salary to price. Pass a positive salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation." : "Work-years detail (salary, employer 401(k)/HSA earned by working longer) is not included: no salary was provided. Pass salaryAnnual to include it. The winners above are retirement-only, not an overall recommendation.");
     }
     const withAges = outcome.mapped.map((m, i) => ({
       ...m,
       retirementAge: ages[i]
     }));
+    const comparisonModels = {
+      retirementOnly: {
+        includesSalary: false,
+        includesWorkYearContributions: false,
+        includesWorkYearPayrollTaxes: false,
+        usesFullOptimizer: false,
+        ssClaimingAgesSearched: false,
+        objective: "lowest lifetime net cost or highest ending after-tax wealth among fixed Do-Nothing-fill strategies per quit age",
+        description: "Prices the same starting balances at each retirement age with one fixed Do-Nothing-fill strategy per age at the entered Social Security claiming ages; ignores the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, and searches neither claiming ages nor conversion strategies."
+      },
+      salaryAware: !hasSalary ? null : {
+        includesSalary: true,
+        includesWorkYearContributions: true,
+        includesWorkYearPayrollTaxes: true,
+        usesFullOptimizer: true,
+        ssClaimingAgesSearched: true,
+        objective: "lowest all-in tax or highest ending after-tax wealth among quit ages, each priced by the joint optimizer",
+        description: "Rolls the extra working years forward — salary, employee payroll taxes, the employee contribution stack, employer 401(k) and HSA, spending during the working years, and investment growth — then prices each quit age's rolled plan with the joint optimizer; each row's winnerStrategy is the optimizer's pick for that quit age alone, searching claiming ages and conversion strategies per quit age (a benefit already started at plan start keeps its entered claiming age and is not searched), while the quit-age comparison itself runs no optimizer search across conversion strategies."
+      }
+    };
+    let overallRecommendation = null;
+    let overallRecommendationNote;
+    if (!hasSalary) {
+      overallRecommendationNote = "No overall recommendation: the salary-aware comparison needs salaryAnnual. The retirement-only winners above price the same starting balances at each retirement age and ignore the salary, employer 401(k)/HSA contributions, and payroll tax earned by working longer, so they cannot recommend a retirement age.";
+    } else if (workYearsWinnerByAllInTax != null && workYearsWinnerByAllInTax === workYearsWinnerByEndingAfterTaxWealth) {
+      overallRecommendation = workYearsWinnerByAllInTax;
+      overallRecommendationNote = `Both salary-aware objectives agree on ${overallRecommendation}: it has the lowest all-in tax and the highest ending after-tax wealth among the compared ages.`;
+    } else {
+      overallRecommendationNote = `No overall recommendation: the salary-aware objectives disagree — lowest all-in tax points to ${workYearsWinnerByAllInTax} while highest ending after-tax wealth points to ${workYearsWinnerByEndingAfterTaxWealth}. Lowest tax does not imply the best outcome; the choice depends on whether the caller values tax saved or wealth left more.`;
+    }
     const scope = buildComparisonScope({
       scope: "limited",
       searchKind: "fixed-comparison",
@@ -16879,6 +19746,8 @@ function compareRetirementAges(scenario) {
       baselineName: outcome.baseline.name,
       winnerByNetCost: outcome.winnerByNetCost,
       winnerByEndingWealth: outcome.winnerByEndingWealth,
+      winnerQualified: outcome.winnerQualified,
+      excludedInvalidWinner: outcome.excludedInvalidWinner,
       tieBreakPolicy: WORK_YEARS_TIE_BREAK,
       excludedCandidateFamilies: [
         "Conversion strategies beyond the entered-plan Do-Nothing fill per quit age.",
@@ -16894,11 +19763,33 @@ function compareRetirementAges(scenario) {
       yearly: yearlyTable(outcome.baselineRaw),
       workYears,
       workYearsWinnerByAllInTax,
+      workYearsWinnerByEndingAfterTaxWealth,
+      retirementOnly: {
+        winnerByNetCost: outcome.winnerByNetCost,
+        winnerByEndingWealth: outcome.winnerByEndingWealth
+      },
+      workYearsComparison: !hasSalary ? null : {
+        winnerByAllInTax: workYearsWinnerByAllInTax,
+        winnerByEndingAfterTaxWealth: workYearsWinnerByEndingAfterTaxWealth
+      },
+      comparisonModels,
+      overallRecommendation,
+      overallRecommendationNote,
       comparisonScope: scope
     }, [
       ...healthPremiumWarnings(scenario),
       YEARLY_TABLE_WARNING,
-      WORK_YEARS_HORIZON_WARNING,
+      ...irmaaAcaCompareWarnings(outcome.mapped),
+      ...unqualifiedWinnerWarning(outcome),
+      ...irmaaAcaCompareWarnings(workYears.map((w) => ({
+        name: `retire-${w.quitAge}`,
+        irmaaLookbackMissingYears: w.irmaaLookbackMissingYears,
+        acaBelow100FplYears: w.acaBelow100FplYears,
+        cliffCapInoperativeYears: w.cliffCapInoperativeYears,
+        earlyWithdrawalUnknownYears: w.earlyWithdrawalUnknownYears,
+        rothBasisUnknownYears: w.rothBasisUnknownYears
+      }))),
+      ...hasSalary ? [WORK_YEARS_STATE_TAX_NOTE] : [],
       ...workYearsWarnings
     ], taxAwareAssumptions(scenario), null, "retirement_work_years");
   });
@@ -16906,7 +19797,7 @@ function compareRetirementAges(scenario) {
 function calculateSingleYearTax(scenario) {
   return guard(() => {
     if (!TAX_LAW_YEARS.some((law) => law.year === scenario.taxYear)) {
-      return unsupported(`The single-year price covers tax years ${TAX_LAW_YEARS.map((law) => law.year).join(", ")}; ${scenario.taxYear} is not priced.`);
+      return unsupported(`The single-year price covers tax years ${TAX_LAW_YEARS.map((law) => law.year).join(", ")}; ${scenario.taxYear} is not priced. In the app's single-year action the same year prices on the newest published row carried forward, with that substitution named in lawProvenance — this tool does not price it.`);
     }
     const warnings = [];
     const agePrimary = scenario.currentAge + (scenario.taxYear - scenario.startYear);
@@ -17018,6 +19909,13 @@ function calculateSingleYearTax(scenario) {
       spendingDraw: scenario.singleYear.spendingDraw,
       cashDraw: scenario.singleYear.cashDraw,
       rothDraw: scenario.singleYear.rothDraw,
+      rothBalance: scenario.singleYear.rothBalance ?? undefined,
+      rothIraBalance: scenario.singleYear.rothIraBalance ?? undefined,
+      rothEmployerBalance: scenario.singleYear.rothEmployerBalance ?? undefined,
+      rothContributionBasis: scenario.singleYear.rothContributionBasis ?? undefined,
+      rothConversionLots: scenario.singleYear.rothConversionLots ?? undefined,
+      firstRothYear: scenario.singleYear.firstRothYear ?? undefined,
+      firstDesignatedRothYear: scenario.singleYear.firstDesignatedRothYear ?? undefined,
       inflationPct: scenario.inflationPct,
       stockSold,
       stockBasis,
@@ -17025,6 +19923,10 @@ function calculateSingleYearTax(scenario) {
       pretaxBalance: primaryBalance,
       pretaxBalanceSpouse: spouseBalance,
       rmdAlreadyReceived,
+      firstRmdDeferralPrimary: sy.firstRmdDeferralPrimary ?? undefined,
+      firstRmdDeferralSpouse: sy.firstRmdDeferralSpouse ?? undefined,
+      firstRmdDeferredCarryPrimary: sy.firstRmdDeferredCarryPrimary ?? undefined,
+      firstRmdDeferredCarrySpouse: sy.firstRmdDeferredCarrySpouse ?? undefined,
       primarySoleBeneficiaryOfSpouse: sy.primarySoleBeneficiaryOfSpouse,
       spouseSoleBeneficiary: joint,
       acaHouseholdSize: scenario.householdSize,
@@ -17037,6 +19939,12 @@ function calculateSingleYearTax(scenario) {
     };
     warnings.push(...healthPremiumWarnings(scenario));
     const priced = pricePlaygroundYear(inputs);
+    if (priced.rothBasisUnknown && scenario.singleYear.rothDraw > 0) {
+      warnings.push(`Roth income and penalty are $0 but UNKNOWN for ${scenario.taxYear}: the Roth draw of ${fmtMoney(scenario.singleYear.rothDraw)} was priced while the Roth contribution basis, conversion lots, and first Roth year were not entered, so the $0 income and $0 penalty on it are unanswered questions, not computed $0s — the real tax depends on how much of the draw came from contributions (free), prior conversions (10% §72(t) penalty when under 59½ and inside 5 years), and earnings (ordinary income, plus 10% when under 59½, unless the distribution is qualified). Enter rothContributionBasis, rothConversionLots, and firstRothYear to price it.`);
+    }
+    if (priced.aca.below100Fpl) {
+      warnings.push(`ACA credit ${priced.aca.credit == null ? "would be $0" : "is $0"} for ${scenario.taxYear} because household MAGI is under 100% of the federal poverty level — the standard §36B income test. No exception is modeled, and Medicaid eligibility is not modeled either, so do not read the $0 as a coverage decision.${priced.aca.credit == null ? " (No benchmark premium was entered, so no credit is priced here.)" : ""}`);
+    }
     if (priced.rmd > 0 && (scenario.singleYear.spendingDraw > 0 || scenario.singleYear.conversion > 0)) {
       const parts = [];
       if (scenario.singleYear.spendingDraw > 0)
@@ -17076,7 +19984,57 @@ var BASE_INPUT_SCHEMA = {
     },
     roth: {
       ...MONEY,
-      description: "Roth IRA / Roth 401(k) balance in dollars. Required."
+      description: "Roth IRA / Roth 401(k) balance in dollars. Required. Optional Roth composition fields describe it for the primary owner — rothIra / rothEmployer (the IRA vs designated-Roth split), rothContributionBasis (regular-contribution basis still in Roth), rothConversionLots (prior conversions, one lot per year), firstRothYear and firstDesignatedRothYear (the 5-year clocks). Without them a Roth draw prices $0 income and $0 penalty and is flagged unknown (rothBasisUnknown)."
+    },
+    rothIra: {
+      ...MONEY,
+      description: "Roth IRA share of the Roth balance, in dollars. Primary owner only. Absent means the whole balance is a Roth IRA (less any entered rothEmployer share)."
+    },
+    rothEmployer: {
+      ...MONEY,
+      description: "Designated Roth employer-plan share of the Roth balance, in dollars. Primary owner only. Absent means $0."
+    },
+    rothContributionBasis: {
+      ...MONEY,
+      description: "Regular-contribution basis still sitting in the primary owner's Roth accounts, in dollars. Contributions come out free, so an entered basis prices the first dollars of any Roth draw as $0 income and $0 penalty. Absent means not established — a Roth draw prices $0 income and $0 penalty and is flagged unknown (rothBasisUnknown). An entered 0 is a real answer (no contribution basis)."
+    },
+    rothConversionLots: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "object",
+        properties: {
+          year: {
+            type: "integer",
+            minimum: 1900,
+            maximum: 2200,
+            description: "Taxable year of the conversion."
+          },
+          taxableAmount: {
+            ...MONEY,
+            description: "Dollars included in income on conversion (what the §72(t) 5-year penalty keys on), in dollars."
+          },
+          nontaxableAmount: {
+            ...MONEY,
+            description: "Dollars of basis converted (penalty-free on withdrawal), in dollars."
+          }
+        },
+        required: ["year", "taxableAmount", "nontaxableAmount"],
+        additionalProperties: false
+      },
+      description: "Prior conversions still sitting in the primary owner's Roth IRA — one lot per conversion year, FIFO. A conversion lot withdrawn before 59½ and inside 5 taxable years pays the 10% §72(t) penalty on the taxable part withdrawn. An entered empty list is a real answer (no prior conversions). Absent means not established — a Roth draw prices $0 income and $0 penalty and is flagged unknown (rothBasisUnknown)."
+    },
+    firstRothYear: {
+      type: "integer",
+      minimum: 1900,
+      maximum: 2200,
+      description: "First taxable year of any Roth IRA contribution (the qualified-distribution 5-year clock), primary owner. Earnings are free only when the owner is 59½ or older AND the priced year is at least 5 years after this year. Absent means not established."
+    },
+    firstDesignatedRothYear: {
+      type: "integer",
+      minimum: 1900,
+      maximum: 2200,
+      description: "First taxable year of designated Roth contributions to the employer plan (that plan's own 5-year clock), primary owner. Absent means not established."
     },
     hsa: {
       ...MONEY,
@@ -17107,7 +20065,7 @@ var BASE_INPUT_SCHEMA = {
     filingStatus: {
       type: "string",
       enum: ["mfj", "single", "hoh"],
-      description: "Federal tax filing status: mfj (married filing jointly), single, or hoh (head of household)."
+      description: 'Federal tax filing status: mfj (married filing jointly), single, or hoh (head of household). Married filing separately ("mfs") is NOT supported — the engine prices mfj, single, and head of household only, and an "mfs" value is rejected rather than priced as one of these.'
     },
     householdSize: {
       type: "integer",
@@ -17186,6 +20144,33 @@ var BASE_INPUT_SCHEMA = {
       ...MONEY,
       description: "ACA benchmark premium per year in dollars for a family household."
     },
+    priorYearMagi: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        properties: {
+          taxYear: {
+            type: "integer",
+            minimum: 1900,
+            maximum: 2200,
+            description: "The tax year the return was filed for."
+          },
+          magi: {
+            ...MONEY,
+            description: "That year's modified adjusted gross income (AGI plus tax-exempt interest) in dollars."
+          },
+          filingStatus: {
+            type: "string",
+            enum: ["mfj", "single", "hoh"],
+            description: "The filing status that year's return was filed under."
+          }
+        },
+        required: ["taxYear", "magi", "filingStatus"],
+        additionalProperties: false
+      },
+      description: "Prior-year filed returns for the two-year IRMAA lookback: each entry is one tax year's MAGI and the filing status that return was filed under. A premium year's IRMAA is set by the return filed two years earlier, so these entries price the first Medicare years of a plan whose march starts near 65; without them those years price $0 of IRMAA and are flagged unknown. Entries are taken exactly as supplied — never inferred from current balances or spending. A duplicate tax year keeps the last entry. Priced by retirement_compare_strategies, retirement_roth_conversion and retirement_work_years."
+    },
     healthPremiumAcaHouseholdAnnual: {
       ...MONEY,
       description: "Marketplace health premium per year in dollars for a year when both spouses are on the marketplace — the plan actually enrolled in. Priced only by the tax-aware tools."
@@ -17229,6 +20214,25 @@ var BASE_INPUT_SCHEMA = {
     employerHsaAnnual: {
       ...MONEY,
       description: "Employer HSA contribution per year in dollars."
+    },
+    hsaCoverage: {
+      type: "string",
+      enum: ["self-only", "family", "none"],
+      description: "HDHP coverage type the HSA limit prices from: self-only or family coverage, or none (no qualifying HDHP — no HSA contribution of either source). Omit to fall back to filing status (family for joint filers, self-only otherwise), recorded as an assumption on the priced work years. Only priced by retirement_work_years."
+    },
+    hsaEligible: {
+      type: "boolean",
+      description: "Whether the primary is an HSA-eligible individual (qualifying HDHP, no disqualifying coverage, not Medicare-enrolled). False means explicitly ineligible — no HSA contribution of either source. Omit to assume eligibility unless Medicare enrollment ends it, recorded as an assumption on the priced work years. Only priced by retirement_work_years."
+    },
+    medicareAgePrimary: {
+      type: ["integer", "null"],
+      minimum: 0,
+      maximum: 120,
+      description: "Primary person's Medicare enrollment age in whole years, or null for no modeled enrollment. When given, HSA contributions (employee and employer) stop in work years at or after that age. Omitted or null means no Medicare enrollment is modeled during the work years — eligibility at 65 is not enrollment, and this is never defaulted to 65."
+    },
+    priorYearWagesAnnual: {
+      ...MONEY,
+      description: "Prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor in dollars — the figure the mandatory Roth catch-up test reads for the first modeled work year. Omit to use that year's own Box-3 wages as a proxy, recorded as an assumption on the first priced work year. Only priced by retirement_work_years."
     },
     interestAnnual: {
       ...MONEY,
@@ -17281,6 +20285,43 @@ var BASE_INPUT_SCHEMA = {
     primarySoleBeneficiaryOfSpouse: {
       type: "boolean",
       description: "Is the primary person the sole beneficiary of the spouse's pre-tax accounts? Gates ONLY the spouse's RMD table: true lets the spouse's RMD use the Joint and Last Survivor Table when the primary is more than 10 years younger, otherwise the Uniform Lifetime Table. Absent means not established — the spouse's RMD prices on the Uniform table (the conservative direction). This is a separate fact from the spouse being the primary's sole beneficiary; one never implies the other."
+    },
+    firstRmdDeferralPrimary: {
+      type: "boolean",
+      description: "Defer the primary's first RMD to April 1 of the following year (26 U.S.C. §401(a)(9)(C)(i)(II)). The first RMD year is the year the owner reaches their RMD age; an election entered past that year has no effect (the response names $0 deferred). Omitted means the first RMD is paid in its own year."
+    },
+    firstRmdDeferralSpouse: {
+      type: "boolean",
+      description: "Defer the spouse's first RMD to April 1 of the following year. Same rule as firstRmdDeferralPrimary, on the spouse's own RMD-age clock. Omitted means the first RMD is paid in its own year."
+    },
+    firstRmdDeferredCarryPrimaryAnnual: {
+      ...MONEY,
+      description: "Primary's first RMD deferred from a prior year, in dollars — priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only; the plan tools never take a carry-in (their carry is produced by the work-years roll). Omitted means $0."
+    },
+    firstRmdDeferredCarrySpouseAnnual: {
+      ...MONEY,
+      description: "Spouse's first RMD deferred from a prior year, in dollars — priced on top of the priced year's own RMD (the two-RMD year). Tax-year tool only. Omitted means $0."
+    },
+    survivorEnabled: {
+      type: "boolean",
+      description: "Turn the survivor scenario on (plan tools only): one spouse dies in survivorDeathYear and the survivor's years price under Single from the year after. Omitted means off — both spouses are modeled through the plan horizon."
+    },
+    survivorWho: {
+      type: "string",
+      enum: ["primary", "spouse"],
+      description: 'Who dies in the survivor scenario. Default is "primary".'
+    },
+    survivorDeathYear: {
+      type: "integer",
+      minimum: 1900,
+      maximum: 2100,
+      description: "Calendar year of death in the survivor scenario. Required when survivorEnabled is true."
+    },
+    survivorClaimAge: {
+      type: "integer",
+      minimum: 60,
+      maximum: 70,
+      description: "The survivor's Social Security claiming age for the enhanced survivor benefit (60–70). The engine prices the SSA survivor rules from it — the widow(er)'s limit, the claiming-age reduction from 60, the delayed credits accrued to the month of death. No claim-one-then-switch optimization: a survivor who claims the survivor benefit and later switches to their own benefit is priced as the larger of the two each year, not as the optimized switch. Absent means the simplified max-of-two-benefits rule. Never inferred: no claiming age is assigned from anything else entered."
     },
     mcSeed: {
       type: "integer",
@@ -17360,7 +20401,8 @@ var EXAMPLE_WORK_YEARS = {
   compareAges: [59, 61, 64],
   salaryAnnual: 120000,
   employer401kAnnual: 5000,
-  employerHsaAnnual: 1000
+  employerHsaAnnual: 1000,
+  medicareAgePrimary: 65
 };
 var EXAMPLE_TAX_YEAR = {
   ...EXAMPLE_CALCULATE,
@@ -17384,37 +20426,43 @@ var TOOLS = [
   },
   {
     name: "retirement_monte_carlo",
-    description: `Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Optional minimumAnnualSpending (dollars per year) adds a spending-adequacy rate: the share of simulations in which every retired year's gross spending stayed at or above that floor — reported beside the success rate, never instead of it, because a high funding-success rate is not proof the household can maintain its desired spending (a percent-of-portfolio plan can fund every year while its spending collapses). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` + `Example call: ${JSON.stringify(EXAMPLE_MONTE_CARLO)}. ` + `Returns: the success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations.`,
+    description: `Use when the user asks how likely their retirement plan is to succeed, or wants a probability instead of a single yes/no answer. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcRuns (number of simulations, up to 5000) and mcSeed (random seed; set it to reproduce the exact same run). Optional minimumAnnualSpending (dollars per year) adds a spending-adequacy rate: the share of simulations in which every retired year's gross spending stayed at or above that floor — reported beside the success rate, never instead of it, because a high funding-success rate is not proof the household can maintain its desired spending (a percent-of-portfolio plan can fund every year while its spending collapses). Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` + `Example call: ${JSON.stringify(EXAMPLE_MONTE_CARLO)}. ` + `Returns: the success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations. successRate is a 0–1 fraction at whole-run precision: with N runs the finest step is 1/N, so 972 successes out of 1,000 read 0.972 (never a 2dp rounding — 99.9% reads 0.999, not 1.0). successfulRuns is the whole-run count behind the rate, derived from the engine rate × run count.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, runRetirementMonteCarlo)
   },
   {
     name: "retirement_max_spending",
-    description: `Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). monthlySpending is still required: give current spending (e.g. 9500) as the starting point; the tool reports the highest sustainable level, which may differ. ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. A supplied minimumAnnualSpending does not change this answer — the solver scores funding success only and reports no adequacy rate. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` + `Example call: ${JSON.stringify(EXAMPLE_MAX_SPENDING)}. ` + `Returns: the maximum sustainable monthly spending in dollars at 85% Monte Carlo success over 1,000 simulations, with a historical cross-check of that spending level. ` + `The response also reports the feasibility of that maximum: targetSuccessRate (0.85), achievedSuccessRate (the success rate actually achieved, 0–1), targetAchieved (whether the returned spending meets the 85% target), and solutionStatus — "feasible" (a positive spending meets the target), "feasible_at_zero" ($0/yr is the highest sustainable spending), "infeasible_at_zero" (no spending level reaches the target, even $0/yr — the reported $0 is NOT a sustainable spending), or "capped" (the figure is the solver's search cap, not a proven maximum above it; the percent strategy's 30%-of-portfolio cap always binds). Never describe a $0 maximum as meeting the target unless solutionStatus is "feasible_at_zero" and targetAchieved is true.`,
+    description: `Use when the user asks how much they can spend per month in retirement, or what the highest sustainable spending level is. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). monthlySpending is still required: give current spending (e.g. 9500) as the starting point; the tool reports the highest sustainable level, which may differ. ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none; both spouses' benefits are priced, each starting in its own claiming year), portfolio assumptions such as expectedRealReturnPct, volatilityPct, stocksPct and strategy (defaults from the engine), plus mcSeed for the Monte Carlo check (random seed; set it to reproduce the exact same run). The solver always runs the engine's fixed 1,000 simulations, so a supplied mcRuns is not used for this tool. A supplied minimumAnnualSpending does not change this answer — the solver scores funding success only and reports no adequacy rate. Tax inputs (filing status, taxable basis, yields, ACA benchmarks, state rate) and taxYear do not change this answer — the simulation prices no tax. Health insurance premiums are not priced here either — use a tax-aware tool (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years or retirement_tax_year) to include them. ` + `Example call: ${JSON.stringify(EXAMPLE_MAX_SPENDING)}. ` + `Returns: the maximum sustainable monthly spending in dollars at 85% Monte Carlo success over 1,000 simulations, with a historical cross-check of that spending level. The maximum is conditional on the seed, 1,000 simulations, the model assumptions, and the engine's $100 search increment — it is a portfolio-only (no-tax) simulation result, not a tax-aware answer. Results carry targetSuccessRate: 0.85, the strategy as priced (spendingStrategy), what the solved dollars mean for that strategy (spendingAmountMeaning — for percent the dollars are the initial-year-equivalent spend at solvedPortfolioWithdrawalPct, not fixed annual spending), and feasible (false when no spending level — not even $0/year — meets the 85% target, with a warning). solvedPortfolioWithdrawalPct is the solver's own percent (a number only for the percent strategy; null otherwise). cappedAtPercentBound is true when the percent strategy's Monte Carlo leg hits the engine's 30%/yr bound — a capped result, not a true maximum — and historicalCappedAtPercentBound is the same flag for the historical leg. The bound is the engine's step count (at most 30%/yr), so a capped percent reads 30 only when the portfolio is an exact $1,000 multiple; on any other portfolio it reads slightly below 30. For constant, phased and guardrails the engine's internal search cap has no adapter-visible flag, so a capped result there is not flagged — a documented limitation. successRate is a 0–1 fraction at whole-run precision (with 1,000 runs the finest step is 0.001), with successfulRuns the whole-run count behind it; the historical leg reports its own historicalRuns / historicalSuccessfulRuns / historicalSolvedPortfolioWithdrawalPct / historicalCappedAtPercentBound. ` + `The response also reports the feasibility of that maximum: targetSuccessRate (0.85), achievedSuccessRate (the success rate actually achieved, 0–1), targetAchieved (whether the returned spending meets the 85% target), and solutionStatus — "feasible" (a positive spending meets the target), "feasible_at_zero" ($0/yr is the highest sustainable spending), "infeasible_at_zero" (no spending level reaches the target, even $0/yr — the reported $0 is NOT a sustainable spending), or "capped" (the figure is the solver's search cap, not a proven maximum above it; the percent strategy's 30%-of-portfolio cap always binds). Never describe a $0 maximum as meeting the target unless solutionStatus is "feasible_at_zero" and targetAchieved is true.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateMaxSpending)
   },
   {
     name: "retirement_compare_strategies",
-    description: `Use when the user asks which account to spend from first, or how the withdrawal order changes their taxes and outcome. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `There is no strategy input: by default the tool compares three withdrawal orders — taxable-first, pre-tax-first, roth-first — and reports each one, so do not pass a withdrawal order. Pass comparisonScope "full" to compare all six permutations of the Taxable / Pre-tax / Roth order instead (same inputs, same baseline taxable-first); the response's comparisonScope block names the evaluated set, both winners (lowest lifetime net cost and highest ending after-tax wealth — different objectives, often different winners), and the tie rule. No comparison here claims a global optimum. ` + `Example call: ${JSON.stringify(EXAMPLE_COMPARE_STRATEGIES)}. ` + `Returns: a tax-aware comparison of the withdrawal orders (three by default, six with comparisonScope "full"), with taxes, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each, so the user can see which order leaves the most.`,
+    description: `Use when the user asks which account to spend from first, or how the withdrawal order changes their taxes and outcome. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `There is no strategy input: by default the tool compares three withdrawal orders — taxable-first, pre-tax-first, roth-first — and reports each one, so do not pass a withdrawal order. Pass comparisonScope "full" to compare all six permutations of the Taxable / Pre-tax / Roth order instead (same inputs, same baseline taxable-first); the response's comparisonScope block names the evaluated set, both winners (lowest lifetime net cost and highest ending after-tax wealth — different objectives, often different winners), and the tie rule. No comparison here claims a global optimum. ` + `Example call: ${JSON.stringify(EXAMPLE_COMPARE_STRATEGIES)}. ` + `Returns: a tax-aware comparison of the withdrawal orders (three by default, six with comparisonScope "full"), with taxes, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each, so the user can see which order leaves the most.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareWithdrawalStrategies)
   },
   {
     name: "retirement_roth_conversion",
-    description: `Use when the user asks whether to convert pre-tax money to Roth, how much to convert, or whether conversions are worth the tax. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `By default the tool compares four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — and the winner is only the best of those four, never a global optimum. Pass comparisonScope "full" to run the engine's full Roth optimizer search instead: thousands of candidates (every bracket / IRMAA / ACA-cliff / MAGI ceiling × conversion window × all six draw orders × guardrail / bunching / gain-harvest variants) at the entered claiming ages, with the Do Nothing benchmark, the winning candidate's actual conversion policy and yearly conversion amounts, and the total candidates evaluated. A full call can take over a minute and is never silently downgraded to the four-strategy comparison. Even the full search is not a global optimum — claiming ages are held at the entered ages. The response's comparisonScope block names the evaluated set, both winners (lowest lifetime net cost and highest ending after-tax wealth — different objectives, often different winners), and what was intentionally excluded. ` + `Example call: ${JSON.stringify(EXAMPLE_ROTH)}. ` + `Returns: a tax-aware comparison of conversion strategies — the four fixed fills by default, or the full optimizer search with comparisonScope "full" — with federal tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each returned candidate.`,
+    description: `Use when the user asks whether to convert pre-tax money to Roth, how much to convert, or whether conversions are worth the tax. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `By default the tool compares four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — and the winner is only the best of those four, never a global optimum. Pass comparisonScope "full" to run the engine's full Roth optimizer search instead: thousands of candidates (every bracket / IRMAA / ACA-cliff / MAGI ceiling × conversion window × all six draw orders × guardrail / bunching / gain-harvest variants) at the entered claiming ages, with the Do Nothing benchmark, the winning candidate's actual conversion policy and yearly conversion amounts, and the total candidates evaluated. A full call can take over a minute and is never silently downgraded to the four-strategy comparison. Even the full search is not a global optimum — claiming ages are held at the entered ages. The response's comparisonScope block names the evaluated set, both winners (lowest lifetime net cost and highest ending after-tax wealth — different objectives, often different winners), and what was intentionally excluded. ` + `Example call: ${JSON.stringify(EXAMPLE_ROTH)}. ` + `Returns: a tax-aware comparison of conversion strategies — the four fixed fills by default, or the full optimizer search with comparisonScope "full" — with federal tax, ACA credit, IRMAA, lifetime health premiums (gross and net, when premium fields are supplied) and ending wealth for each returned candidate.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareRothConversions)
   },
   {
+    name: "retirement_dynamic_withdrawal",
+    description: `Use when the user asks for a year-by-year withdrawal plan — which account to draw from and how much to convert in each year — rather than one fixed order or one fixed conversion ceiling for the whole horizon. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw is priced as tax-free ($0 income, $0 penalty) under an assumed-qualified default, and flagged unknown rather than computed), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `Each year the engine re-prices the remaining horizon from that year's actual balances over up to 114 fixed-fill policies (Do Nothing, Fill 12% / 22% with and without the marginal-rate guardrail, Fill 22% capped at IRMAA Tier 1, Fill capped at the ACA cliff, × windows stopping at 65 / the year before RMDs begin / the end age, × all six draw orders) and commits the best valid policy's first year — so the draw order and the conversion can change year to year as balances, ages, Social Security, RMDs, and the ACA / Medicare boundary change. The result is floored at the best valid fixed policy over the same set (floorBound says whether the floor bound, with the raw greedy figures beside it), and no global optimum is claimed — the set holds no bunching, gain-harvest, or claiming-age search, and the choice is greedy one year at a time. ` + `Example call: ${JSON.stringify(EXAMPLE_ROTH)}. ` + `Returns: the annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, federal and state tax, penalty, IRMAA, ACA credit kept, MAGI and ACA MAGI against the cliff, RMD with the primary / spouse split, and ending balances with the taxable basis), lifetime totals (net cost, tax, penalty, IRMAA, ACA credit, RMDs, conversions), the terminal block (terminal tax on the standing pre-tax balance and the step-up in basis on the taxable balance, with wealth with and without the step-up), and the best fixed policy for comparison.`,
+    inputSchema: BASE_INPUT_SCHEMA,
+    handler: (args) => normalized(args, dynamicWithdrawal)
+  },
+  {
     name: "retirement_work_years",
-    description: `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate — all optional), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's tables. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. A work-years call can take a minute or more, and while it runs the server answers nothing else. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` + `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` + `Returns: a tax-aware comparison of retiring at each age in compareAges, with taxes and ending wealth for each age, plus — when a salary is given — the earned-income comparison (work years, payroll tax, all-in tax) for each age.`,
+    description: `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. Optional hsaCoverage states the HDHP coverage the HSA limit prices from (self-only / family / none); hsaEligible states HSA eligibility explicitly; medicareAgePrimary states the Medicare enrollment age that ends HSA eligibility; priorYearWagesAnnual states the prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor for the mandatory Roth catch-up test in the first modeled work year. Omitting any of them keeps the previous behavior — filing-status HSA limit, assumed eligibility, and the first year's own Box-3 wages as the catch-up proxy — and each fallback is recorded as an assumption on the priced rows and in the warnings, never silently. Pass medicareAgePrimary (whole years, or null) to model Medicare enrollment: HSA contributions (employee and employer) stop in work years at or after that age; omitted or null means no enrollment is modeled and HSA contributions continue — eligibility at 65 is not enrollment, and it is never defaulted to 65. Partial-year HSA eligibility is not modeled: a year prices the full annual limit when eligible and $0 when not. A work-years call can take a minute or more, and while it runs the server answers nothing else. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` + `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` + `Returns: two comparisons of the same ages. The retirement-only comparison (winnerByEndingWealth / winnerByNetCost, also under retirementOnly) prices the same starting balances at each age and ignores salary, employer contributions, and payroll tax. The salary-aware comparison (workYears rows, workYearsComparison) prices the salary, employer 401(k)/HSA, payroll tax, and portfolio growth of the extra working years; every row is valued at the same terminal age, so ending after-tax wealth is comparable across quit ages. Lowest all-in tax (winnerByAllInTax) and highest ending after-tax wealth (winnerByEndingAfterTaxWealth) are different objectives and may point to different ages. overallRecommendation names a quit age only when both salary-aware objectives agree on it (and a salary was provided); otherwise it is null with overallRecommendationNote explaining why. comparisonModels says what each model prices and whether it searches claiming ages or runs the joint optimizer.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareRetirementAges)
   },
   {
     name: "retirement_tax_year",
-    description: `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional), and health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums). ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price. minimumAnnualSpending does not change this year's price either — the floor is a retirement-simulation input; a single tax year prices no simulation. The four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` + `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` + `Returns: the single-year federal and state tax, ACA premium credit, IRMAA price, and health premiums (gross and net, when premium fields are supplied) for that one tax year, including any priced sale gain/loss and RMD.`,
+    description: `Use when the user asks what their tax bill will be for one specific year, or how much a Roth conversion or a draw costs in tax that year. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: taxYear (${LAW_YEARS_PROSE}; default ${latestTaxLawYear()}), single-year amounts for that one year (interestAnnual, ordinaryDividendsAnnual, qualifiedDividendsAnnual, conversionAnnual, spendingDrawAnnual, cashDrawAnnual, rothDrawAnnual — all in dollars), plus filingStatus, householdSize, Social Security amounts and start ages, ACA benchmarks and state rate (all optional), and health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums). A rothDrawAnnual prices on the Roth composition when entered (rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional, primary owner only): contributions come out free, prior conversions inside 5 years pay the 10% §72(t) penalty on the taxable part when under 59½, and earnings are ordinary income (plus 10% when under 59½) unless the distribution is qualified. Without the composition the draw prices as qualified — $0 income, $0 penalty — and the response flags it unknown (rothBasisUnknown, rothAssumedQualified), so never read that $0 as a computed answer. ordinaryDividendsAnnual is the TOTAL ordinary dividends (1099-DIV Box 1a), including the qualified portion; qualifiedDividendsAnnual is the qualified portion (Box 1b) and must not exceed ordinaryDividendsAnnual — a call with qualified above ordinary is rejected as invalid input naming both fields. A taxable share sale is priced from stockSoldAnnual (proceeds) and stockBasisAnnual (basis) — the gain (or loss, when basis exceeds proceeds) rides the capital-gains stack and the proceeds count as cash in; omit both when there is no sale. An RMD is priced from pretaxPriorYearEndAnnual (the primary's pre-tax balance at Dec 31 of the year before the priced year) and, on a joint return, pretaxSpousePriorYearEndAnnual (the spouse's own Dec-31 balance); omit both when no balance is known and no RMD is priced. Use rmdAlreadyReceivedAnnual for the part of this year's RMD already received and already counted in the entered income, and primarySoleBeneficiaryOfSpouse (true/false) only if you know whether the primary is the spouse's sole beneficiary — absent, the spouse's RMD prices on the Uniform Lifetime Table. A first RMD can be deferred to April 1 of the following year with firstRmdDeferralPrimary / firstRmdDeferralSpouse (true) — the priced year must be the owner's first RMD year or the election has no effect; a first RMD deferred from a prior year enters as firstRmdDeferredCarryPrimaryAnnual / firstRmdDeferredCarrySpouseAnnual and prices on top of the priced year's own RMD. The response names the deferred and deferred-paid amounts (rmdDeferredPrimary, rmdDeferredSpouse, rmdDeferredPaidPrimary, rmdDeferredPaidSpouse). retirementAge, endAge, and portfolio assumptions (return, volatility, stocks, spending strategy) do not change this year's price. minimumAnnualSpending does not change this year's price either — the floor is a retirement-simulation input; a single tax year prices no simulation. The four balances are required by the shared input contract but only the prior-Dec-31 balances above price an RMD — the current balances never do. ` + `Example call: ${JSON.stringify(EXAMPLE_TAX_YEAR)}. ` + `Returns: the single-year federal and state tax, ACA premium credit, IRMAA price, and health premiums (gross and net, when premium fields are supplied) for that one tax year, including any priced sale gain/loss and RMD.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, calculateSingleYearTax)
   },
@@ -17449,16 +20497,20 @@ var CAPABILITY_ASSUMPTIONS = [
 ];
 var CAPABILITY_LIMITATIONS = [
   "Stateless and read-only: every call carries its complete scenario; nothing is saved.",
-  `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available.`,
-  "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
-  "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning.",
+  `Tax law years ${FIRST_LAW_YEAR}–${latestTaxLawYear()} only. Later tables are not yet published, so later-year pricing is not available from the single-year tool. Multi-year plans price later years on the newest published row carried forward in today's dollars — a projection, named in each priced year's lawProvenance — and the 2027 federal figures (Rev. Proc. 2026-35) are published but no 2027 row is adopted until the CMS half (2027 Part B premium + IRMAA) publishes.`,
+  "State tax in multi-year results is a flat-rate estimate, never an exact state tax return: the caller-supplied stateRatePct on federal taxable income (0% when none is supplied), named per year in stateTaxProvenance. The single-year tool returns the same provenance beside its figure; the multi-year yearly tables carry lawProvenance and stateTaxProvenance on every row, and the work-years rows — per-quit-age aggregates over several salary years — are covered by a response-level note instead, since no single law row describes an aggregate spanning exact and carried-forward years.",
+  "Health insurance premiums are priced only by the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years, retirement_tax_year); the portfolio-only tools (retirement_calculate, retirement_monte_carlo, retirement_max_spending) price no premiums. A premium supplied with spendingIncludesHealthPremiums false is funded on top of monthlySpending; with the flag true it is already inside spending and is not charged again. Supplying a premium without the flag is rejected.",
+  "retirement_work_years compares retirement ages with the tax-aware engine; when salaryAnnual is given it also prices the earned-income leg (work years, payroll tax, best strategy and claim ages) for each quit age, and without a salary that leg is omitted with a warning. medicareAgePrimary models Medicare enrollment (HSA contributions stop at or after that age); omitted or null means no enrollment is modeled. The retirement-only winners and the salary-aware winners are reported separately — lowest all-in tax and highest ending after-tax wealth are different objectives — and overallRecommendation is set only when both salary-aware objectives agree.",
+  "Every work-years row is valued at the same terminal age, so ending after-tax wealth is comparable across quit ages; all-in tax covers the same full span for every row.",
   "Monte Carlo runs are capped at 5,000 simulations per call and the planning horizon ends at age 120.",
   "Funding success is not spending adequacy: the Monte Carlo and calculate success rates count runs where every year's withdrawal was funded, but under the percent, guardrails, or phased strategies yearly spending can shrink far below the household's desired level while every year still funds. Pass minimumAnnualSpending (dollars per year) to retirement_calculate or retirement_monte_carlo to also get the adequacy rate (`historicalSpendingAdequacyRate` on calculate, `spendingAdequacyRate` on monte_carlo) — the share of runs where every retired year's GROSS spending stayed at or above that floor — and read the two rates together; a high funding-success rate is not proof the household can maintain its desired spending. Adequacy is measured on gross spending, so for the constant strategy, whose gross never varies, a floor at or below yearly spending reads adequacy 100% even in runs where withdrawals went unfunded.",
   "Pre-retirement income is not accumulated: the simulation prices no pre-retirement spending, salary, or tax, so a Social Security benefit (or other fixed income) starting before retirement is not banked in the pre-retirement years — it counts only once retired. Benefits already being collected while still working belong to retirement_work_years, which prices those years with tax and lands the surplus in Taxable.",
-  "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_work_years) price tax and account order instead.",
+  "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years) price tax and account order instead.",
   "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
-  'Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. A long call stalls the whole process — and, when running as the MCP server, the server including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.',
+  'Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, a dynamic withdrawal call can take a minute or more on a full horizon (it re-prices the remaining horizon at every year), and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. A long call stalls the whole process — and, when running as the MCP server, the server including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.',
   "Limited comparisons never claim a global optimum: the default 3-order withdrawal comparison and 4-strategy Roth comparison crown the best of those few only. The full optimizer search is optimal only within the engine's searched candidate space at the entered claiming ages — it does not search claiming ages and prices no Monte Carlo success check. Every comparison response carries a comparisonScope block saying exactly what was evaluated; lowest lifetime net cost and highest ending after-tax wealth are different objectives and often crown different winners.",
+  "Success rates are 0–1 fractions at whole-run precision, never rounded to 2dp: with N runs the finest step is 1/N (931 successes out of 1,000 read 0.931, not 0.93; 99.9% reads 0.999, not 1.0). successfulRuns / historicalSuccessfulRuns are the whole-run counts behind the rates, derived from the engine rate × run count.",
+  "Max spending is conditional on the seed, 1,000 simulations, the model assumptions, and the engine's $100 search increment, and is a portfolio-only (no-tax) simulation result. Only the percent strategy's cap is flaggable: cappedAtPercentBound (Monte Carlo leg) and historicalCappedAtPercentBound (historical leg) are true when the respective leg hits the engine's 30%/yr bound. For constant, phased and guardrails the engine's internal search cap has no adapter-visible flag, so a maximum that is really the cap is not flagged.",
   "Results are planning estimates from the Finance Planner engines, not tax advice.",
   "Standalone bundle: the same eight tools ship as a single finance-planner-cli.mjs file that runs under plain Node.js 20+ with no server, no install, and no network — see assistant-api/STANDALONE.md."
 ];
@@ -17477,7 +20529,7 @@ var TOOL_GUIDE = [
     required: REQUIRED_INPUTS_GLOBAL2,
     optional: [...PRICED_OPTIONAL.retirement_monte_carlo],
     exampleCall: EXAMPLE_MONTE_CARLO,
-    resultSummary: "The success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations. When minimumAnnualSpending is given, also the spending-adequacy rate: the share of simulations where every retired year's gross spending stayed at or above that floor — read beside the success rate, never instead of it."
+    resultSummary: "The success probability — the share of simulations in which the money lasts to the end age — with the distribution of outcomes across the simulations. When minimumAnnualSpending is given, also the spending-adequacy rate: the share of simulations where every retired year's gross spending stayed at or above that floor — read beside the success rate, never instead of it. successRate is a 0–1 fraction at whole-run precision (finest step 1/runs), with successfulRuns the whole-run count behind it."
   },
   {
     name: "retirement_max_spending",
@@ -17485,7 +20537,7 @@ var TOOL_GUIDE = [
     required: REQUIRED_INPUTS_GLOBAL2,
     optional: [...PRICED_OPTIONAL.retirement_max_spending],
     exampleCall: EXAMPLE_MAX_SPENDING,
-    resultSummary: "The maximum sustainable monthly spending in dollars at 85% Monte Carlo success, with a historical cross-check of that spending level. (monthlySpending is still required as the starting point.) The solver always runs the engine's fixed 1,000 simulations — mcRuns is not used for this tool; results report runs: 1000. A supplied minimumAnnualSpending does not change this answer — the solver scores funding success only and reports no adequacy rate. The response also reports feasibility: targetSuccessRate (0.85), achievedSuccessRate, targetAchieved, and solutionStatus (feasible | feasible_at_zero | infeasible_at_zero | capped) — a $0 maximum with solutionStatus infeasible_at_zero means no spending level reaches the target."
+    resultSummary: "The maximum sustainable monthly spending in dollars at 85% Monte Carlo success, with a historical cross-check of that spending level. (monthlySpending is still required as the starting point.) The solver always runs the engine's fixed 1,000 simulations — mcRuns is not used for this tool; results report runs: 1000. A supplied minimumAnnualSpending does not change this answer — the solver scores funding success only and reports no adequacy rate. The maximum is conditional on the seed, 1,000 simulations, the model assumptions, and the engine's $100 search increment — a portfolio-only (no-tax) result. The response also reports feasibility: targetSuccessRate (0.85), achievedSuccessRate, targetAchieved, and solutionStatus (feasible | feasible_at_zero | infeasible_at_zero | capped) — a $0 maximum with solutionStatus infeasible_at_zero means no spending level reaches the target. Results carry spendingStrategy, spendingAmountMeaning, feasible, solvedPortfolioWithdrawalPct (percent strategy only), cappedAtPercentBound (Monte Carlo leg at the engine's 30%/yr bound) and historicalCappedAtPercentBound (historical leg, same bound), and the historical leg's own historicalRuns / historicalSuccessfulRuns / historicalSolvedPortfolioWithdrawalPct. For constant, phased and guardrails the engine's internal search cap has no adapter-visible flag, so a capped result there is not flagged."
   },
   {
     name: "retirement_compare_strategies",
@@ -17504,12 +20556,20 @@ var TOOL_GUIDE = [
     resultSummary: "A tax-aware comparison of four conversion strategies — Do Nothing vs Fill 12% vs Fill 22% vs Fill 22% capped at IRMAA Tier 1 — with federal tax, ACA credit, IRMAA and ending wealth for each."
   },
   {
+    name: "retirement_dynamic_withdrawal",
+    whenToUse: "Use when the user asks for a year-by-year withdrawal plan — which account to draw from and how much to convert in each year — rather than one fixed order or one fixed conversion ceiling for the whole horizon.",
+    required: REQUIRED_INPUTS_GLOBAL2,
+    optional: [...PRICED_OPTIONAL.retirement_dynamic_withdrawal],
+    exampleCall: EXAMPLE_ROTH,
+    resultSummary: "The annual withdrawal schedule table (per year: phase, policy, draw per bucket, conversion, tax, MAGI and ACA position, RMD, ending balances) with lifetime totals, the terminal / step-up block, and the best valid fixed policy for comparison. No global optimum is claimed."
+  },
+  {
     name: "retirement_work_years",
     whenToUse: "Use when the user asks whether working a few more years is worth it, or what changes if they retire later.",
     required: REQUIRED_INPUTS_GLOBAL2,
     optional: [...PRICED_OPTIONAL.retirement_work_years],
     exampleCall: EXAMPLE_WORK_YEARS,
-    resultSummary: "A tax-aware comparison of retiring at each age in compareAges, with taxes and ending wealth for each age; when salaryAnnual is given, each age also prices the earned-income leg (work years, payroll tax, all-in tax, best strategy and claim ages)."
+    resultSummary: "Two comparisons of retiring at each age in compareAges: the retirement-only winners (same starting balances, salary ignored) and — when salaryAnnual is given — the salary-aware work-years comparison (work years, payroll tax, all-in tax, ending after-tax wealth, best strategy and claim ages), with overallRecommendation set only when both salary-aware objectives agree on one age."
   },
   {
     name: "retirement_tax_year",
@@ -17530,6 +20590,7 @@ var TOOL_GUIDE = [
 ];
 var ASSUMPTIONS_SUMMARY = [
   "All money is dollars, ages are whole years, percents are numbers (5 = 5%).",
+  "Success rates are 0–1 fractions at the engine's whole-run precision (never rounded to 2dp): with N runs the finest step is 1/N, and successfulRuns is the whole-run count behind the rate, derived from the engine rate × run count.",
   "Every financial call carries its complete scenario; nothing is saved between calls.",
   "Missing optional fields fall back to documented defaults inside normalize: retirementAge defaults to your current age (retire now), endAge defaults to 95, Social Security defaults to none.",
   "Each tool prices only the inputs its engine reads — the guide lists the priced optionals per tool, and a field outside that list is accepted but has no effect on that tool's answer (notably mcRuns for max-spending, which always solves at the engine's fixed 1,000 runs). Such a field is reported in the response's ignoredInputFields (and as a warnings[] entry naming the field, the tool, and the tool that does price it) instead of being silently dropped.",
@@ -17562,7 +20623,8 @@ function describeCapabilities() {
         adapterVersion: ADAPTER_VERSION,
         apiContractVersion: API_CONTRACT_VERSION_REPORTED,
         taxLawYear: latestTaxLawYear(),
-        lawYears: TAX_LAW_YEARS.map((law) => law.year)
+        lawYears: TAX_LAW_YEARS.map((law) => law.year),
+        lawProvenanceNote: `Published law rows ${FIRST_LAW_YEAR}–${latestTaxLawYear()}. Multi-year plans price later years on the ${latestTaxLawYear()} row carried forward in today's dollars (a projection, named per priced year in lawProvenance); the single-year tool prices published years only.`
       }
     },
     warnings: [],

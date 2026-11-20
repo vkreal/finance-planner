@@ -10,7 +10,7 @@
 //   - the historical market table is inlined, not read from disk;
 //   - the CLI surface (--help, --list, file/stdin, bare describe,
 //     usage errors) behaves as the spec says;
-//   - all 8 tools return byte-identical results to the direct (bun)
+//   - all 9 tools return byte-identical results to the direct (bun)
 //     CLI path on the same inputs, under the system Node and under a
 //     real Node 20 binary;
 //   - edge cases (missing inputs, malformed JSON, explicit zeros,
@@ -138,6 +138,7 @@ const TOOL_NAMES = [
   "retirement_max_spending",
   "retirement_compare_strategies",
   "retirement_roth_conversion",
+  "retirement_dynamic_withdrawal",
   "retirement_work_years",
   "retirement_tax_year",
   "retirement_describe_capabilities",
@@ -155,6 +156,7 @@ const PARITY_CASES: { tool: string; input: Record<string, unknown> }[] = [
   },
   { tool: "retirement_compare_strategies", input: fictionalScenario() },
   { tool: "retirement_roth_conversion", input: fictionalScenario() },
+  { tool: "retirement_dynamic_withdrawal", input: fictionalScenario() },
   {
     tool: "retirement_work_years",
     input: fictionalScenario({
@@ -248,7 +250,13 @@ describe("build: repeatable, deterministic, checksummed", () => {
 describe("bundle contents: no runtime dependency outside itself", () => {
   test("only node:fs / node:fs/promises are imported", () => {
     const imports = new Set<string>();
-    for (const m of bundleText.matchAll(/from\s*["']([^"']+)["']/g)) {
+    // Anchor on `import ... from` — a bare `from "..."` also matches
+    // prose inside the bundle's field-description strings (the
+    // hsaCoverage description ends with "prices from", followed by the
+    // next field's quoted label), which is not an import at all.
+    for (const m of bundleText.matchAll(
+      /import\s[^"']*?from\s*["']([^"']+)["']/g,
+    )) {
       imports.add(m[1]!);
     }
     for (const m of bundleText.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)) {
@@ -355,7 +363,7 @@ describe("CLI surface", () => {
     expect(r.stderr).toBe("");
   }, TOOL_TIMEOUT);
 
-  test("--list lists exactly the 8 tools", () => {
+  test("--list lists exactly the 9 tools", () => {
     const r = run(SYSTEM_NODE, [BUNDLE, "--list"]);
     expect(r.status).toBe(0);
     const names = r.stdout
@@ -425,9 +433,17 @@ describe("CLI surface", () => {
 });
 
 describe("parity with the direct (bun) CLI", () => {
+  // The dynamic-withdrawal leg is minute-scale like work-years (the
+  // roll-forward re-prices every year), so it shares the generous
+  // budget; a timeout failure under load proves nothing about the
+  // bundle.
+  const longTimeout = (tool: string) =>
+    tool === "retirement_work_years" ||
+    tool === "retirement_dynamic_withdrawal"
+      ? WORK_YEARS_TIMEOUT
+      : TOOL_TIMEOUT;
   for (const { tool } of PARITY_CASES) {
-    const timeout =
-      tool === "retirement_work_years" ? WORK_YEARS_TIMEOUT : TOOL_TIMEOUT;
+    const timeout = longTimeout(tool);
     test(
       `${tool}: byte-identical stdout + exit code (system node)`,
       () => {
@@ -443,8 +459,7 @@ describe("parity with the direct (bun) CLI", () => {
   }
 
   for (const { tool } of PARITY_CASES) {
-    const timeout =
-      tool === "retirement_work_years" ? WORK_YEARS_TIMEOUT : TOOL_TIMEOUT;
+    const timeout = longTimeout(tool);
     itNode20(
       `${tool}: byte-identical under Node 20`,
       () => {
@@ -748,7 +763,7 @@ describe("sample-data isolation: a sample change cannot move results", () => {
 
 describe("clean environment: only the .mjs, no repo, no node_modules, no Bun", () => {
   test(
-    "all 8 tools + a stdin calculation, byte-identical to the bun CLI",
+    "all 9 tools + a stdin calculation, byte-identical to the bun CLI",
     () => {
       const clean = mkdtempSync(join(tmpdir(), "standalone-clean-"));
       copyFileSync(BUNDLE, join(clean, "finance-planner-cli.mjs"));
