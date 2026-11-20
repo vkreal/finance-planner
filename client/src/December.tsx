@@ -703,6 +703,14 @@ export function December() {
           : "These entries were changed in another tab or on another device, so your last edit wasn’t saved over them — the saved entries are shown now.",
       );
     },
+    onError: () => {
+      // Platform v29: the mutation-level handler owns the
+      // visible failure message, the shape the other writers
+      // already use — the per-call handlers below own the
+      // queue and the retry, never the message, so a failed
+      // save is reported once, here.
+      setSaveNote("Could not save — your entries stay on this screen.");
+    },
   });
 
   const [form, setForm] = useState<DecForm | null>(null);
@@ -1291,8 +1299,8 @@ export function December() {
         if (res.ok && deferred) deferred();
       },
       onError: () => {
-        setSaveNote("Could not save — your entries stay on this screen.");
-        // Keep the payload queued and re-arm a retry on the
+        // The mutation-level onError sets the visible
+        // message. Keep the payload queued and re-arm a retry on the
         // shared save timer, so it lands once the server is
         // reachable again. If a newer payload was queued
         // behind this one, that payload's own scheduling

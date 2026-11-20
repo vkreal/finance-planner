@@ -1,6 +1,8 @@
 // Build the packaged (static, localStorage) Finance Planner site into
-// packaged/dist/. Run with: bun ./build.mjs  (or `bun run build` in
-// packaged/). This is a SEPARATE build target from the live artifact:
+// packaged/dist/. Run from the REPO ROOT: bun ./packaged/build.mjs
+// (running it from inside packaged/ fails: the client's actionFields
+// macro reads server/src/actions.ts relative to process.cwd()).
+// This is a SEPARATE build target from the live artifact:
 // it never touches client/dist or server/dist, and the live artifact
 // continues to build and ship only through the web-artifact builder.
 //

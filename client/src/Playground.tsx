@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
+import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
+import type { Actions } from "../../server/src/actions";
 import { usePersistedFold } from "./foldState";
 import { usePersistedChoice } from "./persistedChoice";
 import { FoldChevron } from "./FoldChevron";
@@ -34,6 +36,12 @@ type FilingStatus,
 type RetData,
 type RothData,
 } from "./rothShared";
+
+/* Platform v29: form inputs take their limits (maxLength,
+   minLength, required) from the actions' own request schemas —
+   spreading a field's FIELDS entry onto the input that feeds it
+   keeps the page and the server in agreement by construction. */
+const FIELDS = actionFields<typeof Actions>();
 // The tax engine and law tables live server-side (shared with the
 // accuracy self-check fixtures) — see server/src/taxEngine.ts and
 // server/src/taxLaw.ts. The client runs the same code the fixtures
@@ -1982,6 +1990,10 @@ export function Playground({
   // remembered form state for shape compatibility and is no
   // longer toggled.
   const [pgProjHowOpen, setPgProjHowOpen] = useState(false);
+  // The Result's "How to read this" note and its income
+  // stack chart carry no fold state at all: both are always
+  // shown — their +/− toggles were removed at the user's
+  // request (2026-11-16), so there is nothing to remember.
   const [pgProjToAge, setPgProjToAge] = useState("95");
   // Projection from age (start-age control): blank = the
   // template's own age, exactly the walk before this dial
@@ -5819,7 +5831,11 @@ export function Playground({
   // actually showing — the Spending cells' border-r /
   // border-b pattern recomputed for the visible count — so
   // a face or state with fewer tiles still divides cleanly,
-  // four in a row or 2x2, with no stranded cell.
+  // four in a row or 2x2, with no stranded cell. Same-shape
+  // tidy (2026-11-16): every tile now carries the same
+  // three zones — fixed-height label zone, the figure in
+  // one shared style, fixed-height sub-line zone — so the
+  // tiles match in height and layout whichever show.
   const glanceShow: boolean[] = [
     pgFace === "year",
     pgFace === "year" && stripLeftAfterSpending != null,
@@ -5838,26 +5854,30 @@ export function Playground({
   };
   const glanceCellCls = (slot: number) =>
     `group relative flex flex-col p-3.5 sm:p-4 ${glanceDivider(slot)}`;
+  // Same-shape tiles (2026-11-16 tidy): every tile carries
+  // the same three zones in the same order — a label zone of
+  // one fixed height (two label lines, the most any label
+  // wraps to), the figure in one shared style, and a
+  // sub-line zone of one fixed height (two sub-lines, what
+  // the plan-total tile carries). A tile with fewer lines
+  // leaves its zone empty, so all four tiles share one
+  // height and layout and their figures sit on one line.
   const glanceLabelCls =
-    "pr-6 text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase";
+    "min-h-7 pr-6 text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase";
   const glanceFigureCls =
     "display tnum mt-1.5 text-xl leading-none font-semibold whitespace-nowrap";
+  const glanceSubZoneCls = "min-h-[44px]";
   const glanceSubCls =
     "tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]";
 
   return (
     <div className="mt-5">
-        <h2 className="display flex items-center gap-2 text-3xl font-semibold">
+        {/* Title ⓘ removed in the 2026-11-16 tidy: it
+            explained the tool, not a number — the ⓘ dots
+            that remain in this view are the ones that
+            explain a number. */}
+        <h2 className="display text-3xl font-semibold">
           Playground
-          <ExplainerInfoTip
-            id="playground.intro"
-            label="about the Playground"
-            align="start"
-          >
-            <p>
-              Price one year or a projection from your own numbers — your plan is never touched.
-            </p>
-          </ExplainerInfoTip>
         </h2>
         {/* At a glance (wall-of-text A+B build; the play
             strip folded in 2026-11-09; tiles restyle
@@ -5921,6 +5941,7 @@ export function Playground({
                         ? `${fmtDollarsExact((playgroundResult?.cashLeftAfterTax ?? 0) / 12)}/mo`
                         : `${fmtDollars(playgroundResult?.cashLeftAfterTax ?? 0)}/yr`}
                     </p>
+                    <div className={glanceSubZoneCls} />
                   </div>
                 )}
                 {pgFace === "year" && stripLeftAfterSpending != null && (
@@ -5935,6 +5956,7 @@ export function Playground({
                         ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
                         : `${fmtDollars(stripLeftAfterSpending)}/yr`}
                     </p>
+                    <div className={glanceSubZoneCls} />
                   </div>
                 )}
                 {pgPrefillSource && onJumpToYourMoney ? (
@@ -5950,10 +5972,12 @@ export function Playground({
                     >
                       {fmtDollarsExact(pgPrefillSource.planTotal)}
                     </p>
-                    <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
-                    <p className={`${glanceSubCls} underline underline-offset-2`}>
-                      Edit the exclusion
-                    </p>
+                    <div className={glanceSubZoneCls}>
+                      <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
+                      <p className={`${glanceSubCls} underline underline-offset-2`}>
+                        Edit the exclusion
+                      </p>
+                    </div>
                   </button>
                 ) : pgPrefillSource ? (
                   <div className={glanceCellCls(2)}>
@@ -5961,15 +5985,18 @@ export function Playground({
                     <p className={`${glanceFigureCls} text-[var(--accent)]`}>
                       {fmtDollarsExact(pgPrefillSource.planTotal)}
                     </p>
-                    <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
+                    <div className={glanceSubZoneCls}>
+                      <p className={glanceSubCls}>(excl. 529 &amp; Non-Taxable)</p>
+                    </div>
                   </div>
                 ) : null}
                 {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
                   <div className={glanceCellCls(3)}>
                     <p className={glanceLabelCls}>Taxable pool after exclusion</p>
-                    <p className="display tnum mt-1.5 text-xl leading-none font-bold whitespace-nowrap text-[var(--text)]">
+                    <p className={`${glanceFigureCls} text-[var(--text)]`}>
                       {fmtDollarsExact(pgPrefillSource.taxableStart)}
                     </p>
+                    <div className={glanceSubZoneCls} />
                     <div className="absolute top-2 right-2">
                       <InfoNote
                         text={`Taxable plus Cash (${fmtDollarsExact(pgPrefillSource.taxablePoolGross)}) less the ${fmtDollarsExact(pgPrefillSource.taxableExclude)} excluded from the plan in the Tax Plan.`}
@@ -6150,10 +6177,17 @@ export function Playground({
           <>
         {/* Single-year dials (build v69): the group header is
             a plain title row — no box around the group (the
-            section cards inside keep their own card treatment)
-            — its explainer sentence rides the title's ⓘ, and
-            the live dials summary rides under the title in
-            both fold states, plain text with no taps. */}
+            section cards inside keep their own card treatment),
+            and the live dials summary rides under the title in
+            both fold states, plain text with no taps. Dials /
+            Result split (2026-11-16 tidy): the header's
+            visible title is now "Dials" — the first of the
+            One year face's two halves, above the readout
+            below (its own "Result" heading was removed
+            2026-11-16 on the user's word) — and the
+            title's ⓘ is gone: it explained the section, not
+            a number. The section and button aria-labels keep
+            the full "Single-year dials" name. */}
         <section className="mt-4" aria-label="Single-year dials">
           <h3>
             <button
@@ -6165,12 +6199,8 @@ export function Playground({
             >
               <span className="flex items-center gap-2">
                 <span className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
-                  Single-year dials
+                  Dials
                 </span>
-                <InfoNote
-                  text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
-                  ariaLabel="About the single-year dials"
-                />
                 <FoldChevron open={!!pgGroupOpen.single} />
               </span>
               <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
@@ -6726,6 +6756,8 @@ export function Playground({
               $
             </span>
             <input
+              {...FIELDS.saveRothInputs.annualSpendingCents}
+              type="text"
               id="roth-pg-spending"
               aria-label={
                 pgSpendingUnit === "month"
@@ -7683,7 +7715,11 @@ export function Playground({
             (the balances readout inside the projection panel)
             is that face's equivalent, and clicking a chart
             year still loads the year into these same dials —
-            switching back to One year shows it priced. */}
+            switching back to One year shows it priced. Dials /
+            Result split (2026-11-16 tidy): the face reads as
+            its two halves — Dials above, this readout below
+            (the readout's own "Result" heading was removed
+            2026-11-16 on the user's word). */}
         {pgFace === "year" && playgroundResult == null && (
           <p className="mt-4 text-sm text-[var(--dim)]" role="note">
             Enter your age for the year above and the year is priced here —
@@ -8135,16 +8171,12 @@ export function Playground({
                   : "top-0";
               return (
                 <div className="mt-3" aria-label="Income stacking chart">
-                  <p className="mt-1 text-xs text-[var(--dim)]">
-                    On a taxable-income axis. The hatched start of the bar is
-                    the {fmtDollars(deductions)} of deductions sheltering the
-                    first dollars — the stack nets to{" "}
-                    {fmtDollars(ordinaryTaxable)} of ordinary taxable income
-                    {gainsTotal > 0
-                      ? `, ${fmtDollars(pg.taxableIncome)} with gains on top`
-                      : ""}
-                    .
-                  </p>
+                  {/* The chart's explainer paragraph ("On a
+                      taxable-income axis…") moved out in the
+                      2026-11-16 tidy — it now lives in the
+                      always-shown "How to read this" note
+                      above the Income stack heading, word for
+                      word. */}
                   {(landingMarker != null || showGainsEndLabel) && (
                     <div className="relative mt-1" ref={stackLabelsRef}>
                       {showGainsEndLabel && (
@@ -9133,14 +9165,41 @@ export function Playground({
                   )}
                 </p>
 
+                {/* How to read this: the income stack
+                    chart's explainer paragraph, moved out of
+                    the chart in the 2026-11-16 tidy — the same
+                    words, priced from the same stack model.
+                    Always shown, no fold: its +/− toggle was
+                    removed at the user's request (2026-11-16),
+                    like the chart's own toggle below. */}
                 <div className="mt-3">
-                  <h3 className="text-sm font-semibold">
-                    Income stack
-                    <InfoNote
-                      text={bracketStatusText}
-                      ariaLabel="Bracket-by-bracket status for the income stack"
-                    />
-                  </h3>
+                  <p className="text-sm font-medium text-[var(--dim)]">
+                    How to read this
+                  </p>
+                  <p className="mt-1 max-w-3xl text-xs text-[var(--dim)]">
+                    On a taxable-income axis. The hatched start of the bar is
+                    the {fmtDollars(stackModel.deductions)} of deductions sheltering the
+                    first dollars — the stack nets to{" "}
+                    {fmtDollars(stackModel.ordinaryTaxable)} of ordinary taxable income
+                    {stackModel.gainsTotal > 0
+                      ? `, ${fmtDollars(pg.taxableIncome)} with gains on top`
+                      : ""}
+                    .
+                  </p>
+                </div>
+
+                {/* Income stack chart heading: plain text,
+                    no fold — the chart below is always shown
+                    (its +/− toggle was removed at the user's
+                    request, 2026-11-16). The bracket-status ⓘ
+                    stays beside the heading, explaining the
+                    chart's numbers. */}
+                <div className="mt-3 flex items-center gap-2">
+                  <h3 className="text-sm font-semibold">Income stack</h3>
+                  <InfoNote
+                    text={bracketStatusText}
+                    ariaLabel="Bracket-by-bracket status for the income stack"
+                  />
                 </div>
 
                 {stackChart}

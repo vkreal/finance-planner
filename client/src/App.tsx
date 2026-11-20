@@ -80,6 +80,14 @@ import { RothConversion, type RothSectionId } from "./RothConversion";
 import { Playground, SpendPeriodPills } from "./Playground";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
+import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
+import type { Actions } from "../../server/src/actions";
+
+/* Platform v29: form inputs take their limits (maxLength,
+   minLength, required) from the actions' own request schemas —
+   spreading a field's FIELDS entry onto the input that feeds it
+   keeps the page and the server in agreement by construction. */
+const FIELDS = actionFields<typeof Actions>();
 
 type Dash = ApiResponse<typeof api, "getDashboard">;
 type Txn = Dash["monthTransactions"][number];
@@ -277,6 +285,33 @@ function todayStr(): string {
 
 function currentMonth(): string {
   return todayStr().slice(0, 7);
+}
+
+/* Shift a YYYY-MM month key by a number of months (negative
+   goes back). Used by the smart defaults to name "last month"
+   relative to the viewed month. */
+function shiftMonthKey(month: string, delta: number): string {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/* A monthly bill's amount in effect for a given month, read off
+   its version history (newest first): the latest version whose
+   effective-from is on or before that month, or null when the
+   bill had no version in effect yet that month. */
+function billAmountInEffectFor(bill: Bill, month: string): number | null {
+  let best: { effectiveFrom: string; amountCents: number } | null = null;
+  for (const h of bill.history) {
+    if (
+      h.effectiveFrom <= month &&
+      (best == null || h.effectiveFrom > best.effectiveFrom)
+    ) {
+      best = h;
+    }
+  }
+  return best?.amountCents ?? null;
 }
 
 /* ---------------- CSV parsing ----------------
@@ -629,7 +664,17 @@ function BillAmountEditor({
     base: { amountCents: number | null };
   }) => Promise<{ ok: boolean; reason?: string }>;
 }) {
-  const [dollars, setDollars] = useState(String(bill.latestAmountCents / 100));
+  // Smart default: the amount starts on LAST month's amount for
+  // this bill (the version in effect for the month before this
+  // one), so renewing a bill at the same price is a confirm, not
+  // a retype; it falls back to the latest amount when last month
+  // had no version in effect.
+  const [dollars, setDollars] = useState(() =>
+    String(
+      (billAmountInEffectFor(bill, shiftMonthKey(currentMonth(), -1)) ??
+        bill.latestAmountCents) / 100,
+    ),
+  );
   const [from, setFrom] = useState(currentMonth());
   const [error, setError] = useState("");
   const [savedFrom, setSavedFrom] = useState<string | null>(null);
@@ -675,6 +720,7 @@ function BillAmountEditor({
         <label className="text-sm">
           <span className="mb-1 block text-[var(--dim)]">Amount ($/mo)</span>
           <input
+            {...FIELDS.setMonthlyBillAmount.amountCents}
             type="text"
             inputMode="decimal"
             aria-label={`Monthly amount for ${bill.name}`}
@@ -823,14 +869,31 @@ function InlinePaymentForm({
   const expectedCents = bill.inEffectForMonth
     ? bill.expectedCents
     : bill.latestExpectedCents;
+  // Smart default: when this bill was paid last year, the form
+  // comes up with LAST YEAR's charge amount and the same
+  // month/day as last year's charge (in the viewed year) —
+  // yearly charges usually repeat at the same price on the same
+  // date. With no payment last year it falls back to the
+  // expected amount and the usual date, exactly as before.
+  const prevYearCents = bill.prevYearLastActualCents ?? null;
+  const prevYearDate = bill.prevYearLastActualDate ?? null;
   const [date, setDate] = useState(() => {
+    if (prevYearDate) {
+      const targetMonth = `${viewedMonth.slice(0, 4)}-${prevYearDate.slice(5, 7)}`;
+      const day = Math.min(
+        Number(prevYearDate.slice(8, 10)) || 1,
+        daysInMonthOf(targetMonth),
+      );
+      return `${targetMonth}-${String(day).padStart(2, "0")}`;
+    }
     const today = todayStr();
     return today.slice(0, 7) === viewedMonth ? today : `${viewedMonth}-01`;
   });
   const [desc, setDesc] = useState(bill.name);
-  const [dollars, setDollars] = useState(
-    expectedCents ? String(expectedCents / 100) : "",
-  );
+  const [dollars, setDollars] = useState(() => {
+    const startCents = prevYearCents ?? expectedCents;
+    return startCents ? String(startCents / 100) : "";
+  });
   const [source, setSource] = useState<"checking" | "card">(
     bill.paidByType === "card" ? "card" : "checking",
   );
@@ -844,7 +907,7 @@ function InlinePaymentForm({
       onSaved();
       onClose();
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   const categoryOptions = useMemo(() => {
@@ -930,6 +993,7 @@ function InlinePaymentForm({
             Amount ($)
           </label>
           <input
+            {...FIELDS.addTransaction.amountCents}
             id={`${idBase}-amount`}
             type="text"
             inputMode="decimal"
@@ -939,7 +1003,16 @@ function InlinePaymentForm({
             value={dollars}
             onChange={(e) => setDollars(e.target.value)}
           />
-          {expectedCents ? (
+          {prevYearCents != null && prevYearDate ? (
+            <p className="mt-1 text-xs text-[var(--dim)]">
+              Filled from last year&rsquo;s charge — {fmt(prevYearCents)} on{" "}
+              {prevYearDate}
+              {expectedCents && expectedCents !== prevYearCents
+                ? ` · expected ${fmt(expectedCents)}`
+                : ""}{" "}
+              — edit if the actual differed.
+            </p>
+          ) : expectedCents ? (
             <p className="mt-1 text-xs text-[var(--dim)]">
               Expected {fmt(expectedCents)} — edit if the actual differed.
             </p>
@@ -954,6 +1027,7 @@ function InlinePaymentForm({
           id={`${idBase}-desc`}
           type="text"
           required
+          {...FIELDS.addTransaction.description}
           className={inputCls}
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
@@ -981,6 +1055,7 @@ function InlinePaymentForm({
           <input
             id={`${idBase}-account`}
             type="text"
+            {...FIELDS.addTransaction.accountName}
             className={inputCls}
             value={account}
             onChange={(e) => setAccount(e.target.value)}
@@ -3497,7 +3572,11 @@ export function App() {
      RothConversion's existing jumpTarget mechanism
      (build v133) jumps to the named field once the plan has
      loaded, opening its section on the All settings face. The
-     nonce makes each tap fire exactly once. */
+     nonce makes each tap fire exactly once, and once the jump
+     has fired RothConversion reports it consumed
+     (onJumpConsumed below) and this state is cleared — the
+     target must not outlive its one jump, or every later
+     switch into the Tax Plan would replay it. */
   const [rothJumpTarget, setRothJumpTarget] = useState<{
     fieldId: string;
     section: RothSectionId;
@@ -4353,7 +4432,7 @@ export function App() {
       invalidate();
       resetTxnForm();
     },
-    onError: (e) => setFormError(String(e)),
+    onError: (e) => setFormError(e.message),
   });
   const updateTxn = useMutation({
     mutationFn: (input: TxnInput & { id: number } & {
@@ -4371,7 +4450,7 @@ export function App() {
       invalidate();
       resetTxnForm();
     },
-    onError: (e) => setFormError(String(e)),
+    onError: (e) => setFormError(e.message),
   });
   const deleteTxn = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4381,6 +4460,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That transaction could not be deleted.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const addYearly = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addYearlyExpense">) =>
@@ -4392,7 +4472,7 @@ export function App() {
          it (persisted) so the bill just added is visible. */
       setYearlyBillsOpen(true);
     },
-    onError: (e) => setYearlyError(String(e)),
+    onError: (e) => setYearlyError(e.message),
   });
   const updateYearly = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateYearlyExpense">) =>
@@ -4407,7 +4487,7 @@ export function App() {
       invalidate();
       resetYearlyForm();
     },
-    onError: (e) => setYearlyError(String(e)),
+    onError: (e) => setYearlyError(e.message),
   });
   const deleteYearly = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4417,6 +4497,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That expense could not be deleted.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const deleteYearlyVersion = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -4431,7 +4512,7 @@ export function App() {
       }
       invalidate();
     },
-    onError: (e) => setVersionDeleteError(String(e)),
+    onError: (e) => setVersionDeleteError(e.message),
   });
   const deleteMonthlyVersion = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -4446,7 +4527,7 @@ export function App() {
       }
       invalidate();
     },
-    onError: (e) => setVersionDeleteError(String(e)),
+    onError: (e) => setVersionDeleteError(e.message),
   });
   const upsertSummary = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "upsertMonthlySummary">) =>
@@ -4464,7 +4545,7 @@ export function App() {
       setSDollars("");
       setSummaryError("");
     },
-    onError: (e) => setSummaryError(String(e)),
+    onError: (e) => setSummaryError(e.message),
   });
   const deleteSummary = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4474,6 +4555,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That month's total could not be removed.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const addCashOutItem = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addCashOutItem">) =>
@@ -4483,7 +4565,7 @@ export function App() {
       resetItemForm();
       setCashOutMonthExpanded(input.month, true);
     },
-    onError: (e) => setItemError(String(e)),
+    onError: (e) => setItemError(e.message),
   });
   const updateCashOutItem = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateCashOutItem">) =>
@@ -4499,7 +4581,7 @@ export function App() {
       resetItemForm();
       setCashOutMonthExpanded(input.month, true);
     },
-    onError: (e) => setItemError(String(e)),
+    onError: (e) => setItemError(e.message),
   });
   const deleteCashOutItem = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4509,6 +4591,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That item could not be deleted.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const addBill = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addMonthlyBill">) =>
@@ -4520,7 +4603,7 @@ export function App() {
          it (persisted) so the bill just added is visible. */
       setMonthlyBillsOpen(true);
     },
-    onError: (e) => setBillError(String(e)),
+    onError: (e) => setBillError(e.message),
   });
   const updateBill = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateMonthlyBill">) =>
@@ -4535,7 +4618,7 @@ export function App() {
       invalidate();
       resetBillForm();
     },
-    onError: (e) => setBillError(String(e)),
+    onError: (e) => setBillError(e.message),
   });
   const deleteBill = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4545,6 +4628,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That bill could not be deleted.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setBillAmount = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillAmount">) =>
@@ -4559,8 +4643,14 @@ export function App() {
       invalidate();
       resetBillForm();
     },
-    onError: (e) => setBillError(String(e)),
+    onError: (e) => setBillError(e.message),
   });
+  /* Platform v29: a failed row amount save is handled by the
+     mutation's own onError, which keeps the error's message
+     here for saveBillAmountFromRow to hand back to the row
+     editor — the failure shows once, in place, as the error's
+     own readable message. */
+  const billAmountFromRowErrorRef = useRef<string | null>(null);
   const setBillAmountFromRow = useMutation({
     // The roster row's in-place amount editor: the same
     // setMonthlyBillAmount action the Edit form uses, but its own
@@ -4572,6 +4662,9 @@ export function App() {
     onSuccess: (r) => {
       if (r.ok) invalidate();
     },
+    onError: (e) => {
+      billAmountFromRowErrorRef.current = e.message;
+    },
   });
   const addOneOff = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addMonthlyOneOff">) =>
@@ -4580,7 +4673,7 @@ export function App() {
       invalidate();
       resetOneOffForm();
     },
-    onError: (e) => setOneOffError(String(e)),
+    onError: (e) => setOneOffError(e.message),
   });
   const updateOneOff = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateMonthlyOneOff">) =>
@@ -4596,7 +4689,7 @@ export function App() {
       invalidate();
       resetOneOffForm();
     },
-    onError: (e) => setOneOffError(String(e)),
+    onError: (e) => setOneOffError(e.message),
   });
   const deleteOneOff = useMutation({
     // Build v121 (F3): an immediate delete carries the epoch
@@ -4606,6 +4699,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That one-off could not be deleted.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setDueMonth = useMutation({
     // Build v121 (F3): an immediate setter carries the epoch
@@ -4616,6 +4710,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That due month could not be saved.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setMonthlyCategory = useMutation({
     // Build v121 (F3): an immediate setter carries the epoch
@@ -4626,6 +4721,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That category could not be saved.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setYearlyCategory = useMutation({
     // Build v121 (F3): an immediate setter carries the epoch
@@ -4636,6 +4732,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That category could not be saved.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setMonthlyKeepLightsOn = useMutation({
     // Build v121 (F3): an immediate setter carries the epoch
@@ -4646,6 +4743,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That flag could not be saved.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const setMonthlyBillsCollapsedAll = useMutation({
     // Build v130 (round-19 finding 10): carries the epoch of the
@@ -4658,6 +4756,10 @@ export function App() {
         setMonthlyBillsCollapsedAllOverride(null);
       }
       invalidate();
+    },
+    onError: (e) => {
+      setActionMsg(e.message);
+      setMonthlyBillsCollapsedAllOverride(null);
     },
   });
   const setYearlyBillsCollapsedAll = useMutation({
@@ -4672,6 +4774,10 @@ export function App() {
       }
       invalidate();
     },
+    onError: (e) => {
+      setActionMsg(e.message);
+      setYearlyBillsCollapsedAllOverride(null);
+    },
   });
   const setByCategoryCollapsedAll = useMutation({
     // Build v130 (round-19 finding 10): carries the epoch of the
@@ -4685,6 +4791,10 @@ export function App() {
       }
       invalidate();
     },
+    onError: (e) => {
+      setActionMsg(e.message);
+      setByCategoryCollapsedAllOverride(null);
+    },
   });
   const setYearInSpendingCollapsedAll = useMutation({
     // Build v130 (round-19 finding 10): carries the epoch of the
@@ -4697,6 +4807,10 @@ export function App() {
         setYearInSpendingCollapsedAllOverride(null);
       }
       invalidate();
+    },
+    onError: (e) => {
+      setActionMsg(e.message);
+      setYearInSpendingCollapsedAllOverride(null);
     },
   });
 
@@ -4744,6 +4858,7 @@ export function App() {
     effectiveFrom: string;
     base: { amountCents: number | null };
   }): Promise<{ ok: boolean; reason?: string }> {
+    billAmountFromRowErrorRef.current = null;
     try {
       const r = await setBillAmountFromRow.mutateAsync({
         ...input,
@@ -4751,7 +4866,12 @@ export function App() {
       });
       return r.ok ? { ok: true } : { ok: false, reason: r.reason ?? undefined };
     } catch (e) {
-      return { ok: false, reason: String(e) };
+      return {
+        ok: false,
+        reason:
+          billAmountFromRowErrorRef.current ??
+          (e instanceof Error ? e.message : String(e)),
+      };
     }
   }
   const handleYearlyBillsCollapsedAllChange = (collapsed: boolean) => {
@@ -4780,6 +4900,7 @@ export function App() {
       if (!r.ok) setActionMsg(r.reason ?? "That flag could not be saved.");
       invalidate();
     },
+    onError: (e) => setActionMsg(e.message),
   });
   const seed = useMutation({
     mutationFn: () => api.seedExamples({}),
@@ -4787,6 +4908,7 @@ export function App() {
       invalidate();
       setActionMsg(r.reason);
     },
+    onError: (e) => setActionMsg(e.message),
   });
   function resetTxnForm() {
     setShowTxnForm(false);
@@ -4807,11 +4929,50 @@ export function App() {
     setShowTxnForm(true);
     const today = todayStr();
     setTDate(today.slice(0, 7) === month ? today : `${month}-01`);
+    // Smart defaults: Paid from and Account start on the ones
+    // used last time (the dashboard's last spending transaction),
+    // so the common case is already filled; a prefill below or
+    // the payee match in the Description field can refine them.
+    setTSource(data?.lastTxnSourceType === "card" ? "card" : "checking");
+    setTAccount(data?.lastTxnAccountName ?? "Checking");
     if (prefill?.desc) setTDesc(prefill.desc);
     if (prefill?.yearlyId) setTYearlyId(String(prefill.yearlyId));
     if (prefill?.source) setTSource(prefill.source);
     if (prefill?.account) setTAccount(prefill.account);
     if (prefill?.category) setTCategory(prefill.category);
+    // A prefilled payee with no explicit category/account of its
+    // own takes them from that payee's last transaction — the
+    // same match the Description field applies while typing.
+    if (prefill?.desc && !prefill.category) {
+      const match = (data?.payeeDefaults ?? []).find(
+        (p) => p.description === prefill.desc?.trim(),
+      );
+      if (match) {
+        setTCategory(match.category);
+        if (!prefill.account) setTAccount(match.accountName);
+        if (!prefill.source)
+          setTSource(match.sourceType === "card" ? "card" : "checking");
+      }
+    }
+  }
+
+  /* Smart default for the transaction Description field: when
+     the typed description exactly matches a payee used before
+     (exact string — similar-looking names are never merged),
+     the category, account, and paid-from fill from that payee's
+     most recent transaction. New entries only — editing an
+     existing transaction keeps its own values. */
+  function handleTxnDescChange(v: string) {
+    setTDesc(v);
+    if (editingTxnId) return;
+    const match = (data?.payeeDefaults ?? []).find(
+      (p) => p.description === v.trim(),
+    );
+    if (match) {
+      setTCategory(match.category);
+      setTAccount(match.accountName);
+      setTSource(match.sourceType === "card" ? "card" : "checking");
+    }
   }
 
   function openEditTxn(t: Txn) {
@@ -5068,6 +5229,30 @@ export function App() {
     setCashOutMonthExpanded(forMonth, true);
   }
 
+  /* Smart defaults for the cash-out item Name field: the form
+     already opens on the month it was opened for; picking a
+     name used before also fills the amount from that name's
+     most recent item (only while the amount is still blank, so
+     a typed amount is never overwritten) and moves the date to
+     the same day of the month as last time, clamped to this
+     month's real length. Exact name match only — similar names
+     are separate entries. New items only: editing an item keeps
+     its own amount and day. */
+  function handleItemNameChange(v: string) {
+    setIDesc(v);
+    if (editingItemId) return;
+    const match = (data?.cashOutPayeeDefaults ?? []).find(
+      (p) => p.description === v,
+    );
+    if (!match) return;
+    if (!iDollars.trim()) setIDollars(String(match.amountCents / 100));
+    const m = iDate.slice(0, 7);
+    if (/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) {
+      const day = Math.min(match.day, daysInMonthOf(m));
+      setIDate(`${m}-${String(day).padStart(2, "0")}`);
+    }
+  }
+
   function openEditItem(it: CashOutItem) {
     setItemFormAnchor("edit");
     setEditingItemId(it.id);
@@ -5175,6 +5360,29 @@ export function App() {
     setBCategory(b.category);
     setBKeepLightsOn(b.keepLightsOn);
     setBillError("");
+  }
+
+  /* Smart default for a NEW monthly bill: typing the exact name
+     of a bill that already exists fills the amount with that
+     bill's amount in effect last month (only while the amount
+     is still blank), plus its Paid from and Category — adding a
+     bill you already track starts from its own figures instead
+     of a blank form. Exact name match only. */
+  function handleBillNameChange(v: string) {
+    setBName(v);
+    if (editingBillId) return;
+    const match = (data?.monthlyBills ?? []).find(
+      (b) => b.name === v.trim(),
+    );
+    if (!match) return;
+    if (!bDollars.trim()) {
+      const lastMonthAmt =
+        billAmountInEffectFor(match, shiftMonthKey(month, -1)) ??
+        match.latestAmountCents;
+      setBDollars(String(lastMonthAmt / 100));
+    }
+    setBPaidBy(match.paidBy);
+    setBCategory(match.category);
   }
 
   function submitBill(e: FormEvent) {
@@ -5633,7 +5841,10 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RothConversion jumpTarget={rothJumpTarget} />
+          <RothConversion
+            jumpTarget={rothJumpTarget}
+            onJumpConsumed={() => setRothJumpTarget(null)}
+          />
         </main>
       </div>
     );
@@ -5742,7 +5953,7 @@ export function App() {
         </div>
         <div>
           <label htmlFor="s-amount" className={labelCls}>Total cash out ($)</label>
-          <input id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
+          <input {...FIELDS.upsertMonthlySummary.cashOutCents} id="s-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={sDollars} onChange={(e) => setSDollars(e.target.value)} />
         </div>
       </div>
       <p className="text-sm text-[var(--dim)]">
@@ -5772,7 +5983,7 @@ export function App() {
         </div>
         <div>
           <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
-          <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
+          <input {...FIELDS.addCashOutItem.amountCents} id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
         </div>
       </div>
       <div>
@@ -5781,7 +5992,7 @@ export function App() {
           id="ci-desc"
           value={iDesc}
           options={cashOutNameOptions}
-          onChange={setIDesc}
+          onChange={handleItemNameChange}
           customLabel="Add a new name…"
           customPlaceholder="Type a new name"
           customAriaLabel="New name"
@@ -5790,7 +6001,7 @@ export function App() {
       </div>
       <div>
         <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
-        <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
+        <input {...FIELDS.addCashOutItem.note} id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
       </div>
       <p className="text-sm text-[var(--dim)]">
         Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
@@ -6342,6 +6553,8 @@ export function App() {
                       $
                     </span>
                   <input
+                    {...FIELDS.saveRothInputs.annualSpendingCents}
+                    type="text"
                     id="spending-target-per-year"
                     aria-label={
                       spendingTargetUnit === "month"
@@ -6864,6 +7077,11 @@ export function App() {
                             from {cm.itemsCount} item{cm.itemsCount === 1 ? "" : "s"}
                           </p>
                         )}
+                        {cm.itemsCount === 0 && cm.enteredCashOutCents != null && (
+                          <p className="mt-0.5 text-xs text-[var(--dim)]">
+                            from entered total
+                          </p>
+                        )}
                         {hasBoth && (
                           <p className="tnum mt-0.5 text-xs text-[var(--dim)]">
                             Entered total {fmt(cm.enteredCashOutCents ?? 0)} · Items{" "}
@@ -7210,27 +7428,40 @@ export function App() {
               )}
             </section>
 
-            {showProvisional && (
-              <section className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-relaxed text-[var(--dim)]">
-                <strong className="text-[var(--text)]">Early days:</strong>{" "}
-                with only {data.trailingMonthsCovered} months tracked, the
-                smoothed and actual averages are expected to differ —
-                smoothed bills already paid are in the actual average, but
-                bills that haven't come due yet aren't. This check becomes meaningful
-                once a full 12 months are covered.
-              </section>
-            )}
-
-            {showDivergence && (
-              <section className="mt-3 rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] p-3 text-sm leading-relaxed">
-                <strong>Worth a look:</strong> your average smoothed spend (
-                {fmt(data.avgSmoothedCents)}) and your actual average (
-                {fmt(data.trailingAvgCents)}) differ by{" "}
-                {fmt(Math.abs(data.divergenceCents))} (
-                {Math.abs(Math.round(data.divergencePct * 100))}%). When these
-                drift apart it usually means something was missed or
-                double-counted — or your smoothed-bills list no longer
-                matches what the bills actually cost now.
+            {/* One divergence-check card, two mutually exclusive states:
+                under 12 months of trailing data it reads "Early days"
+                (provisional wording); at 12 months it flips to "Worth a
+                look" with the figures. Exactly one state shows, never
+                both, never neither when a divergence note applies. */}
+            {(showProvisional || showDivergence) && (
+              <section
+                className={
+                  showProvisional
+                    ? "mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-relaxed text-[var(--dim)]"
+                    : "mt-3 rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] p-3 text-sm leading-relaxed"
+                }
+              >
+                {showProvisional ? (
+                  <>
+                    <strong className="text-[var(--text)]">Early days:</strong>{" "}
+                    with only {data.trailingMonthsCovered} months tracked, the
+                    smoothed and actual averages are expected to differ —
+                    smoothed bills already paid are in the actual average, but
+                    bills that haven't come due yet aren't. This check becomes meaningful
+                    once a full 12 months are covered.
+                  </>
+                ) : (
+                  <>
+                    <strong>Worth a look:</strong> your average smoothed spend (
+                    {fmt(data.avgSmoothedCents)}) and your actual average (
+                    {fmt(data.trailingAvgCents)}) differ by{" "}
+                    {fmt(Math.abs(data.divergenceCents))} (
+                    {Math.abs(Math.round(data.divergencePct * 100))}%). When these
+                    drift apart it usually means something was missed or
+                    double-counted — or your smoothed-bills list no longer
+                    matches what the bills actually cost now.
+                  </>
+                )}
               </section>
             )}
 
@@ -7276,7 +7507,7 @@ export function App() {
                     </div>
                     <div>
                       <label htmlFor="o-amount" className={labelCls}>Amount ($) — already included above</label>
-                      <input id="o-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={oDollars} onChange={(e) => setODollars(e.target.value)} />
+                      <input {...FIELDS.addMonthlyOneOff.amountCents} id="o-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={oDollars} onChange={(e) => setODollars(e.target.value)} />
                     </div>
                   </div>
                   <div>
@@ -7294,7 +7525,7 @@ export function App() {
                   </div>
                   <div>
                     <label htmlFor="o-note" className={labelCls}>Note (optional)</label>
-                    <textarea id="o-note" rows={2} className={inputCls} value={oNote} onChange={(e) => setONote(e.target.value)} placeholder="Any detail worth remembering about this cost" />
+                    <textarea {...FIELDS.addMonthlyOneOff.note} id="o-note" rows={2} className={inputCls} value={oNote} onChange={(e) => setONote(e.target.value)} placeholder="Any detail worth remembering about this cost" />
                   </div>
                   {oneOffError && <p className="text-sm text-[var(--bad)]">{oneOffError}</p>}
                   <div className="flex gap-2">
@@ -7562,12 +7793,12 @@ export function App() {
                   </h3>
                   <div>
                     <label htmlFor="b-name" className={labelCls}>Name</label>
-                    <input id="b-name" type="text" required className={inputCls} value={bName} onChange={(e) => setBName(e.target.value)} placeholder="e.g. Mortgage" />
+                    <input {...FIELDS.addMonthlyBill.name} id="b-name" type="text" required className={inputCls} value={bName} onChange={(e) => handleBillNameChange(e.target.value)} placeholder="e.g. Mortgage" />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label htmlFor="b-amount" className={labelCls}>Monthly amount ($)</label>
-                      <input id="b-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={bDollars} onChange={(e) => setBDollars(e.target.value)} />
+                      <input {...FIELDS.addMonthlyBill.amountCents} id="b-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={bDollars} onChange={(e) => setBDollars(e.target.value)} />
                     </div>
                     <div>
                       <label htmlFor="b-from" className={labelCls}>Amount takes effect from</label>
@@ -7583,11 +7814,11 @@ export function App() {
                   </p>
                   <div>
                     <label htmlFor="b-paidby" className={labelCls}>Paid from</label>
-                    <input id="b-paidby" type="text" className={inputCls} value={bPaidBy} onChange={(e) => setBPaidBy(e.target.value)} list="account-names" />
+                    <input {...FIELDS.addMonthlyBill.paidBy} id="b-paidby" type="text" className={inputCls} value={bPaidBy} onChange={(e) => setBPaidBy(e.target.value)} list="account-names" />
                   </div>
                   <div>
                     <label htmlFor="b-notes" className={labelCls}>Notes (optional)</label>
-                    <input id="b-notes" type="text" className={inputCls} value={bNotes} onChange={(e) => setBNotes(e.target.value)} placeholder="e.g. due on the 1st" />
+                    <input {...FIELDS.addMonthlyBill.notes} id="b-notes" type="text" className={inputCls} value={bNotes} onChange={(e) => setBNotes(e.target.value)} placeholder="e.g. due on the 1st" />
                   </div>
                   <div>
                     <label htmlFor="b-category" className={labelCls}>Category</label>
@@ -7895,10 +8126,12 @@ export function App() {
                 {/* Same header pattern as Monthly bills: bold title,
                     then the ⓘ, then the quick summary — here the
                     month's cash out, the same figure the Monthly
-                    bills footer reconciles against — and the fold
-                    toggle pinned to the far right end of the header
-                    row, lined up with the other section headers'
-                    toggles. The tip sits near
+                    bills footer reconciles against, labelled with
+                    its basis (items / entered total / transactions)
+                    so it never reads as the total of the list below
+                    it — and the fold toggle pinned to the far right
+                    end of the header row, lined up with the other
+                    section headers' toggles. The tip sits near
                     the left edge now, so its bubble opens
                     left-aligned (align="start"). */}
                 <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
@@ -7915,7 +8148,12 @@ export function App() {
                     </p>
                   </ExplainerInfoTip>
                   <span className="tnum text-base font-normal text-[var(--dim)]">
-                    {fmt(data.cashOutCents)}
+                    Cash out {fmt(data.cashOutCents)}{" "}
+                    {data.isItemsMonth
+                      ? `(from ${data.cashOutItemsCount} item${data.cashOutItemsCount === 1 ? "" : "s"})`
+                      : data.isSummaryMonth
+                        ? "(entered total)"
+                        : "(from transactions)"}
                   </span>
                 </h2>
                 <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
@@ -7928,6 +8166,14 @@ export function App() {
                   />
                 </div>
               </div>
+
+              {transactionsOpen &&
+                (data.isItemsMonth || data.isSummaryMonth) &&
+                data.monthTransactions.length > 0 && (
+                  <p className="mt-2 text-sm text-[var(--dim)]">
+                    These transactions are not added to that total.
+                  </p>
+                )}
 
               {transactionsOpen && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -7966,12 +8212,12 @@ export function App() {
                     </div>
                     <div>
                       <label htmlFor="t-amount" className={labelCls}>Amount ($)</label>
-                      <input id="t-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={tDollars} onChange={(e) => setTDollars(e.target.value)} />
+                      <input {...FIELDS.addTransaction.amountCents} id="t-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={tDollars} onChange={(e) => setTDollars(e.target.value)} />
                     </div>
                   </div>
                   <div>
                     <label htmlFor="t-desc" className={labelCls}>Description</label>
-                    <input id="t-desc" type="text" required className={inputCls} value={tDesc} onChange={(e) => setTDesc(e.target.value)} />
+                    <input {...FIELDS.addTransaction.description} id="t-desc" type="text" required className={inputCls} value={tDesc} onChange={(e) => handleTxnDescChange(e.target.value)} />
                   </div>
                   <div>
                     <label htmlFor="t-kind" className={labelCls}>What kind is it?</label>
@@ -7993,7 +8239,7 @@ export function App() {
                         </div>
                         <div>
                           <label htmlFor="t-account" className={labelCls}>Account name</label>
-                          <input id="t-account" type="text" className={inputCls} value={tAccount} onChange={(e) => setTAccount(e.target.value)} list="account-names" />
+                          <input {...FIELDS.addTransaction.accountName} id="t-account" type="text" className={inputCls} value={tAccount} onChange={(e) => setTAccount(e.target.value)} list="account-names" />
                           <datalist id="account-names">
                             {data.accountNames.map((a) => (
                               <option key={a} value={a} />
@@ -8134,6 +8380,12 @@ export function App() {
                   </li>
                 ))}
               </ul>
+              {!smoothedOnly && visibleMonthTransactions.length > 0 && (
+                <p className="tnum mt-2 flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-sm text-[var(--dim)]">
+                  <span>Checking cash out from the transactions above</span>
+                  <span>{fmt(data.transactionCashOutCents)}</span>
+                </p>
+              )}
                 </div>
               )}
             </section>
@@ -8217,7 +8469,7 @@ export function App() {
                   </h3>
                   <div>
                     <label htmlFor="y-name" className={labelCls}>Name</label>
-                    <input id="y-name" type="text" required className={inputCls} value={yName} onChange={(e) => setYName(e.target.value)} placeholder="e.g. Home insurance, or Water" />
+                    <input {...FIELDS.addYearlyExpense.name} id="y-name" type="text" required className={inputCls} value={yName} onChange={(e) => setYName(e.target.value)} placeholder="e.g. Home insurance, or Water" />
                   </div>
                   <div>
                     <label htmlFor="y-frequency" className={labelCls}>How often is it billed?</label>
@@ -8233,7 +8485,7 @@ export function App() {
                       <label htmlFor="y-amount" className={labelCls}>
                         {yFrequency !== "yearly" ? "Expected per bill ($)" : "Expected per year ($)"}
                       </label>
-                      <input id="y-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={yDollars} onChange={(e) => setYDollars(e.target.value)} />
+                      <input {...FIELDS.addYearlyExpense.expectedCents} id="y-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={yDollars} onChange={(e) => setYDollars(e.target.value)} />
                     </div>
                     <div>
                       <label htmlFor="y-due" className={labelCls}>
@@ -8297,7 +8549,7 @@ export function App() {
                     </div>
                     <div>
                       <label htmlFor="y-paidname" className={labelCls}>Account name</label>
-                      <input id="y-paidname" type="text" className={inputCls} value={yPaidName} onChange={(e) => setYPaidName(e.target.value)} list="account-names" />
+                      <input {...FIELDS.addYearlyExpense.paidByName} id="y-paidname" type="text" className={inputCls} value={yPaidName} onChange={(e) => setYPaidName(e.target.value)} list="account-names" />
                     </div>
                   </div>
                   <div>
@@ -8828,7 +9080,7 @@ function ReserveSettings({
       onSaved();
       setMsg("Saved.");
     },
-    onError: (e) => setMsg(String(e)),
+    onError: (e) => setMsg(e.message),
   });
 
   if (!open) {
@@ -8871,7 +9123,7 @@ function ReserveSettings({
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label htmlFor="rs-opening" className={labelCls}>Opening reserve ($)</label>
-          <input id="rs-opening" type="text" inputMode="decimal" className={inputCls} value={opening} onChange={(e) => setOpening(e.target.value)} />
+          <input {...FIELDS.updateSettings.openingReserveCents} id="rs-opening" type="text" inputMode="decimal" className={inputCls} value={opening} onChange={(e) => setOpening(e.target.value)} />
         </div>
         <div>
           <label htmlFor="rs-start" className={labelCls}>Reserve starts (month)</label>
@@ -9269,7 +9521,7 @@ function ImportPanel({
         `Imported ${r.imported} row${r.imported === 1 ? "" : "s"}, then a batch failed${r.error ? ` (${r.error})` : ""}. The remaining ${r.remaining.length} row${r.remaining.length === 1 ? " is" : "s are"} still in the preview — press Import again to retry just those.`,
       );
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   function buildRows(): { rows: TxnInput[]; skipped: number; bothFilled: number } | null {
@@ -9710,7 +9962,7 @@ function ImportPanel({
         </div>
         <div>
           <label htmlFor="imp-account" className={labelCls}>Account name</label>
-          <input id="imp-account" type="text" className={inputCls} value={account} onChange={(e) => { setAccount(e.target.value); clearPreview(); }} />
+          <input {...FIELDS.importTransactions.rows.accountName} id="imp-account" type="text" className={inputCls} value={account} onChange={(e) => { setAccount(e.target.value); clearPreview(); }} />
         </div>
         <div>
           <label htmlFor="imp-sign" className={labelCls}>In this file, money out is</label>

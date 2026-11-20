@@ -53,6 +53,14 @@ import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
 import { usePersistedChoice } from "./persistedChoice";
 import { TrendBlock } from "./YearBlocks";
+import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
+import type { Actions } from "../../server/src/actions";
+
+/* Platform v29: form inputs take their limits (maxLength,
+   minLength, required) from the actions' own request schemas —
+   spreading a field's FIELDS entry onto the input that feeds it
+   keeps the page and the server in agreement by construction. */
+const FIELDS = actionFields<typeof Actions>();
 
 type NwData = ApiResponse<typeof api, "getNetWorth">;
 type NwAccount = NwData["accounts"][number];
@@ -711,7 +719,7 @@ function SnapshotEditor({
       invalidate();
       onClose();
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   const del = useMutation({
@@ -727,7 +735,7 @@ function SnapshotEditor({
       invalidate();
       onClose();
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   function submit(e: FormEvent) {
@@ -833,6 +841,7 @@ function SnapshotEditor({
             <input
               id="nw-note"
               type="text"
+              {...FIELDS.addNwSnapshot.note}
               className={inputCls}
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -875,6 +884,7 @@ function SnapshotEditor({
                           />
                         </div>
                         <input
+                          {...FIELDS.updateNwSnapshot.balances.splits.amountCents}
                           id={`nw-bal-${a.id}-${bucketKey(bucket)}`}
                           aria-label={`${a.name} ${bucketLabel(bucket)} amount`}
                           type="text"
@@ -933,6 +943,7 @@ function SnapshotEditor({
                 </label>
                 <div className="flex items-center gap-2">
                   <input
+                    {...FIELDS.updateNwSnapshot.balances.balanceCents}
                     id={`nw-bal-${a.id}`}
                     type="text"
                     inputMode="decimal"
@@ -1117,7 +1128,7 @@ function BalanceEditor({
       queryClient.invalidateQueries({ queryKey: ["networth"] });
       onClose();
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   function submit(e: FormEvent) {
@@ -1214,6 +1225,7 @@ function BalanceEditor({
                       />
                     </div>
                     <input
+                      {...FIELDS.updateNwBalance.splits.amountCents}
                       id={`nw-one-bal-${bucketKey(bucket)}`}
                       aria-label={`${account.name} ${bucketLabel(bucket)} amount`}
                       type="text"
@@ -1261,6 +1273,7 @@ function BalanceEditor({
               </label>
               <div className="flex items-center gap-2">
                 <input
+                  {...FIELDS.updateNwBalance.balanceCents}
                   id="nw-one-bal"
                   type="text"
                   inputMode="decimal"
@@ -1713,7 +1726,7 @@ function NwImportPanel({
       setDraft(null);
       onSaved();
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(e.message),
   });
 
   function submitDraft() {
@@ -2161,6 +2174,7 @@ function NwImportPanel({
                             <BucketHelp bucket={bucket} align={i % 2 === 0 ? "left" : "right"} />
                           </div>
                           <input
+                            {...FIELDS.addNwSnapshot.balances.splits.amountCents}
                             id={`nw-imp-bal-${es.accountId}-${bucketKey(bucket)}`}
                             aria-label={`${acct.name} ${bucketLabel(bucket)} amount`}
                             type="text"
@@ -2218,6 +2232,7 @@ function NwImportPanel({
                     </label>
                     <div className="flex items-center gap-2">
                       <input
+                        {...FIELDS.addNwSnapshot.balances.balanceCents}
                         id={`nw-imp-bal-${es.accountId}`}
                         type="text"
                         inputMode="decimal"
@@ -2982,7 +2997,7 @@ export function NetWorthView() {
       setBackupNotice(r.reason);
       invalidateBackups();
     },
-    onError: (e) => setBackupError(String(e)),
+    onError: (e) => setBackupError(e.message),
   });
   const deleteAllBackups = useMutation({
     mutationFn: () => api.deleteAllBackups({}),
@@ -2996,7 +3011,7 @@ export function NetWorthView() {
       setConfirmDeleteAllBackups(false);
       invalidateBackups();
     },
-    onError: (e) => setBackupError(String(e)),
+    onError: (e) => setBackupError(e.message),
   });
   const createBackup = useMutation({
     mutationFn: () => api.createBackupNow({}),
@@ -3013,7 +3028,7 @@ export function NetWorthView() {
       setBackupNotice(r.reason);
       invalidateBackups();
     },
-    onError: (e) => setBackupError(`Backup failed: ${String(e)}`),
+    onError: (e) => setBackupError(`Backup failed: ${e.message}`),
   });
 
   const invalidate = () =>
@@ -3022,6 +3037,7 @@ export function NetWorthView() {
   const seed = useMutation({
     mutationFn: () => api.seedNetWorth({}),
     onSuccess: invalidate,
+    onError: (e) => setAccountError(e.message),
   });
   const addAccount = useMutation({
     mutationFn: (input: { name: string; type: NwAccountType }) =>
@@ -3041,7 +3057,7 @@ export function NetWorthView() {
       setShowAccountForm(false);
       invalidate();
     },
-    onError: (e) => setAccountError(String(e)),
+    onError: (e) => setAccountError(e.message),
   });
   const renameAccount = useMutation({
     mutationFn: (input: {
@@ -3075,7 +3091,7 @@ export function NetWorthView() {
       setRenamingId(null);
       invalidate();
     },
-    onError: (e) => setRenameError(String(e)),
+    onError: (e) => setRenameError(e.message),
   });
   const setIncludeProperty = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -3088,6 +3104,7 @@ export function NetWorthView() {
       setAccountError("");
       invalidate();
     },
+    onError: (e) => setAccountError(e.message),
   });
   const setNwTarget = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -3103,7 +3120,7 @@ export function NetWorthView() {
       setTargetError("");
       invalidate();
     },
-    onError: (e) => setTargetError(String(e)),
+    onError: (e) => setTargetError(e.message),
   });
   // Accounts / History collapse flags: optimistic — each section
   // flips immediately from local state and the choice persists in
@@ -3126,6 +3143,10 @@ export function NetWorthView() {
       setAccountError("");
       invalidate();
     },
+    onError: (e) => {
+      setAccountError(e.message);
+      setAccountsOverride(null);
+    },
   });
   const setHistoryCollapsed = useMutation({
     // Build v130 (round-19 finding 10): carries the epoch of the
@@ -3140,6 +3161,10 @@ export function NetWorthView() {
       setAccountError("");
       invalidate();
     },
+    onError: (e) => {
+      setAccountError(e.message);
+      setHistoryOverride(null);
+    },
   });
   const setNwGrowthSince = useMutation({
     // Build v130 (round-19 finding 10): carries the epoch of the
@@ -3153,6 +3178,7 @@ export function NetWorthView() {
       setAccountError("");
       invalidate();
     },
+    onError: (e) => setAccountError(e.message),
   });
   const setArchived = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -3166,6 +3192,7 @@ export function NetWorthView() {
       setAccountError("");
       invalidate();
     },
+    onError: (e) => setAccountError(e.message),
   });
   const deleteAccount = useMutation({
     // Build v121 (F3): carries the epoch of the data on screen.
@@ -3179,7 +3206,7 @@ export function NetWorthView() {
       setConfirmDeleteAccountId(null);
       invalidate();
     },
-    onError: (e) => setDeleteAccountError(String(e)),
+    onError: (e) => setDeleteAccountError(e.message),
   });
 
   const model = useMemo(() => {
@@ -3355,6 +3382,18 @@ export function NetWorthView() {
     }
     return null;
   };
+  // First property balance field of a snapshot: the first
+  // property account (display order) with a recorded balance.
+  // The property-net figure tap lands here, so the cursor goes
+  // to a house/mortgage value rather than an unrelated account.
+  const firstPropertyBalanceFieldId = (s: NwSnapshot): string | null => {
+    for (const a of accounts) {
+      if (a.propertyKind === "none") continue;
+      if (!s.balances.some((x) => x.accountId === a.id)) continue;
+      return accountBalanceFieldId(s, a.id);
+    }
+    return null;
+  };
   // The balance field for one account in one snapshot (whole, or
   // its first split part when the balance is split).
   const accountBalanceFieldId = (
@@ -3442,11 +3481,14 @@ export function NetWorthView() {
             className="mt-4 flex flex-wrap items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault();
-              if (newAccountName.trim())
-                addAccount.mutate({
-                  name: newAccountName.trim(),
-                  type: newAccountType,
-                });
+              if (!newAccountName.trim()) {
+                setAccountError("Give the account a name first.");
+                return;
+              }
+              addAccount.mutate({
+                name: newAccountName.trim(),
+                type: newAccountType,
+              });
             }}
           >
             <div className="min-w-52 flex-1">
@@ -3454,6 +3496,7 @@ export function NetWorthView() {
               <input
                 id="nw-new-account-empty"
                 type="text"
+                {...FIELDS.addNwAccount.name}
                 className={inputCls}
                 value={newAccountName}
                 onChange={(e) => setNewAccountName(e.target.value)}
@@ -3556,19 +3599,18 @@ export function NetWorthView() {
      latest snapshot (bucketTotalForSnapshot: property accounts
      are always outside the buckets, custodial accounts never
      count). Bar shares are of the positive segments' own sum,
-     so they always add to 100%. The section HEADLINE and the
-     "% of target" figure, however, use the SIGNED sum of every
+     so they always add to 100%. The "% of target" figure beside
+     the headline total, however, uses the SIGNED sum of every
      bucket (build v63, F1): a negative bucket (a split part
      can be negative) is real money owed against the others, so
-     it must reduce the headline even though it cannot draw as
-     a bar segment — negative buckets render as their own lines
-     under the bar instead, so the displayed parts (positive
-     legend amounts plus the negative lines) foot exactly to
-     the headline. With every bucket positive the two sums are
-     equal and the section renders exactly as before. When
-     property is included and has a balance, the mix covers
-     only the bucketed part of net worth, and the section says
-     so (see below). */
+     it must reduce that figure's numerator even though it cannot
+     draw as a bar segment — negative buckets render as their own
+     lines under the bar instead, so the displayed parts (positive
+     legend amounts plus the negative lines) foot exactly to the
+     signed sum. With every bucket positive the two sums are
+     equal. When property is included and has a balance, the mix
+     covers only the bucketed part of net worth, and the section
+     says so (see below). */
   const bucketEntries: { bucket: NwBucket; cents: number }[] = latest
     ? NW_BUCKETS.map((bucket) => ({
         bucket,
@@ -3879,10 +3921,13 @@ export function NetWorthView() {
       </div>
 
       {/* combined net worth card — one full-width card: the headline
-          stat strip (prominent net worth with its date, plus the two
-          deltas as compact lines beside it on wide screens and below
-          it on phones) on top, the "Net worth over time" chart below,
-          separated by a divider */}
+          stat strip (prominent net worth with its date and the "% of
+          target" line beside it, plus the two deltas as compact lines
+          beside it on wide screens and below it on phones) on top,
+          the Current buckets bar right under the total, and the
+          "Net worth over time" chart below, each separated by a
+          divider. The total is shown once, in the headline; the
+          buckets block carries no total of its own. */}
       <section
         aria-label="Net worth summary"
         className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
@@ -3898,6 +3943,23 @@ export function NetWorthView() {
             <p className="tnum mt-1 text-sm whitespace-nowrap text-[var(--dim)]">
               {latest ? `as of ${fmtDateLong(latest.date)}` : ""}
             </p>
+            {bucketEntries.length > 0 &&
+              targetCents != null &&
+              targetCents > 0 && (
+                <p className="tnum mt-1 text-sm whitespace-nowrap text-[var(--dim)]">
+                  {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of
+                  the{" "}
+                  <button
+                    type="button"
+                    aria-label="Go to the Net worth target field"
+                    className={nwTapCls}
+                    onClick={jumpToNwTarget}
+                  >
+                    {fmt(targetCents)}
+                  </button>{" "}
+                  target
+                </p>
+              )}
           </div>
           <div className="flex min-w-0 flex-col gap-2 sm:items-end">
             <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm sm:justify-end">
@@ -3961,7 +4023,11 @@ export function NetWorthView() {
                     type="button"
                     aria-label={`Edit the house and mortgage values in the ${fmtDateLong(latest.date)} snapshot`}
                     className={nwTapCls}
-                    onClick={() => openEditSnapshot(latest)}
+                    onClick={() => {
+                      const fieldId = firstPropertyBalanceFieldId(latest);
+                      if (fieldId) jumpToNwSnapshotField(latest, fieldId);
+                      else openEditSnapshot(latest);
+                    }}
                   >
                     {fmt(latestPropertyNet)}
                   </button>{" "}
@@ -3990,6 +4056,114 @@ export function NetWorthView() {
             </p>
           )}
         </div>
+
+      {/* current bucket mix — merged into the combined card, right
+          under the headline total: one stacked bar from the latest
+          snapshot's bucket subtotals. No total here — the total is
+          shown once, in the headline above, with the "% of target"
+          line beside it. */}
+      <section
+        aria-label="Current buckets"
+        className="mt-5 border-t border-[var(--border)] pt-5"
+      >
+        <div>
+          <h3 className="display text-lg font-semibold">Current buckets</h3>
+          <p className="mt-0.5 text-sm text-[var(--dim)]">
+            {latest
+              ? `From the ${fmtDateLong(latest.date)} snapshot`
+              : ""}
+          </p>
+        </div>
+        {bucketEntries.length > 0 ? (
+          <>
+            {bucketMix.length > 0 && (
+            <div
+              className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
+              role="img"
+              aria-label={`Bucket mix: ${bucketMix
+                .map(
+                  (s) =>
+                    `${bucketLabel(s.bucket)} ${fmt(s.cents)}, ${bucketMixTotal > 0 ? ((s.cents / bucketMixTotal) * 100).toFixed(1) : "0.0"} percent`,
+                )
+                .join("; ")}`}
+            >
+              {bucketMix.map((s) => (
+                <div
+                  key={s.bucket}
+                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
+                  style={{
+                    width: `${bucketMixTotal > 0 ? (s.cents / bucketMixTotal) * 100 : 0}%`,
+                    background: BUCKET_COLORS[s.bucket],
+                  }}
+                >
+                  {(s.cents / bucketMixTotal) * 100 >= 7 && (
+                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+                      {bucketLabel(s.bucket)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            )}
+            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+              {bucketMix.map((s) => (
+                <li
+                  key={s.bucket}
+                  className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                    style={{ background: BUCKET_COLORS[s.bucket] }}
+                  />
+                  <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                  <span>{fmt(s.cents)}</span>
+                  <span className="text-[var(--dim)]">
+                    ·{" "}
+                    {bucketMixTotal > 0
+                      ? ((s.cents / bucketMixTotal) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {bucketNegative.length > 0 && (
+              <ul className="mt-2 space-y-1.5" aria-label="Negative buckets">
+                {bucketNegative.map((s) => (
+                  <li
+                    key={s.bucket}
+                    className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                      style={{ background: BUCKET_COLORS[s.bucket] }}
+                    />
+                    <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                    <span>{fmt(s.cents)}</span>
+                    <span className="text-[var(--dim)]">
+                      — below zero, so it is not in the bar above; it is
+                      counted in the total at the top
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {bucketMixPropertyNet != null && (
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                Property net {fmt(bucketMixPropertyNet)} is counted in net
+                worth, outside the buckets — so this mix covers the bucketed
+                part of the total.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-[var(--dim)]">
+            No bucket amounts recorded in the latest snapshot yet.
+          </p>
+        )}
+      </section>
 
       {/* main chart — inside the combined card now, so this is a
           divider-separated block, not its own card */}
@@ -4618,134 +4792,6 @@ export function NetWorthView() {
       </div>
       </section>
 
-      {/* current bucket mix — one stacked bar from the latest
-          snapshot's bucket subtotals */}
-      <section
-        aria-label="Current buckets"
-        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="display text-lg font-semibold">Current buckets</h3>
-            <p className="mt-0.5 text-sm text-[var(--dim)]">
-              {latest
-                ? `From the ${fmtDateLong(latest.date)} snapshot`
-                : ""}
-            </p>
-          </div>
-          {bucketEntries.length > 0 && (
-            <div className="text-right">
-              <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
-                {fmt(bucketSignedTotal)}
-              </p>
-              {targetCents != null && targetCents > 0 && (
-                <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
-                  {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of the{" "}
-                  <button
-                    type="button"
-                    aria-label="Go to the Net worth target field"
-                    className={nwTapCls}
-                    onClick={jumpToNwTarget}
-                  >
-                    {fmt(targetCents)}
-                  </button>{" "}
-                  target
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-        {bucketEntries.length > 0 ? (
-          <>
-            {bucketMix.length > 0 && (
-            <div
-              className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
-              role="img"
-              aria-label={`Bucket mix: ${bucketMix
-                .map(
-                  (s) =>
-                    `${bucketLabel(s.bucket)} ${fmt(s.cents)}, ${bucketMixTotal > 0 ? ((s.cents / bucketMixTotal) * 100).toFixed(1) : "0.0"} percent`,
-                )
-                .join("; ")}`}
-            >
-              {bucketMix.map((s) => (
-                <div
-                  key={s.bucket}
-                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
-                  style={{
-                    width: `${bucketMixTotal > 0 ? (s.cents / bucketMixTotal) * 100 : 0}%`,
-                    background: BUCKET_COLORS[s.bucket],
-                  }}
-                >
-                  {(s.cents / bucketMixTotal) * 100 >= 7 && (
-                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
-                      {bucketLabel(s.bucket)}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            )}
-            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
-              {bucketMix.map((s) => (
-                <li
-                  key={s.bucket}
-                  className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
-                    style={{ background: BUCKET_COLORS[s.bucket] }}
-                  />
-                  <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                  <span>{fmt(s.cents)}</span>
-                  <span className="text-[var(--dim)]">
-                    ·{" "}
-                    {bucketMixTotal > 0
-                      ? ((s.cents / bucketMixTotal) * 100).toFixed(1)
-                      : "0.0"}
-                    %
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {bucketNegative.length > 0 && (
-              <ul className="mt-2 space-y-1.5" aria-label="Negative buckets">
-                {bucketNegative.map((s) => (
-                  <li
-                    key={s.bucket}
-                    className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
-                      style={{ background: BUCKET_COLORS[s.bucket] }}
-                    />
-                    <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                    <span>{fmt(s.cents)}</span>
-                    <span className="text-[var(--dim)]">
-                      — below zero, so it is not in the bar above; it is
-                      counted in the total at the top
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {bucketMixPropertyNet != null && (
-              <p className="mt-2 text-sm text-[var(--dim)]">
-                Property net {fmt(bucketMixPropertyNet)} is counted in net
-                worth, outside the buckets — so this mix covers the bucketed
-                part of the total.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="mt-2 text-sm text-[var(--dim)]">
-            No bucket amounts recorded in the latest snapshot yet.
-          </p>
-        )}
-      </section>
-
       {/* net worth target */}
       <section
         aria-label="Net worth target"
@@ -4785,6 +4831,7 @@ export function NetWorthView() {
                 Net worth target ($)
               </label>
               <input
+                {...FIELDS.setNwTarget.targetCents}
                 id="nw-target-input"
                 type="text"
                 inputMode="decimal"
@@ -5145,11 +5192,14 @@ export function NetWorthView() {
           className="mt-3 flex flex-wrap items-end gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (newAccountName.trim())
-              addAccount.mutate({
-                name: newAccountName.trim(),
-                type: newAccountType,
-              });
+            if (!newAccountName.trim()) {
+              setAccountError("Give the account a name first.");
+              return;
+            }
+            addAccount.mutate({
+              name: newAccountName.trim(),
+              type: newAccountType,
+            });
           }}
         >
           <div className="min-w-52 flex-1">
@@ -5157,6 +5207,7 @@ export function NetWorthView() {
             <input
               id="nw-new-account"
               type="text"
+              {...FIELDS.addNwAccount.name}
               className={inputCls}
               value={newAccountName}
               onChange={(e) => setNewAccountName(e.target.value)}
@@ -5374,6 +5425,7 @@ export function NetWorthView() {
                           <input
                             type="text"
                             aria-label={`New name for ${a.name}`}
+                            {...FIELDS.renameNwAccount.name}
                             className="w-32 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm"
                             value={renameName}
                             onChange={(e) => setRenameName(e.target.value)}
@@ -5397,7 +5449,11 @@ export function NetWorthView() {
                             type="button"
                             className="text-sm font-medium text-[var(--accent)]"
                             disabled={renameAccount.isPending}
-                            onClick={() =>
+                            onClick={() => {
+                              if (!renameName.trim()) {
+                                setRenameError("Give the account a name first.");
+                                return;
+                              }
                               renameAccount.mutate({
                                 id: a.id,
                                 name: renameName,
@@ -5407,8 +5463,8 @@ export function NetWorthView() {
                                   propertyKind: a.propertyKind,
                                   custodial: a.custodial,
                                 },
-                              })
-                            }
+                              });
+                            }}
                           >
                             Save
                           </button>

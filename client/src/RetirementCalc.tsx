@@ -55,6 +55,14 @@ solveMaxSpending,
 type SimInputs,
 type SpendingStrategy,
 } from "@space/server/retirementEngines";
+import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
+import type { Actions } from "../../server/src/actions";
+
+/* Platform v29: form inputs take their limits (maxLength,
+   minLength, required) from the actions' own request schemas —
+   spreading a field's FIELDS entry onto the input that feeds it
+   keeps the page and the server in agreement by construction. */
+const FIELDS = actionFields<typeof Actions>();
 
 type CalcData = ApiResponse<typeof api, "getRetirementCalc">;
 type Scenario = CalcData["scenarios"][number];
@@ -3029,7 +3037,7 @@ export function RetirementCalc() {
       setScenarioMsg(r.reason);
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
     },
-    onError: (e) => setScenarioMsg(String(e)),
+    onError: (e) => setScenarioMsg(e.message),
   });
   const deleteScenario = useMutation({
     mutationFn: (name: string) => api.deleteRetirementScenario({ name }),
@@ -3038,7 +3046,7 @@ export function RetirementCalc() {
       setScenarioMsg(r.reason);
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
     },
-    onError: (e) => setScenarioMsg(String(e)),
+    onError: (e) => setScenarioMsg(e.message),
   });
   const renameScenario = useMutation({
     mutationFn: (input: Parameters<typeof api.renameRetirementScenario>[0]) =>
@@ -3049,7 +3057,7 @@ export function RetirementCalc() {
       if (r.ok) setRenamingName(null);
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
     },
-    onError: (e) => setScenarioMsg(String(e)),
+    onError: (e) => setScenarioMsg(e.message),
   });
 
   // Assumptions group collapse toggle: display only, persisted
@@ -3066,6 +3074,10 @@ export function RetirementCalc() {
     ) => api.setRetirementAssumptionsCollapsed(input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
+    },
+    onError: (e) => {
+      setScenarioMsg(e.message);
+      setAssumptionsOverride(null);
     },
   });
 
@@ -3097,6 +3109,13 @@ export function RetirementCalc() {
       // preference never moved.
       if (!r.ok) setSpendingUnit(data?.spendingUnit ?? "month");
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
+    },
+    onError: (e) => {
+      // A failed flip never landed either: revert the local
+      // unit to the stored one and say why, in the same place
+      // the scenario messages land.
+      setSpendingUnit(data?.spendingUnit ?? "month");
+      setScenarioMsg(e.message);
     },
   });
 
@@ -3270,7 +3289,7 @@ export function RetirementCalc() {
       );
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
     },
-    onError: (e) => setPlanMsg(String(e)),
+    onError: (e) => setPlanMsg(e.message),
   });
 
   const handleSaveAsMyPlan = () => {
@@ -4470,17 +4489,17 @@ export function RetirementCalc() {
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
             <div>
               <label htmlFor="rc-current-age" className={labelCls}>Current age</label>
-              <input id="rc-current-age" type="text" inputMode="numeric" className={inputCls} value={currentAge} onFocus={() => setFocusField("currentAge")} onBlur={() => setFocusField(null)} onChange={(e) => setCurrentAge(e.target.value)} />
+              <input {...FIELDS.saveRetirementCalc.currentAge} id="rc-current-age" type="text" inputMode="numeric" className={inputCls} value={currentAge} onFocus={() => setFocusField("currentAge")} onBlur={() => setFocusField(null)} onChange={(e) => setCurrentAge(e.target.value)} />
               <p className="mt-1 text-xs text-[var(--dim)]">Your birth year in the Tax Plan sets this age — editing it here updates the birth year there.</p>
             </div>
             <div>
               <label htmlFor="rc-retirement-age" className={labelCls}>Retirement age</label>
-              <input id="rc-retirement-age" type="text" inputMode="numeric" className={inputCls} value={retirementAge} onFocus={() => setFocusField("retirementAge")} onBlur={() => setFocusField(null)} onChange={(e) => setRetirementAge(e.target.value)} />
+              <input {...FIELDS.saveRetirementCalc.retirementAge} id="rc-retirement-age" type="text" inputMode="numeric" className={inputCls} value={retirementAge} onFocus={() => setFocusField("retirementAge")} onBlur={() => setFocusField(null)} onChange={(e) => setRetirementAge(e.target.value)} />
               <p className="mt-1 text-xs text-[var(--dim)]">Later than today? The portfolio grows with no withdrawals until then.</p>
             </div>
             <div>
               <label htmlFor="rc-end-age" className={labelCls}>End age</label>
-              <input id="rc-end-age" type="text" inputMode="numeric" className={inputCls} value={endAge} onFocus={() => setFocusField("endAge")} onBlur={() => setFocusField(null)} onChange={(e) => setEndAge(e.target.value)} />
+              <input {...FIELDS.saveRetirementCalc.endAge} id="rc-end-age" type="text" inputMode="numeric" className={inputCls} value={endAge} onFocus={() => setFocusField("endAge")} onBlur={() => setFocusField(null)} onChange={(e) => setEndAge(e.target.value)} />
               <p className="mt-1 text-xs text-[var(--dim)]">The age the plan is tested to.</p>
             </div>
           </div>
@@ -4491,7 +4510,7 @@ export function RetirementCalc() {
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
             <div>
               <label htmlFor="rc-portfolio" className={labelCls}>Starting portfolio ($)</label>
-              <input id="rc-portfolio" type="text" inputMode="decimal" className={inputCls} value={focusField === "portfolio" ? portfolio : formatMoneyDisplay(portfolio)} onFocus={() => setFocusField("portfolio")} onBlur={() => setFocusField(null)} onChange={(e) => { setPortfolio(e.target.value); setPortfolioFollowing(e.target.value.trim() === ""); }} />
+              <input {...FIELDS.saveRetirementCalc.portfolioCents} id="rc-portfolio" type="text" inputMode="decimal" className={inputCls} value={focusField === "portfolio" ? portfolio : formatMoneyDisplay(portfolio)} onFocus={() => setFocusField("portfolio")} onBlur={() => setFocusField(null)} onChange={(e) => { setPortfolio(e.target.value); setPortfolioFollowing(e.target.value.trim() === ""); }} />
               <Explainer
                 id="retirement.startingPortfolio"
                 label="Starting portfolio"
@@ -4505,7 +4524,7 @@ export function RetirementCalc() {
             {strategy === "percent" ? (
               <div>
                 <label htmlFor="rc-percent" className={labelCls}>% of portfolio per year (%)</label>
-                <input id="rc-percent" type="text" inputMode="decimal" className={inputCls} value={focusField === "percent" ? percentOfPortfolio : formatPctDisplay(percentOfPortfolio)} onFocus={() => setFocusField("percent")} onBlur={() => setFocusField(null)} onChange={(e) => setPercentOfPortfolio(e.target.value)} />
+                <input {...FIELDS.saveRetirementCalc.percentOfPortfolio} id="rc-percent" type="text" inputMode="decimal" className={inputCls} value={focusField === "percent" ? percentOfPortfolio : formatPctDisplay(percentOfPortfolio)} onFocus={() => setFocusField("percent")} onBlur={() => setFocusField(null)} onChange={(e) => setPercentOfPortfolio(e.target.value)} />
                 <p className="mt-1 text-xs text-[var(--dim)]">
                   Each retired year, spending is this % of the balance at the start of that year.
                   {percentAnnualisedCents != null && (
@@ -4530,6 +4549,7 @@ export function RetirementCalc() {
                     stretching to fill the block. */}
                 <div className="shrink-0">
                 <input
+                  {...FIELDS.saveRetirementCalc.spendingCents}
                   id="rc-spending"
                   type="text"
                   inputMode="decimal"
@@ -4641,14 +4661,14 @@ export function RetirementCalc() {
               <>
                 <div>
                   <label htmlFor="rc-phase-start" className={labelCls}>Step-down starts at age</label>
-                  <input id="rc-phase-start" type="text" inputMode="numeric" className={inputCls} value={phaseStartAge} onChange={(e) => setPhaseStartAge(e.target.value)} placeholder="75" />
+                  <input {...FIELDS.saveRetirementCalc.phaseStartAge} id="rc-phase-start" type="text" inputMode="numeric" className={inputCls} value={phaseStartAge} onChange={(e) => setPhaseStartAge(e.target.value)} placeholder="75" />
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Spending stays full through this age; the first lower year is the one after. Blank = 75.
                   </p>
                 </div>
                 <div>
                   <label htmlFor="rc-phase-decline" className={labelCls}>Step down by (%/yr)</label>
-                  <input id="rc-phase-decline" type="text" inputMode="decimal" className={inputCls} value={focusField === "phase-decline" ? phaseDeclinePct : formatPctDisplay(phaseDeclinePct)} onFocus={() => setFocusField("phase-decline")} onBlur={() => setFocusField(null)} onChange={(e) => setPhaseDeclinePct(e.target.value)} placeholder="1" />
+                  <input {...FIELDS.saveRetirementCalc.phaseDeclinePct} id="rc-phase-decline" type="text" inputMode="decimal" className={inputCls} value={focusField === "phase-decline" ? phaseDeclinePct : formatPctDisplay(phaseDeclinePct)} onFocus={() => setFocusField("phase-decline")} onBlur={() => setFocusField(null)} onChange={(e) => setPhaseDeclinePct(e.target.value)} placeholder="1" />
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Each year after the start age, spending is this % below the year before. Blank = 1%.
                   </p>
@@ -4664,21 +4684,21 @@ export function RetirementCalc() {
               <>
                 <div>
                   <label htmlFor="rc-guardrails-cut" className={labelCls}>Cut trigger (%)</label>
-                  <input id="rc-guardrails-cut" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-cut" ? guardrailsCutPct : formatPctDisplay(guardrailsCutPct)} onFocus={() => setFocusField("guardrails-cut")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsCutPct(e.target.value)} placeholder="120" />
+                  <input {...FIELDS.saveRetirementCalc.guardrailsCutPct} id="rc-guardrails-cut" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-cut" ? guardrailsCutPct : formatPctDisplay(guardrailsCutPct)} onFocus={() => setFocusField("guardrails-cut")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsCutPct(e.target.value)} placeholder="120" />
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Adjust spending down when the current withdrawal rate exceeds this % of the starting withdrawal rate. Blank = 120%, the professional default.
                   </p>
                 </div>
                 <div>
                   <label htmlFor="rc-guardrails-raise" className={labelCls}>Raise trigger (%)</label>
-                  <input id="rc-guardrails-raise" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-raise" ? guardrailsRaisePct : formatPctDisplay(guardrailsRaisePct)} onFocus={() => setFocusField("guardrails-raise")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsRaisePct(e.target.value)} placeholder="80" />
+                  <input {...FIELDS.saveRetirementCalc.guardrailsRaisePct} id="rc-guardrails-raise" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-raise" ? guardrailsRaisePct : formatPctDisplay(guardrailsRaisePct)} onFocus={() => setFocusField("guardrails-raise")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsRaisePct(e.target.value)} placeholder="80" />
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Adjust spending up when the current withdrawal rate falls below this % of the starting withdrawal rate. Blank = 80%, the professional default.
                   </p>
                 </div>
                 <div>
                   <label htmlFor="rc-guardrails-adjustment" className={labelCls}>Adjustment size (%)</label>
-                  <input id="rc-guardrails-adjustment" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-adjustment" ? guardrailsAdjustmentPct : formatPctDisplay(guardrailsAdjustmentPct)} onFocus={() => setFocusField("guardrails-adjustment")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsAdjustmentPct(e.target.value)} placeholder="10" />
+                  <input {...FIELDS.saveRetirementCalc.guardrailsAdjustmentPct} id="rc-guardrails-adjustment" type="text" inputMode="decimal" className={inputCls} value={focusField === "guardrails-adjustment" ? guardrailsAdjustmentPct : formatPctDisplay(guardrailsAdjustmentPct)} onFocus={() => setFocusField("guardrails-adjustment")} onBlur={() => setFocusField(null)} onChange={(e) => setGuardrailsAdjustmentPct(e.target.value)} placeholder="10" />
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Each adjustment changes spending by this % — at most one adjustment per year. Blank = 10%, the professional default.
                   </p>
@@ -4687,19 +4707,19 @@ export function RetirementCalc() {
             )}
             <div>
               <label htmlFor="rc-stocks" className={labelCls}>Portfolio mix — stocks %</label>
-              <input id="rc-stocks" type="text" inputMode="decimal" className={inputCls} value={focusField === "stocks" ? stocksPct : formatPctDisplay(stocksPct)} onFocus={() => setFocusField("stocks")} onBlur={() => setFocusField(null)} onChange={(e) => setStocksPct(e.target.value)} aria-describedby="rc-mix-note" />
+              <input {...FIELDS.saveRetirementCalc.stocksPct} id="rc-stocks" type="text" inputMode="decimal" className={inputCls} value={focusField === "stocks" ? stocksPct : formatPctDisplay(stocksPct)} onFocus={() => setFocusField("stocks")} onBlur={() => setFocusField(null)} onChange={(e) => setStocksPct(e.target.value)} aria-describedby="rc-mix-note" />
               <p id="rc-mix-note" className="mt-1 text-xs text-[var(--dim)]">
                 Bonds make up the rest: {bondsPct}% bonds.
               </p>
             </div>
             <div>
               <label htmlFor="rc-extra-income" className={labelCls}>Extra income ($/yr, optional)</label>
-              <input id="rc-extra-income" type="text" inputMode="decimal" className={inputCls} value={focusField === "extra-income" ? extraIncome : formatMoneyDisplay(extraIncome)} onFocus={() => setFocusField("extra-income")} onBlur={() => setFocusField(null)} onChange={(e) => setExtraIncome(e.target.value)} placeholder="Blank = none" />
+              <input {...FIELDS.saveRetirementCalc.extraIncomeCents} id="rc-extra-income" type="text" inputMode="decimal" className={inputCls} value={focusField === "extra-income" ? extraIncome : formatMoneyDisplay(extraIncome)} onFocus={() => setFocusField("extra-income")} onBlur={() => setFocusField(null)} onChange={(e) => setExtraIncome(e.target.value)} placeholder="Blank = none" />
               <p className="mt-1 text-xs text-[var(--dim)]">Social Security or a pension, in today&rsquo;s dollars. Blank = none. Income starting before retirement is not saved up in the years before retirement — it counts from the first retired year. Benefits already being collected while still working belong on the Roth view&rsquo;s Work-years tab, which prices them with tax.</p>
             </div>
             <div>
               <label htmlFor="rc-extra-start" className={labelCls}>Extra income starts at age</label>
-              <input id="rc-extra-start" type="text" inputMode="numeric" className={inputCls} value={extraStartAge} onChange={(e) => setExtraStartAge(e.target.value)} placeholder="e.g. 67" />
+              <input {...FIELDS.saveRetirementCalc.extraIncomeStartAge} id="rc-extra-start" type="text" inputMode="numeric" className={inputCls} value={extraStartAge} onChange={(e) => setExtraStartAge(e.target.value)} placeholder="e.g. 67" />
               <p className="mt-1 text-xs text-[var(--dim)]">Defaults to 67 (Social Security). Blank = starts at your retirement age.</p>
             </div>
             <div>
@@ -4728,12 +4748,12 @@ export function RetirementCalc() {
             <div id="rc-assumptions-fields" className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
               <div>
                 <label htmlFor="rc-expected-return" className={labelCls}>Expected real return (%)</label>
-                <input id="rc-expected-return" type="text" inputMode="decimal" className={inputCls} value={focusField === "expectedPct" ? expectedPct : formatPctDisplay(expectedPct)} onFocus={() => setFocusField("expectedPct")} onBlur={() => setFocusField(null)} onChange={(e) => setExpectedPct(e.target.value)} />
+                <input {...FIELDS.saveRetirementCalc.expectedReturnPct} id="rc-expected-return" type="text" inputMode="decimal" className={inputCls} value={focusField === "expectedPct" ? expectedPct : formatPctDisplay(expectedPct)} onFocus={() => setFocusField("expectedPct")} onBlur={() => setFocusField(null)} onChange={(e) => setExpectedPct(e.target.value)} />
                 <p className="mt-1 text-xs text-[var(--dim)]">Used by Projection &amp; Monte Carlo.</p>
               </div>
               <div>
                 <label htmlFor="rc-vol" className={labelCls}>Volatility (%)</label>
-                <input id="rc-vol" type="text" inputMode="decimal" className={inputCls} value={focusField === "vol" ? volPct : formatPctDisplay(volPct)} onFocus={() => setFocusField("vol")} onBlur={() => setFocusField(null)} onChange={(e) => setVolPct(e.target.value)} />
+                <input {...FIELDS.saveRetirementCalc.volatilityPct} id="rc-vol" type="text" inputMode="decimal" className={inputCls} value={focusField === "vol" ? volPct : formatPctDisplay(volPct)} onFocus={() => setFocusField("vol")} onBlur={() => setFocusField(null)} onChange={(e) => setVolPct(e.target.value)} />
                 <p className="mt-1 text-xs text-[var(--dim)]">Monte Carlo only. Blend default: stocks 18%, bonds 6%. Blank = the blend default for your mix.</p>
               </div>
             </div>
@@ -5346,6 +5366,7 @@ export function RetirementCalc() {
             <div>
               <label htmlFor="rc-solver-target" className={labelCls}>Target success %</label>
               <input
+                {...FIELDS.getRetirementBaselineResults.solverTarget}
                 id="rc-solver-target"
                 type="text"
                 inputMode="decimal"
@@ -5727,19 +5748,23 @@ export function RetirementCalc() {
                         <input
                           type="text"
                           aria-label={`New name for ${sc.name}`}
+                          {...FIELDS.renameRetirementScenario.newName}
                           className="min-w-0 flex-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] sm:max-w-xs"
                           value={renameText}
-                          maxLength={60}
                           onChange={(ev) => setRenameText(ev.target.value)}
                         />
                         <button
                           type="button"
                           aria-label={`Save name for ${sc.name}`}
                           className="rounded-[var(--radius)] bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-                          disabled={renameScenario.isPending || renameText.trim() === ""}
-                          onClick={() =>
-                            renameScenario.mutate({ name: sc.name, newName: renameText })
-                          }
+                          disabled={renameScenario.isPending}
+                          onClick={() => {
+                            if (!renameText.trim()) {
+                              setScenarioMsg("Give the scenario a name first.");
+                              return;
+                            }
+                            renameScenario.mutate({ name: sc.name, newName: renameText });
+                          }}
                         >
                           Save name
                         </button>

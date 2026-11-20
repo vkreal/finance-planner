@@ -843,6 +843,13 @@ const yearlyOut = z.object({
   actualCountThisYear: z.number(),
   lastActualDate: z.string().nullable(),
   lastActualCents: z.number().nullable(),
+  // Smart default for recording this year's payment: the LAST
+  // payment recorded in the PREVIOUS calendar year (relative to
+  // the viewed month's year), or nulls when none was recorded.
+  // The record-payment form pre-fills its amount from this
+  // charge and its date from this charge's month/day.
+  prevYearLastActualDate: z.string().nullable(),
+  prevYearLastActualCents: z.number().nullable(),
   status: z.string(),
 });
 
@@ -1306,6 +1313,20 @@ function yearlyOutFor(
   );
   const actualThisYearCents = thisYear.reduce((s, t) => s + t.amountCents, 0);
   const last = thisYear.length > 0 ? thisYear[thisYear.length - 1] : undefined;
+  // Previous calendar year's payments (smart default source for
+  // the record-payment form): the same start boundary as thisYear
+  // applies, so a payment made before the bill itself started
+  // never becomes the default for a later year either.
+  const prevYearStr = String(Number(year) - 1);
+  const prevYearPayments = linked.filter(
+    (t) =>
+      t.date.startsWith(prevYearStr) &&
+      (startMonth == null || monthOf(t.date) >= startMonth),
+  );
+  const prevLast =
+    prevYearPayments.length > 0
+      ? prevYearPayments[prevYearPayments.length - 1]
+      : undefined;
   const inEffectRaw = yearlyVersionInEffect(versions, selectedMonth, backfill);
   const notStarted = inEffectRaw === null;
   const inEffect = notStarted ? undefined : (inEffectRaw ?? undefined);
@@ -1441,6 +1462,8 @@ function yearlyOutFor(
     actualCountThisYear: thisYear.length,
     lastActualDate: last ? last.date : null,
     lastActualCents: last ? last.amountCents : null,
+    prevYearLastActualDate: prevLast ? prevLast.date : null,
+    prevYearLastActualCents: prevLast ? prevLast.amountCents : null,
     status,
   };
 }
@@ -3549,7 +3572,7 @@ const rothTaxReturnResponse = z.object({
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 163;
+export const API_CONTRACT_VERSION = 165;
 const ENGINE_VERSION = "engine-2";
 
 const provenanceOut = z.object({
@@ -6896,6 +6919,8 @@ const ACTION_PURPOSES: Record<string, string> = {
   addCashOutItem: "Add an itemized cash-out line to a month.",
   updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  copyCashOutItems: "Copy one month's itemized cash-out lines into another month. Items already present in the target month — same description, amount, day, and note — are skipped, so copying twice never double-counts a month. A copied item's day is clamped to the target month's real length. Returns { ok: false, reason } when the two months are the same or the source month has no items. Epoch-checked like its sibling item writers: when the caller supplies `baseEpoch`, the copy is refused when a backup restore has advanced the stored epoch since the load. (The Spending view's 'Same as last month' button that called this was removed on 2026-11-17 after it polluted November 2026; the action itself remains published for API callers.)",
+  undoQuickCopyNov2026: "One-time data repair (2026-11-17): delete the November 2026 cash-out items that the removed 'Same as last month' quick action copied in from October 2026 — a November item is deleted only when an October 2026 item matches it exactly on description, amount, day, and note, the copy's own signature. November's own items never match an October item on all four fields, so they are untouched. Idempotent: a repeat call after the repair removes nothing. Returns the removed count and total plus November's item total after the repair.",
   updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (build v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (build v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
@@ -8184,6 +8209,32 @@ export const Actions = {
       ),
       yearly: z.array(yearlyOut),
       accountNames: z.array(z.string()),
+      // Smart entry defaults (display defaults only — they
+      // pre-fill new-entry forms and never change any figure):
+      // the account and paid-from of the most recent spending
+      // transaction, the most recent category/account/paid-from
+      // per exact transaction description (the payee), and the
+      // most recent amount/day per exact cash-out item name.
+      // Exact strings only — similar-looking names stay separate
+      // entries, never merged.
+      lastTxnAccountName: z.string().nullable(),
+      lastTxnSourceType: z.string().nullable(),
+      payeeDefaults: z.array(
+        z.object({
+          description: z.string(),
+          category: z.string(),
+          accountName: z.string(),
+          sourceType: z.string(),
+        }),
+      ),
+      cashOutPayeeDefaults: z.array(
+        z.object({
+          description: z.string(),
+          amountCents: z.number(),
+          day: z.number(),
+          month: z.string(),
+        }),
+      ),
       // Data-integrity warning lines for this load (bill version
       // chains, payment references, cash-out items). Empty when the
       // stored data passes every check — the UI renders nothing
@@ -8493,6 +8544,58 @@ export const Actions = {
         ]),
       ];
 
+      // Smart entry defaults: `txns` is date-ascending then
+      // id-ascending, and `cashOutItems` is month/day/id
+      // ascending, so walking each backwards yields the most
+      // recent row first. Only spending transactions carry an
+      // account/category default (card payments and transfers
+      // have neither in the entry form).
+      const spendingTxns = txns.filter((t) => t.kind === "spending");
+      const lastSpendingTxn =
+        spendingTxns.length > 0
+          ? spendingTxns[spendingTxns.length - 1]
+          : undefined;
+      const payeeDefaults: {
+        description: string;
+        category: string;
+        accountName: string;
+        sourceType: string;
+      }[] = [];
+      {
+        const seen = new Set<string>();
+        for (let i = spendingTxns.length - 1; i >= 0; i--) {
+          const t = spendingTxns[i];
+          if (!t || seen.has(t.description)) continue;
+          seen.add(t.description);
+          payeeDefaults.push({
+            description: t.description,
+            category: t.category,
+            accountName: t.accountName,
+            sourceType: t.sourceType,
+          });
+        }
+      }
+      const cashOutPayeeDefaults: {
+        description: string;
+        amountCents: number;
+        day: number;
+        month: string;
+      }[] = [];
+      {
+        const seen = new Set<string>();
+        for (let i = cashOutItems.length - 1; i >= 0; i--) {
+          const it = cashOutItems[i];
+          if (!it || seen.has(it.description)) continue;
+          seen.add(it.description);
+          cashOutPayeeDefaults.push({
+            description: it.description,
+            amountCents: it.amountCents,
+            day: it.day,
+            month: it.month,
+          });
+        }
+      }
+
       // Bill amounts are versioned: this month's breakdown uses the
       // version in effect for THIS month, so a future amount change
       // never rewrites an earlier month's total or the amount left after monthly bills.
@@ -8751,6 +8854,10 @@ export const Actions = {
         noDueMonthBills,
         yearly: yearlyOuts,
         accountNames,
+        lastTxnAccountName: lastSpendingTxn?.accountName ?? null,
+        lastTxnSourceType: lastSpendingTxn?.sourceType ?? null,
+        payeeDefaults,
+        cashOutPayeeDefaults,
         integrityWarnings: integrityWarningLines([
           checkBillVersionChains({ txns, yearly, yearlyVersions, summaries, bills, billVersions, cashOutItems }),
           checkPaymentReferences({ txns, yearly, yearlyVersions, summaries, bills, billVersions, cashOutItems }),
@@ -10842,6 +10949,166 @@ export const Actions = {
       }
       ctx.invalidateQueries();
       return { ok: true, reason: "Cash-out item deleted." };
+    },
+  }),
+
+  copyCashOutItems: defineAction({
+    description: "Copy one month's cash-out items into another month, skipping items already there.",
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      fromMonth: z.string().regex(monthRe),
+      toMonth: z.string().regex(monthRe),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      copied: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+      conflict: z.boolean().optional(),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      if (args.fromMonth === args.toMonth) {
+        return {
+          ok: false,
+          reason: "Pick two different months to copy between.",
+          copied: 0,
+          skipped: 0,
+        };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "cash-out items");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason, copied: 0, skipped: 0 };
+      }
+      const { cashOutItems } = await loadAll(ctx);
+      const source = cashOutItems.filter((it) => it.month === args.fromMonth);
+      if (source.length === 0) {
+        return {
+          ok: false,
+          reason: `No cash-out items in ${args.fromMonth} to copy.`,
+          copied: 0,
+          skipped: 0,
+        };
+      }
+      // Days clamp to the target month's real length (leap-year
+      // aware), the same rule the item writers validate against.
+      const [ty = 1970, tm = 1] = args.toMonth.split("-").map(Number);
+      const targetDays = new Date(ty, tm, 0).getDate();
+      const keyOf = (it: { description: string; amountCents: number; day: number; note: string | null }) =>
+        [it.description, String(it.amountCents), String(it.day), it.note ?? ""].join("\u001f");
+      const present = new Set(
+        cashOutItems
+          .filter((it) => it.month === args.toMonth)
+          .map((it) => keyOf(it)),
+      );
+      let copied = 0;
+      let skipped = 0;
+      for (const it of source) {
+        const day = Math.min(it.day, targetDays);
+        const candidate = {
+          description: it.description,
+          amountCents: it.amountCents,
+          day,
+          note: it.note ?? null,
+        };
+        if (present.has(keyOf(candidate))) {
+          skipped++;
+          continue;
+        }
+        await db.insert(schema.monthlyCashOutItems).values({
+          month: args.toMonth,
+          description: await encryptStr(key, candidate.description, "monthly_cash_out_items.description"),
+          amountCents: await encryptNum(key, candidate.amountCents, "monthly_cash_out_items.amount_cents"),
+          note: await encryptNullable(key, candidate.note, "monthly_cash_out_items.note"),
+          day,
+        });
+        present.add(keyOf(candidate));
+        copied++;
+      }
+      ctx.invalidateQueries();
+      return {
+        ok: true,
+        reason:
+          copied > 0
+            ? `Copied ${copied} item${copied === 1 ? "" : "s"} from ${args.fromMonth} into ${args.toMonth}${skipped > 0 ? ` — ${skipped} already there, skipped` : ""}.`
+            : `Everything from ${args.fromMonth} is already in ${args.toMonth} — nothing new to copy.`,
+        copied,
+        skipped,
+      };
+    },
+  }),
+
+  undoQuickCopyNov2026: defineAction({
+    description: "One-time repair: delete the November 2026 cash-out items the 'Same as last month' quick action copied in from October 2026.",
+    privileged: [privileged.ensureEncryptionKey],
+    // One-time data repair (2026-11-17, user-reported): the
+    // Spending view's "Same as last month" quick action copied
+    // all 9 of October 2026's cash-out items into November 2026,
+    // which already had 11 items of its own — November showed
+    // 20 items / $27,651.79 instead of its own 11 / $19,262.48,
+    // with the Mortgage, a gym bill, Chase CC LLC, and Citi CC
+    // each appearing twice and October's property-tax lines
+    // repeated a month late. The quick action's row has been
+    // removed from the Spending view; this action undoes the
+    // copy itself. A November item counts as one of the copies
+    // only when an October 2026 item matches it exactly on
+    // description, amount, day, and note — the signature the
+    // copy wrote (copies keep the source day, and no genuine
+    // November item matches an October item on all four fields:
+    // November's own Mortgage/Gym lines sit on different days
+    // and its Chase CC LLC / Citi CC amounts differ). Matching
+    // runs on the decrypted rows from loadAll, like every other
+    // content match in this layer. Idempotent: once the copies
+    // are gone, a repeat call removes nothing.
+    request: z.object({}),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      removed: z.number().int().nonnegative(),
+      removedTotalCents: z.number().int().nonnegative(),
+      novemberTotalCents: z.number().int().nonnegative(),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const { cashOutItems } = await loadAll(ctx);
+      const keyOf = (it: { description: string; amountCents: number; day: number; note: string | null }) =>
+        [it.description, String(it.amountCents), String(it.day), it.note ?? ""].join("\u001f");
+      const octoberKeys = new Set(
+        cashOutItems.filter((it) => it.month === "2026-10").map((it) => keyOf(it)),
+      );
+      const stray = cashOutItems.filter(
+        (it) => it.month === "2026-11" && octoberKeys.has(keyOf(it)),
+      );
+      let removed = 0;
+      let removedTotalCents = 0;
+      for (const it of stray) {
+        const deleted = await db
+          .delete(schema.monthlyCashOutItems)
+          .where(eq(schema.monthlyCashOutItems.id, it.id))
+          .returning({ id: schema.monthlyCashOutItems.id });
+        if (deleted.length > 0) {
+          removed++;
+          removedTotalCents += it.amountCents;
+        }
+      }
+      const strayIds = new Set(stray.map((it) => it.id));
+      const novemberTotalCents = cashOutItems
+        .filter((it) => it.month === "2026-11" && !strayIds.has(it.id))
+        .reduce((sum, it) => sum + it.amountCents, 0);
+      if (removed > 0) ctx.invalidateQueries();
+      return {
+        ok: true,
+        reason:
+          removed > 0
+            ? `Removed ${removed} copied item${removed === 1 ? "" : "s"} from November 2026; November's own items now total ${novemberTotalCents} cents.`
+            : "No copied items found in November 2026 — nothing to remove.",
+        removed,
+        removedTotalCents,
+        novemberTotalCents,
+      };
     },
   }),
 
