@@ -35,6 +35,7 @@ import {
   computeJointOptimizer,
   optimizerHeirSensitivity,
   optimizerSensitivity,
+  runDynamicOptimizer,
   runOptimizer,
   runRothMonteCarloCheck,
   runRothMonteCarloStats,
@@ -93,6 +94,11 @@ function runJob(msg: JobMessage): unknown {
         p.targetPct,
         p.mcSeed,
       );
+    case "dynamicOptimizer":
+      // SHOULD-1 (§1.2 rule: any call over ~2 s CPU on the
+      // sample household moves to the pool — 15.3 s CPU here).
+      // Full result (no summary shape for this kind).
+      return runDynamicOptimizer(p.inputs, p.opts);
     default:
       throw new Error(`engine worker: unknown job kind ${JSON.stringify(msg.kind)}`);
   }

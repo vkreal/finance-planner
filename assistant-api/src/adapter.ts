@@ -189,7 +189,7 @@ import {
 } from "../../server/src/retirementEngines";
 import {
   pricePlaygroundYear,
-  runDynamicOptimizer,
+  runDynamicOptimizerAsync,
   runOptimizerAsync,
   runRothCompare,
   harvestGatePasses,
@@ -3017,13 +3017,23 @@ async function compareRothConversionsFull(
  * construction (the adapter maps the engine result, it never
  * re-prices a year). No global-optimality claim: see the
  * result's searchLimits.
+ *
+ * Engine Review C7 architecture, SHOULD-1: the optimizer runs
+ * in the worker pool (SMALL lane) through
+ * runDynamicOptimizerAsync, not synchronously on the request
+ * thread — it measures 15.3 s CPU on the sample household,
+ * ~7× the §1.2 ~2 s migration rule. guardAsync maps a pool
+ * EngineError to the typed adapter error.
  */
-export function dynamicWithdrawal(
+export async function dynamicWithdrawal(
   scenario: NormalizedScenario,
-): AdapterResult<DynamicOptimizerResult> {
-  return guard(() => {
+): Promise<AdapterResult<DynamicOptimizerResult>> {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const planInputs = buildRothPlanInputs(scenario);
-    const result = runDynamicOptimizer(planInputs);
+    const result = await runDynamicOptimizerAsync(planInputs, {
+      timeoutMs: remainingMs(),
+    });
     if (!result.ok) return engineError(result.reason ?? "The dynamic optimizer could not price this scenario.");
     return respond(
       scenario,
@@ -3245,13 +3255,15 @@ export async function compareRetirementAges(
       // so a multi-minute salary leg no longer blocks the
       // request thread. The retirement-only legs above stay
       // in-thread (runRothCompare, ~1 s at the capped size).
-      // One opts object carries the action's remaining budget
-      // (§1.5), as the space worker's work-years action does.
+      // Per-action deadline (§1.5, MUST-2): the ages dispatch
+      // sequentially inside the compare, so it gets the
+      // remaining-budget callback — not one precomputed number —
+      // and each age's dispatch computes its budget fresh.
       const wyRows: WorkYearsCompareRow[] = await runWorkYearsCompareAsync(
         planInputs,
         job,
         ages,
-        { timeoutMs: remainingMs() },
+        { remainingMs },
       );
       workYears.push(
         ...wyRows.map((row) => ({

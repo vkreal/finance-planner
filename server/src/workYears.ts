@@ -2726,11 +2726,22 @@ export function runWorkYearsCompare(
 // dedups identical joint jobs as well). The sync compare above
 // stays for fixtures and tests, which price small shapes
 // in-thread by design.
+//
+// Per-action deadline (§1.5, MUST-2): the ages dispatch
+// SEQUENTIALLY, so a single timeoutMs shared across them would
+// give every age a fresh full budget — a two-age compare could
+// run ~195 s wall past the 120 s cap. Callers pass
+// `remainingMs` — the action's remaining-budget callback — and
+// the budget is computed FRESH at each age's dispatch, exactly
+// as runRothOptimizer does at each of its dispatch sites. A
+// fixed `timeoutMs` is still accepted as a fallback for callers
+// with no action clock (tests); remainingMs wins when both are
+// given.
 export async function runWorkYearsCompareAsync(
   plan: RothPlanInputs,
   job: WorkYearJob,
   quitAges: number[],
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; remainingMs?: () => number },
 ): Promise<WorkYearsCompareRow[]> {
   const cache = new Map<
     string,
@@ -2744,7 +2755,9 @@ export async function runWorkYearsCompareAsync(
     if (!entry) {
       entry = {
         roll,
-        optimizer: runJointOptimizerAsync(roll.rolledInputs, opts),
+        optimizer: runJointOptimizerAsync(roll.rolledInputs, {
+          timeoutMs: opts?.remainingMs?.() ?? opts?.timeoutMs,
+        }),
       };
       cache.set(key, entry);
     }

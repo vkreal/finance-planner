@@ -60,7 +60,11 @@ export type EngineJobKind =
   | "mcStats"
   | "workYearsJoint"
   | "retirementMc"
-  | "solver";
+  | "solver"
+  // SHOULD-1: the dynamic-withdrawal optimizer (15.3 s CPU on
+  // the sample household — ~7× the §1.2 ~2 s migration rule),
+  // SMALL lane: a fixed-horizon search, not a joint search.
+  | "dynamicOptimizer";
 
 export const ENGINE_JOB_LANE: Record<EngineJobKind, EngineLane> = {
   joint: "large",
@@ -72,17 +76,39 @@ export const ENGINE_JOB_LANE: Record<EngineJobKind, EngineLane> = {
   mcStats: "small",
   retirementMc: "small",
   solver: "small",
+  dynamicOptimizer: "small",
 };
 
 export type EngineErrorCode = "ENGINE_TIMEOUT" | "ENGINE_BUSY" | "ENGINE_CRASH";
 
 const ENGINE_ERROR_REASONS: Record<EngineErrorCode, string> = {
+  // The default timeout text names the pool's 100 s default
+  // budget. Jobs dispatched with a shorter remaining budget get
+  // a reason naming their own budget instead (NICE-2:
+  // engineTimeoutReason, built from the job's allotted
+  // timeoutMs at the settle site).
   ENGINE_TIMEOUT:
     "The search ran past its 100 s budget and was stopped; no result was produced. Try a narrower search (fewer claiming ages / shorter horizon) or try again.",
   ENGINE_BUSY: "The engine is busy; try again in a moment.",
   ENGINE_CRASH:
     "The engine worker stopped unexpectedly; the search was not completed.",
 };
+
+// NICE-2: the timeout reason names the budget the job actually
+// got — a job dispatched 90 s into an action gets 10 s, not
+// 100 s (§1.5) — so a caller is never told it "ran past its
+// 100 s budget" when it only had seconds.
+function formatBudgetMs(ms: number): string {
+  if (ms >= 1000) {
+    const s = ms / 1000;
+    return `${Number.isInteger(s) ? s : s.toFixed(1)} s`;
+  }
+  return `${ms} ms`;
+}
+
+function engineTimeoutReason(timeoutMs: number): string {
+  return `The search ran past its ${formatBudgetMs(timeoutMs)} budget and was stopped; no result was produced. Try a narrower search (fewer claiming ages / shorter horizon) or try again.`;
+}
 
 export class EngineError extends Error {
   readonly code: EngineErrorCode;
@@ -157,10 +183,28 @@ interface Job {
   payload: unknown;
   detail: "full" | "summary";
   deadline: number;
+  // The budget this job was allotted at dispatch (§1.5): the
+  // action's remaining budget, or the pool default. The timeout
+  // reason names it (NICE-2), so a job that only got 10 s is
+  // never told it ran past a 100 s budget.
+  timeoutMs: number;
   timer: ReturnType<typeof setTimeout> | null;
   // Waiters: each dispatch adds one resolve/reject pair. The job
   // settles every waiter; a waiter that releases removes its pair.
-  waiters: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
+  // A deduped waiter carries its own deadline timer (NICE-3):
+  // the first waiter's deadline IS the job's deadline (the job
+  // timer governs it), but a later waiter may arrive with a much
+  // shorter remaining budget of its own, and must not wait past
+  // it for the shared job. Its timer rejects that waiter only —
+  // the shared job keeps running for the others, unless it was
+  // the last waiter, in which case the refcount rule terminates
+  // the job as a release would.
+  waiters: Array<{
+    resolve: (v: unknown) => void;
+    reject: (e: unknown) => void;
+    timer: ReturnType<typeof setTimeout> | null;
+    timeoutMs: number | null;
+  }>;
   started: boolean;
   settled: boolean;
 }
@@ -233,7 +277,11 @@ export class EnginePool {
     const existing = this.inflight.get(key);
     if (existing && !existing.settled) {
       this.stats.deduped++;
-      return this.attach(existing);
+      // NICE-3: the deduped waiter gets its own deadline —
+      // this dispatch's remaining budget, or the pool default
+      // when the caller passed none — so a late caller with a
+      // short budget is not held past it by the shared job.
+      return this.attach(existing, opts?.timeoutMs ?? this.jobTimeoutMs);
     }
     const state = this.lanes[lane];
     if (state.queue.length >= this.queueCap) {
@@ -253,12 +301,15 @@ export class EnginePool {
       payload,
       detail: opts?.detail ?? "full",
       deadline: Date.now() + Math.max(0, timeoutMs),
+      timeoutMs,
       timer: null,
       waiters: [],
       started: false,
       settled: false,
     };
     this.inflight.set(key, job);
+    // The first waiter's deadline is the job's own deadline —
+    // no separate waiter timer (the job timer governs it).
     const handle = this.attach<T>(job);
     state.queue.push(job);
     job.timer = setTimeout(() => this.onDeadline(job), Math.max(0, timeoutMs));
@@ -266,22 +317,63 @@ export class EnginePool {
     return handle;
   }
 
-  private attach<T>(job: Job): EngineJobHandle<T> {
-    let waiter!: { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+  // `waiterTimeoutMs` is set only for a deduped waiter
+  // (NICE-3): its own deadline, independent of the shared
+  // job's. The first waiter passes none — its deadline is the
+  // job's deadline, governed by the job timer.
+  private attach<T>(job: Job, waiterTimeoutMs?: number): EngineJobHandle<T> {
+    let waiter!: {
+      resolve: (v: unknown) => void;
+      reject: (e: unknown) => void;
+      timer: ReturnType<typeof setTimeout> | null;
+      timeoutMs: number | null;
+    };
     const promise = new Promise<T>((resolve, reject) => {
-      waiter = { resolve: resolve as (v: unknown) => void, reject };
+      waiter = {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        timer: null,
+        timeoutMs: waiterTimeoutMs ?? null,
+      };
     });
     // A rejected promise with no waiter yet would surface as an
     // unhandled rejection in Bun: attach a no-op catcher — the
     // caller's own await still observes the rejection.
     promise.catch(() => {});
     job.waiters.push(waiter);
+    if (waiterTimeoutMs != null) {
+      waiter.timer = setTimeout(() => {
+        // This waiter's own deadline passed while the shared
+        // job is still running: reject this waiter only. The
+        // job keeps running for the other waiters; if this was
+        // the last waiter, the refcount rule terminates it —
+        // nobody needs it anymore.
+        if (job.settled) return;
+        const idx = job.waiters.indexOf(waiter);
+        if (idx < 0) return;
+        job.waiters.splice(idx, 1);
+        waiter.timer = null;
+        waiter.reject(
+          new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(waiterTimeoutMs)),
+        );
+        if (job.waiters.length === 0) {
+          console.error(
+            `[engine-pool] job ${job.id} (${job.kind}) terminated: last waiter left (own deadline)`,
+          );
+          this.terminateJob(job, null);
+        }
+      }, Math.max(0, waiterTimeoutMs));
+    }
     let released = false;
     return {
       promise,
       release: () => {
         if (released) return;
         released = true;
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+          waiter.timer = null;
+        }
         const idx = job.waiters.indexOf(waiter);
         if (idx >= 0) job.waiters.splice(idx, 1);
         if (job.waiters.length === 0 && !job.settled) {
@@ -296,6 +388,15 @@ export class EnginePool {
     };
   }
 
+  private clearWaiterTimers(job: Job): void {
+    for (const w of job.waiters) {
+      if (w.timer) {
+        clearTimeout(w.timer);
+        w.timer = null;
+      }
+    }
+  }
+
   private settle(job: Job, outcome: { ok: true; value: unknown } | { ok: false; error: unknown }): void {
     if (job.settled) return;
     job.settled = true;
@@ -303,6 +404,7 @@ export class EnginePool {
       clearTimeout(job.timer);
       job.timer = null;
     }
+    this.clearWaiterTimers(job);
     this.inflight.delete(job.dedupKey);
     const waiters = job.waiters.splice(0);
     for (const w of waiters) {
@@ -323,7 +425,7 @@ export class EnginePool {
         this.stats.timeouts++;
         this.settle(next, {
           ok: false,
-          error: new EngineError("ENGINE_TIMEOUT"),
+          error: new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(next.timeoutMs)),
         });
         continue;
       }
@@ -357,19 +459,34 @@ export class EnginePool {
   private onDeadline(job: Job): void {
     if (job.settled) return;
     this.stats.timeouts++;
-    console.error(
-      `[engine-pool] job ${job.id} (${job.kind}) timed out after its deadline; terminating worker`,
-    );
-    this.terminateJob(job, new EngineError("ENGINE_TIMEOUT"));
+    if (this.lanes[job.lane].running === job) {
+      console.error(
+        `[engine-pool] job ${job.id} (${job.kind}) timed out after its deadline; terminating worker`,
+      );
+    } else {
+      // Queued job: rejected without starting it (§1.3) — the
+      // lane worker is untouched (MUST-1).
+      console.error(
+        `[engine-pool] job ${job.id} (${job.kind}) timed out while queued; dropping without starting it`,
+      );
+    }
+    this.terminateJob(job, new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(job.timeoutMs)));
   }
 
   // Hard termination (§1.4): worker.terminate() on the lane
   // worker, then spawn a fresh replacement. The terminated worker
   // is never reused. `reason` settles the job when one is owed
   // (null when the last waiter left and no answer is owed).
+  //
+  // MUST-1: the worker is replaced ONLY when the job is the
+  // lane's RUNNING job. A queued job never started, so ending it
+  // splices it out of the queue and settles it — terminating the
+  // lane worker for a queued job killed the job that was
+  // actually running on that lane.
   private terminateJob(job: Job, reason: unknown): void {
     const state = this.lanes[job.lane];
-    if (state.running === job) state.running = null;
+    const wasRunning = state.running === job;
+    if (wasRunning) state.running = null;
     else {
       const idx = state.queue.indexOf(job);
       if (idx >= 0) state.queue.splice(idx, 1);
@@ -383,8 +500,11 @@ export class EnginePool {
         clearTimeout(job.timer);
         job.timer = null;
       }
+      this.clearWaiterTimers(job);
+      job.waiters.splice(0);
       this.inflight.delete(job.dedupKey);
     }
+    if (!wasRunning) return;
     this.stats.terminated++;
     this.replaceWorker(job.lane);
     this.pump(job.lane);

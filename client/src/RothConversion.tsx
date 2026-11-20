@@ -110,6 +110,30 @@ type PlanPayload = Parameters<typeof api.saveRothScenario>[0] & {
 type OptData = ApiResponse<typeof api, "runRothOptimizer">;
 type OptScore = NonNullable<OptData["winner"]>;
 
+// Engine Review C7 architecture (§1.4) — the three typed engine
+// errors (ENGINE_TIMEOUT / ENGINE_BUSY / ENGINE_CRASH) map to a
+// plain-language retry prompt with a user-initiated Try again
+// button. The client never retries automatically: a retry
+// re-runs the same multi-second search, so the user decides.
+// Any other failure code (validation, save errors) keeps the
+// generic reason display — only these three codes get the
+// retry affordance.
+type EngineErrorCode = "ENGINE_TIMEOUT" | "ENGINE_BUSY" | "ENGINE_CRASH";
+function engineErrorCode(code: unknown): EngineErrorCode | null {
+  return code === "ENGINE_TIMEOUT" ||
+    code === "ENGINE_BUSY" ||
+    code === "ENGINE_CRASH"
+    ? code
+    : null;
+}
+function engineRetryNote(code: EngineErrorCode): string {
+  if (code === "ENGINE_TIMEOUT")
+    return "The search ran out of time and was stopped — no result was produced. Try again, or narrow the search (fewer claiming ages / shorter horizon).";
+  if (code === "ENGINE_BUSY")
+    return "The engine is busy — try again in a moment.";
+  return "The engine stopped unexpectedly before finishing — try again.";
+}
+
 // Net Worth bucket colors (same hexes as the Net Worth view, so a
 // bucket reads the same colour everywhere in the app).
 const BUCKET_COLORS = {
@@ -4126,6 +4150,13 @@ export function RothConversion({
     },
     onError: () => setOptRunFailed(true),
   });
+  // One place builds the optimizer request — the Run button
+  // and the engine-error Try again button below share it.
+  const runOptimizerNow = () =>
+    runOptimizerMut.mutate({
+      ...buildSavePayload(),
+      fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
+    });
   // Save an optimizer result as a scenario: the working inputs
   // with the result's ceilings, window stop, and variant flags —
   // plus the result's claiming ages, stored as the scenario's
@@ -10874,6 +10905,25 @@ export function RothConversion({
               {wyError}
             </p>
           )}
+          {wyResult &&
+            !wyResult.ok &&
+            (() => {
+              const code = engineErrorCode(wyResult.code);
+              if (code == null) return null;
+              return (
+                <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                  {engineRetryNote(code)}{" "}
+                  <button
+                    type="button"
+                    className="text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-50"
+                    disabled={runWyMut.isPending}
+                    onClick={runWorkYears}
+                  >
+                    Try again
+                  </button>
+                </p>
+              );
+            })()}
 
           {wyResult?.ok && wyResult.rows.length > 0 && (
             <>
@@ -11578,12 +11628,7 @@ export function RothConversion({
               aria-label="Run the lifetime-tax optimizer"
               className="rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
               disabled={!planInputs || runOptimizerMut.isPending}
-              onClick={() =>
-                runOptimizerMut.mutate({
-                  ...buildSavePayload(),
-                  fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
-                })
-              }
+              onClick={runOptimizerNow}
             >
               {runOptimizerMut.isPending ? "Searching…" : "Run the optimizer"}
             </button>
@@ -11610,6 +11655,25 @@ export function RothConversion({
               {optResult.reason}
             </p>
           )}
+          {optResult &&
+            !optResult.ok &&
+            (() => {
+              const code = engineErrorCode(optResult.code);
+              if (code == null) return null;
+              return (
+                <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                  {engineRetryNote(code)}{" "}
+                  <button
+                    type="button"
+                    className="text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-50"
+                    disabled={!planInputs || runOptimizerMut.isPending}
+                    onClick={runOptimizerNow}
+                  >
+                    Try again
+                  </button>
+                </p>
+              );
+            })()}
           {optResult?.ok && optResult.winner && optResult.doNothing && (
             <div className="mt-4">
               <div className="rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
@@ -12180,6 +12244,28 @@ export function RothConversion({
                       {mcResult.data.reason}
                     </p>
                   )}
+                  {mcResult &&
+                    !mcResult.data.ok &&
+                    (() => {
+                      const code = engineErrorCode(mcResult.data.code);
+                      if (code == null) return null;
+                      return (
+                        <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                          {engineRetryNote(code)}{" "}
+                          <button
+                            type="button"
+                            className="text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-50"
+                            disabled={runMcCheckMut.isPending}
+                            onClick={() => {
+                              if (mcRequestNow)
+                                runMcCheckMut.mutate(mcRequestNow);
+                            }}
+                          >
+                            Try again
+                          </button>
+                        </p>
+                      );
+                    })()}
                   {mcResult?.data.ok && mcResultCurrent && !optStale && (
                     <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-4 py-3">
                       <p className="text-sm text-[var(--dim)]">
