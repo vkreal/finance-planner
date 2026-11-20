@@ -137,6 +137,7 @@ import {
   validateMonteCarloSeed,
 } from "./retirementEngines";
 import { claimAgeLabel, type ClaimAgeInfo } from "./claimAge";
+import { dispatchEngineJob, stableEngineKey } from "./enginePool";
 // The claiming-age label lives in claimAge.ts (Engine Review
 // C1, NICE-3) and is re-exported here so the import sites that
 // read it from this module — the gift action, the fixtures —
@@ -1813,7 +1814,12 @@ export function claimAgeRowSurvivorAnnual(
   });
 }
 
-function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
+// Exported for the engine worker (Engine Review C7 architecture,
+// §1.1/R7): the worker is stateless, so it calls the unmemoized
+// search directly instead of the memoized runJointOptimizer — a
+// worker-side module cache would duplicate the main-thread cache
+// in full-result form and defeat the compact cache (§2).
+export function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const combos = claimAgeCombos(inputs);
   const first = combos[0];
   const floor = inputs.claimAgeFloor ?? null;
@@ -2109,6 +2115,132 @@ export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult 
   if (jointOptimizerCache.size >= 50) jointOptimizerCache.clear();
   jointOptimizerCache.set(key, structuredClone(result));
   return result;
+}
+
+// --- Worker-pool async wrappers (Engine Review C7 architecture,
+// §1.2) ----------------------------------------------------------
+// The action paths (server/src/actions.ts) await these; the sync
+// functions above stay for fixtures, tests, and the in-thread
+// callers that cannot await (the accuracy suites price small
+// shapes in-thread by design, and the assistant-api adapter is
+// synchronous end-to-end — its migration is a follow-on, not
+// part of this build). The wrappers change the THREAD, not the
+// math: the worker calls the same engine functions with the same
+// inputs, and the results are bit-identical (§1.6, parity set).
+// `timeoutMs` is the action's remaining budget (§1.5): a job's
+// effective deadline is min(actionDeadline, dispatch + 100 s).
+// On a miss the joint wrapper stores the worker's result in the
+// same main-thread cache under the same clone discipline (store
+// a clone, return the fresh object); a hit never touches a
+// worker. Phase 2 changes the stored shape to the compact
+// summary; the wrapper's contract (same figures, same key) does
+// not change.
+export type EngineJobOpts = { timeoutMs?: number };
+
+export async function runJointOptimizerAsync(
+  inputs: RothPlanInputs,
+  opts?: EngineJobOpts,
+): Promise<JointOptimizerResult> {
+  const key = jointInputsKey(inputs);
+  const hit = jointOptimizerCache.get(key);
+  if (hit) return structuredClone(hit);
+  const { promise } = dispatchEngineJob<JointOptimizerResult>(
+    "joint",
+    key,
+    { inputs },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  const result = await promise;
+  if (jointOptimizerCache.size >= 50) jointOptimizerCache.clear();
+  jointOptimizerCache.set(key, structuredClone(result));
+  return result;
+}
+
+export async function runOptimizerAsync(
+  inputs: RothPlanInputs,
+  opts?: EngineJobOpts & { searchOrders?: boolean },
+): Promise<OptimizerResult> {
+  const searchOrders = opts?.searchOrders ?? true;
+  const { promise } = dispatchEngineJob<OptimizerResult>(
+    "fixedAge",
+    stableEngineKey({ inputs, searchOrders }),
+    { inputs, searchOrders },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
+export async function optimizerSensitivityAsync(
+  inputs: RothPlanInputs,
+  deltaPct: number,
+  opts?: EngineJobOpts,
+): Promise<{ returnPct: number; winner: ScoredCandidate }> {
+  const { promise } = dispatchEngineJob<{ returnPct: number; winner: ScoredCandidate }>(
+    "sensitivity",
+    stableEngineKey({ inputs, deltaPct }),
+    { inputs, deltaPct },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
+export async function optimizerHeirSensitivityAsync(
+  inputs: RothPlanInputs,
+  heirRatePct: number,
+  opts?: EngineJobOpts,
+): Promise<{
+  heirRatePct: number;
+  winner: ScoredCandidate;
+  doNothing: ScoredCandidate;
+}> {
+  const { promise } = dispatchEngineJob<{
+    heirRatePct: number;
+    winner: ScoredCandidate;
+    doNothing: ScoredCandidate;
+  }>(
+    "heirSensitivity",
+    stableEngineKey({ inputs, heirRatePct }),
+    { inputs, heirRatePct },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
+export async function runRothMonteCarloCheckAsync(
+  inputs: RothPlanInputs,
+  winner: { spec: OptimizerCandidateSpec; claimAges: ClaimAgeInfo },
+  doNothing: { spec: OptimizerCandidateSpec; claimAges: ClaimAgeInfo },
+  mcOpts: { volatilityPct: number; pathCount: number; seed: number },
+  opts?: EngineJobOpts,
+): Promise<RothMcCheckResult> {
+  const { promise } = dispatchEngineJob<RothMcCheckResult>(
+    "mcCheck",
+    stableEngineKey({ inputs, winner, doNothing, mcOpts }),
+    { inputs, winner, doNothing, opts: mcOpts },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
+export async function runRothMonteCarloStatsAsync(
+  base: RothCompareBaseSaved,
+  scenarios: { name: string; overrides: RothCompareOverrides }[],
+  startYear: number,
+  mcOpts: {
+    volatilityPct: number;
+    pathCount: number;
+    seed: number;
+    taxReturnActuals?: RothTaxReturnStored | null;
+  },
+  opts?: EngineJobOpts,
+): Promise<RothMcStatsResult> {
+  const { promise } = dispatchEngineJob<RothMcStatsResult>(
+    "mcStats",
+    stableEngineKey({ base, scenarios, startYear, mcOpts }),
+    { base, scenarios, startYear, opts: mcOpts },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
 }
 
 // Plain-language statement of what the joint search covered, for

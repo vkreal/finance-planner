@@ -195,6 +195,7 @@ import {
 import {
   jointInputsKey,
   runJointOptimizer,
+  runJointOptimizerAsync,
   type JointOptimizerResult,
 } from "./rothOptimizer";
 
@@ -2637,6 +2638,47 @@ export function workYearsCompareCacheKey(
     : `roll:${jointInputsKey(roll.rolledInputs)}`;
 }
 
+// One priced row from a roll and its joint-optimizer result —
+// shared by the sync compare and the worker-pool async compare
+// below, so the two paths can never drift apart on row assembly.
+function buildWorkYearsRow(
+  quitAge: number,
+  roll: WorkYearRoll,
+  opt: JointOptimizerResult,
+): WorkYearsCompareRow {
+  const workTax = r2(roll.totals.federal + roll.totals.state + roll.totals.fica);
+  const claim67 =
+    opt.claimAgeTable.find((row) => row.primaryAge === 67) ?? null;
+  const endingNominal = r2(
+    opt.winner.result.endingPretax +
+      opt.winner.result.endingRoth +
+      opt.winner.result.endingTaxable +
+      opt.winner.result.endingHsa,
+  );
+  return {
+    quitAge,
+    workYears: roll.totals.years,
+    roll,
+    optimizer: opt,
+    workTax,
+    payrollTax: roll.totals.payrollTax,
+    totalTax: r2(opt.winner.cost.tax + workTax),
+    shortfall: roll.totals.shortfall,
+    allInTax: r2(opt.winner.cost.netCost + workTax),
+    assumptions: roll.assumptions,
+    claim67AllInTax:
+      claim67 == null ? null : r2(claim67.best.cost.netCost + workTax),
+    endingNominal,
+    endingAfterTax: opt.winner.result.endingAfterTaxWealth,
+    irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
+    acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
+    cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
+    earlyWithdrawalUnknownYears:
+      opt.winner.result.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears,
+  };
+}
+
 export function runWorkYearsCompare(
   plan: RothPlanInputs,
   job: WorkYearJob,
@@ -2671,37 +2713,42 @@ export function runWorkYearsCompare(
       entry = { roll, optimizer: runJointOptimizer(roll.rolledInputs) };
       cache.set(key, entry);
     }
-    const opt = entry.optimizer;
-    const workTax = r2(roll.totals.federal + roll.totals.state + roll.totals.fica);
-    const claim67 =
-      opt.claimAgeTable.find((row) => row.primaryAge === 67) ?? null;
-    const endingNominal = r2(
-      opt.winner.result.endingPretax +
-        opt.winner.result.endingRoth +
-        opt.winner.result.endingTaxable +
-        opt.winner.result.endingHsa,
-    );
-    return {
-      quitAge,
-      workYears: roll.totals.years,
-      roll,
-      optimizer: opt,
-      workTax,
-      payrollTax: roll.totals.payrollTax,
-      totalTax: r2(opt.winner.cost.tax + workTax),
-      shortfall: roll.totals.shortfall,
-      allInTax: r2(opt.winner.cost.netCost + workTax),
-      assumptions: roll.assumptions,
-      claim67AllInTax:
-        claim67 == null ? null : r2(claim67.best.cost.netCost + workTax),
-      endingNominal,
-      endingAfterTax: opt.winner.result.endingAfterTaxWealth,
-      irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
-      acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
-      cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
-      earlyWithdrawalUnknownYears:
-        opt.winner.result.earlyWithdrawalUnknownYears,
-      rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears,
-    };
+    return buildWorkYearsRow(quitAge, roll, entry.optimizer);
   });
+}
+
+// Worker-pool compare (Engine Review C7 architecture, §1.2): the
+// same rows as runWorkYearsCompare, but each quit age's joint
+// search runs as one LARGE-lane worker job instead of blocking
+// the main thread. The roll itself is cheap and stays in-thread;
+// only the joint leg moves. Identical effective plans still
+// price the optimizer once and share the result (the pool itself
+// dedups identical joint jobs as well). The sync compare above
+// stays for fixtures and tests, which price small shapes
+// in-thread by design.
+export async function runWorkYearsCompareAsync(
+  plan: RothPlanInputs,
+  job: WorkYearJob,
+  quitAges: number[],
+  opts?: { timeoutMs?: number },
+): Promise<WorkYearsCompareRow[]> {
+  const cache = new Map<
+    string,
+    { roll: WorkYearRoll; optimizer: Promise<JointOptimizerResult> }
+  >();
+  const rows: WorkYearsCompareRow[] = [];
+  for (const quitAge of quitAges) {
+    const roll = rollWorkYears(plan, job, quitAge);
+    const key = workYearsCompareCacheKey(quitAge, roll);
+    let entry = cache.get(key);
+    if (!entry) {
+      entry = {
+        roll,
+        optimizer: runJointOptimizerAsync(roll.rolledInputs, opts),
+      };
+      cache.set(key, entry);
+    }
+    rows.push(buildWorkYearsRow(quitAge, roll, await entry.optimizer));
+  }
+  return rows;
 }
