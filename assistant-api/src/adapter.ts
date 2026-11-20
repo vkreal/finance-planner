@@ -2975,7 +2975,7 @@ async function compareRothConversionsFull(
               doNothing.result.rothBasisUnknownYears,
           },
         ]),
-        "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+        "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs, the server keeps answering light requests (including /health) — the call itself still occupies its lane until it returns or times out.",
         // (Engine Review C9, Build 3 NICEs, N6): the "cheapest
         // valid candidate" sentence runs only when the crown IS
         // qualified — on an all-invalid search there is no valid
