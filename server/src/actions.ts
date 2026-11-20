@@ -227,6 +227,7 @@ ROTH_MC_CHECK_SEED,
 assessCandidateIntegrity,
 buildRothFunding,
 claimAgeLabel,
+claimAgeCombos,
 consumeExecutionInputs,
 enteredClaimInfo,
 joinRothBlob,
@@ -14474,9 +14475,25 @@ export const Actions = {
       const remainingMs = () =>
         Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - actionStartedAt));
       try {
-          const res = await runJointOptimizerAsync(inputs, {
+          // The joint and fixed-age legs are independent (§1.2):
+          // joint on LARGE, fixed-age on SMALL — both dispatch
+          // before either is awaited, so they overlap instead of
+          // running back to back (NICE-6). The fixed-age run is
+          // only needed when more than one claiming-age
+          // combination was searched — with one combination the
+          // joint run IS the fixed-age run — so its dispatch is
+          // gated on the combo count, computed here from the
+          // same pure claimAgeCombos the joint search prices,
+          // and no SMALL job is dispatched (or wasted) in the
+          // 1-combo case.
+          const jointPromise = runJointOptimizerAsync(inputs, {
             timeoutMs: remainingMs(),
           });
+          const fixedAgePromise =
+            claimAgeCombos(inputs).length > 1
+              ? runOptimizerAsync(inputs, { timeoutMs: remainingMs() })
+              : null;
+          const res = await jointPromise;
           const dnCost = res.doNothing.cost.netCost;
         const winnerKey = res.winner.spec.key;
         // Priced levers (build v69): price the entered plan
@@ -14521,10 +14538,11 @@ export const Actions = {
         // the full strategy set. When no claiming age was searched
         // there is only one combination and the joint run above IS
         // the fixed-age run — reuse it instead of pricing the same
-        // scan twice.
+        // scan twice. The run was dispatched concurrently with the
+        // joint run above (NICE-6); here it is only awaited.
         const fixedAge =
-          res.jointSearch.combosTested > 1
-            ? await runOptimizerAsync(inputs, { timeoutMs: remainingMs() })
+          res.jointSearch.combosTested > 1 && fixedAgePromise != null
+            ? await fixedAgePromise
             : res;
         const fixedDnCost = fixedAge.doNothing.cost.netCost;
         const orderWinnerIsDoNothing = fixedAge.winner.spec.key === DO_NOTHING_SPEC.key;
@@ -15287,10 +15305,18 @@ export const Actions = {
       // Work-years compare: each quit age's joint search runs
       // as one LARGE-lane worker job (§1.2); the roll stays
       // in-thread inside the async compare.
+      // Per-action deadline (§1.5, MUST-2): the ages dispatch
+      // sequentially inside the compare, so the compare gets the
+      // action's remaining-budget callback — not one precomputed
+      // number — and each age's dispatch computes its budget
+      // fresh from the action clock.
+      const actionStartedAt = Date.now();
+      const remainingMs = () =>
+        Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - actionStartedAt));
       let compared: Awaited<ReturnType<typeof runWorkYearsCompareAsync>>;
       try {
         compared = await runWorkYearsCompareAsync(inputs, job, ages, {
-          timeoutMs: ENGINE_JOB_TIMEOUT_MS,
+          remainingMs,
         });
       } catch (err) {
         if (err instanceof EngineError) {

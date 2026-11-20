@@ -15,7 +15,7 @@ import { expectEnvelope, expectOk, fictionalScenario, normalizedScenario } from 
 describe("C10 — adapter parity for retirement_dynamic_withdrawal", () => {
   test("adapter result equals the direct engine result to the cent", async () => {
     const scenario = normalizedScenario({ endAge: 70 });
-    const viaAdapter = expectOk(dynamicWithdrawal(scenario));
+    const viaAdapter = expectOk(await dynamicWithdrawal(scenario));
     const direct = runDynamicOptimizer(buildRothPlanInputs(scenario));
     expect(direct.ok).toBe(true);
     expect(viaAdapter.ok).toBe(true);

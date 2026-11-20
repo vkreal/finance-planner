@@ -18,15 +18,18 @@
 // test harness must not hang on it).
 
 import { describe, test, expect, afterAll } from "bun:test";
-import { EnginePool, EngineError, stableEngineKey } from "./enginePool";
+import { EnginePool, EngineError, enginePool, stableEngineKey } from "./enginePool";
 import {
   compactJointOptimizerResult,
   computeJointOptimizer,
   jointInputsKey,
+  runDynamicOptimizer,
   runOptimizer,
 } from "./rothOptimizer";
 import { runMonteCarlo } from "./retirementEngines";
+import { runWorkYearsCompareAsync } from "./workYears";
 import { jointSmall, sampleRetirement, small5y } from "./performanceShapes";
+import { samplePlanInputs } from "./sampleHousehold";
 import { createHash } from "node:crypto";
 
 // Every pool made here is shut down in afterAll: workers keep
@@ -39,6 +42,9 @@ function makePool(opts?: ConstructorParameters<typeof EnginePool>[0]): EnginePoo
 }
 afterAll(() => {
   for (const pool of pools) pool.shutdown();
+  // runWorkYearsCompareAsync (MUST-2 test below) dispatches
+  // through the process-wide singleton pool, not a local one.
+  enginePool.shutdown();
 });
 
 function stable(v: unknown): unknown {
@@ -183,7 +189,7 @@ describe("engine pool live behavior (§4.3)", () => {
     expect(err).toBeInstanceOf(EngineError);
     expect((err as EngineError).code).toBe("ENGINE_TIMEOUT");
     expect((err as EngineError).retryable).toBe(true);
-    expect((err as Error).message).toMatch(/100 s budget/);
+    expect((err as Error).message).toMatch(/100 ms budget/);
     // The LARGE lane respawned: the same joint serves normally
     // now (with a full deadline — the pool's 100 ms test
     // deadline would time it out again).
@@ -307,5 +313,176 @@ describe("engine pool live behavior (§4.3)", () => {
       { detail: "full" },
     );
     expect((await next).candidatesTested).toBe(3025);
+  }, 300_000);
+
+  test("queued timeout: a queued job's deadline expiry does not kill the running job (MUST-1)", async () => {
+    const pool = makePool();
+    // A runs on LARGE (5y joint, seconds); B queues behind it
+    // with a 100 ms deadline. B must reject ENGINE_TIMEOUT at
+    // ~100 ms while A still completes — B's expiry must not
+    // terminate the lane worker A is running on. (Review Pass 1
+    // proved the bug live with a 38y fixed-age A: B's 2 s expiry
+    // killed A, which then failed with a spurious ENGINE_TIMEOUT
+    // at its own 120 s deadline although it completes alone in
+    // 70 s. The 5y shape proves the same defect in seconds.)
+    const a = pool.dispatch<any>(
+      "joint",
+      jointInputsKey(jointSmall()),
+      { inputs: jointSmall() },
+      { timeoutMs: 100_000, detail: "full" },
+    );
+    const b = pool.dispatch<any>(
+      "joint",
+      jointInputsKey(jointSmall({ pretaxStart: 1 })),
+      { inputs: jointSmall({ pretaxStart: 1 }) },
+      { timeoutMs: 100, detail: "full" },
+    );
+    const bStarted = Date.now();
+    let bErr: unknown;
+    try {
+      await b.promise;
+    } catch (e) {
+      bErr = e;
+    }
+    const bMs = Date.now() - bStarted;
+    expect(bErr).toBeInstanceOf(EngineError);
+    expect((bErr as EngineError).code).toBe("ENGINE_TIMEOUT");
+    expect((bErr as Error).message).toMatch(/100 ms budget/);
+    // B's expiry is fast — it never started, so it cannot have
+    // waited for A.
+    expect(bMs).toBeLessThan(10_000);
+    // A still completes on the original worker: no worker was
+    // terminated for B, and the lane started exactly one job.
+    const res = await a.promise;
+    expect(res.candidatesTested).toBe(3025);
+    expect(pool.poolStats().started).toBe(1);
+    expect(pool.poolStats().terminated).toBe(0);
+  }, 300_000);
+
+  test("dedup waiter deadline: a late waiter with a short budget rejects on its own deadline while the shared job completes (NICE-3)", async () => {
+    const pool = makePool();
+    const key = jointInputsKey(jointSmall());
+    const h1 = pool.dispatch<any>("joint", key, { inputs: jointSmall() }, { timeoutMs: 100_000, detail: "full" });
+    // h2 attaches to the same job but with a 100 ms budget of
+    // its own — far shorter than the job's remaining time.
+    const h2 = pool.dispatch<any>("joint", key, { inputs: jointSmall() }, { timeoutMs: 100, detail: "full" });
+    let err2: unknown;
+    try {
+      await h2.promise;
+    } catch (e) {
+      err2 = e;
+    }
+    expect(err2).toBeInstanceOf(EngineError);
+    expect((err2 as EngineError).code).toBe("ENGINE_TIMEOUT");
+    expect((err2 as Error).message).toMatch(/100 ms budget/);
+    // The shared job kept running for h1 and completed: one
+    // worker execution, no termination.
+    const r1 = await h1.promise;
+    expect(r1.candidatesTested).toBe(3025);
+    expect(pool.poolStats().started).toBe(1);
+    expect(pool.poolStats().terminated).toBe(0);
+  }, 300_000);
+});
+
+describe("engine pool fix round (Review Pass 1)", () => {
+  test("dynamic optimizer: worker result is digest-identical to in-thread (SHOULD-1)", async () => {
+    const pool = makePool();
+    // Short horizon (end 66), as in the C10 tests' short shape —
+    // the full 38y shape is the live probe (see the fix-round
+    // notes). The worker job gets a long deadline on purpose:
+    // this leg proves PARITY, not the deadline (the timeout test
+    // below proves that), and on this loaded VM a 100 s wall
+    // deadline would kill the job on wall stretch alone — the
+    // same load artifact the follow-up entry records for the
+    // health test. The job's honest cost is ~18 s wall on a
+    // quiet run for the 13y shape.
+    const inputs = samplePlanInputs({ endAgePrimary: 66 });
+    const inThread = runDynamicOptimizer(inputs);
+    expect(inThread.ok).toBe(true);
+    const { promise } = pool.dispatch<any>(
+      "dynamicOptimizer",
+      stableEngineKey({ inputs, annualSpending: null, policies: null }),
+      { inputs, opts: {} },
+      { timeoutMs: 600_000, detail: "full" },
+    );
+    const viaWorker = await promise;
+    expect(viaWorker.ok).toBe(true);
+    expect(digest(viaWorker)).toBe(digest(inThread));
+  }, 300_000);
+
+  test("dynamic optimizer timeout: a job past its deadline returns ENGINE_TIMEOUT (SHOULD-1)", async () => {
+    const pool = makePool();
+    const inputs = samplePlanInputs({ endAgePrimary: 70 });
+    const { promise } = pool.dispatch<any>(
+      "dynamicOptimizer",
+      stableEngineKey({ inputs, annualSpending: null, policies: null }),
+      { inputs, opts: {} },
+      { timeoutMs: 100, detail: "full" },
+    );
+    let err: unknown;
+    try {
+      await promise;
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(EngineError);
+    expect((err as EngineError).code).toBe("ENGINE_TIMEOUT");
+    expect((err as EngineError).retryable).toBe(true);
+  }, 300_000);
+
+  test("work-years compare: each quit age's dispatch gets the remaining budget fresh (MUST-2)", async () => {
+    // Short horizon (end 66, window 62–64), as in the
+    // work-years HSA tests: each age's joint is a 1-combo 5y
+    // search that completes in seconds. The claiming ages are
+    // LOCKED (already claiming at 58/56, as jointSmall does):
+    // unlocked ages would search 72/63 combos per quit age —
+    // the shape the sync HSA test prices with a 900 s timeout —
+    // and the first age could never complete inside this test.
+    // The remaining-budget callback gives the first age a full budget and the second
+    // age 50 ms: the second dispatch must time out, proving its
+    // effective deadline was the remainder — with the old
+    // single-timeoutMs sharing, the second age would get the
+    // first age's budget and complete.
+    const plan = samplePlanInputs({
+      startYear: 2026,
+      birthYearPrimary: 1964,
+      birthYearSpouse: 1966,
+      retirementAge: 62,
+      windowStartAge: 62,
+      windowStopAge: 64,
+      endAgePrimary: 66,
+      ssPrimaryStartAge: 58,
+      ssSpouseStartAge: 56,
+      expectedReturnPct: 0,
+      annualSpending: 120000,
+    });
+    const job = {
+      salary: 100000,
+      employer401k: 0,
+      employerHsa: 0,
+      hsaCoverage: "family" as const,
+      hsaEligible: true,
+      priorYearWages: 90000,
+    };
+    let calls = 0;
+    // The first age gets a long budget on purpose: this leg
+    // proves the SECOND dispatch got the fresh remainder, not
+    // the deadline (the timeout test above proves that), and on
+    // this loaded VM a 100 s wall deadline would kill the first
+    // age's joint on wall stretch alone. The second age gets
+    // 50 ms: it must time out, proving its effective deadline
+    // was the remainder — with the old single-timeoutMs sharing,
+    // the second age would get the pool default and complete.
+    const remainingMs = () => (calls++ === 0 ? 600_000 : 50);
+    let err: unknown;
+    try {
+      await runWorkYearsCompareAsync(plan, job, [63, 64], { remainingMs });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(EngineError);
+    expect((err as EngineError).code).toBe("ENGINE_TIMEOUT");
+    expect((err as Error).message).toMatch(/50 ms budget/);
+    expect(calls).toBe(2);
   }, 300_000);
 });

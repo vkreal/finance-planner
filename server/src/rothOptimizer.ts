@@ -2430,6 +2430,38 @@ export async function runRothMonteCarloStatsAsync(
   return promise;
 }
 
+// Dynamic-withdrawal optimizer on the pool (Engine Review C7
+// architecture, SHOULD-1): runDynamicOptimizer measures 15.3 s
+// CPU on the sample household — ~7× the §1.2 ~2 s migration
+// rule — so it gets a worker kind (SMALL lane: a fixed-horizon
+// search, not a joint search) and the adapter migrates to it.
+// The sync function stays for fixtures, tests, and the in-thread
+// callers that cannot await. The wrapper changes the THREAD,
+// not the math: the worker calls the same engine function with
+// the same inputs, bit-identical (§1.6).
+export async function runDynamicOptimizerAsync(
+  inputs: RothPlanInputs,
+  opts?: EngineJobOpts & {
+    annualSpending?: number;
+    policies?: DynamicPolicy[];
+  },
+): Promise<DynamicOptimizerResult> {
+  const { promise } = dispatchEngineJob<DynamicOptimizerResult>(
+    "dynamicOptimizer",
+    stableEngineKey({
+      inputs,
+      annualSpending: opts?.annualSpending ?? null,
+      policies: opts?.policies ?? null,
+    }),
+    {
+      inputs,
+      opts: { annualSpending: opts?.annualSpending, policies: opts?.policies },
+    },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
 // Plain-language statement of what the joint search covered, for
 // the optimizer result card. Wording is household-neutral for the
 // declared "No benefit" cases (generic for any household); the
