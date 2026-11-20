@@ -12580,7 +12580,9 @@ export function RothConversion({
                 // 6px on a phone, while "51" is about 11px — so
                 // text carried directly by the slot overflows its
                 // box and reads as clipped. The inner span paints
-                // at the same centre, and the neighbouring slots
+                // at the same centre (same painted centre as before
+                // — the over-wide line spilled right in the old form
+                // too), and the neighbouring slots
                 // are empty, so nothing collides.
                 const showAge =
                   labelSelected ||
@@ -12737,7 +12739,9 @@ export function RothConversion({
               // labels collide (the 2065 tick against the final
               // 2066 in the user's screenshot); when the final year
               // crowds the tick before it, the final year wins
-              // and the tick is dropped.
+              // and the tick is dropped — even when that tick is
+              // the first year, so a plan shorter than the gap
+              // still shows its last year.
               const labelYearSet = (() => {
                 const wanted = new Set<number>();
                 const firstYr = planYears[0]?.year;
@@ -12751,7 +12755,7 @@ export function RothConversion({
                 for (const yr of sorted) {
                   const prev = kept[kept.length - 1];
                   if (prev != null && yr - prev < minGap) {
-                    if (yr === lastYr && prev !== firstYr)
+                    if (yr === lastYr)
                       kept[kept.length - 1] = yr;
                     continue;
                   }
