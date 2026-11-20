@@ -196,7 +196,7 @@ import {
   jointInputsKey,
   runJointOptimizer,
   runJointOptimizerAsync,
-  type JointOptimizerResult,
+  type JointOptimizerSummary,
 } from "./rothOptimizer";
 
 function r2(n: number): number {
@@ -2554,7 +2554,7 @@ export type WorkYearsCompareRow = {
   quitAge: number;
   workYears: number;
   roll: WorkYearRoll;
-  optimizer: JointOptimizerResult;
+  optimizer: JointOptimizerSummary;
   // The work years' own tax (federal + state + payroll) — never
   // priced by the optimizer, added here for the all-in figures.
   workTax: number;
@@ -2644,7 +2644,7 @@ export function workYearsCompareCacheKey(
 function buildWorkYearsRow(
   quitAge: number,
   roll: WorkYearRoll,
-  opt: JointOptimizerResult,
+  opt: JointOptimizerSummary,
 ): WorkYearsCompareRow {
   const workTax = r2(roll.totals.federal + roll.totals.state + roll.totals.fica);
   const claim67 =
@@ -2704,7 +2704,7 @@ export function runWorkYearsCompare(
   // have shared one optimizer result. Keying on the full
   // rolled inputs (the exact plan the optimizer prices) makes
   // a shared result possible only for identical plans.
-  const cache = new Map<string, { roll: WorkYearRoll; optimizer: JointOptimizerResult }>();
+  const cache = new Map<string, { roll: WorkYearRoll; optimizer: JointOptimizerSummary }>();
   return quitAges.map((quitAge) => {
     const roll = rollWorkYears(plan, job, quitAge);
     const key = workYearsCompareCacheKey(quitAge, roll);
@@ -2734,7 +2734,7 @@ export async function runWorkYearsCompareAsync(
 ): Promise<WorkYearsCompareRow[]> {
   const cache = new Map<
     string,
-    { roll: WorkYearRoll; optimizer: Promise<JointOptimizerResult> }
+    { roll: WorkYearRoll; optimizer: Promise<JointOptimizerSummary> }
   >();
   const rows: WorkYearsCompareRow[] = [];
   for (const quitAge of quitAges) {

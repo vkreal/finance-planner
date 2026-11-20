@@ -138,6 +138,10 @@ import {
 } from "./retirementEngines";
 import { claimAgeLabel, type ClaimAgeInfo } from "./claimAge";
 import { dispatchEngineJob, stableEngineKey } from "./enginePool";
+import {
+  ByteBudgetCache,
+  estimateValueBytes,
+} from "./byteBudgetCache";
 // The claiming-age label lives in claimAge.ts (Engine Review
 // C1, NICE-3) and is re-exported here so the import sites that
 // read it from this module — the gift action, the fixtures —
@@ -1301,6 +1305,142 @@ export type OptimizerResult = {
   scored: ScoredCandidate[];
 };
 
+/* ---------------- Compact joint summaries (C7 architecture, §2.2) ----
+   The joint cache stores JointOptimizerSummary, not the full result: a
+   full result carries every scored candidate's full multi-decade march
+   (~81 KB/candidate at a 38-year horizon, ~3.25 GB for a full-sample
+   81-combo search), while the summary keeps the full march only for the
+   small named set and replaces every other candidate's march with its
+   scalars. The named set is what any consumer (present or future)
+   plausibly needs full detail for; the scored tail is where all the
+   bytes are. Expected sizes: full-sample joint ≈ 41 MB (was ~3.25 GB),
+   primary-only 38 y ≈ 6 MB (was ~370 MB), tiny 3 y ≈ 1 MB (was 8.9 MB).
+
+   Named set (full RothPlanResult including years[]): winner, doNothing,
+   selectedWinner, winnerByNetCost, winnerByEndingWealth, runnersUp (≤3),
+   each claimAgeTable row's best (≤9), and excludedInvalidWinner.candidate
+   when present — at most ~16 full marches. The compaction matches by
+   object identity: every named candidate IS an element of `scored`
+   (computeJointOptimizer crowns and tables off the same scored list, and
+   the single-combination path reuses runOptimizer's scored list), so a
+   candidate in the set keeps its full march wherever it appears.
+
+   Kept per tail candidate: spec (full), cost (full), integrity (full),
+   claimAges (full), and the RothPlanResult scalars only (all lifetime
+   totals, all ending balances, the small year-list arrays, plus
+   yearCount = years.length for structural checks). `years[]` itself is
+   dropped. Top-level fields are unchanged. The compaction is pure: no
+   timestamps, no randomness, no iteration-order dependence (candidate
+   order is the scoring order, which is deterministic).
+
+   Consumer audit (re-verified by grep before landing — see
+   build/consumer-audit-phase2.md): no production reader needs a tail
+   candidate's years[]. The action reads only toOptScore fields, the
+   gift model reads only the winner's march, work-years reads only the
+   winner's scalars and the claim-67 row's best cost, and the adapter's
+   yearly readers run on fixed-age results (never cached here). The one
+   deep reader is fixture-only (taxFixtures opt-ceiling-violations-
+   all-scored) and prices the full result via computeJointOptimizer. */
+
+// A priced march reduced to its scalars: every RothPlanResult field
+// except years[], plus the year count the years array carried.
+export type RothPlanResultSummary = Omit<RothPlanResult, "years"> & {
+  yearCount: number;
+};
+
+// A scored candidate whose march was compacted: identical to
+// ScoredCandidate except result carries no years[].
+export type ScoredCandidateSummary = {
+  spec: OptimizerCandidateSpec;
+  result: RothPlanResultSummary;
+  cost: NetCostBreakdown;
+  integrity: CandidateIntegrity;
+  claimAges: ClaimAgeInfo;
+};
+
+// A joint result with the named set intact and the scored tail compacted.
+export type JointOptimizerSummary = Omit<
+  JointOptimizerResult,
+  | "doNothing"
+  | "winner"
+  | "selectedWinner"
+  | "winnerByNetCost"
+  | "winnerByEndingWealth"
+  | "runnersUp"
+  | "excludedInvalidWinner"
+  | "scored"
+> & {
+  doNothing: ScoredCandidate;
+  winner: ScoredCandidate;
+  selectedWinner: ScoredCandidate;
+  winnerByNetCost: ScoredCandidate;
+  winnerByEndingWealth: ScoredCandidate;
+  runnersUp: ScoredCandidate[];
+  excludedInvalidWinner: {
+    candidate: ScoredCandidate;
+    integrity: CandidateIntegrity;
+  } | null;
+  scored: (ScoredCandidate | ScoredCandidateSummary)[];
+};
+
+function summarizeRothPlanResult(
+  result: RothPlanResult,
+): RothPlanResultSummary {
+  const { years, ...rest } = result;
+  return {
+    ...rest,
+    // The small year-list arrays are copied, not shared: the summary
+    // must not alias the full result's arrays (a caller mutating one
+    // must never reach the other through the summary).
+    irmaaLookbackMissingYears: [...result.irmaaLookbackMissingYears],
+    acaBelow100FplYears: [...result.acaBelow100FplYears],
+    cliffCapInoperativeYears: [...result.cliffCapInoperativeYears],
+    earlyWithdrawalUnknownYears: [...result.earlyWithdrawalUnknownYears],
+    rothBasisUnknownYears: [...result.rothBasisUnknownYears],
+    yearCount: years.length,
+  };
+}
+
+function summarizeScoredCandidate(
+  s: ScoredCandidate,
+): ScoredCandidateSummary {
+  return {
+    spec: s.spec,
+    result: summarizeRothPlanResult(s.result),
+    cost: s.cost,
+    integrity: s.integrity,
+    claimAges: s.claimAges,
+  };
+}
+
+// Pure compaction (§2.2): the named set keeps its full march; every
+// other scored candidate is replaced by its summary. The returned
+// object shares the named candidates (and the top-level scalars) with
+// the input — callers that store it clone it first (the cache does),
+// and callers that hand it out never hand out the stored copy.
+export function compactJointOptimizerResult(
+  result: JointOptimizerResult,
+): JointOptimizerSummary {
+  const named = new Set<ScoredCandidate>([
+    result.doNothing,
+    result.winner,
+    result.selectedWinner,
+    result.winnerByNetCost,
+    result.winnerByEndingWealth,
+    ...result.runnersUp,
+    ...result.claimAgeTable.map((row) => row.best),
+    ...(result.excludedInvalidWinner == null
+      ? []
+      : [result.excludedInvalidWinner.candidate]),
+  ]);
+  return {
+    ...result,
+    scored: result.scored.map((s) =>
+      named.has(s) ? s : summarizeScoredCandidate(s),
+    ),
+  };
+}
+
 /* ---------------- Priced levers vs the entered plan (build v69) ----
    The "What would improve this plan" list: the top few DISTINCT
    candidates the search priced whose lifetime net cost BEATS the
@@ -1317,7 +1457,10 @@ export type OptimizerResult = {
    pricing. Ordering is the winner ordering (lowest net cost,
    ending wealth breaking ties). */
 export type OptimizerImprovement = {
-  candidate: ScoredCandidate;
+  // The candidate may be a compacted tail candidate (a cached joint
+  // summary's scored entry): the improvement reads only summary-kept
+  // fields (spec, cost, claimAges, integrity, endingAfterTaxWealth).
+  candidate: ScoredCandidate | ScoredCandidateSummary;
   gainVsSavedPlan: number;
 };
 
@@ -1341,11 +1484,11 @@ export type OptimizerImprovementsResult = {
 };
 
 export function optimizerImprovements(
-  scoredLists: ScoredCandidate[][],
+  scoredLists: (ScoredCandidate | ScoredCandidateSummary)[][],
   savedPlanNetCost: number,
   limit = 3,
 ): OptimizerImprovementsResult {
-  const byLever = new Map<string, ScoredCandidate>();
+  const byLever = new Map<string, ScoredCandidate | ScoredCandidateSummary>();
   const invalidLeverKeys = new Set<string>();
   for (const list of scoredLists) {
     for (const s of list) {
@@ -2063,9 +2206,31 @@ export function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerRes
    and returning a deep clone of the stored result keeps every
    result bit-identical to a fresh search while skipping the
    duplicate work. The stored copy is never handed out, so a
-   caller mutating its result cannot poison the cache. Bounded:
-   the cache clears when it grows past 50 entries. */
-const jointOptimizerCache = new Map<string, JointOptimizerResult>();
+   caller mutating its result cannot poison the cache.
+   (Engine Review C7 architecture, §2 — Phase 2 cache.) The cache
+   stores compact summaries only (compactJointOptimizerResult),
+   never full results, and is bounded by BYTES, not by count:
+   JOINT_CACHE_BUDGET_BYTES with oldest-first LRU eviction
+   (ByteBudgetCache), replacing the old 50-entry clear-all. The
+   key function is unchanged, including the non-finite tokens —
+   the NaN/Infinity regression tests pin it. */
+export const JOINT_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
+const jointOptimizerCache = new ByteBudgetCache<JointOptimizerSummary>(
+  JOINT_CACHE_BUDGET_BYTES,
+  "joint",
+);
+
+// Observability (§2.4): entries, accounted bytes, hits, misses,
+// evictions — for tests and logs. No client-facing change.
+export function jointCacheStats(): {
+  entries: number;
+  bytes: number;
+  hits: number;
+  misses: number;
+  evictions: number;
+} {
+  return jointOptimizerCache.stats();
+}
 // Cache key for the joint search: a stable serialization of the FULL
 // inputs with keys sorted recursively. Non-finite numbers get distinct
 // object tokens — plain JSON.stringify maps NaN, Infinity, and
@@ -2107,14 +2272,19 @@ export function jointInputsKey(inputs: RothPlanInputs): string {
   };
   return JSON.stringify(sortValue(inputs), nonFiniteReplacer);
 }
-export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
+export function runJointOptimizer(
+  inputs: RothPlanInputs,
+): JointOptimizerSummary {
   const key = jointInputsKey(inputs);
   const hit = jointOptimizerCache.get(key);
   if (hit) return structuredClone(hit);
-  const result = computeJointOptimizer(inputs);
-  if (jointOptimizerCache.size >= 50) jointOptimizerCache.clear();
-  jointOptimizerCache.set(key, structuredClone(result));
-  return result;
+  const summary = compactJointOptimizerResult(computeJointOptimizer(inputs));
+  jointOptimizerCache.set(
+    key,
+    structuredClone(summary),
+    estimateValueBytes(summary),
+  );
+  return summary;
 }
 
 // --- Worker-pool async wrappers (Engine Review C7 architecture,
@@ -2129,31 +2299,48 @@ export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult 
 // bit-identical (§1.6, parity set).
 // `timeoutMs` is the action's remaining budget (§1.5): a job's
 // effective deadline is min(actionDeadline, dispatch + 100 s).
-// On a miss the joint wrapper stores the worker's result in the
-// same main-thread cache under the same clone discipline (store
-// a clone, return the fresh object); a hit never touches a
-// worker. Phase 2 changes the stored shape to the compact
-// summary; the wrapper's contract (same figures, same key) does
-// not change.
+// On a miss the joint wrapper stores the worker's COMPACT summary
+// in the same main-thread cache under the same clone discipline
+// (store a clone, return the fresh object); a hit never touches a
+// worker. `detail: "full"` bypasses the cache entirely (no read,
+// no store) and returns the worker's full result — the fixture /
+// full-detail mode; a full result satisfies the summary contract
+// structurally, so the return type does not change. The dedup key
+// carries the detail, so a summary job and a full job for the same
+// inputs never share one worker execution (they return different
+// shapes).
 export type EngineJobOpts = { timeoutMs?: number };
 
 export async function runJointOptimizerAsync(
   inputs: RothPlanInputs,
-  opts?: EngineJobOpts,
-): Promise<JointOptimizerResult> {
+  opts?: EngineJobOpts & { detail?: "full" | "summary" },
+): Promise<JointOptimizerSummary> {
+  const detail = opts?.detail ?? "summary";
   const key = jointInputsKey(inputs);
+  if (detail === "full") {
+    const { promise } = dispatchEngineJob<JointOptimizerSummary>(
+      "joint",
+      `${key}:full`,
+      { inputs },
+      { timeoutMs: opts?.timeoutMs, detail: "full" },
+    );
+    return promise;
+  }
   const hit = jointOptimizerCache.get(key);
   if (hit) return structuredClone(hit);
-  const { promise } = dispatchEngineJob<JointOptimizerResult>(
+  const { promise } = dispatchEngineJob<JointOptimizerSummary>(
     "joint",
-    key,
+    `${key}:summary`,
     { inputs },
-    { timeoutMs: opts?.timeoutMs, detail: "full" },
+    { timeoutMs: opts?.timeoutMs, detail: "summary" },
   );
-  const result = await promise;
-  if (jointOptimizerCache.size >= 50) jointOptimizerCache.clear();
-  jointOptimizerCache.set(key, structuredClone(result));
-  return result;
+  const summary = await promise;
+  jointOptimizerCache.set(
+    key,
+    structuredClone(summary),
+    estimateValueBytes(summary),
+  );
+  return summary;
 }
 
 export async function runOptimizerAsync(

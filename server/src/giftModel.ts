@@ -57,7 +57,7 @@ type RothYear,
 } from "./taxEngine";
 import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
 import { claimAgeLabel } from "./claimAge";
-import type { JointOptimizerResult } from "./rothOptimizer";
+import type { JointOptimizerSummary } from "./rothOptimizer";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -270,7 +270,7 @@ export type GiftComparison = {
   fafsaApplies: boolean;
 };
 
-function sideOf(opt: JointOptimizerResult): GiftPlanSide {
+function sideOf(opt: JointOptimizerSummary): GiftPlanSide {
   return {
     winnerName: opt.winner.spec.name,
     claimLabel: claimAgeLabel(opt.winner.claimAges),
@@ -374,7 +374,7 @@ export function parentsAllocableCgTax(
 // production caller passes runJointOptimizer.
 export type GiftOptimizer = (
   inputs: RothPlanInputs,
-) => JointOptimizerResult;
+) => JointOptimizerSummary;
 
 export function computeGiftComparison(
   plan: RothPlanInputs,
@@ -409,7 +409,7 @@ export function computeGiftComparison(
   // amount's sale gain (reused as the final baseline when
   // the gift turns out not to be capped).
   let taxableAtGiftYear: number;
-  let provisionalBaseline: JointOptimizerResult | null = null;
+  let provisionalBaseline: JointOptimizerSummary | null = null;
   if (giftAge <= startAge) {
     taxableAtGiftYear = plan.taxableStart;
   } else {

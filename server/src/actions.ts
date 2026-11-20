@@ -254,6 +254,7 @@ type RothCompareResult,
 type RothExecutionCents,
 type RothSavedLike,
 type ScoredCandidate,
+type ScoredCandidateSummary,
 } from "./rothOptimizer";
 import {
 deriveSpendFromCashSleeveStartDollars,
@@ -4667,7 +4668,10 @@ const optimizerSearchScopeOut = z.object({
 });
 
 function toOptScore(
-  s: ScoredCandidate,
+  // The candidate may be a compacted tail candidate (a cached joint
+  // summary's scored entry, via optimizerImprovements): toOptScore
+  // reads only summary-kept fields, never years[].
+  s: ScoredCandidate | ScoredCandidateSummary,
   doNothingNetCost: number,
 ): z.infer<typeof optScoreOut> {
   return {
