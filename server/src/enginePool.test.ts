@@ -384,6 +384,111 @@ describe("engine pool live behavior (§4.3)", () => {
   }, 300_000);
 });
 
+describe("engine pool in-thread fallback (standalone single-file bundle)", () => {
+  test("fallback fixed-age job returns the same result as the worker pool on the same inputs", async () => {
+    const fallback = makePool({ inThreadFallback: true });
+    expect(fallback.isInThreadFallback()).toBe(true);
+    const workerPool = makePool();
+    expect(workerPool.isInThreadFallback()).toBe(false);
+    const key = stableEngineKey({ inputs: small5y(), searchOrders: false });
+    const payload = { inputs: small5y(), searchOrders: false };
+    const { promise: viaFallback } = fallback.dispatch<any>(
+      "fixedAge",
+      key,
+      payload,
+      { detail: "full" },
+    );
+    const inThreadResult = await viaFallback;
+    const { promise: viaWorker } = workerPool.dispatch<any>(
+      "fixedAge",
+      key,
+      payload,
+      { detail: "full" },
+    );
+    const workerResult = await viaWorker;
+    expect(inThreadResult.candidatesTested).toBe(
+      workerResult.candidatesTested,
+    );
+    expect(inThreadResult.selectedWinner.cost.netCost).toBe(
+      workerResult.selectedWinner.cost.netCost,
+    );
+    expect(digest(inThreadResult)).toBe(digest(workerResult));
+  }, 300_000);
+
+  test("fallback jobs are counted in poolStats().inThreadJobs", async () => {
+    const pool = makePool({ inThreadFallback: true });
+    const before = pool.poolStats().inThreadJobs;
+    const built = sampleRetirement();
+    const { promise } = pool.dispatch<any>(
+      "retirementMc",
+      stableEngineKey({ inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 1000 }),
+      { inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 1000 },
+      { detail: "full" },
+    );
+    const res = await promise;
+    expect(res.successRate).toBe(97.5);
+    expect(pool.poolStats().inThreadJobs).toBe(before + 1);
+    expect(pool.poolStats().completed).toBeGreaterThanOrEqual(1);
+  }, 300_000);
+
+  test("fallback validation throw preserves its error kind (RangeError, not EngineError)", async () => {
+    const pool = makePool({ inThreadFallback: true });
+    const built = sampleRetirement();
+    // runCount 0 is invalid Monte Carlo input: runMonteCarlo
+    // throws RangeError (defense-in-depth guard). The fallback
+    // settles with the ORIGINAL error — the same kind the
+    // worker path re-creates.
+    const { promise } = pool.dispatch<any>(
+      "retirementMc",
+      stableEngineKey({ inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 0 }),
+      { inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 0 },
+      { detail: "full" },
+    );
+    let err: unknown;
+    try {
+      await promise;
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(RangeError);
+    expect(err).not.toBeInstanceOf(EngineError);
+    expect((err as Error).message).toMatch(/run count/);
+  }, 300_000);
+
+  test("fallback job dispatched with a 1 ms deadline still completes (a deadline cannot interrupt in-thread work)", async () => {
+    const pool = makePool({ inThreadFallback: true });
+    const { promise } = pool.dispatch<any>(
+      "fixedAge",
+      stableEngineKey({ inputs: small5y(), searchOrders: false }),
+      { inputs: small5y(), searchOrders: false },
+      { timeoutMs: 1, detail: "full" },
+    );
+    const res = await promise;
+    expect(res.candidatesTested).toBeGreaterThan(0);
+    expect(pool.poolStats().timeouts).toBe(0);
+    expect(pool.poolStats().inThreadJobs).toBe(1);
+  }, 300_000);
+
+  test("a default pool reports isInThreadFallback() === false; enableInThreadFallback() is one-way and idempotent", async () => {
+    const pool = makePool();
+    expect(pool.isInThreadFallback()).toBe(false);
+    pool.enableInThreadFallback();
+    expect(pool.isInThreadFallback()).toBe(true);
+    pool.enableInThreadFallback();
+    expect(pool.isInThreadFallback()).toBe(true);
+    const built = sampleRetirement();
+    const { promise } = pool.dispatch<any>(
+      "retirementMc",
+      stableEngineKey({ inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 1000 }),
+      { inputs: built.inputs, expected: built.expected, vol: built.vol, seed: 12345, runCount: 1000 },
+      { detail: "full" },
+    );
+    const res = await promise;
+    expect(res.successRate).toBe(97.5);
+    expect(pool.poolStats().inThreadJobs).toBe(1);
+  }, 300_000);
+});
+
 describe("engine pool fix round (Review Pass 1)", () => {
   test("dynamic optimizer: worker result is digest-identical to in-thread (SHOULD-1)", async () => {
     const pool = makePool();

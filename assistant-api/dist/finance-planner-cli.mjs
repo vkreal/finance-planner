@@ -102,591 +102,6 @@ var HISTORICAL = [
   { year: 2025, stockPct: 17.78, bondPct: 7.8, cpiPct: 2.6 }
 ];
 
-function percentile(sorted, p) {
-  if (sorted.length === 0)
-    return 0;
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p / 100 * sorted.length)));
-  return sorted[idx] ?? 0;
-}
-function medianOf(values) {
-  if (values.length === 0)
-    return 0;
-  const s = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 1 ? s[mid] ?? 0 : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
-}
-function horizonYears(currentAge, endAge) {
-  return Math.max(0, endAge - currentAge + 1);
-}
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = a + 1831565813 | 0;
-    let t = Math.imul(a ^ a >>> 15, 1 | a);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-function normalRandom(rng) {
-  let u = 0;
-  let v = 0;
-  while (u === 0)
-    u = rng();
-  while (v === 0)
-    v = rng();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-var MAX_MONTE_CARLO_RUNS = 1e4;
-function validateMonteCarloSeed(seed) {
-  if (!Number.isInteger(seed)) {
-    throw new RangeError(`Monte Carlo seed must be a finite integer, got ${seed}.`);
-  }
-}
-function validateMonteCarloRunCount(runCount, maxRuns = MAX_MONTE_CARLO_RUNS) {
-  if (!Number.isInteger(runCount) || runCount < 1 || runCount > maxRuns) {
-    throw new RangeError(`Monte Carlo run count must be a whole number from 1 to ${maxRuns}, got ${runCount}.`);
-  }
-}
-function validateMonteCarloReturn(expected, vol) {
-  if (!Number.isFinite(expected)) {
-    throw new RangeError(`Monte Carlo expected return must be a finite number, got ${expected}.`);
-  }
-  if (!Number.isFinite(vol) || vol < 0) {
-    throw new RangeError(`Monte Carlo volatility must be a finite number at or above 0, got ${vol}.`);
-  }
-}
-var GUARDRAILS_CUT_DEFAULT = 120;
-var GUARDRAILS_RAISE_DEFAULT = 80;
-var GUARDRAILS_ADJUSTMENT_DEFAULT = 10;
-var GUARDRAILS_RATE_REL_TOLERANCE = 0.000000001;
-function guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs) {
-  if (bal <= 0 || initialRate <= 0)
-    return currentSpending;
-  const curRate = currentSpending / bal;
-  const adj = inputs.guardrailsAdjustmentPct / 100;
-  const cutThreshold = inputs.guardrailsCutPct / 100 * initialRate;
-  const raiseThreshold = inputs.guardrailsRaisePct / 100 * initialRate;
-  if (curRate - cutThreshold > Math.abs(cutThreshold) * GUARDRAILS_RATE_REL_TOLERANCE) {
-    return Math.round(currentSpending * (1 - adj));
-  }
-  if (raiseThreshold - curRate > Math.abs(raiseThreshold) * GUARDRAILS_RATE_REL_TOLERANCE) {
-    return Math.round(currentSpending * (1 + adj));
-  }
-  return currentSpending;
-}
-var PHASE_START_AGE_DEFAULT = 75;
-var PHASE_DECLINE_PCT_DEFAULT = 1;
-var STOCKS_PCT_DEFAULT = 95;
-var EXPECTED_RETURN_DEFAULT = 5;
-function phasedGrossCents(inputs, age) {
-  if (age <= inputs.phaseStartAge)
-    return inputs.spendingCents;
-  const factor = Math.pow(1 - inputs.phaseDeclinePct / 100, age - inputs.phaseStartAge);
-  return Math.round(inputs.spendingCents * factor);
-}
-function incomeCentsAt(inputs, age) {
-  const sched = inputs.incomeSchedule;
-  if (sched && sched.length > 0) {
-    let total = 0;
-    for (const s of sched) {
-      const start = s.startAge ?? inputs.retirementAge;
-      if (age >= start)
-        total += s.amountCents;
-    }
-    return total;
-  }
-  return inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge ? inputs.extraIncomeCents : 0;
-}
-function eventualIncomeCents(inputs) {
-  const sched = inputs.incomeSchedule;
-  if (sched && sched.length > 0) {
-    let total = 0;
-    for (const s of sched) {
-      const start = s.startAge ?? inputs.retirementAge;
-      if (start <= inputs.endAge)
-        total += s.amountCents;
-    }
-    return total;
-  }
-  return inputs.extraIncomeStartAge != null ? inputs.extraIncomeCents : 0;
-}
-function simulateDetailed(inputs, returns) {
-  const years = horizonYears(inputs.currentAge, inputs.endAge);
-  const balances = [inputs.startCents];
-  const grossWithdrawals = [];
-  const netWithdrawals = [];
-  let bal = inputs.startCents;
-  let currentSpending = inputs.spendingCents;
-  let initialRate = null;
-  for (let i = 0;i < years; i++) {
-    const age = inputs.currentAge + i;
-    let gross = 0;
-    let net = 0;
-    if (age >= inputs.retirementAge) {
-      const income = incomeCentsAt(inputs, age);
-      if (inputs.strategy === "percent") {
-        gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
-      } else if (inputs.strategy === "guardrails") {
-        if (initialRate == null) {
-          initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
-          currentSpending = inputs.spendingCents;
-        }
-        currentSpending = guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs);
-        gross = currentSpending;
-      } else if (inputs.strategy === "phased") {
-        gross = phasedGrossCents(inputs, age);
-      } else {
-        gross = inputs.spendingCents;
-      }
-      net = gross - income;
-      bal -= net;
-      if (bal < 0)
-        bal = 0;
-    }
-    grossWithdrawals.push(gross);
-    netWithdrawals.push(net);
-    const r = returns[i] ?? 0;
-    bal = bal * (1 + r);
-    if (bal < 0)
-      bal = 0;
-    balances.push(bal);
-  }
-  return { balances, grossWithdrawals, netWithdrawals };
-}
-function neverRunsOutFromDetailed(det, inputs) {
-  for (let i = 0;i < det.netWithdrawals.length; i++) {
-    if (inputs.currentAge + i < inputs.retirementAge)
-      continue;
-    if ((det.netWithdrawals[i] ?? 0) > (det.balances[i] ?? 0))
-      return false;
-  }
-  return true;
-}
-function runNeverRunsOut(inputs, returns) {
-  const years = horizonYears(inputs.currentAge, inputs.endAge);
-  let bal = inputs.startCents;
-  let currentSpending = inputs.spendingCents;
-  let initialRate = null;
-  for (let i = 0;i < years; i++) {
-    const age = inputs.currentAge + i;
-    if (age >= inputs.retirementAge) {
-      const income = incomeCentsAt(inputs, age);
-      let gross;
-      if (inputs.strategy === "percent") {
-        gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
-      } else if (inputs.strategy === "guardrails") {
-        if (initialRate == null) {
-          initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
-          currentSpending = inputs.spendingCents;
-        }
-        currentSpending = guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs);
-        gross = currentSpending;
-      } else if (inputs.strategy === "phased") {
-        gross = phasedGrossCents(inputs, age);
-      } else {
-        gross = inputs.spendingCents;
-      }
-      const net = gross - income;
-      if (net > bal)
-        return false;
-      bal -= net;
-      if (bal < 0)
-        bal = 0;
-    }
-    const r = returns[i] ?? 0;
-    bal = bal * (1 + r);
-    if (bal < 0)
-      bal = 0;
-  }
-  return true;
-}
-function blendedExpected(stocksPct) {
-  return stocksPct / 100 * 7 + (1 - stocksPct / 100) * 2;
-}
-function historicalRealReturns(stocksPct) {
-  const sFrac = stocksPct / 100;
-  return HISTORICAL.map((h) => {
-    const stockReal = (1 + h.stockPct / 100) / (1 + h.cpiPct / 100) - 1;
-    const bondReal = (1 + h.bondPct / 100) / (1 + h.cpiPct / 100) - 1;
-    return sFrac * stockReal + (1 - sFrac) * bondReal;
-  });
-}
-function spendingStats(inputs, runsGross) {
-  if (inputs.strategy !== "percent") {
-    return {
-      lowestSpending: null,
-      averageSpending: null,
-      medianFinalYearSpending: null,
-      medianFirstRetiredYearSpending: null
-    };
-  }
-  let lowest = null;
-  const perRunAvg = [];
-  const perRunFinal = [];
-  const perRunFirst = [];
-  for (const gross of runsGross) {
-    const retired = gross.filter((_, i) => inputs.currentAge + i >= inputs.retirementAge);
-    if (retired.length === 0)
-      continue;
-    perRunAvg.push(retired.reduce((s, v) => s + v, 0) / retired.length);
-    perRunFirst.push(retired[0] ?? 0);
-    perRunFinal.push(retired[retired.length - 1] ?? 0);
-    for (const v of retired)
-      lowest = lowest == null ? v : Math.min(lowest, v);
-  }
-  return {
-    lowestSpending: lowest,
-    averageSpending: perRunAvg.length > 0 ? medianOf(perRunAvg) : null,
-    medianFinalYearSpending: perRunFinal.length > 0 ? medianOf(perRunFinal) : null,
-    medianFirstRetiredYearSpending: perRunFirst.length > 0 ? medianOf(perRunFirst) : null
-  };
-}
-function spendingAdequacyRate(inputs, runsGross) {
-  const floor = inputs.minimumAnnualSpendingCents;
-  if (floor == null || floor <= 0)
-    return null;
-  let adequate = 0;
-  let counted = 0;
-  for (const gross of runsGross) {
-    const retired = gross.filter((_, i) => inputs.currentAge + i >= inputs.retirementAge);
-    if (retired.length === 0)
-      continue;
-    counted++;
-    if (retired.every((g) => g >= floor))
-      adequate++;
-  }
-  if (counted === 0)
-    return null;
-  return adequate / counted * 100;
-}
-function runHistorical(inputs, stocksPct) {
-  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
-  if (planYears <= 0)
-    return null;
-  const allReturns = historicalRealReturns(stocksPct);
-  const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
-  const runs = [];
-  let neverOut = 0;
-  for (let idx = 0;idx < HISTORICAL.length; idx++) {
-    const sy = HISTORICAL[idx]?.year ?? 0;
-    if (sy + planYears - 1 > lastYear)
-      break;
-    const returns = allReturns.slice(idx, idx + planYears);
-    const det = simulateDetailed(inputs, returns);
-    runs.push({
-      startYear: sy,
-      path: det.balances,
-      ending: det.balances[det.balances.length - 1] ?? 0,
-      returns,
-      grossWithdrawals: det.grossWithdrawals,
-      netWithdrawals: det.netWithdrawals
-    });
-    if (neverRunsOutFromDetailed(det, inputs))
-      neverOut++;
-  }
-  if (runs.length === 0)
-    return null;
-  const endings = runs.map((r) => r.ending);
-  const successes = endings.filter((e) => e > 0).length;
-  const worst = runs.reduce((a, b) => b.ending < a.ending ? b : a, runs[0] ?? { startYear: 0, path: [], ending: 0, returns: [], grossWithdrawals: [], netWithdrawals: [] });
-  const chart = [];
-  for (let i = 0;i <= planYears; i++) {
-    const row = { age: inputs.currentAge + i };
-    const vals = [];
-    for (const r of runs) {
-      const v = (r.path[i] ?? 0) / 100;
-      row[`r${r.startYear}`] = v;
-      vals.push(r.path[i] ?? 0);
-    }
-    row.median = medianOf(vals) / 100;
-    chart.push(row);
-  }
-  const stats = spendingStats(inputs, runs.map((r) => r.grossWithdrawals));
-  return {
-    runs,
-    chart,
-    count: runs.length,
-    successRate: successes / runs.length * 100,
-    neverOutSuccessRate: neverOut / runs.length * 100,
-    medianEnding: medianOf(endings),
-    worstEnding: worst.ending,
-    worstStartYear: worst.startYear,
-    lowestSpending: stats.lowestSpending,
-    averageSpending: stats.averageSpending,
-    medianFinalYearSpending: stats.medianFinalYearSpending,
-    medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
-    spendingAdequacySuccessRate: spendingAdequacyRate(inputs, runs.map((r) => r.grossWithdrawals)),
-    minimumAnnualSpendingCents: inputs.minimumAnnualSpendingCents ?? null
-  };
-}
-var MONTE_CARLO_TAB_SEED_DEFAULT = 12345;
-var MONTE_CARLO_TAB_RUNS = 1000;
-function runMonteCarlo(inputs, expected, vol, seed, runCount = MONTE_CARLO_TAB_RUNS) {
-  validateMonteCarloRunCount(runCount);
-  validateMonteCarloSeed(seed);
-  validateMonteCarloReturn(expected, vol);
-  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
-  if (planYears <= 0)
-    return null;
-  const rng = mulberry32(seed * 7919 + 17);
-  const endings = [];
-  const paths = [];
-  const runsGross = [];
-  let neverOut = 0;
-  for (let run = 0;run < runCount; run++) {
-    const returns = [];
-    for (let i = 0;i < planYears; i++) {
-      returns.push(expected + vol * normalRandom(rng));
-    }
-    const det = simulateDetailed(inputs, returns);
-    paths.push(det.balances);
-    runsGross.push(det.grossWithdrawals);
-    endings.push(det.balances[det.balances.length - 1] ?? 0);
-    if (neverRunsOutFromDetailed(det, inputs))
-      neverOut++;
-  }
-  const sortedEndings = [...endings].sort((a, b) => a - b);
-  const successes = endings.filter((e) => e > 0).length;
-  const chart = [];
-  for (let i = 0;i <= planYears; i++) {
-    const vals = paths.map((p) => p[i] ?? 0).sort((a, b) => a - b);
-    const p10 = percentile(vals, 10) / 100;
-    const p25 = percentile(vals, 25) / 100;
-    const p50 = medianOf(vals) / 100;
-    const p75 = percentile(vals, 75) / 100;
-    const p90 = percentile(vals, 90) / 100;
-    chart.push({
-      age: inputs.currentAge + i,
-      base: p10,
-      segLow: p25 - p10,
-      band75: p75 - p25,
-      segHigh: p90 - p75,
-      median: p50,
-      p10,
-      p90
-    });
-  }
-  const stats = spendingStats(inputs, runsGross);
-  return {
-    successRate: successes / runCount * 100,
-    neverOutSuccessRate: neverOut / runCount * 100,
-    p10: percentile(sortedEndings, 10),
-    p50: medianOf(endings),
-    p90: percentile(sortedEndings, 90),
-    chart,
-    lowestSpending: stats.lowestSpending,
-    averageSpending: stats.averageSpending,
-    medianFinalYearSpending: stats.medianFinalYearSpending,
-    medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
-    spendingAdequacySuccessRate: spendingAdequacyRate(inputs, runsGross),
-    minimumAnnualSpendingCents: inputs.minimumAnnualSpendingCents ?? null
-  };
-}
-function solverResult(args) {
-  return {
-    maxSpendingCents: args.maxSpendingCents,
-    successRate: args.successRate,
-    medianEnding: args.medianEnding,
-    percent: args.percent,
-    approximate: args.approximate,
-    targetSuccessRate: args.targetPct,
-    achievedSuccessRate: args.successRate,
-    targetAchieved: args.successRate >= args.targetPct,
-    solutionStatus: args.solutionStatus
-  };
-}
-function evaluatePlan(inputs, stocksPct, expected, vol, engine, mcSeed) {
-  if (engine === "historical") {
-    const h = runHistorical(inputs, stocksPct);
-    return h ? { successRate: h.neverOutSuccessRate, medianEnding: h.medianEnding } : null;
-  }
-  const mc = runMonteCarlo(inputs, expected, vol, mcSeed, MONTE_CARLO_TAB_RUNS);
-  return mc ? { successRate: mc.neverOutSuccessRate, medianEnding: mc.p50 } : null;
-}
-function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, capSteps, approximate, mcSeed) {
-  const STEP = 1e4;
-  const planYears = horizonYears(base.currentAge, base.endAge);
-  if (planYears <= 0)
-    return null;
-  const runReturns = [];
-  if (engine === "historical") {
-    const allReturns = historicalRealReturns(stocksPct);
-    const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
-    for (let idx = 0;idx < HISTORICAL.length; idx++) {
-      const sy = HISTORICAL[idx]?.year ?? 0;
-      if (sy + planYears - 1 > lastYear)
-        break;
-      runReturns.push(allReturns.slice(idx, idx + planYears));
-    }
-  } else {
-    const rng = mulberry32(mcSeed * 7919 + 17);
-    for (let run = 0;run < MONTE_CARLO_TAB_RUNS; run++) {
-      const returns = [];
-      for (let i = 0;i < planYears; i++) {
-        returns.push(expected + vol * normalRandom(rng));
-      }
-      runReturns.push(returns);
-    }
-  }
-  if (runReturns.length === 0)
-    return null;
-  const needed = Math.ceil(targetPct / 100 * runReturns.length - 0.000000001);
-  const allowedFail = runReturns.length - needed;
-  const feasible = (cents) => {
-    const firstYearGross = Math.min(cents, ...base.guardrailsCutPct < 100 ? [
-      Math.round(cents * (1 - base.guardrailsAdjustmentPct / 100))
-    ] : [], ...base.guardrailsRaisePct > 100 ? [
-      Math.round(cents * (1 + base.guardrailsAdjustmentPct / 100))
-    ] : []);
-    const firstYearNet = firstYearGross - firstYearIncome;
-    if (firstYearNet > 0) {
-      let lo = 0;
-      let hi = sortedRetBals.length;
-      while (lo < hi) {
-        const mid = Math.floor((lo + hi) / 2);
-        if ((sortedRetBals[mid] ?? 0) < firstYearNet)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      if (sortedRetBals.length - lo < needed)
-        return false;
-    }
-    const inp = { ...base, spendingCents: cents };
-    let succ = 0;
-    let fail = 0;
-    for (const returns of runReturns) {
-      if (runNeverRunsOut(inp, returns)) {
-        succ++;
-        if (succ >= needed)
-          return true;
-      } else {
-        fail++;
-        if (fail > allowedFail)
-          return false;
-      }
-    }
-    return succ >= needed;
-  };
-  const preYears = Math.max(0, Math.min(planYears, base.retirementAge - base.currentAge));
-  const eventualIncome = eventualIncomeCents(base);
-  const retBals = [];
-  let maxRetBal = 0;
-  for (const returns of runReturns) {
-    let b = base.startCents;
-    for (let i = 0;i < preYears; i++) {
-      b = b * (1 + (returns[i] ?? 0));
-      if (b < 0)
-        b = 0;
-    }
-    retBals.push(b);
-    if (b > maxRetBal)
-      maxRetBal = b;
-  }
-  const sortedRetBals = [...retBals].sort((a, b) => a - b);
-  const firstRetiredAge = Math.max(base.currentAge, base.retirementAge);
-  const firstYearIncome = incomeCentsAt(base, firstRetiredAge);
-  const cutFactor = 1 - Math.max(0, base.guardrailsAdjustmentPct) / 100;
-  const raiseFactor = base.guardrailsRaisePct > 100 ? 1 + base.guardrailsAdjustmentPct / 100 : 1;
-  const scanSteps = base.guardrailsCutPct < 100 && cutFactor > 0 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * cutFactor)) + 1)) : base.guardrailsCutPct < 100 ? capSteps : raiseFactor > 0 && raiseFactor < 1 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * raiseFactor)) + 1)) : raiseFactor <= 0 ? capSteps : Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)));
-  let best = 0;
-  for (let k = scanSteps;k >= 1; k--) {
-    if (feasible(k * STEP)) {
-      best = k;
-      break;
-    }
-  }
-  const winner = evaluatePlan({ ...base, spendingCents: best * STEP }, stocksPct, expected, vol, engine, mcSeed);
-  if (!winner)
-    return null;
-  const solutionStatus = winner.successRate < targetPct ? "infeasible_at_zero" : best === scanSteps && scanSteps === capSteps ? "capped" : best === 0 ? "feasible_at_zero" : "feasible";
-  return solverResult({
-    maxSpendingCents: best * STEP,
-    successRate: winner.successRate,
-    medianEnding: winner.medianEnding,
-    percent: null,
-    approximate,
-    targetPct,
-    solutionStatus
-  });
-}
-function solveMaxSpending(base, stocksPct, expected, vol, engine, targetPct, mcSeed = MONTE_CARLO_TAB_SEED_DEFAULT) {
-  validateMonteCarloSeed(mcSeed);
-  validateMonteCarloReturn(expected, vol);
-  if (base.retirementAge >= base.endAge)
-    return null;
-  const approximate = engine === "montecarlo";
-  const STEP = 1e4;
-  if (base.strategy === "percent") {
-    if (base.startCents <= 0)
-      return null;
-    const maxSteps = Math.floor(base.startCents * 0.3 / STEP);
-    if (maxSteps <= 0)
-      return null;
-    const pctFor = (k) => k * STEP * 100 / base.startCents;
-    const evalStep = (k) => evaluatePlan({ ...base, percentOfPortfolio: pctFor(k) }, stocksPct, expected, vol, engine, mcSeed);
-    const at0 = evalStep(0);
-    if (!at0)
-      return null;
-    if (at0.successRate < targetPct) {
-      return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: 0, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
-    }
-    const atMax = evalStep(maxSteps);
-    if (atMax && atMax.successRate >= targetPct) {
-      return solverResult({ maxSpendingCents: maxSteps * STEP, successRate: atMax.successRate, medianEnding: atMax.medianEnding, percent: pctFor(maxSteps), approximate, targetPct, solutionStatus: "capped" });
-    }
-    let lo = 0;
-    let hi = maxSteps;
-    while (hi - lo > 1) {
-      const mid = Math.floor((lo + hi) / 2);
-      const e = evalStep(mid);
-      if (e && e.successRate >= targetPct)
-        lo = mid;
-      else
-        hi = mid;
-    }
-    const best = evalStep(lo);
-    if (!best)
-      return null;
-    return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: pctFor(lo), approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
-  }
-  const evalSpend = (cents) => evaluatePlan({ ...base, spendingCents: cents }, stocksPct, expected, vol, engine, mcSeed);
-  const at0 = evalSpend(0);
-  if (!at0)
-    return null;
-  if (at0.successRate < targetPct) {
-    return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: null, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
-  }
-  const capSteps = Math.max(1, Math.floor(Math.max(base.startCents * 2, 1e8) / STEP));
-  if (base.strategy === "guardrails") {
-    return solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, capSteps, approximate, mcSeed);
-  }
-  let lo = 0;
-  let hi = Math.min(capSteps, Math.max(1, Math.ceil(Math.max(base.spendingCents, 5000000) / STEP)));
-  let eHi = evalSpend(hi * STEP);
-  while (eHi && eHi.successRate >= targetPct && hi < capSteps) {
-    lo = hi;
-    hi = Math.min(capSteps, hi * 2);
-    eHi = evalSpend(hi * STEP);
-  }
-  if (eHi && eHi.successRate >= targetPct) {
-    return solverResult({ maxSpendingCents: hi * STEP, successRate: eHi.successRate, medianEnding: eHi.medianEnding, percent: null, approximate, targetPct, solutionStatus: "capped" });
-  }
-  while (hi - lo > 1) {
-    const mid = Math.floor((lo + hi) / 2);
-    const e = evalSpend(mid * STEP);
-    if (e && e.successRate >= targetPct)
-      lo = mid;
-    else
-      hi = mid;
-  }
-  const best = evalSpend(lo * STEP);
-  if (!best)
-    return null;
-  return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: null, approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
-}
-
 var TAX_RATES = [10, 12, 22, 24, 32, 35, 37];
 var TAX_LAW_2025 = {
   year: 2025,
@@ -9809,6 +9224,121 @@ function impliedYieldPctsFromTaxReturn(stored, taxablePoolDollars) {
 
 var DEFAULT_HEIR_RATE_PCT = 22;
 
+var utf8 = new TextEncoder;
+function estimateValueBytes(value) {
+  const seen = new Set;
+  const walk = (v) => {
+    switch (typeof v) {
+      case "number":
+      case "bigint":
+        return 8;
+      case "string":
+        return utf8.encode(v).length;
+      case "boolean":
+        return 4;
+      case "undefined":
+        return 4;
+      case "function":
+      case "symbol":
+        return 8;
+      default:
+        break;
+    }
+    if (v === null)
+      return 4;
+    if (typeof v !== "object")
+      return 8;
+    if (seen.has(v))
+      return 0;
+    seen.add(v);
+    let bytes = 32;
+    if (Array.isArray(v)) {
+      for (const el of v)
+        bytes += walk(el);
+    } else {
+      for (const [k, val] of Object.entries(v)) {
+        bytes += utf8.encode(k).length;
+        bytes += walk(val);
+      }
+    }
+    return bytes;
+  };
+  return walk(value);
+}
+
+class ByteBudgetCache {
+  budgetBytes;
+  label;
+  entriesMap = new Map;
+  totalBytes = 0;
+  hits = 0;
+  misses = 0;
+  evictions = 0;
+  constructor(budgetBytes, label) {
+    this.budgetBytes = budgetBytes;
+    this.label = label;
+  }
+  get budget() {
+    return this.budgetBytes;
+  }
+  get size() {
+    return this.entriesMap.size;
+  }
+  get bytes() {
+    return this.totalBytes;
+  }
+  get(key) {
+    const entry = this.entriesMap.get(key);
+    if (entry === undefined) {
+      this.misses++;
+      return;
+    }
+    this.hits++;
+    this.entriesMap.delete(key);
+    this.entriesMap.set(key, entry);
+    return entry.value;
+  }
+  has(key) {
+    return this.entriesMap.has(key);
+  }
+  set(key, value, bytes) {
+    const prev = this.entriesMap.get(key);
+    if (prev !== undefined) {
+      this.totalBytes -= prev.bytes;
+      this.entriesMap.delete(key);
+    }
+    this.entriesMap.set(key, { value, bytes });
+    this.totalBytes += bytes;
+    while (this.totalBytes > this.budgetBytes && this.entriesMap.size > 1) {
+      const oldest = this.entriesMap.keys().next();
+      if (oldest.done)
+        break;
+      const oldestKey = oldest.value;
+      const evicted = this.entriesMap.get(oldestKey);
+      this.entriesMap.delete(oldestKey);
+      this.totalBytes -= evicted.bytes;
+      this.evictions++;
+      console.debug(`[byte-budget-cache:${this.label}] evicted ${oldestKey} (${evicted.bytes} B); ` + `${this.entriesMap.size} entries, ${this.totalBytes} B remain`);
+    }
+    if (this.totalBytes > this.budgetBytes) {
+      console.error(`[byte-budget-cache:${this.label}] WARNING: single entry ${key} ` + `is ${this.totalBytes} B, over the ${this.budgetBytes} B budget; ` + `stored as the sole entry`);
+    }
+  }
+  stats() {
+    return {
+      entries: this.entriesMap.size,
+      bytes: this.totalBytes,
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions
+    };
+  }
+  clear() {
+    this.entriesMap.clear();
+    this.totalBytes = 0;
+  }
+}
+
 function r23(n) {
   return Math.round(n * 100) / 100;
 }
@@ -10278,6 +9808,43 @@ function scoreAllCandidates(inputs, claimAges = enteredClaimInfo(inputs), opts) 
   scored.sort((a, b) => compareScoredCandidates(a, b, planOrderKey));
   return scored;
 }
+function summarizeRothPlanResult(result) {
+  const { years, ...rest } = result;
+  return {
+    ...rest,
+    irmaaLookbackMissingYears: [...result.irmaaLookbackMissingYears],
+    acaBelow100FplYears: [...result.acaBelow100FplYears],
+    cliffCapInoperativeYears: [...result.cliffCapInoperativeYears],
+    earlyWithdrawalUnknownYears: [...result.earlyWithdrawalUnknownYears],
+    rothBasisUnknownYears: [...result.rothBasisUnknownYears],
+    yearCount: years.length
+  };
+}
+function summarizeScoredCandidate(s) {
+  return {
+    spec: s.spec,
+    result: summarizeRothPlanResult(s.result),
+    cost: s.cost,
+    integrity: s.integrity,
+    claimAges: s.claimAges
+  };
+}
+function compactJointOptimizerResult(result) {
+  const named = new Set([
+    result.doNothing,
+    result.winner,
+    result.selectedWinner,
+    result.winnerByNetCost,
+    result.winnerByEndingWealth,
+    ...result.runnersUp,
+    ...result.claimAgeTable.map((row) => row.best),
+    ...result.excludedInvalidWinner == null ? [] : [result.excludedInvalidWinner.candidate]
+  ]);
+  return {
+    ...result,
+    scored: result.scored.map((s) => named.has(s) ? s : summarizeScoredCandidate(s))
+  };
+}
 function runOptimizer(inputs, opts) {
   const scored = scoreAllCandidates(inputs, enteredClaimInfo(inputs), opts);
   const doNothing = scored.find((s) => s.spec.key === DO_NOTHING_SPEC.key) ?? scored[0];
@@ -10545,7 +10112,8 @@ function computeJointOptimizer(inputs) {
     claimAgeFloorMet: met
   };
 }
-var jointOptimizerCache = new Map;
+var JOINT_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
+var jointOptimizerCache = new ByteBudgetCache(JOINT_CACHE_BUDGET_BYTES, "joint");
 function jointInputsKey(inputs) {
   const sortValue = (v) => {
     if (Array.isArray(v))
@@ -10572,16 +10140,241 @@ function jointInputsKey(inputs) {
   };
   return JSON.stringify(sortValue(inputs), nonFiniteReplacer);
 }
-function runJointOptimizer(inputs) {
+async function runJointOptimizerAsync(inputs, opts) {
+  const detail = opts?.detail ?? "summary";
   const key = jointInputsKey(inputs);
+  if (detail === "full") {
+    const { promise } = dispatchEngineJob("joint", `${key}:full`, { inputs }, { timeoutMs: opts?.timeoutMs, detail: "full" });
+    return promise;
+  }
   const hit = jointOptimizerCache.get(key);
   if (hit)
     return structuredClone(hit);
-  const result = computeJointOptimizer(inputs);
-  if (jointOptimizerCache.size >= 50)
-    jointOptimizerCache.clear();
-  jointOptimizerCache.set(key, structuredClone(result));
-  return result;
+  const { promise } = dispatchEngineJob("joint", `${key}:summary`, { inputs }, { timeoutMs: opts?.timeoutMs, detail: "summary" });
+  const summary = await promise;
+  jointOptimizerCache.set(key, structuredClone(summary), estimateValueBytes(summary));
+  return summary;
+}
+async function runOptimizerAsync(inputs, opts) {
+  const searchOrders = opts?.searchOrders ?? true;
+  const { promise } = dispatchEngineJob("fixedAge", stableEngineKey({ inputs, searchOrders }), { inputs, searchOrders }, { timeoutMs: opts?.timeoutMs, detail: "full" });
+  return promise;
+}
+async function runDynamicOptimizerAsync(inputs, opts) {
+  const { promise } = dispatchEngineJob("dynamicOptimizer", stableEngineKey({
+    inputs,
+    annualSpending: opts?.annualSpending ?? null,
+    policies: opts?.policies ?? null
+  }), {
+    inputs,
+    opts: { annualSpending: opts?.annualSpending, policies: opts?.policies }
+  }, { timeoutMs: opts?.timeoutMs, detail: "full" });
+  return promise;
+}
+function optimizerSensitivity(inputs, deltaPct) {
+  const shifted = { ...inputs, expectedReturnPct: inputs.expectedReturnPct + deltaPct };
+  const res = runOptimizer(shifted, { searchOrders: false });
+  return { returnPct: shifted.expectedReturnPct, winner: res.winner };
+}
+function optimizerHeirSensitivity(inputs, heirRatePct) {
+  const shifted = { ...inputs, heirRatePct };
+  const res = runOptimizer(shifted, { searchOrders: false });
+  return { heirRatePct, winner: res.winner, doNothing: res.doNothing };
+}
+var MC_STREAM_STRIDE_YEARS = 160;
+var mcMulberry32 = mulberry32;
+var mcNormalRandom = normalRandom;
+function rothMcStream(seed) {
+  validateMonteCarloSeed(seed);
+  return mcMulberry32(seed * 7919 + 17);
+}
+function rothMcShockSeries(years, rng) {
+  const out = [];
+  for (let i = 0;i < years; i++) {
+    out.push(mcNormalRandom(rng));
+  }
+  return out;
+}
+var mcMedianOf = medianOf;
+var mcPercentile = percentile;
+var MAX_ROTH_MONTE_CARLO_PATHS = 1000;
+function invalidRothMcOptsReason(opts) {
+  if (!Number.isInteger(opts.pathCount) || opts.pathCount < 1 || opts.pathCount > MAX_ROTH_MONTE_CARLO_PATHS) {
+    return `The Monte Carlo path count must be a whole number from 1 to ${MAX_ROTH_MONTE_CARLO_PATHS}, got ${opts.pathCount}.`;
+  }
+  if (!Number.isInteger(opts.seed)) {
+    return `Monte Carlo seed must be a finite integer, got ${opts.seed}.`;
+  }
+  if (!Number.isFinite(opts.volatilityPct) || opts.volatilityPct < 0 || opts.volatilityPct > 100) {
+    return `Monte Carlo volatility must be between 0 and 100 percent, got ${opts.volatilityPct}.`;
+  }
+  return null;
+}
+function priceMcCandidate(inputs, candidate, series) {
+  const { spec, claimAges } = candidate;
+  const comboInputs = {
+    ...inputs,
+    ssPrimaryAnnual: claimAges.primaryAnnual,
+    ssPrimaryStartAge: claimAges.primaryAge,
+    ssSpouseAnnual: claimAges.spouseAnnual,
+    ssSpouseStartAge: claimAges.spouseAge
+  };
+  if (spec.key === DO_NOTHING_SPEC.key) {
+    const result = simulateRothPlan(structuredClone(comboInputs), { id: "none", name: "Do Nothing", ceilings: null }, series);
+    return planNetCost(result, inputs).netCost;
+  }
+  const candidateInputs = spec.windowStopAge === comboInputs.windowStopAge && drawOrderKey(spec.drawOrder) === drawOrderKey(comboInputs.drawOrder) ? structuredClone(comboInputs) : { ...structuredClone(comboInputs), windowStopAge: spec.windowStopAge, drawOrder: spec.drawOrder };
+  const result = simulateRothPlan(candidateInputs, candidateStrategy(spec), series);
+  return planNetCost(result, inputs).netCost;
+}
+function runRothMonteCarloCheck(inputs, winner, doNothing, opts) {
+  const optsError = invalidRothMcOptsReason(opts);
+  if (optsError)
+    throw new RangeError(optsError);
+  const rng = rothMcStream(opts.seed);
+  const paths = [];
+  const years = inputs.endAgePrimary - (inputs.startYear - inputs.birthYearPrimary) + 1;
+  for (let i = 0;i < opts.pathCount; i++) {
+    const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+    const series = z.slice(0, Math.max(0, years)).map((zi) => inputs.expectedReturnPct + opts.volatilityPct * zi);
+    const winnerCost = priceMcCandidate(inputs, winner, series);
+    const doNothingCost = priceMcCandidate(inputs, doNothing, series);
+    paths.push({
+      winnerCost,
+      doNothingCost,
+      advantage: r23(doNothingCost - winnerCost)
+    });
+  }
+  const wins = paths.filter((p) => p.advantage > 0).length;
+  const sortedAdvantages = paths.map((p) => p.advantage).sort((a, b) => a - b);
+  return {
+    pathsRun: paths.length,
+    wins,
+    winRatePct: paths.length > 0 ? Math.round(wins / paths.length * 1000) / 10 : 0,
+    medianAdvantage: r23(mcMedianOf(sortedAdvantages)),
+    p10Advantage: r23(mcPercentile(sortedAdvantages, 10)),
+    p90Advantage: r23(mcPercentile(sortedAdvantages, 90)),
+    winnerMedianNetCost: r23(mcMedianOf(paths.map((p) => p.winnerCost))),
+    doNothingMedianNetCost: r23(mcMedianOf(paths.map((p) => p.doNothingCost))),
+    paths
+  };
+}
+function runRothMonteCarloStats(base, scenarios, startYear, opts) {
+  const optsError = invalidRothMcOptsReason(opts);
+  if (optsError)
+    return { ok: false, reason: optsError, scenarios: [] };
+  const noBirthYear = {
+    ok: false,
+    reason: "The Monte Carlo stats run needs a birth year before it can price a plan — enter it in the base plan and run again.",
+    scenarios: []
+  };
+  if (scenarios.length === 0) {
+    return {
+      ok: false,
+      reason: "The Monte Carlo stats run needs at least one scenario — name a strategy to price.",
+      scenarios: []
+    };
+  }
+  const baseInputs = planInputsFromSaved(base, startYear);
+  if (!baseInputs)
+    return noBirthYear;
+  const ageNow = baseInputs.startYear - baseInputs.birthYearPrimary;
+  if (baseInputs.endAgePrimary <= ageNow) {
+    return {
+      ok: false,
+      reason: "The plan end age is not after the current age, so there is no lifetime to stress-test — raise the end age in the base plan and run again.",
+      scenarios: []
+    };
+  }
+  const built = [];
+  for (const s of scenarios) {
+    const b = buildCompareScenario(base, s.name, s.overrides, startYear, opts.taxReturnActuals);
+    if (!b)
+      return noBirthYear;
+    built.push(b);
+  }
+  for (const b of built) {
+    if (b.inputs.endAgePrimary <= ageNow) {
+      return {
+        ok: false,
+        reason: `Scenario "${b.name}": the plan end age is not after the current age, so there is no lifetime to stress-test — raise the end age in that scenario and run again.`,
+        scenarios: []
+      };
+    }
+  }
+  const perScenario = built.map(() => []);
+  const rng = rothMcStream(opts.seed);
+  const horizonYears = (inputs) => inputs.endAgePrimary - (inputs.startYear - inputs.birthYearPrimary) + 1;
+  const scenarioYears = built.map((b) => horizonYears(b.inputs));
+  for (let i = 0;i < opts.pathCount; i++) {
+    const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+    for (let j = 0;j < built.length; j++) {
+      const b = built[j];
+      const yearsS = scenarioYears[j] ?? 0;
+      const series = yearsS > 0 ? z.slice(0, yearsS).map((zi) => b.inputs.expectedReturnPct + opts.volatilityPct * zi) : [];
+      const result = simulateRothPlan(b.inputs, b.strategy, series);
+      const cost = planNetCost(result, b.inputs);
+      let shortfallDollars = 0;
+      let hasShortfall = false;
+      let unpaidTaxDollars = 0;
+      let hasUnpaidTax = false;
+      for (const y of result.years) {
+        if (y.spendShortfall > 0)
+          hasShortfall = true;
+        shortfallDollars += y.spendShortfall;
+        if (y.unpaidTax > 0)
+          hasUnpaidTax = true;
+        unpaidTaxDollars += y.unpaidTax;
+      }
+      perScenario[j].push({
+        netCostCents: toCents(cost.netCost),
+        wealthCents: toCents(result.endingAfterTaxWealth),
+        pretaxCents: toCents(result.endingPretax),
+        shortfallCents: toCents(shortfallDollars),
+        hasShortfall,
+        unpaidTaxCents: toCents(unpaidTaxDollars),
+        hasUnpaidTax
+      });
+    }
+  }
+  const sortedCopy = (values) => [...values].sort((a, b) => a - b);
+  return {
+    ok: true,
+    reason: `Priced ${built.length} scenario${built.length === 1 ? "" : "s"} across ${opts.pathCount} varied-return paths at ${opts.volatilityPct}% volatility.`,
+    scenarios: built.map((b, j) => {
+      const rows = perScenario[j];
+      const withShortfall = rows.filter((r) => r.hasShortfall).length;
+      const withUnpaidTax = rows.filter((r) => r.hasUnpaidTax).length;
+      const fullyFunded = rows.filter((r) => !r.hasShortfall && !r.hasUnpaidTax).length;
+      const shortfalls = rows.map((r) => r.shortfallCents);
+      const unpaidTaxes = rows.map((r) => r.unpaidTaxCents);
+      const wealths = rows.map((r) => r.wealthCents);
+      const pretaxes = rows.map((r) => r.pretaxCents);
+      const costs = rows.map((r) => r.netCostCents);
+      return {
+        name: b.name,
+        strategyDescription: b.strategyDescription,
+        pathsRun: rows.length,
+        pathsWithShortfall: withShortfall,
+        neverShortfallRatePct: rows.length > 0 ? Math.round((rows.length - withShortfall) / rows.length * 1000) / 10 : 0,
+        totalShortfallP50Cents: Math.round(mcMedianOf(shortfalls)),
+        totalShortfallP90Cents: mcPercentile(sortedCopy(shortfalls), 90),
+        fullyFundedRatePct: rows.length > 0 ? Math.round(fullyFunded / rows.length * 1000) / 10 : 0,
+        pathsWithUnpaidTax: withUnpaidTax,
+        totalUnpaidTaxP50Cents: Math.round(mcMedianOf(unpaidTaxes)),
+        totalUnpaidTaxP90Cents: mcPercentile(sortedCopy(unpaidTaxes), 90),
+        endingAfterTaxWealthP10Cents: mcPercentile(sortedCopy(wealths), 10),
+        endingAfterTaxWealthP50Cents: Math.round(mcMedianOf(wealths)),
+        endingAfterTaxWealthP90Cents: mcPercentile(sortedCopy(wealths), 90),
+        endingPretaxP10Cents: mcPercentile(sortedCopy(pretaxes), 10),
+        endingPretaxP50Cents: Math.round(mcMedianOf(pretaxes)),
+        endingPretaxP90Cents: mcPercentile(sortedCopy(pretaxes), 90),
+        netCostP10Cents: mcPercentile(sortedCopy(costs), 10),
+        netCostP50Cents: Math.round(mcMedianOf(costs)),
+        netCostP90Cents: mcPercentile(sortedCopy(costs), 90)
+      };
+    })
+  };
 }
 function countedSpousePretax(inp) {
   return inp.filingStatus === "mfj" ? inp.pretaxBalanceSpouse ?? null : null;
@@ -12094,6 +11887,1061 @@ function runDynamicOptimizer(base, opts) {
   });
 }
 
+function runEngineJob(msg) {
+  if (msg.detail === "summary" && msg.kind !== "joint" && msg.kind !== "workYearsJoint") {
+    throw new Error(`engine worker: detail "summary" is not supported for job kind ${JSON.stringify(msg.kind)}`);
+  }
+  const p = msg.payload;
+  switch (msg.kind) {
+    case "joint":
+    case "workYearsJoint": {
+      const full = computeJointOptimizer(p.inputs);
+      return msg.detail === "summary" ? compactJointOptimizerResult(full) : full;
+    }
+    case "fixedAge":
+      return runOptimizer(p.inputs, { searchOrders: p.searchOrders ?? true });
+    case "sensitivity":
+      return optimizerSensitivity(p.inputs, p.deltaPct);
+    case "heirSensitivity":
+      return optimizerHeirSensitivity(p.inputs, p.heirRatePct);
+    case "mcCheck":
+      return runRothMonteCarloCheck(p.inputs, p.winner, p.doNothing, p.opts);
+    case "mcStats":
+      return runRothMonteCarloStats(p.base, p.scenarios, p.startYear, p.opts);
+    case "retirementMc":
+      return runMonteCarlo(p.inputs, p.expected, p.vol, p.seed, p.runCount);
+    case "solver":
+      return solveMaxSpending(p.inputs, p.stocksPct, p.expected, p.vol, p.engine, p.targetPct, p.mcSeed);
+    case "dynamicOptimizer":
+      return runDynamicOptimizer(p.inputs, p.opts);
+    default:
+      throw new Error(`engine worker: unknown job kind ${JSON.stringify(msg.kind)}`);
+  }
+}
+
+var ENGINE_JOB_TIMEOUT_MS = 1e5;
+var ENGINE_QUEUE_CAP = 8;
+var ENGINE_JOB_LANE = {
+  joint: "large",
+  workYearsJoint: "large",
+  fixedAge: "small",
+  sensitivity: "small",
+  heirSensitivity: "small",
+  mcCheck: "small",
+  mcStats: "small",
+  retirementMc: "small",
+  solver: "small",
+  dynamicOptimizer: "small"
+};
+var ENGINE_ERROR_REASONS = {
+  ENGINE_TIMEOUT: "The search ran past its 100 s budget and was stopped; no result was produced. Try a narrower search (fewer claiming ages / shorter horizon) or try again.",
+  ENGINE_BUSY: "The engine is busy; try again in a moment.",
+  ENGINE_CRASH: "The engine worker stopped unexpectedly; the search was not completed."
+};
+function formatBudgetMs(ms) {
+  if (ms >= 1000) {
+    const s = ms / 1000;
+    return `${Number.isInteger(s) ? s : s.toFixed(1)} s`;
+  }
+  return `${ms} ms`;
+}
+function engineTimeoutReason(timeoutMs) {
+  return `The search ran past its ${formatBudgetMs(timeoutMs)} budget and was stopped; no result was produced. Try a narrower search (fewer claiming ages / shorter horizon) or try again.`;
+}
+
+class EngineError extends Error {
+  code;
+  retryable = true;
+  constructor(code, reason) {
+    super(reason ?? ENGINE_ERROR_REASONS[code]);
+    this.name = "EngineError";
+    this.code = code;
+  }
+}
+function stableEngineKey(value) {
+  const sortValue = (v) => {
+    if (Array.isArray(v))
+      return v.map(sortValue);
+    if (v != null && typeof v === "object") {
+      const out = {};
+      for (const k of Object.keys(v).sort()) {
+        out[k] = sortValue(v[k]);
+      }
+      return out;
+    }
+    return v;
+  };
+  const nonFiniteReplacer = (_key, v) => {
+    if (typeof v === "number") {
+      if (Number.isNaN(v))
+        return { __c7NonFinite__: "NaN" };
+      if (v === Infinity)
+        return { __c7NonFinite__: "Infinity" };
+      if (v === -Infinity)
+        return { __c7NonFinite__: "-Infinity" };
+    }
+    return v;
+  };
+  return JSON.stringify(sortValue(value), nonFiniteReplacer);
+}
+
+class EnginePool {
+  opts;
+  nextJobId = 1;
+  lanes = {
+    large: { worker: null, crashHandled: false, running: null, queue: [] },
+    small: { worker: null, crashHandled: false, running: null, queue: [] }
+  };
+  inflight = new Map;
+  stats = {
+    started: 0,
+    completed: 0,
+    deduped: 0,
+    timeouts: 0,
+    busy: 0,
+    crashes: 0,
+    terminated: 0,
+    inThreadJobs: 0
+  };
+  inThreadFallback;
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.inThreadFallback = opts.inThreadFallback ?? false;
+  }
+  enableInThreadFallback() {
+    this.inThreadFallback = true;
+  }
+  isInThreadFallback() {
+    return this.inThreadFallback;
+  }
+  get queueCap() {
+    return this.opts.queueCap ?? ENGINE_QUEUE_CAP;
+  }
+  get jobTimeoutMs() {
+    return this.opts.jobTimeoutMs ?? ENGINE_JOB_TIMEOUT_MS;
+  }
+  poolStats() {
+    return { ...this.stats };
+  }
+  dispatch(kind, dedupKey, payload, opts) {
+    const lane = ENGINE_JOB_LANE[kind];
+    const key = `${lane}:${kind}:${dedupKey}`;
+    const existing = this.inflight.get(key);
+    if (existing && !existing.settled) {
+      this.stats.deduped++;
+      return this.attach(existing, opts?.timeoutMs ?? this.jobTimeoutMs);
+    }
+    const state = this.lanes[lane];
+    if (state.queue.length >= this.queueCap) {
+      this.stats.busy++;
+      const err = new EngineError("ENGINE_BUSY");
+      return {
+        promise: Promise.reject(err),
+        release: () => {}
+      };
+    }
+    const timeoutMs = opts?.timeoutMs ?? this.jobTimeoutMs;
+    const job = {
+      id: this.nextJobId++,
+      lane,
+      kind,
+      dedupKey: key,
+      payload,
+      detail: opts?.detail ?? "full",
+      deadline: Date.now() + Math.max(0, timeoutMs),
+      timeoutMs,
+      timer: null,
+      waiters: [],
+      started: false,
+      settled: false
+    };
+    this.inflight.set(key, job);
+    const handle = this.attach(job);
+    state.queue.push(job);
+    job.timer = setTimeout(() => this.onDeadline(job), Math.max(0, timeoutMs));
+    this.pump(lane);
+    return handle;
+  }
+  attach(job, waiterTimeoutMs) {
+    let waiter;
+    const promise = new Promise((resolve, reject) => {
+      waiter = {
+        resolve,
+        reject,
+        timer: null,
+        timeoutMs: waiterTimeoutMs ?? null
+      };
+    });
+    promise.catch(() => {});
+    job.waiters.push(waiter);
+    if (waiterTimeoutMs != null) {
+      waiter.timer = setTimeout(() => {
+        if (job.settled)
+          return;
+        const idx = job.waiters.indexOf(waiter);
+        if (idx < 0)
+          return;
+        job.waiters.splice(idx, 1);
+        waiter.timer = null;
+        waiter.reject(new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(waiterTimeoutMs)));
+        if (job.waiters.length === 0) {
+          console.error(`[engine-pool] job ${job.id} (${job.kind}) terminated: last waiter left (own deadline)`);
+          this.terminateJob(job, null);
+        }
+      }, Math.max(0, waiterTimeoutMs));
+    }
+    let released = false;
+    return {
+      promise,
+      release: () => {
+        if (released)
+          return;
+        released = true;
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+          waiter.timer = null;
+        }
+        const idx = job.waiters.indexOf(waiter);
+        if (idx >= 0)
+          job.waiters.splice(idx, 1);
+        if (job.waiters.length === 0 && !job.settled) {
+          console.error(`[engine-pool] job ${job.id} (${job.kind}) terminated: last waiter left`);
+          this.terminateJob(job, null);
+        }
+      }
+    };
+  }
+  clearWaiterTimers(job) {
+    for (const w of job.waiters) {
+      if (w.timer) {
+        clearTimeout(w.timer);
+        w.timer = null;
+      }
+    }
+  }
+  settle(job, outcome) {
+    if (job.settled)
+      return;
+    job.settled = true;
+    if (job.timer) {
+      clearTimeout(job.timer);
+      job.timer = null;
+    }
+    this.clearWaiterTimers(job);
+    this.inflight.delete(job.dedupKey);
+    const waiters = job.waiters.splice(0);
+    for (const w of waiters) {
+      if (outcome.ok)
+        w.resolve(outcome.value);
+      else
+        w.reject(outcome.error);
+    }
+  }
+  pump(lane) {
+    const state = this.lanes[lane];
+    if (state.running)
+      return;
+    while (state.queue.length > 0) {
+      const next = state.queue[0];
+      if (Date.now() >= next.deadline) {
+        state.queue.shift();
+        this.stats.timeouts++;
+        this.settle(next, {
+          ok: false,
+          error: new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(next.timeoutMs))
+        });
+        continue;
+      }
+      break;
+    }
+    const job = state.queue.shift();
+    if (!job)
+      return;
+    if (this.inThreadFallback) {
+      state.running = job;
+      job.started = true;
+      this.stats.started++;
+      if (!inThreadFallbackMarkerLogged) {
+        inThreadFallbackMarkerLogged = true;
+        console.error("[engine-pool] single-file bundle: no engine worker file; running engine jobs in-thread (a deadline cannot interrupt in-thread work)");
+      }
+      try {
+        const result = runEngineJob({
+          jobId: job.id,
+          kind: job.kind,
+          payload: job.payload,
+          detail: job.detail
+        });
+        state.running = null;
+        this.stats.completed++;
+        this.stats.inThreadJobs++;
+        this.settle(job, { ok: true, value: result });
+      } catch (err) {
+        state.running = null;
+        this.stats.inThreadJobs++;
+        const name = err instanceof Error ? err.name : "Error";
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[engine-pool] job ${job.id} (${job.kind}) engine error: ${name}: ${message}`);
+        this.settle(job, { ok: false, error: err });
+      }
+      this.pump(lane);
+      return;
+    }
+    const worker = this.ensureWorker(lane);
+    state.running = job;
+    job.started = true;
+    this.stats.started++;
+    try {
+      worker.postMessage({
+        jobId: job.id,
+        kind: job.kind,
+        payload: job.payload,
+        detail: job.detail
+      });
+    } catch (err) {
+      state.running = null;
+      this.settle(job, {
+        ok: false,
+        error: err instanceof Error ? err : new Error(String(err))
+      });
+      this.pump(lane);
+    }
+  }
+  onDeadline(job) {
+    if (job.settled)
+      return;
+    this.stats.timeouts++;
+    if (this.lanes[job.lane].running === job) {
+      console.error(`[engine-pool] job ${job.id} (${job.kind}) timed out after its deadline; terminating worker`);
+    } else {
+      console.error(`[engine-pool] job ${job.id} (${job.kind}) timed out while queued; dropping without starting it`);
+    }
+    this.terminateJob(job, new EngineError("ENGINE_TIMEOUT", engineTimeoutReason(job.timeoutMs)));
+  }
+  terminateJob(job, reason) {
+    const state = this.lanes[job.lane];
+    const wasRunning = state.running === job;
+    if (wasRunning)
+      state.running = null;
+    else {
+      const idx = state.queue.indexOf(job);
+      if (idx >= 0)
+        state.queue.splice(idx, 1);
+    }
+    if (reason !== null)
+      this.settle(job, { ok: false, error: reason });
+    else {
+      job.settled = true;
+      if (job.timer) {
+        clearTimeout(job.timer);
+        job.timer = null;
+      }
+      this.clearWaiterTimers(job);
+      job.waiters.splice(0);
+      this.inflight.delete(job.dedupKey);
+    }
+    if (!wasRunning)
+      return;
+    this.stats.terminated++;
+    this.replaceWorker(job.lane);
+    this.pump(job.lane);
+  }
+  ensureWorker(lane) {
+    const state = this.lanes[lane];
+    if (state.worker)
+      return state.worker;
+    const worker = new Worker(new URL("./engineWorker.js", import.meta.url));
+    state.worker = worker;
+    state.crashHandled = false;
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg == null || typeof msg !== "object" || typeof msg.jobId !== "number") {
+        this.onWorkerCrash(lane, new Error("engine worker posted an unparseable message"));
+        return;
+      }
+      const running = this.lanes[lane].running;
+      if (!running || running.id !== msg.jobId) {
+        return;
+      }
+      this.lanes[lane].running = null;
+      if (msg.ok) {
+        this.stats.completed++;
+        this.settle(running, { ok: true, value: msg.result });
+      } else {
+        const err = msg.error.name === "RangeError" ? new RangeError(msg.error.message) : msg.error.name === "TypeError" ? new TypeError(msg.error.message) : new Error(msg.error.message);
+        console.error(`[engine-pool] job ${running.id} (${running.kind}) engine error: ${msg.error.name}: ${msg.error.message}`);
+        this.settle(running, { ok: false, error: err });
+      }
+      this.pump(lane);
+    };
+    worker.onerror = (e) => {
+      console.error(`[engine-pool] ${lane} worker error: ${e.message ?? e}`);
+      this.onWorkerCrash(lane, new Error("engine worker error event"));
+    };
+    worker.addEventListener("close", () => {
+      if (state.worker === worker) {
+        this.onWorkerCrash(lane, new Error("engine worker closed unexpectedly"));
+      }
+    });
+    return worker;
+  }
+  onWorkerCrash(lane, cause) {
+    const state = this.lanes[lane];
+    if (state.crashHandled)
+      return;
+    state.crashHandled = true;
+    this.stats.crashes++;
+    console.error(`[engine-pool] ${lane} worker crashed (${cause.message}); respawning lane worker`);
+    const running = state.running;
+    state.running = null;
+    state.worker = null;
+    if (running && !running.settled) {
+      this.settle(running, { ok: false, error: new EngineError("ENGINE_CRASH") });
+    }
+    this.pump(lane);
+  }
+  replaceWorker(lane) {
+    const state = this.lanes[lane];
+    const old = state.worker;
+    state.worker = null;
+    if (old) {
+      try {
+        old.terminate();
+      } catch {}
+    }
+  }
+  shutdown() {
+    for (const lane of ["large", "small"]) {
+      const state = this.lanes[lane];
+      const dropped = [
+        ...state.running ? [state.running] : [],
+        ...state.queue.splice(0)
+      ];
+      state.running = null;
+      for (const job of dropped) {
+        if (job.timer)
+          clearTimeout(job.timer);
+        job.timer = null;
+        this.settle(job, {
+          ok: false,
+          error: new Error("engine pool shut down")
+        });
+      }
+      this.replaceWorker(lane);
+    }
+  }
+  __testTerminateLaneWorker(lane) {
+    const state = this.lanes[lane];
+    const w = state.worker;
+    if (w) {
+      try {
+        w.terminate();
+      } catch {}
+    }
+  }
+}
+var inThreadFallbackMarkerLogged = false;
+var enginePool = new EnginePool;
+function enableStandaloneInThreadFallback() {
+  enginePool.enableInThreadFallback();
+}
+function dispatchEngineJob(kind, dedupKey, payload, opts) {
+  return enginePool.dispatch(kind, dedupKey, payload, opts);
+}
+
+function percentile(sorted, p) {
+  if (sorted.length === 0)
+    return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p / 100 * sorted.length)));
+  return sorted[idx] ?? 0;
+}
+function medianOf(values) {
+  if (values.length === 0)
+    return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] ?? 0 : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
+}
+function horizonYears(currentAge, endAge) {
+  return Math.max(0, endAge - currentAge + 1);
+}
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = a + 1831565813 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function normalRandom(rng) {
+  let u = 0;
+  let v = 0;
+  while (u === 0)
+    u = rng();
+  while (v === 0)
+    v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+var MAX_MONTE_CARLO_RUNS = 1e4;
+function validateMonteCarloSeed(seed) {
+  if (!Number.isInteger(seed)) {
+    throw new RangeError(`Monte Carlo seed must be a finite integer, got ${seed}.`);
+  }
+}
+function validateMonteCarloRunCount(runCount, maxRuns = MAX_MONTE_CARLO_RUNS) {
+  if (!Number.isInteger(runCount) || runCount < 1 || runCount > maxRuns) {
+    throw new RangeError(`Monte Carlo run count must be a whole number from 1 to ${maxRuns}, got ${runCount}.`);
+  }
+}
+function validateMonteCarloReturn(expected, vol) {
+  if (!Number.isFinite(expected)) {
+    throw new RangeError(`Monte Carlo expected return must be a finite number, got ${expected}.`);
+  }
+  if (!Number.isFinite(vol) || vol < 0) {
+    throw new RangeError(`Monte Carlo volatility must be a finite number at or above 0, got ${vol}.`);
+  }
+}
+var GUARDRAILS_CUT_DEFAULT = 120;
+var GUARDRAILS_RAISE_DEFAULT = 80;
+var GUARDRAILS_ADJUSTMENT_DEFAULT = 10;
+var GUARDRAILS_RATE_REL_TOLERANCE = 0.000000001;
+function guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs) {
+  if (bal <= 0 || initialRate <= 0)
+    return currentSpending;
+  const curRate = currentSpending / bal;
+  const adj = inputs.guardrailsAdjustmentPct / 100;
+  const cutThreshold = inputs.guardrailsCutPct / 100 * initialRate;
+  const raiseThreshold = inputs.guardrailsRaisePct / 100 * initialRate;
+  if (curRate - cutThreshold > Math.abs(cutThreshold) * GUARDRAILS_RATE_REL_TOLERANCE) {
+    return Math.round(currentSpending * (1 - adj));
+  }
+  if (raiseThreshold - curRate > Math.abs(raiseThreshold) * GUARDRAILS_RATE_REL_TOLERANCE) {
+    return Math.round(currentSpending * (1 + adj));
+  }
+  return currentSpending;
+}
+var PHASE_START_AGE_DEFAULT = 75;
+var PHASE_DECLINE_PCT_DEFAULT = 1;
+var STOCKS_PCT_DEFAULT = 95;
+var EXPECTED_RETURN_DEFAULT = 5;
+function phasedGrossCents(inputs, age) {
+  if (age <= inputs.phaseStartAge)
+    return inputs.spendingCents;
+  const factor = Math.pow(1 - inputs.phaseDeclinePct / 100, age - inputs.phaseStartAge);
+  return Math.round(inputs.spendingCents * factor);
+}
+function incomeCentsAt(inputs, age) {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (age >= start)
+        total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null && age >= inputs.extraIncomeStartAge ? inputs.extraIncomeCents : 0;
+}
+function eventualIncomeCents(inputs) {
+  const sched = inputs.incomeSchedule;
+  if (sched && sched.length > 0) {
+    let total = 0;
+    for (const s of sched) {
+      const start = s.startAge ?? inputs.retirementAge;
+      if (start <= inputs.endAge)
+        total += s.amountCents;
+    }
+    return total;
+  }
+  return inputs.extraIncomeStartAge != null ? inputs.extraIncomeCents : 0;
+}
+function simulateDetailed(inputs, returns) {
+  const years = horizonYears(inputs.currentAge, inputs.endAge);
+  const balances = [inputs.startCents];
+  const grossWithdrawals = [];
+  const netWithdrawals = [];
+  let bal = inputs.startCents;
+  let currentSpending = inputs.spendingCents;
+  let initialRate = null;
+  for (let i = 0;i < years; i++) {
+    const age = inputs.currentAge + i;
+    let gross = 0;
+    let net = 0;
+    if (age >= inputs.retirementAge) {
+      const income = incomeCentsAt(inputs, age);
+      if (inputs.strategy === "percent") {
+        gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
+      } else if (inputs.strategy === "guardrails") {
+        if (initialRate == null) {
+          initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
+          currentSpending = inputs.spendingCents;
+        }
+        currentSpending = guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs);
+        gross = currentSpending;
+      } else if (inputs.strategy === "phased") {
+        gross = phasedGrossCents(inputs, age);
+      } else {
+        gross = inputs.spendingCents;
+      }
+      net = gross - income;
+      bal -= net;
+      if (bal < 0)
+        bal = 0;
+    }
+    grossWithdrawals.push(gross);
+    netWithdrawals.push(net);
+    const r = returns[i] ?? 0;
+    bal = bal * (1 + r);
+    if (bal < 0)
+      bal = 0;
+    balances.push(bal);
+  }
+  return { balances, grossWithdrawals, netWithdrawals };
+}
+function neverRunsOutFromDetailed(det, inputs) {
+  for (let i = 0;i < det.netWithdrawals.length; i++) {
+    if (inputs.currentAge + i < inputs.retirementAge)
+      continue;
+    if ((det.netWithdrawals[i] ?? 0) > (det.balances[i] ?? 0))
+      return false;
+  }
+  return true;
+}
+function runNeverRunsOut(inputs, returns) {
+  const years = horizonYears(inputs.currentAge, inputs.endAge);
+  let bal = inputs.startCents;
+  let currentSpending = inputs.spendingCents;
+  let initialRate = null;
+  for (let i = 0;i < years; i++) {
+    const age = inputs.currentAge + i;
+    if (age >= inputs.retirementAge) {
+      const income = incomeCentsAt(inputs, age);
+      let gross;
+      if (inputs.strategy === "percent") {
+        gross = Math.round(bal * (inputs.percentOfPortfolio / 100));
+      } else if (inputs.strategy === "guardrails") {
+        if (initialRate == null) {
+          initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
+          currentSpending = inputs.spendingCents;
+        }
+        currentSpending = guardrailsAdjustedSpending(currentSpending, bal, initialRate, inputs);
+        gross = currentSpending;
+      } else if (inputs.strategy === "phased") {
+        gross = phasedGrossCents(inputs, age);
+      } else {
+        gross = inputs.spendingCents;
+      }
+      const net = gross - income;
+      if (net > bal)
+        return false;
+      bal -= net;
+      if (bal < 0)
+        bal = 0;
+    }
+    const r = returns[i] ?? 0;
+    bal = bal * (1 + r);
+    if (bal < 0)
+      bal = 0;
+  }
+  return true;
+}
+function blendedExpected(stocksPct) {
+  return stocksPct / 100 * 7 + (1 - stocksPct / 100) * 2;
+}
+function historicalRealReturns(stocksPct) {
+  const sFrac = stocksPct / 100;
+  return HISTORICAL.map((h) => {
+    const stockReal = (1 + h.stockPct / 100) / (1 + h.cpiPct / 100) - 1;
+    const bondReal = (1 + h.bondPct / 100) / (1 + h.cpiPct / 100) - 1;
+    return sFrac * stockReal + (1 - sFrac) * bondReal;
+  });
+}
+function spendingStats(inputs, runsGross) {
+  if (inputs.strategy !== "percent") {
+    return {
+      lowestSpending: null,
+      averageSpending: null,
+      medianFinalYearSpending: null,
+      medianFirstRetiredYearSpending: null
+    };
+  }
+  let lowest = null;
+  const perRunAvg = [];
+  const perRunFinal = [];
+  const perRunFirst = [];
+  for (const gross of runsGross) {
+    const retired = gross.filter((_, i) => inputs.currentAge + i >= inputs.retirementAge);
+    if (retired.length === 0)
+      continue;
+    perRunAvg.push(retired.reduce((s, v) => s + v, 0) / retired.length);
+    perRunFirst.push(retired[0] ?? 0);
+    perRunFinal.push(retired[retired.length - 1] ?? 0);
+    for (const v of retired)
+      lowest = lowest == null ? v : Math.min(lowest, v);
+  }
+  return {
+    lowestSpending: lowest,
+    averageSpending: perRunAvg.length > 0 ? medianOf(perRunAvg) : null,
+    medianFinalYearSpending: perRunFinal.length > 0 ? medianOf(perRunFinal) : null,
+    medianFirstRetiredYearSpending: perRunFirst.length > 0 ? medianOf(perRunFirst) : null
+  };
+}
+function spendingAdequacyRate(inputs, runsGross) {
+  const floor = inputs.minimumAnnualSpendingCents;
+  if (floor == null || floor <= 0)
+    return null;
+  let adequate = 0;
+  let counted = 0;
+  for (const gross of runsGross) {
+    const retired = gross.filter((_, i) => inputs.currentAge + i >= inputs.retirementAge);
+    if (retired.length === 0)
+      continue;
+    counted++;
+    if (retired.every((g) => g >= floor))
+      adequate++;
+  }
+  if (counted === 0)
+    return null;
+  return adequate / counted * 100;
+}
+function runHistorical(inputs, stocksPct) {
+  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
+  if (planYears <= 0)
+    return null;
+  const allReturns = historicalRealReturns(stocksPct);
+  const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
+  const runs = [];
+  let neverOut = 0;
+  for (let idx = 0;idx < HISTORICAL.length; idx++) {
+    const sy = HISTORICAL[idx]?.year ?? 0;
+    if (sy + planYears - 1 > lastYear)
+      break;
+    const returns = allReturns.slice(idx, idx + planYears);
+    const det = simulateDetailed(inputs, returns);
+    runs.push({
+      startYear: sy,
+      path: det.balances,
+      ending: det.balances[det.balances.length - 1] ?? 0,
+      returns,
+      grossWithdrawals: det.grossWithdrawals,
+      netWithdrawals: det.netWithdrawals
+    });
+    if (neverRunsOutFromDetailed(det, inputs))
+      neverOut++;
+  }
+  if (runs.length === 0)
+    return null;
+  const endings = runs.map((r) => r.ending);
+  const successes = endings.filter((e) => e > 0).length;
+  const worst = runs.reduce((a, b) => b.ending < a.ending ? b : a, runs[0] ?? { startYear: 0, path: [], ending: 0, returns: [], grossWithdrawals: [], netWithdrawals: [] });
+  const chart = [];
+  for (let i = 0;i <= planYears; i++) {
+    const row = { age: inputs.currentAge + i };
+    const vals = [];
+    for (const r of runs) {
+      const v = (r.path[i] ?? 0) / 100;
+      row[`r${r.startYear}`] = v;
+      vals.push(r.path[i] ?? 0);
+    }
+    row.median = medianOf(vals) / 100;
+    chart.push(row);
+  }
+  const stats = spendingStats(inputs, runs.map((r) => r.grossWithdrawals));
+  return {
+    runs,
+    chart,
+    count: runs.length,
+    successRate: successes / runs.length * 100,
+    neverOutSuccessRate: neverOut / runs.length * 100,
+    medianEnding: medianOf(endings),
+    worstEnding: worst.ending,
+    worstStartYear: worst.startYear,
+    lowestSpending: stats.lowestSpending,
+    averageSpending: stats.averageSpending,
+    medianFinalYearSpending: stats.medianFinalYearSpending,
+    medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
+    spendingAdequacySuccessRate: spendingAdequacyRate(inputs, runs.map((r) => r.grossWithdrawals)),
+    minimumAnnualSpendingCents: inputs.minimumAnnualSpendingCents ?? null
+  };
+}
+var MONTE_CARLO_TAB_SEED_DEFAULT = 12345;
+var MONTE_CARLO_TAB_RUNS = 1000;
+function runMonteCarlo(inputs, expected, vol, seed, runCount = MONTE_CARLO_TAB_RUNS) {
+  validateMonteCarloRunCount(runCount);
+  validateMonteCarloSeed(seed);
+  validateMonteCarloReturn(expected, vol);
+  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
+  if (planYears <= 0)
+    return null;
+  const rng = mulberry32(seed * 7919 + 17);
+  const endings = [];
+  const paths = [];
+  const runsGross = [];
+  let neverOut = 0;
+  for (let run = 0;run < runCount; run++) {
+    const returns = [];
+    for (let i = 0;i < planYears; i++) {
+      returns.push(expected + vol * normalRandom(rng));
+    }
+    const det = simulateDetailed(inputs, returns);
+    paths.push(det.balances);
+    runsGross.push(det.grossWithdrawals);
+    endings.push(det.balances[det.balances.length - 1] ?? 0);
+    if (neverRunsOutFromDetailed(det, inputs))
+      neverOut++;
+  }
+  const sortedEndings = [...endings].sort((a, b) => a - b);
+  const successes = endings.filter((e) => e > 0).length;
+  const chart = [];
+  for (let i = 0;i <= planYears; i++) {
+    const vals = paths.map((p) => p[i] ?? 0).sort((a, b) => a - b);
+    const p10 = percentile(vals, 10) / 100;
+    const p25 = percentile(vals, 25) / 100;
+    const p50 = medianOf(vals) / 100;
+    const p75 = percentile(vals, 75) / 100;
+    const p90 = percentile(vals, 90) / 100;
+    chart.push({
+      age: inputs.currentAge + i,
+      base: p10,
+      segLow: p25 - p10,
+      band75: p75 - p25,
+      segHigh: p90 - p75,
+      median: p50,
+      p10,
+      p90
+    });
+  }
+  const stats = spendingStats(inputs, runsGross);
+  return {
+    successRate: successes / runCount * 100,
+    neverOutSuccessRate: neverOut / runCount * 100,
+    p10: percentile(sortedEndings, 10),
+    p50: medianOf(endings),
+    p90: percentile(sortedEndings, 90),
+    chart,
+    lowestSpending: stats.lowestSpending,
+    averageSpending: stats.averageSpending,
+    medianFinalYearSpending: stats.medianFinalYearSpending,
+    medianFirstRetiredYearSpending: stats.medianFirstRetiredYearSpending,
+    spendingAdequacySuccessRate: spendingAdequacyRate(inputs, runsGross),
+    minimumAnnualSpendingCents: inputs.minimumAnnualSpendingCents ?? null
+  };
+}
+async function runMonteCarloAsync(inputs, expected, vol, seed, runCount = MONTE_CARLO_TAB_RUNS, opts) {
+  const { promise } = dispatchEngineJob("retirementMc", stableEngineKey({ inputs, expected, vol, seed, runCount }), { inputs, expected, vol, seed, runCount }, { timeoutMs: opts?.timeoutMs, detail: "full" });
+  return promise;
+}
+async function solveMaxSpendingAsync(base, stocksPct, expected, vol, engine, targetPct, mcSeed = MONTE_CARLO_TAB_SEED_DEFAULT, opts) {
+  const { promise } = dispatchEngineJob("solver", stableEngineKey({ base, stocksPct, expected, vol, engine, targetPct, mcSeed }), { inputs: base, stocksPct, expected, vol, engine, targetPct, mcSeed }, { timeoutMs: opts?.timeoutMs, detail: "full" });
+  return promise;
+}
+function solverResult(args) {
+  return {
+    maxSpendingCents: args.maxSpendingCents,
+    successRate: args.successRate,
+    medianEnding: args.medianEnding,
+    percent: args.percent,
+    approximate: args.approximate,
+    targetSuccessRate: args.targetPct,
+    achievedSuccessRate: args.successRate,
+    targetAchieved: args.successRate >= args.targetPct,
+    solutionStatus: args.solutionStatus
+  };
+}
+function evaluatePlan(inputs, stocksPct, expected, vol, engine, mcSeed) {
+  if (engine === "historical") {
+    const h = runHistorical(inputs, stocksPct);
+    return h ? { successRate: h.neverOutSuccessRate, medianEnding: h.medianEnding } : null;
+  }
+  const mc = runMonteCarlo(inputs, expected, vol, mcSeed, MONTE_CARLO_TAB_RUNS);
+  return mc ? { successRate: mc.neverOutSuccessRate, medianEnding: mc.p50 } : null;
+}
+function solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, capSteps, approximate, mcSeed) {
+  const STEP = 1e4;
+  const planYears = horizonYears(base.currentAge, base.endAge);
+  if (planYears <= 0)
+    return null;
+  const runReturns = [];
+  if (engine === "historical") {
+    const allReturns = historicalRealReturns(stocksPct);
+    const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
+    for (let idx = 0;idx < HISTORICAL.length; idx++) {
+      const sy = HISTORICAL[idx]?.year ?? 0;
+      if (sy + planYears - 1 > lastYear)
+        break;
+      runReturns.push(allReturns.slice(idx, idx + planYears));
+    }
+  } else {
+    const rng = mulberry32(mcSeed * 7919 + 17);
+    for (let run = 0;run < MONTE_CARLO_TAB_RUNS; run++) {
+      const returns = [];
+      for (let i = 0;i < planYears; i++) {
+        returns.push(expected + vol * normalRandom(rng));
+      }
+      runReturns.push(returns);
+    }
+  }
+  if (runReturns.length === 0)
+    return null;
+  const needed = Math.ceil(targetPct / 100 * runReturns.length - 0.000000001);
+  const allowedFail = runReturns.length - needed;
+  const feasible = (cents) => {
+    const firstYearGross = Math.min(cents, ...base.guardrailsCutPct < 100 ? [
+      Math.round(cents * (1 - base.guardrailsAdjustmentPct / 100))
+    ] : [], ...base.guardrailsRaisePct > 100 ? [
+      Math.round(cents * (1 + base.guardrailsAdjustmentPct / 100))
+    ] : []);
+    const firstYearNet = firstYearGross - firstYearIncome;
+    if (firstYearNet > 0) {
+      let lo = 0;
+      let hi = sortedRetBals.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if ((sortedRetBals[mid] ?? 0) < firstYearNet)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      if (sortedRetBals.length - lo < needed)
+        return false;
+    }
+    const inp = { ...base, spendingCents: cents };
+    let succ = 0;
+    let fail = 0;
+    for (const returns of runReturns) {
+      if (runNeverRunsOut(inp, returns)) {
+        succ++;
+        if (succ >= needed)
+          return true;
+      } else {
+        fail++;
+        if (fail > allowedFail)
+          return false;
+      }
+    }
+    return succ >= needed;
+  };
+  const preYears = Math.max(0, Math.min(planYears, base.retirementAge - base.currentAge));
+  const eventualIncome = eventualIncomeCents(base);
+  const retBals = [];
+  let maxRetBal = 0;
+  for (const returns of runReturns) {
+    let b = base.startCents;
+    for (let i = 0;i < preYears; i++) {
+      b = b * (1 + (returns[i] ?? 0));
+      if (b < 0)
+        b = 0;
+    }
+    retBals.push(b);
+    if (b > maxRetBal)
+      maxRetBal = b;
+  }
+  const sortedRetBals = [...retBals].sort((a, b) => a - b);
+  const firstRetiredAge = Math.max(base.currentAge, base.retirementAge);
+  const firstYearIncome = incomeCentsAt(base, firstRetiredAge);
+  const cutFactor = 1 - Math.max(0, base.guardrailsAdjustmentPct) / 100;
+  const raiseFactor = base.guardrailsRaisePct > 100 ? 1 + base.guardrailsAdjustmentPct / 100 : 1;
+  const scanSteps = base.guardrailsCutPct < 100 && cutFactor > 0 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * cutFactor)) + 1)) : base.guardrailsCutPct < 100 ? capSteps : raiseFactor > 0 && raiseFactor < 1 ? Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome + 1) / (STEP * raiseFactor)) + 1)) : raiseFactor <= 0 ? capSteps : Math.min(capSteps, Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)));
+  let best = 0;
+  for (let k = scanSteps;k >= 1; k--) {
+    if (feasible(k * STEP)) {
+      best = k;
+      break;
+    }
+  }
+  const winner = evaluatePlan({ ...base, spendingCents: best * STEP }, stocksPct, expected, vol, engine, mcSeed);
+  if (!winner)
+    return null;
+  const solutionStatus = winner.successRate < targetPct ? "infeasible_at_zero" : best === scanSteps && scanSteps === capSteps ? "capped" : best === 0 ? "feasible_at_zero" : "feasible";
+  return solverResult({
+    maxSpendingCents: best * STEP,
+    successRate: winner.successRate,
+    medianEnding: winner.medianEnding,
+    percent: null,
+    approximate,
+    targetPct,
+    solutionStatus
+  });
+}
+function solveMaxSpending(base, stocksPct, expected, vol, engine, targetPct, mcSeed = MONTE_CARLO_TAB_SEED_DEFAULT) {
+  validateMonteCarloSeed(mcSeed);
+  validateMonteCarloReturn(expected, vol);
+  if (base.retirementAge >= base.endAge)
+    return null;
+  const approximate = engine === "montecarlo";
+  const STEP = 1e4;
+  if (base.strategy === "percent") {
+    if (base.startCents <= 0)
+      return null;
+    const maxSteps = Math.floor(base.startCents * 0.3 / STEP);
+    if (maxSteps <= 0)
+      return null;
+    const pctFor = (k) => k * STEP * 100 / base.startCents;
+    const evalStep = (k) => evaluatePlan({ ...base, percentOfPortfolio: pctFor(k) }, stocksPct, expected, vol, engine, mcSeed);
+    const at0 = evalStep(0);
+    if (!at0)
+      return null;
+    if (at0.successRate < targetPct) {
+      return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: 0, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
+    }
+    const atMax = evalStep(maxSteps);
+    if (atMax && atMax.successRate >= targetPct) {
+      return solverResult({ maxSpendingCents: maxSteps * STEP, successRate: atMax.successRate, medianEnding: atMax.medianEnding, percent: pctFor(maxSteps), approximate, targetPct, solutionStatus: "capped" });
+    }
+    let lo = 0;
+    let hi = maxSteps;
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      const e = evalStep(mid);
+      if (e && e.successRate >= targetPct)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    const best = evalStep(lo);
+    if (!best)
+      return null;
+    return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: pctFor(lo), approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
+  }
+  const evalSpend = (cents) => evaluatePlan({ ...base, spendingCents: cents }, stocksPct, expected, vol, engine, mcSeed);
+  const at0 = evalSpend(0);
+  if (!at0)
+    return null;
+  if (at0.successRate < targetPct) {
+    return solverResult({ maxSpendingCents: 0, successRate: at0.successRate, medianEnding: at0.medianEnding, percent: null, approximate, targetPct, solutionStatus: "infeasible_at_zero" });
+  }
+  const capSteps = Math.max(1, Math.floor(Math.max(base.startCents * 2, 1e8) / STEP));
+  if (base.strategy === "guardrails") {
+    return solveGuardrailsScan(base, stocksPct, expected, vol, engine, targetPct, capSteps, approximate, mcSeed);
+  }
+  let lo = 0;
+  let hi = Math.min(capSteps, Math.max(1, Math.ceil(Math.max(base.spendingCents, 5000000) / STEP)));
+  let eHi = evalSpend(hi * STEP);
+  while (eHi && eHi.successRate >= targetPct && hi < capSteps) {
+    lo = hi;
+    hi = Math.min(capSteps, hi * 2);
+    eHi = evalSpend(hi * STEP);
+  }
+  if (eHi && eHi.successRate >= targetPct) {
+    return solverResult({ maxSpendingCents: hi * STEP, successRate: eHi.successRate, medianEnding: eHi.medianEnding, percent: null, approximate, targetPct, solutionStatus: "capped" });
+  }
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    const e = evalSpend(mid * STEP);
+    if (e && e.successRate >= targetPct)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  const best = evalSpend(lo * STEP);
+  if (!best)
+    return null;
+  return solverResult({ maxSpendingCents: lo * STEP, successRate: best.successRate, medianEnding: best.medianEnding, percent: null, approximate, targetPct, solutionStatus: lo === 0 ? "feasible_at_zero" : "feasible" });
+}
+
 function r24(n) {
   return Math.round(n * 100) / 100;
 }
@@ -12752,41 +13600,50 @@ function rollWorkYears(plan, job, quitAge) {
 function workYearsCompareCacheKey(quitAge, roll) {
   return roll.totals.years === 0 ? `no-work:${quitAge}` : `roll:${jointInputsKey(roll.rolledInputs)}`;
 }
-function runWorkYearsCompare(plan, job, quitAges) {
+function buildWorkYearsRow(quitAge, roll, opt) {
+  const workTax = r24(roll.totals.federal + roll.totals.state + roll.totals.fica);
+  const claim67 = opt.claimAgeTable.find((row) => row.primaryAge === 67) ?? null;
+  const endingNominal = r24(opt.winner.result.endingPretax + opt.winner.result.endingRoth + opt.winner.result.endingTaxable + opt.winner.result.endingHsa);
+  return {
+    quitAge,
+    workYears: roll.totals.years,
+    roll,
+    optimizer: opt,
+    workTax,
+    payrollTax: roll.totals.payrollTax,
+    totalTax: r24(opt.winner.cost.tax + workTax),
+    shortfall: roll.totals.shortfall,
+    allInTax: r24(opt.winner.cost.netCost + workTax),
+    assumptions: roll.assumptions,
+    claim67AllInTax: claim67 == null ? null : r24(claim67.best.cost.netCost + workTax),
+    endingNominal,
+    endingAfterTax: opt.winner.result.endingAfterTaxWealth,
+    irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
+    acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
+    cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
+    earlyWithdrawalUnknownYears: opt.winner.result.earlyWithdrawalUnknownYears,
+    rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears
+  };
+}
+async function runWorkYearsCompareAsync(plan, job, quitAges, opts) {
   const cache = new Map;
-  return quitAges.map((quitAge) => {
+  const rows = [];
+  for (const quitAge of quitAges) {
     const roll = rollWorkYears(plan, job, quitAge);
     const key = workYearsCompareCacheKey(quitAge, roll);
     let entry = cache.get(key);
     if (!entry) {
-      entry = { roll, optimizer: runJointOptimizer(roll.rolledInputs) };
+      entry = {
+        roll,
+        optimizer: runJointOptimizerAsync(roll.rolledInputs, {
+          timeoutMs: opts?.remainingMs?.() ?? opts?.timeoutMs
+        })
+      };
       cache.set(key, entry);
     }
-    const opt = entry.optimizer;
-    const workTax = r24(roll.totals.federal + roll.totals.state + roll.totals.fica);
-    const claim67 = opt.claimAgeTable.find((row) => row.primaryAge === 67) ?? null;
-    const endingNominal = r24(opt.winner.result.endingPretax + opt.winner.result.endingRoth + opt.winner.result.endingTaxable + opt.winner.result.endingHsa);
-    return {
-      quitAge,
-      workYears: roll.totals.years,
-      roll,
-      optimizer: opt,
-      workTax,
-      payrollTax: roll.totals.payrollTax,
-      totalTax: r24(opt.winner.cost.tax + workTax),
-      shortfall: roll.totals.shortfall,
-      allInTax: r24(opt.winner.cost.netCost + workTax),
-      assumptions: roll.assumptions,
-      claim67AllInTax: claim67 == null ? null : r24(claim67.best.cost.netCost + workTax),
-      endingNominal,
-      endingAfterTax: opt.winner.result.endingAfterTaxWealth,
-      irmaaLookbackMissingYears: opt.winner.result.irmaaLookbackMissingYears,
-      acaBelow100FplYears: opt.winner.result.acaBelow100FplYears,
-      cliffCapInoperativeYears: opt.winner.result.cliffCapInoperativeYears,
-      earlyWithdrawalUnknownYears: opt.winner.result.earlyWithdrawalUnknownYears,
-      rothBasisUnknownYears: opt.winner.result.rothBasisUnknownYears
-    };
-  });
+    rows.push(buildWorkYearsRow(quitAge, roll, await entry.optimizer));
+  }
+  return rows;
 }
 
 var ADAPTER_VERSION = "assistant-api 0.1.0";
@@ -18493,13 +19350,17 @@ function roundDeep(value) {
   }
   return value;
 }
-function engineError(message) {
+function engineError(message, code = "engine_error", retryable) {
   return {
     ok: false,
     source: "finance-planner-engine",
     adapterVersion: ADAPTER_VERSION,
     apiContractVersion: API_CONTRACT_VERSION_REPORTED,
-    error: { code: "engine_error", message }
+    error: {
+      code,
+      message,
+      ...retryable === undefined ? {} : { retryable }
+    }
   };
 }
 function unsupported(message) {
@@ -18517,6 +19378,20 @@ function guard(fn) {
   } catch {
     return engineError("The engine could not price this scenario.");
   }
+}
+async function guardAsync(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof EngineError) {
+      return engineError(err.message, err.code, err.retryable);
+    }
+    return engineError("The engine could not price this scenario.");
+  }
+}
+function actionDeadline() {
+  const startedAt = Date.now();
+  return () => Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - startedAt));
 }
 function respond(scenario, results, warnings = [], extraAssumptions = [], taxLawYear = null, tool) {
   const ignored = ignoredInputsForTool(tool, scenario);
@@ -19195,10 +20070,11 @@ function calculateRetirement(scenario) {
     }, warnings, [], null, "retirement_calculate");
   });
 }
-function runRetirementMonteCarlo(scenario) {
-  return guard(() => {
+async function runRetirementMonteCarlo(scenario) {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const { inputs, warnings } = toSimInputs(scenario);
-    const mc = runMonteCarlo(inputs, scenario.expectedReturnPct / 100, scenario.volatilityPct / 100, scenario.mcSeed, scenario.mcRuns);
+    const mc = await runMonteCarloAsync(inputs, scenario.expectedReturnPct / 100, scenario.volatilityPct / 100, scenario.mcSeed, scenario.mcRuns, { timeoutMs: remainingMs() });
     if (mc === null) {
       return engineError("Monte Carlo could not price this horizon (the plan end age is at or before the current age).");
     }
@@ -19253,19 +20129,20 @@ function runRetirementMonteCarlo(scenario) {
     }, warnings, [], null, "retirement_monte_carlo");
   });
 }
-function calculateMaxSpending(scenario) {
-  return guard(() => {
+async function calculateMaxSpending(scenario) {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const { inputs, warnings } = toSimInputs(scenario);
     const expected = scenario.expectedReturnPct / 100;
     const vol = scenario.volatilityPct / 100;
-    const solved = solveMaxSpending(inputs, scenario.stocksPct, expected, vol, "montecarlo", 85, scenario.mcSeed);
+    const solved = await solveMaxSpendingAsync(inputs, scenario.stocksPct, expected, vol, "montecarlo", 85, scenario.mcSeed, { timeoutMs: remainingMs() });
     if (solved === null) {
       return unsupported("No sustainable spending could be solved for these ages (retirement at/after the plan end age, or no retired years)");
     }
     if (!solved.targetAchieved) {
       warnings.push(`No spending level reaches the 85% target — even $0/yr falls short at ${(Math.round(solved.successRate * 10) / 10).toFixed(1)}% success. The reported $0 maximum is not a sustainable spending level.`);
     }
-    const histSolved = solveMaxSpending(inputs, scenario.stocksPct, expected, vol, "historical", 85, scenario.mcSeed);
+    const histSolved = await solveMaxSpendingAsync(inputs, scenario.stocksPct, expected, vol, "historical", 85, scenario.mcSeed, { timeoutMs: remainingMs() });
     const maxAnnual = centsToDollars(solved.maxSpendingCents);
     const histAnnual = histSolved === null ? null : centsToDollars(histSolved.maxSpendingCents);
     const histRuns = histSolved === null ? null : runHistorical(inputs, scenario.stocksPct)?.count ?? null;
@@ -19371,8 +20248,8 @@ function compareWithdrawalStrategies(scenario) {
     ], taxAwareAssumptions(scenario), null, "retirement_compare_strategies");
   });
 }
-function compareRothConversions(scenario) {
-  return guard(() => {
+async function compareRothConversions(scenario) {
+  return guardAsync(async () => {
     if (scenario.comparisonScope === "full") {
       return compareRothConversionsFull(scenario);
     }
@@ -19431,10 +20308,13 @@ function compareRothConversions(scenario) {
     ], taxAwareAssumptions(scenario), null, "retirement_roth_conversion");
   });
 }
-function compareRothConversionsFull(scenario) {
-  return guard(() => {
+async function compareRothConversionsFull(scenario) {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const planInputs = buildRothPlanInputs(scenario);
-    const result = runOptimizer(planInputs);
+    const result = await runOptimizerAsync(planInputs, {
+      timeoutMs: remainingMs()
+    });
     const winner = result.winner;
     const doNothing = result.doNothing;
     const wealthWinner = result.winnerByEndingWealth;
@@ -19601,7 +20481,7 @@ function compareRothConversionsFull(scenario) {
           rothBasisUnknownYears: doNothing.result.rothBasisUnknownYears
         }
       ]),
-      "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs the server answers nothing else.",
+      "Full optimizer search: the winner is the engine's best candidate at the entered claiming ages, not a global optimum — claiming ages were not searched (see comparisonScope.excludedCandidateFamilies). A full call can take over a minute; while it runs, the server keeps answering light requests (including /health) — the call itself still occupies its lane until it returns or times out.",
       ...result.excludedInvalidWinner == null ? [] : [
         `The cheapest candidate the search priced (${optimizerCandidateDisplayName(result.excludedInvalidWinner.candidate.spec)}) was excluded as invalid: ${result.excludedInvalidWinner.integrity.reasons.join("; ")}.${result.winnerQualified ? " The crowned winner is the cheapest valid candidate." : ""}`
       ],
@@ -19611,10 +20491,13 @@ function compareRothConversionsFull(scenario) {
     ], taxAwareAssumptions(scenario), null, "retirement_roth_conversion");
   });
 }
-function dynamicWithdrawal(scenario) {
-  return guard(() => {
+async function dynamicWithdrawal(scenario) {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const planInputs = buildRothPlanInputs(scenario);
-    const result = runDynamicOptimizer(planInputs);
+    const result = await runDynamicOptimizerAsync(planInputs, {
+      timeoutMs: remainingMs()
+    });
     if (!result.ok)
       return engineError(result.reason ?? "The dynamic optimizer could not price this scenario.");
     return respond(scenario, result, [
@@ -19623,8 +20506,9 @@ function dynamicWithdrawal(scenario) {
     ], taxAwareAssumptions(scenario), null, "retirement_dynamic_withdrawal");
   });
 }
-function compareRetirementAges(scenario) {
-  return guard(() => {
+async function compareRetirementAges(scenario) {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     if (scenario.comparisonScope === "full") {
       return unsupported('retirement_work_years has no full comparison mode: each quit age prices one fixed strategy, and the full optimizer search runs per retirement age. Use retirement_roth_conversion with comparisonScope "full" for the optimizer search, or omit comparisonScope for the fixed quit-age comparison.');
     }
@@ -19666,7 +20550,7 @@ function compareRetirementAges(scenario) {
         hsaEligible: scenario.hsaEligible,
         priorYearWages: scenario.priorYearWagesAnnual
       };
-      const wyRows = runWorkYearsCompare(planInputs, job, ages);
+      const wyRows = await runWorkYearsCompareAsync(planInputs, job, ages, { remainingMs });
       workYears.push(...wyRows.map((row) => ({
         quitAge: row.quitAge,
         workYears: row.workYears,
@@ -20354,7 +21238,7 @@ var EMPTY_INPUT_SCHEMA = {
   properties: {},
   additionalProperties: false
 };
-function normalized(args, fn) {
+async function normalized(args, fn) {
   const n = normalizeInputs(args);
   if (!n.ok)
     return n.error;
@@ -20456,7 +21340,7 @@ var TOOLS = [
   },
   {
     name: "retirement_work_years",
-    description: `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. Optional hsaCoverage states the HDHP coverage the HSA limit prices from (self-only / family / none); hsaEligible states HSA eligibility explicitly; medicareAgePrimary states the Medicare enrollment age that ends HSA eligibility; priorYearWagesAnnual states the prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor for the mandatory Roth catch-up test in the first modeled work year. Omitting any of them keeps the previous behavior — filing-status HSA limit, assumed eligibility, and the first year's own Box-3 wages as the catch-up proxy — and each fallback is recorded as an assumption on the priced rows and in the warnings, never silently. Pass medicareAgePrimary (whole years, or null) to model Medicare enrollment: HSA contributions (employee and employer) stop in work years at or after that age; omitted or null means no enrollment is modeled and HSA contributions continue — eligibility at 65 is not enrollment, and it is never defaulted to 65. Partial-year HSA eligibility is not modeled: a year prices the full annual limit when eligible and $0 when not. A work-years call can take a minute or more, and while it runs the server answers nothing else. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` + `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` + `Returns: two comparisons of the same ages. The retirement-only comparison (winnerByEndingWealth / winnerByNetCost, also under retirementOnly) prices the same starting balances at each age and ignores salary, employer contributions, and payroll tax. The salary-aware comparison (workYears rows, workYearsComparison) prices the salary, employer 401(k)/HSA, payroll tax, and portfolio growth of the extra working years; every row is valued at the same terminal age, so ending after-tax wealth is comparable across quit ages. Lowest all-in tax (winnerByAllInTax) and highest ending after-tax wealth (winnerByEndingAfterTaxWealth) are different objectives and may point to different ages. overallRecommendation names a quit age only when both salary-aware objectives agree on it (and a salary was provided); otherwise it is null with overallRecommendationNote explaining why. comparisonModels says what each model prices and whether it searches claiming ages or runs the joint optimizer.`,
+    description: `Use when the user asks whether working a few more years is worth it, or what changes if they retire later. ` + `Required: the same six as retirement_calculate — pretax, taxable, roth, hsa (dollars; 0 is fine), monthlySpending (dollars per month), currentAge (whole years). ` + `Optional: retirementAge (defaults to your current age — retire now), compareAges (a list of retirement ages to compare; default is the retirement age, plus two and plus five years), endAge (default 95), Social Security amounts and start ages (default none), tax inputs (taxable basis, yields, ACA benchmarks, state rate, and the Roth composition — rothIra / rothEmployer split, rothContributionBasis, rothConversionLots, firstRothYear, firstDesignatedRothYear — all optional; without the composition a Roth draw prices -e income and -e penalty and is flagged unknown), health premium amounts (healthPremiumAcaHouseholdAnnual, healthPremiumAcaSingleAnnual, healthPremiumMedicarePerPersonAnnual — annual dollars; supplying any of them requires spendingIncludesHealthPremiums, which states whether monthlySpending already includes the premiums), and portfolio assumptions expectedRealReturnPct and stocksPct (defaults from the engine). Spending strategy and volatility do not change this comparison — it is deterministic and tax-aware, not simulated. taxYear does not change it either — the march starts in the current year and prices each year under that year's published tables; a year past the newest published row prices under that row carried forward in today's dollars — a projection. minimumAnnualSpending does not change it either — the floor is a retirement-simulation input; this comparison prices no simulation. ` + `Pass salaryAnnual (plus employer401kAnnual and employerHsaAnnual) to price the earned-income leg: each quit age then also reports work years, payroll tax and the optimizer's best strategy and claim ages. Without a salary the earned-income leg is omitted and the response carries a warning instead. Optional hsaCoverage states the HDHP coverage the HSA limit prices from (self-only / family / none); hsaEligible states HSA eligibility explicitly; medicareAgePrimary states the Medicare enrollment age that ends HSA eligibility; priorYearWagesAnnual states the prior calendar year's Social Security wages (W-2 Box 3) from the plan sponsor for the mandatory Roth catch-up test in the first modeled work year. Omitting any of them keeps the previous behavior — filing-status HSA limit, assumed eligibility, and the first year's own Box-3 wages as the catch-up proxy — and each fallback is recorded as an assumption on the priced rows and in the warnings, never silently. Pass medicareAgePrimary (whole years, or null) to model Medicare enrollment: HSA contributions (employee and employer) stop in work years at or after that age; omitted or null means no enrollment is modeled and HSA contributions continue — eligibility at 65 is not enrollment, and it is never defaulted to 65. Partial-year HSA eligibility is not modeled: a year prices the full annual limit when eligible and $0 when not. A work-years call can take a minute or more; while it runs, the server keeps answering light requests (including /health) — the call itself still occupies its lane until it returns or times out. comparisonScope "full" is not supported for this tool — each quit age prices one fixed strategy, and the full optimizer search runs per retirement age (see retirement_roth_conversion); passing "full" here returns an unsupported error, not a quiet limited comparison. ` + `Example call: ${JSON.stringify(EXAMPLE_WORK_YEARS)}. ` + `Returns: two comparisons of the same ages. The retirement-only comparison (winnerByEndingWealth / winnerByNetCost, also under retirementOnly) prices the same starting balances at each age and ignores salary, employer contributions, and payroll tax. The salary-aware comparison (workYears rows, workYearsComparison) prices the salary, employer 401(k)/HSA, payroll tax, and portfolio growth of the extra working years; every row is valued at the same terminal age, so ending after-tax wealth is comparable across quit ages. Lowest all-in tax (winnerByAllInTax) and highest ending after-tax wealth (winnerByEndingAfterTaxWealth) are different objectives and may point to different ages. overallRecommendation names a quit age only when both salary-aware objectives agree on it (and a salary was provided); otherwise it is null with overallRecommendationNote explaining why. comparisonModels says what each model prices and whether it searches claiming ages or runs the joint optimizer.`,
     inputSchema: BASE_INPUT_SCHEMA,
     handler: (args) => normalized(args, compareRetirementAges)
   },
@@ -20507,7 +21391,7 @@ var CAPABILITY_LIMITATIONS = [
   "Pre-retirement income is not accumulated: the simulation prices no pre-retirement spending, salary, or tax, so a Social Security benefit (or other fixed income) starting before retirement is not banked in the pre-retirement years — it counts only once retired. Benefits already being collected while still working belong to retirement_work_years, which prices those years with tax and lands the surplus in Taxable.",
   "The retirement simulation is tax-free and single-portfolio: it prices no income tax, no IRMAA, and no separate account buckets — the tax-aware tools (retirement_compare_strategies, retirement_roth_conversion, retirement_dynamic_withdrawal, retirement_work_years) price tax and account order instead.",
   "A single-year price models a share sale only from typed stockSoldAnnual/stockBasisAnnual (never from taxableBasisPct, which prices no sale), and an RMD only from a typed prior-Dec-31 balance (never from today's balance). Capital-loss carryforward entering the year is not an input — the year's own realized loss still prices (up to $3,000 against ordinary income, the rest carried out in lossCarryOutSt/lossCarryOutLt), but a banked loss from an earlier year cannot be typed in.",
-  'Synchronous execution: calls run to completion in-process with no hard preemption in v1; most calls return in a few seconds, but the work-years comparison can take a minute or more, a dynamic withdrawal call can take a minute or more on a full horizon (it re-prices the remaining horizon at every year), and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. A long call stalls the whole process — and, when running as the MCP server, the server including /health — until it finishes. The full optimizer search has no explicit timeout or resource limit in v1, by design: it runs to completion, and if the optimizer throws the call fails with `engine_error` — never a fabricated or partial winner — and is never silently downgraded to the limited comparison.',
+  'Execution: the heavy calls (work-years comparison, dynamic withdrawal, full optimizer search) run in a two-worker pool, not on the request thread, so a long call does not stall the server — including /health — while it runs; most calls return in a few seconds, but the work-years comparison can take a minute or more, a dynamic withdrawal call can take a minute or more on a full horizon (it re-prices the remaining horizon at every year), and a full optimizer search (retirement_roth_conversion with comparisonScope "full") can take over a minute too. Each worker job has a 100 s deadline: a job past it fails with a typed timeout error (`ENGINE_TIMEOUT`, retryable) — never a fabricated or partial winner — and is never silently downgraded to the limited comparison. If the optimizer throws, the call fails with `engine_error`. In the standalone single-file bundle there is no worker file, so the same heavy tools run in-thread instead; a deadline cannot interrupt in-thread work, so there is no execution timeout there (see STANDALONE.md).',
   "Limited comparisons never claim a global optimum: the default 3-order withdrawal comparison and 4-strategy Roth comparison crown the best of those few only. The full optimizer search is optimal only within the engine's searched candidate space at the entered claiming ages — it does not search claiming ages and prices no Monte Carlo success check. Every comparison response carries a comparisonScope block saying exactly what was evaluated; lowest lifetime net cost and highest ending after-tax wealth are different objectives and often crown different winners.",
   "Success rates are 0–1 fractions at whole-run precision, never rounded to 2dp: with N runs the finest step is 1/N (931 successes out of 1,000 read 0.931, not 0.93; 99.9% reads 0.999, not 1.0). successfulRuns / historicalSuccessfulRuns are the whole-run counts behind the rates, derived from the engine rate × run count.",
   "Max spending is conditional on the seed, 1,000 simulations, the model assumptions, and the engine's $100 search increment, and is a portfolio-only (no-tax) simulation result. Only the percent strategy's cap is flaggable: cappedAtPercentBound (Monte Carlo leg) and historicalCappedAtPercentBound (historical leg) are true when the respective leg hits the engine's 30%/yr bound. For constant, phased and guardrails the engine's internal search cap has no adapter-visible flag, so a maximum that is really the cap is not flagged.",
@@ -20632,14 +21516,14 @@ function describeCapabilities() {
   };
   return envelope;
 }
-function dispatchTool(name, args) {
+async function dispatchTool(name, args) {
   const started = Date.now();
   const def = TOOLS_BY_NAME.get(name);
   if (!def) {
     throw new Error(`Unknown tool: ${name}`);
   }
   try {
-    const result = def.handler(args);
+    const result = await def.handler(args);
     console.error(`[assistant-api] tool=${name} ok=${result.ok} ms=${Date.now() - started}`);
     return result;
   } catch (err) {
@@ -20759,7 +21643,8 @@ async function runTool(toolName, file, bareDescribe = false) {
   }
   let envelope;
   try {
-    envelope = dispatchTool(toolName, args);
+    enableStandaloneInThreadFallback();
+    envelope = await dispatchTool(toolName, args);
   } catch (err) {
     console.error(`error: tool failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

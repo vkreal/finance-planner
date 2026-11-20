@@ -41,6 +41,21 @@
 // unbundled, and to the built .js when run bundled (two-entry
 // build: build:server-worker emits server/dist/engineWorker.js
 // beside server/dist/actions.js — probe Q2).
+//
+// In-thread fallback (STANDALONE-CLI-ONLY — see
+// enableStandaloneInThreadFallback below): the standalone
+// single-file bundle carries no engineWorker.js beside it, so the
+// pool cannot spawn a worker there. When the fallback is enabled,
+// the pool runs the job synchronously in-thread via the same
+// runEngineJob the worker entry calls — same function, same
+// results. The server / MCP / space-worker paths must NEVER
+// enable it: a missing worker file in the server must surface as
+// ENGINE_CRASH, never silently lose isolation. Documented limit:
+// a deadline cannot interrupt in-thread work — the job timer is
+// cleared by settle(), so a job dispatched with a short deadline
+// still runs to completion in this mode.
+
+import { runEngineJob } from "./engineJobRunner";
 
 // --- Config (single constants, §1.1/§1.3/§1.5) ---------------------
 export const ENGINE_WORKER_POOL_SIZE = 2;
@@ -165,6 +180,9 @@ export interface EnginePoolStats {
   busy: number;
   crashes: number;
   terminated: number;
+  // Jobs executed in-thread via the standalone fallback
+  // (enableInThreadFallback) instead of in a worker.
+  inThreadJobs: number;
 }
 
 type WorkerMessage =
@@ -225,6 +243,13 @@ export interface EnginePoolOptions {
   // Per-job deadline in ms (default ENGINE_JOB_TIMEOUT_MS).
   // Tests pass a short deadline to prove ENGINE_TIMEOUT fast.
   jobTimeoutMs?: number;
+  // In-thread fallback (default false): run jobs synchronously
+  // in-thread via runEngineJob instead of spawning a worker.
+  // STANDALONE-CLI-ONLY — the single-file bundle carries no
+  // engineWorker.js beside it; the server / MCP / space-worker
+  // paths must never set this. A deadline cannot interrupt
+  // in-thread work in this mode (documented limit).
+  inThreadFallback?: boolean;
 }
 
 export class EnginePool {
@@ -242,9 +267,27 @@ export class EnginePool {
     busy: 0,
     crashes: 0,
     terminated: 0,
+    inThreadJobs: 0,
   };
+  // In-thread fallback flag (constructor option or
+  // enableInThreadFallback). STANDALONE-CLI-ONLY — see
+  // enableStandaloneInThreadFallback below.
+  private inThreadFallback: boolean;
 
-  constructor(private readonly opts: EnginePoolOptions = {}) {}
+  constructor(private readonly opts: EnginePoolOptions = {}) {
+    this.inThreadFallback = opts.inThreadFallback ?? false;
+  }
+
+  // One-way, idempotent: once the fallback is on, it stays on
+  // for the pool's lifetime. There is no disable — the mode
+  // exists only for processes that have no worker file at all.
+  enableInThreadFallback(): void {
+    this.inThreadFallback = true;
+  }
+
+  isInThreadFallback(): boolean {
+    return this.inThreadFallback;
+  }
 
   get queueCap(): number {
     return this.opts.queueCap ?? ENGINE_QUEUE_CAP;
@@ -433,6 +476,50 @@ export class EnginePool {
     }
     const job = state.queue.shift();
     if (!job) return;
+    if (this.inThreadFallback) {
+      // STANDALONE-CLI-ONLY: no worker file exists beside the
+      // single-file bundle, so run the job synchronously
+      // in-thread via the same runEngineJob the worker entry
+      // calls — same function, same results. Never calls
+      // ensureWorker in this mode. The job timer set in
+      // dispatch() is cleared by settle(), so a deadline cannot
+      // interrupt in-thread work (documented limit).
+      state.running = job;
+      job.started = true;
+      this.stats.started++;
+      if (!inThreadFallbackMarkerLogged) {
+        inThreadFallbackMarkerLogged = true;
+        console.error(
+          "[engine-pool] single-file bundle: no engine worker file; running engine jobs in-thread (a deadline cannot interrupt in-thread work)",
+        );
+      }
+      try {
+        const result = runEngineJob({
+          jobId: job.id,
+          kind: job.kind,
+          payload: job.payload,
+          detail: job.detail,
+        });
+        state.running = null;
+        this.stats.completed++;
+        this.stats.inThreadJobs++;
+        this.settle(job, { ok: true, value: result });
+      } catch (err) {
+        // Mirror the worker path: log name + message, settle
+        // with the ORIGINAL error (same kind the worker path
+        // re-creates — RangeError stays RangeError).
+        state.running = null;
+        this.stats.inThreadJobs++;
+        const name = err instanceof Error ? err.name : "Error";
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[engine-pool] job ${job.id} (${job.kind}) engine error: ${name}: ${message}`,
+        );
+        this.settle(job, { ok: false, error: err });
+      }
+      this.pump(lane);
+      return;
+    }
     const worker = this.ensureWorker(lane);
     state.running = job;
     job.started = true;
@@ -655,10 +742,27 @@ export class EnginePool {
   }
 }
 
+// Once-per-process marker: the first fallback job prints it;
+// never at import/enable time, never on --help/--list/describe
+// (those dispatch no pool job). The standalone suite asserts
+// --help stderr is "" and bare-describe stderr is exactly the one
+// adapter log line — a startup print would break them.
+let inThreadFallbackMarkerLogged = false;
+
 // The process-wide pool (one per process, §1.1). Created lazily
 // on the first heavy call by the wrappers that use it — the
 // module itself spawns no worker at import time.
 export const enginePool = new EnginePool();
+
+// STANDALONE-CLI-ONLY: enables the in-thread fallback on the
+// process-wide singleton. The standalone CLI is the ONLY call
+// site — the single-file bundle has no engineWorker.js beside
+// it. The server / MCP / space-worker paths must NEVER call this:
+// a missing worker file in the server must surface as
+// ENGINE_CRASH, never silently lose isolation.
+export function enableStandaloneInThreadFallback(): void {
+  enginePool.enableInThreadFallback();
+}
 
 export function dispatchEngineJob<T>(
   kind: EngineJobKind,

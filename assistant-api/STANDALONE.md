@@ -175,7 +175,10 @@ non-taxable) — the response never merges them.
   comparison (a minute or more) and the full-optimizer search
   (`comparisonScope: "full"`, ~77s quiet / ~216s loaded). What bounds
   them instead of a time limit is the work itself: a 256KB input cap,
-  `mcRuns` ≤ 5,000, `compareAges` 2–5, and the age-120 horizon.
+  `mcRuns` ≤ 5,000, `compareAges` 2–5, and the age-120 horizon. The
+  bundle runs engine jobs in-thread because the single-file
+  distribution carries no worker file; the fallback is explicit to
+  the CLI entry and the server/MCP paths always use the worker pool.
 - Results are planning estimates from the Finance Planner engines,
   not tax advice.
 

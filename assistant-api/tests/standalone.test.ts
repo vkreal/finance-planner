@@ -630,6 +630,23 @@ describe("parity with the direct (bun) CLI", () => {
     expect(first.stdout).toBe(bun.stdout);
   }, TOOL_TIMEOUT);
 
+  test("a pool tool in the bundle runs in-thread: stderr carries the single-file fallback marker", () => {
+    // The single-file bundle has no engineWorker.js beside it,
+    // so the pool runs the job in-thread and prints the marker
+    // once, on the first fallback job — never at startup, so
+    // --help stderr stays "" and bare-describe stderr stays the
+    // one adapter log line (both pinned by existing tests).
+    const dir = writeParityInputs();
+    const r = runBundle(
+      SYSTEM_NODE,
+      "retirement_monte_carlo",
+      join(dir, "retirement_monte_carlo.json"),
+    );
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toHaveProperty("ok", true);
+    expect(r.stderr).toContain("[engine-pool] single-file bundle");
+  }, TOOL_TIMEOUT);
+
   test("successive requests cannot affect each other (A, B, A)", () => {
     const dir = mkdtempSync(join(tmpdir(), "standalone-aba-"));
     const fileA = join(dir, "a.json");

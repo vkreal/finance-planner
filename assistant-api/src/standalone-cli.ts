@@ -29,6 +29,7 @@
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { TOOLS, dispatchTool } from "./tools";
+import { enableStandaloneInThreadFallback } from "../../server/src/enginePool";
 
 const USAGE = `finance-planner-cli.mjs — single-file Finance Planner calculator. Needs only Node.js 20+, no server, no install, no network. Full guide: assistant-api/AI_USAGE.md and assistant-api/STANDALONE.md.
 
@@ -178,6 +179,12 @@ async function runTool(
   }
   let envelope;
   try {
+    // The single-file bundle has no engineWorker.js beside it,
+    // so the pool runs engine jobs in-thread instead of in a
+    // worker. This is the ONLY call site of
+    // enableStandaloneInThreadFallback — the server / MCP paths
+    // always use the worker pool.
+    enableStandaloneInThreadFallback();
     envelope = await dispatchTool(toolName, args);
   } catch (err) {
     console.error(
