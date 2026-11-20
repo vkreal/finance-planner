@@ -178,7 +178,7 @@ async function runTool(
   }
   let envelope;
   try {
-    envelope = dispatchTool(toolName, args);
+    envelope = await dispatchTool(toolName, args);
   } catch (err) {
     console.error(
       `error: tool failed: ${err instanceof Error ? err.message : String(err)}`,
