@@ -21,10 +21,16 @@
 //   only /mcp requires the bearer token (when auth is on).
 // - Rate-limit buckets are keyed by a SHA-256 hash of the token, never the
 //   token itself. Tokens, arguments and results are never logged.
-// - Engine calls are synchronous and run to completion in-process. There is
-//   no hard preemption in v1; typical calls return in under 2 seconds and
-//   wall time is logged per call. Input caps (mcRuns <= 5000 in the schema,
-//   endAge <= 120 enforced here) bound the work instead.
+// - Heavy engine calls run in the worker pool (Engine Review C7
+//   architecture, §1): the adapter dispatches them to worker
+//   threads, so /health and light calls answer while a search
+//   runs. A job that runs past its 100 s budget, finds the lane
+//   queue full, or dies with its worker returns a typed error
+//   (ENGINE_TIMEOUT / ENGINE_BUSY / ENGINE_CRASH, retryable):
+//   timeout and crash map to JSON-RPC -32000 with
+//   data {code, retryable}, busy maps to HTTP 429 with
+//   Retry-After. Input caps (mcRuns <= 5000 in the schema,
+//   endAge <= 120 enforced here) bound the work as well.
 // - structuredContent is included on every tools/call result. The MCP spec
 //   added it in protocol version 2025-06-18; older clients ignore unknown
 //   fields, and this stateless server keeps no per-client session to
@@ -44,6 +50,11 @@ export const MCP_PATH = "/mcp";
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_END_AGE = 120;
 export const SLOW_CALL_MS = 10_000;
+// Retry-After (seconds) on an ENGINE_BUSY 429 (C7 §1.4). The
+// value is advisory — the lane drains as its running job
+// finishes — and 5 s keeps a retrying client from hammering a
+// lane that is still busy, without waiting out a whole job.
+export const ENGINE_BUSY_RETRY_AFTER_SECONDS = 5;
 
 const EXPENSIVE_TOOLS: ReadonlySet<string> = new Set([
   "retirement_monte_carlo",
@@ -119,6 +130,7 @@ type JsonRpcId = string | number | null;
 interface RpcResponse {
   status: number;
   body: Record<string, unknown> | null; // null = 202 with an empty body
+  headers?: Record<string, string>;
 }
 
 function rpcError(
@@ -126,10 +138,15 @@ function rpcError(
   code: number,
   message: string,
   status = 200,
+  data?: Record<string, unknown>,
 ): RpcResponse {
   return {
     status,
-    body: { jsonrpc: "2.0", id: id ?? null, error: { code, message } },
+    body: {
+      jsonrpc: "2.0",
+      id: id ?? null,
+      error: { code, message, ...(data === undefined ? {} : { data }) },
+    },
   };
 }
 
@@ -149,7 +166,7 @@ function publicTools(): Array<Record<string, unknown>> {
   }));
 }
 
-function handleRpc(body: unknown): RpcResponse {
+async function handleRpc(body: unknown): Promise<RpcResponse> {
   if (Array.isArray(body)) {
     // Batch requests are not supported.
     return rpcError(null, -32600, "Batch requests are not supported");
@@ -217,7 +234,37 @@ function handleRpc(body: unknown): RpcResponse {
         });
       }
       try {
-        const envelope = dispatchTool(name, args);
+        const envelope = await dispatchTool(name, args);
+        // Typed pool errors (C7 §1.4) map off the envelope, not
+        // through it: a timeout or crash is a JSON-RPC -32000
+        // with data {code, retryable}; a busy lane is the
+        // existing 429 shape with Retry-After. Every other
+        // error envelope (invalid_input, engine_error, …)
+        // rides the normal result shape, as before.
+        if (!envelope.ok) {
+          const code = envelope.error.code;
+          if (code === "ENGINE_TIMEOUT" || code === "ENGINE_CRASH") {
+            return rpcError(id, -32000, envelope.error.message, 200, {
+              code,
+              retryable: envelope.error.retryable ?? true,
+            });
+          }
+          if (code === "ENGINE_BUSY") {
+            return {
+              status: 429,
+              body: {
+                error: {
+                  code: "engine_busy",
+                  message: envelope.error.message,
+                  retryAfterSeconds: ENGINE_BUSY_RETRY_AFTER_SECONDS,
+                },
+              },
+              headers: {
+                "Retry-After": String(ENGINE_BUSY_RETRY_AFTER_SECONDS),
+              },
+            };
+          }
+        }
         return rpcResult(id, {
           content: [{ type: "text", text: JSON.stringify(envelope) }],
           structuredContent: envelope,
@@ -489,7 +536,7 @@ export function createServer(
       }
 
       const startedCall = Date.now();
-      const rpc = handleRpc(parsed);
+      const rpc = await handleRpc(parsed);
       const callMs = Date.now() - startedCall;
       if (callMs > SLOW_CALL_MS) {
         console.log(
@@ -504,7 +551,7 @@ export function createServer(
       if (rpc.body === null) {
         return new Response(null, { status: rpc.status });
       }
-      return jsonResponse(rpc.status, rpc.body);
+      return jsonResponse(rpc.status, rpc.body, rpc.headers ?? {});
     },
   });
 

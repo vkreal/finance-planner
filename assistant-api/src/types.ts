@@ -61,12 +61,22 @@ export interface AdapterResponse<T> {
   ignoredInputFields: IgnoredInputField[];
 }
 
-/** Error codes the adapter can return. */
+/** Error codes the adapter can return.
+ *
+ * The ENGINE_* codes are the worker-pool error surface (Engine
+ * Review C7 architecture, §1.4): a heavy engine job that ran past
+ * its deadline, found the lane queue full, or died with its
+ * worker. All three are retryable and carry a plain-language
+ * message with no stack; `retryable` is set on those envelopes
+ * only. Additive: no success-path shape changes. */
 export type AdapterErrorCode =
   | "missing_input"
   | "invalid_input"
   | "unsupported"
-  | "engine_error";
+  | "engine_error"
+  | "ENGINE_TIMEOUT"
+  | "ENGINE_BUSY"
+  | "ENGINE_CRASH";
 
 /** Failed adapter response envelope.
  *
@@ -85,6 +95,10 @@ export interface AdapterError {
     missing?: string[];
     details?: unknown;
     questions?: Array<{ field: string; question: string }>;
+    /** Set (true) on the ENGINE_* errors only: the caller may
+     * retry the same call — the engine produced no result, so
+     * nothing was partially applied. Absent on every other code. */
+    retryable?: boolean;
   };
 }
 

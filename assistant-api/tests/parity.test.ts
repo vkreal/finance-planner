@@ -97,7 +97,7 @@ function directSimInputs(): SimInputs {
 }
 
 describe("calculateRetirement vs the sim engines directly", () => {
-  test("ending balance, yearly tables, and historical cross-check match to the cent", () => {
+  test("ending balance, yearly tables, and historical cross-check match to the cent", async () => {
     const s = normalizedScenario();
     const res = expectOk(calculateRetirement(s));
     const inputs = directSimInputs();
@@ -149,9 +149,9 @@ describe("calculateRetirement vs the sim engines directly", () => {
 });
 
 describe("Monte Carlo", () => {
-  test("the reported success rate is a fraction 0–1, not a percent", () => {
+  test("the reported success rate is a fraction 0–1, not a percent", async () => {
     const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
-    const res = expectOk(runRetirementMonteCarlo(s));
+    const res = expectOk(await runRetirementMonteCarlo(s));
     expect(res.successRate).toBeGreaterThanOrEqual(0);
     expect(res.successRate).toBeLessThanOrEqual(1);
     // Review 7 (R7-S1) + Review 2: the old pin was toBeCloseTo(0.99, 2) —
@@ -183,15 +183,15 @@ describe("Monte Carlo", () => {
     expect(res.runs).toBe(200);
   });
 
-  test("same seed twice is identical; a different seed (usually) differs", () => {
-    const run = (seed: number) =>
+  test("same seed twice is identical; a different seed (usually) differs", async () => {
+    const run = async (seed: number) =>
       runRetirementMonteCarlo(
         normalizedScenario({ mcRuns: 200, mcSeed: seed }),
       );
-    const first = run(42);
-    const second = run(42);
+    const first = await run(42);
+    const second = await run(42);
     expect(JSON.stringify(second)).toBe(JSON.stringify(first));
-    const other = run(43);
+    const other = await run(43);
     expect(JSON.stringify(other)).not.toBe(JSON.stringify(first));
     if (other.ok && first.ok) {
       expect(
@@ -201,9 +201,9 @@ describe("Monte Carlo", () => {
     }
   });
 
-  test("the MC chart is dollars, not cents", () => {
+  test("the MC chart is dollars, not cents", async () => {
     const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
-    const res = expectOk(runRetirementMonteCarlo(s));
+    const res = expectOk(await runRetirementMonteCarlo(s));
     // Every path starts at the same portfolio, so the first chart row
     // is exactly the starting portfolio in dollars ($3,787,000).
     expect(res.chart[0]?.age).toBe(54);
@@ -238,7 +238,7 @@ describe("blended mirror parity", () => {
     },
   );
 
-  test("spot values: 95% stocks is 6.75% return, 17.4% vol", () => {
+  test("spot values: 95% stocks is 6.75% return, 17.4% vol", async () => {
     expect(blendedExpectedPct(95)).toBe(6.75);
     expect(blendedVolPct(95)).toBe(17.4);
     expect(blendedExpectedPct(0)).toBe(2);
@@ -249,7 +249,7 @@ describe("blended mirror parity", () => {
 });
 
 describe("compare rows reconcile", () => {
-  test("withdrawal strategies: ending wealth = buckets − terminal tax; yearly conversions sum to the baseline total", () => {
+  test("withdrawal strategies: ending wealth = buckets − terminal tax; yearly conversions sum to the baseline total", async () => {
     const res = expectOk(compareWithdrawalStrategies(normalizedScenario()));
     expect(res.scenarios).toHaveLength(3);
     for (const sc of res.scenarios) {
@@ -266,8 +266,8 @@ describe("compare rows reconcile", () => {
     );
   });
 
-  test("Roth conversions: same identity, and the fill strategies really convert", () => {
-    const res = expectOk(compareRothConversions(normalizedScenario()));
+  test("Roth conversions: same identity, and the fill strategies really convert", async () => {
+    const res = expectOk(await compareRothConversions(normalizedScenario()));
     expect(res.scenarios.map((s) => s.name)).toEqual([
       "do-nothing",
       "fill-12%",
@@ -292,8 +292,8 @@ describe("compare rows reconcile", () => {
     );
   });
 
-  test("Roth deltas are exactly (scenario − baseline) for wealth and net cost", () => {
-    const res = expectOk(compareRothConversions(normalizedScenario()));
+  test("Roth deltas are exactly (scenario − baseline) for wealth and net cost", async () => {
+    const res = expectOk(await compareRothConversions(normalizedScenario()));
     const baseline = res.scenarios.find((s) => s.name === res.baselineName)!;
     expect(res.deltas).toHaveLength(3);
     for (const d of res.deltas) {
@@ -311,7 +311,7 @@ describe("compare rows reconcile", () => {
 });
 
 describe("single-year tax vs pricePlaygroundYear, built independently", () => {
-  test("every tax-aware response reports taxLawYear 2026", () => {
+  test("every tax-aware response reports taxLawYear 2026", async () => {
     const single = expectEnvelope(
       calculateSingleYearTax(
         normalizedScenario({
@@ -325,11 +325,11 @@ describe("single-year tax vs pricePlaygroundYear, built independently", () => {
       ),
     );
     expect(single.taxLawYear).toBe(2026);
-    const roth = expectEnvelope(compareRothConversions(normalizedScenario()));
+    const roth = expectEnvelope(await compareRothConversions(normalizedScenario()));
     expect(roth.taxLawYear).toBe(2026);
   });
 
-  test("the single-year figures match a direct pricePlaygroundYear call on the same inputs", () => {
+  test("the single-year figures match a direct pricePlaygroundYear call on the same inputs", async () => {
     const s = normalizedScenario({
       taxYear: 2026,
       interestAnnual: 1000,
@@ -381,7 +381,7 @@ describe("single-year tax vs pricePlaygroundYear, built independently", () => {
     expect(res.agi).toBe(140000);
   });
 
-  test("the single-year result carries no settlement flags, and the compare yearly table says what it omits", () => {
+  test("the single-year result carries no settlement flags, and the compare yearly table says what it omits", async () => {
     const res = expectOk(
       calculateSingleYearTax(
         normalizedScenario({
@@ -412,9 +412,9 @@ describe("single-year tax vs pricePlaygroundYear, built independently", () => {
 });
 
 describe("compareRetirementAges work-years leg", () => {
-  test("without a salary the comparison still answers, with workYears [] and a salary warning", () => {
+  test("without a salary the comparison still answers, with workYears [] and a salary warning", async () => {
     const res = expectEnvelope(
-      compareRetirementAges(normalizedScenario({ compareAges: [60, 62] })),
+      await compareRetirementAges(normalizedScenario({ compareAges: [60, 62] })),
     );
     expect(res.results.scenarios.map((s) => s.retirementAge)).toEqual([
       60, 62,
@@ -426,9 +426,9 @@ describe("compareRetirementAges work-years leg", () => {
 
   test(
     "with a salary (spouse SS $0) the work-years leg prices each quit age",
-    () => {
+    async () => {
       const res = expectEnvelope(
-        compareRetirementAges(
+        await compareRetirementAges(
           normalizedScenario({
             salaryAnnual: 120000,
             spouseSocialSecurityAnnual: 0,
@@ -458,9 +458,9 @@ describe("compareRetirementAges work-years leg", () => {
 });
 
 describe("calculateMaxSpending vs solveMaxSpending directly", () => {
-  test("max annual/monthly, success rate (0–1 fraction), median ending, historical cross-check match", () => {
+  test("max annual/monthly, success rate (0–1 fraction), median ending, historical cross-check match", async () => {
     const s = normalizedScenario();
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     const inputs = directSimInputs();
     const expected = s.expectedReturnPct / 100;
     const vol = s.volatilityPct / 100;
@@ -531,12 +531,12 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
     );
   }, 30_000);
 
-  test("percent strategy reports capped: the 30% cap binds, and the adapter says so", () => {
+  test("percent strategy reports capped: the 30% cap binds, and the adapter says so", async () => {
     // The percent leg's 30% cap always binds (a percent-of-balance
     // withdrawal can never outrun the balance in one year), so the
     // adapter must report solutionStatus "capped" — not "feasible".
     const s = normalizedScenario({ strategy: "percent" });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     // The direct side, hand-built from the scenario the same way
     // toSimInputs builds it (percent leg: 5% of the start-of-year
     // balance; both SS streams summed into the one extra income,
@@ -580,7 +580,7 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
     );
   }, 30_000);
 
-  test("feasible_at_zero reports $0 as the highest sustainable spending, target met", () => {
+  test("feasible_at_zero reports $0 as the highest sustainable spending, target met", async () => {
     // A $100 portfolio over 40 years with no income: $0/yr meets
     // the 85% target (100%) and the first $100 step does not, so
     // the adapter's $0 maximum is a sustainable spending — the
@@ -599,7 +599,7 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
       spouseSocialSecurityAnnual: 0,
       spouseSocialSecurityStartAge: 67,
     });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     expect(res.maxAnnualSpending).toBe(0);
     expect(res.maxMonthlySpending).toBe(0);
     expect(res.successRate).toBe(1);
@@ -611,15 +611,15 @@ describe("calculateMaxSpending vs solveMaxSpending directly", () => {
     expect(res.historicalSolutionStatus).toBe("feasible_at_zero");
   }, 60_000);
 
-  test("mcRuns is inert: 10 vs 5000 give identical results; runs reports the fixed 1000 (pass-3 S1)", () => {
+  test("mcRuns is inert: 10 vs 5000 give identical results; runs reports the fixed 1000 (pass-3 S1)", async () => {
     // solveMaxSpending takes no run count — its Monte Carlo leg always
     // runs MONTE_CARLO_TAB_RUNS (1000). The adapter must say so in the
     // response instead of echoing the caller's mcRuns as if it mattered.
     const a = expectEnvelope(
-      calculateMaxSpending(normalizedScenario({ mcRuns: 10 })),
+      await calculateMaxSpending(normalizedScenario({ mcRuns: 10 })),
     );
     const b = expectEnvelope(
-      calculateMaxSpending(normalizedScenario({ mcRuns: 5000 })),
+      await calculateMaxSpending(normalizedScenario({ mcRuns: 5000 })),
     );
     expect(b.results.maxMonthlySpending).toBe(a.results.maxMonthlySpending);
     expect(b.results.maxAnnualSpending).toBe(a.results.maxAnnualSpending);
@@ -649,7 +649,7 @@ describe("priced-input inertness (pass-4 S1, pass-5 S1)", () => {
   // is given. Work-years taxYear inertness is code-verified only
   // (same runCompare path as the two compares priced here); a live
   // second work-years leg was not run for it.
-  test("calculate ignores mcRuns/mcSeed: varied runs/seeds give identical results", () => {
+  test("calculate ignores mcRuns/mcSeed: varied runs/seeds give identical results", async () => {
     const a = expectEnvelope(
       calculateRetirement(
         normalizedScenario({ mcRuns: 10, mcSeed: 1 }),
@@ -665,7 +665,7 @@ describe("priced-input inertness (pass-4 S1, pass-5 S1)", () => {
     expect(b.taxLawYear).toBe(2026);
   });
 
-  test("calculate ignores volatilityPct: 5 vs 50 give identical results (pass-5 S1)", () => {
+  test("calculate ignores volatilityPct: 5 vs 50 give identical results (pass-5 S1)", async () => {
     // calculateRetirement runs only simulateDetailed + runHistorical
     // + runNeverRunsOut — none takes volatility, which only the
     // Monte Carlo legs (MC tool, max-spending solver) read.
@@ -680,7 +680,7 @@ describe("priced-input inertness (pass-4 S1, pass-5 S1)", () => {
 
   test(
     "compare and roth-conversion ignore taxYear; the envelope reports the march's first year",
-    () => {
+    async () => {
       const c25 = expectEnvelope(
         compareWithdrawalStrategies(
           normalizedScenario({ taxYear: 2025 }),
@@ -695,10 +695,10 @@ describe("priced-input inertness (pass-4 S1, pass-5 S1)", () => {
       expect(c25.taxLawYear).toBe(2026);
       expect(c26.taxLawYear).toBe(2026);
       const r25 = expectEnvelope(
-        compareRothConversions(normalizedScenario({ taxYear: 2025 })),
+        await compareRothConversions(normalizedScenario({ taxYear: 2025 })),
       );
       const r26 = expectEnvelope(
-        compareRothConversions(normalizedScenario({ taxYear: 2026 })),
+        await compareRothConversions(normalizedScenario({ taxYear: 2026 })),
       );
       expect(JSON.stringify(r25.results)).toBe(JSON.stringify(r26.results));
       expect(r25.taxLawYear).toBe(2026);
@@ -707,7 +707,7 @@ describe("priced-input inertness (pass-4 S1, pass-5 S1)", () => {
     60_000,
   );
 
-  test("single-year tax genuinely prices taxYear (control for the override)", () => {
+  test("single-year tax genuinely prices taxYear (control for the override)", async () => {
     // NOTE: expectEnvelope pins taxLawYear 2026, so the 2025 call
     // below asserts ok:true directly instead.
     const priced = (taxYear: number) => {

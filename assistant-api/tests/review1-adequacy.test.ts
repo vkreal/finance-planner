@@ -23,7 +23,7 @@ import {
 } from "./helpers";
 
 describe("E1-S1 spending adequacy (adapter)", () => {
-  test("monte carlo percent + floor: funding 100%, adequacy 26.8%", () => {
+  test("monte carlo percent + floor: funding 100%, adequacy 26.8%", async () => {
     // The fictional household on the percent strategy (5% of the
     // start-of-year balance) with a $150,000/yr floor, default
     // seed/runs: every simulation funds, but only 26.8% keep every
@@ -32,7 +32,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     // not rounded to two decimals — rounding would collapse the
     // near-100% band to 1.0 (Engine Review 1, pass 2 SHOULD-1).
     const r = expectOk(
-      runRetirementMonteCarlo(
+      await runRetirementMonteCarlo(
         normalizedScenario({
           strategy: "percent",
           minimumAnnualSpending: 150000,
@@ -44,7 +44,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     expect(r.minimumAnnualSpending).toBe(150000);
   });
 
-  test("monte carlo near-100% adequacy is not rounded up to 1.0", () => {
+  test("monte carlo near-100% adequacy is not rounded up to 1.0", async () => {
     // Floors $14,100–$19,000/yr on the same percent plan: the engine
     // measures 99.9% down to 99.5% adequacy while funding stays 100%.
     // The adapter must report the exact rate (0.999 … 0.995), never
@@ -53,9 +53,13 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     // ($14,100 stands in for the reviewer's lower endpoint, whose
     // literal is scrub-reserved; $14,100 prices identically.)
     const expected = [0.999, 0.998, 0.997, 0.997, 0.996, 0.995];
-    [14100, 15000, 16000, 17000, 18000, 19000].forEach((floor, i) => {
+    // for...of, not forEach: the body awaits the Monte Carlo leg,
+    // and a forEach callback cannot be awaited by the test.
+    for (const [i, floor] of [
+      14100, 15000, 16000, 17000, 18000, 19000,
+    ].entries()) {
       const r = expectOk(
-        runRetirementMonteCarlo(
+        await runRetirementMonteCarlo(
           normalizedScenario({
             strategy: "percent",
             minimumAnnualSpending: floor,
@@ -65,15 +69,15 @@ describe("E1-S1 spending adequacy (adapter)", () => {
       expect(r.successRate).toBe(1);
       expect(r.spendingAdequacyRate).toBeCloseTo(expected[i]!, 12);
       expect(r.spendingAdequacyRate).toBeLessThan(1);
-    });
+    }
   });
 
-  test("monte carlo without a floor: adequacy null, other figures unchanged", () => {
+  test("monte carlo without a floor: adequacy null, other figures unchanged", async () => {
     // Parity: the floor adds the rate and nothing else — the
     // success rate and the p50 ending are bit-identical with the
     // floored run above (same seed, same stream).
     const floored = expectOk(
-      runRetirementMonteCarlo(
+      await runRetirementMonteCarlo(
         normalizedScenario({
           strategy: "percent",
           minimumAnnualSpending: 150000,
@@ -81,7 +85,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
       ),
     );
     const plain = expectOk(
-      runRetirementMonteCarlo(normalizedScenario({ strategy: "percent" })),
+      await runRetirementMonteCarlo(normalizedScenario({ strategy: "percent" })),
     );
     expect(plain.spendingAdequacyRate).toBeNull();
     expect(plain.minimumAnnualSpending).toBeNull();
@@ -91,9 +95,9 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     expect(plain.endingP90).toBe(floored.endingP90);
   });
 
-  test("monte carlo floor $0 is no floor", () => {
+  test("monte carlo floor $0 is no floor", async () => {
     const r = expectOk(
-      runRetirementMonteCarlo(
+      await runRetirementMonteCarlo(
         normalizedScenario({
           strategy: "percent",
           minimumAnnualSpending: 0,
@@ -104,7 +108,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     expect(r.minimumAnnualSpending).toBeNull();
   });
 
-  test("calculate percent + floor: historical adequacy beside the funding rate", () => {
+  test("calculate percent + floor: historical adequacy beside the funding rate", async () => {
     // Same household, percent strategy, $150,000/yr floor: the
     // historical cross-check funds every start year (rate 1) while
     // adequacy is 33/57 ≈ 0.5789 — the two rates diverge on the same
@@ -123,7 +127,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     expect(r.minimumAnnualSpending).toBe(150000);
   });
 
-  test("calculate constant + floor at spending: adequacy 100% with the caveat warning", () => {
+  test("calculate constant + floor at spending: adequacy 100% with the caveat warning", async () => {
     // Constant spending ($114k/yr) with the floor at the
     // spending itself: gross never varies, so adequacy reads 1 —
     // and the response warns, in its own words, that this rate
@@ -150,7 +154,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     ).not.toContain("constant spending never varies");
   });
 
-  test("calculate constant + floor above spending: adequacy 0% with no caveat warning", () => {
+  test("calculate constant + floor above spending: adequacy 0% with no caveat warning", async () => {
     // Constant spending ($114k/yr) with the floor above it
     // ($150k/yr): gross never varies, so adequacy reads 0 — and
     // the caveat warning must NOT fire, because its premise ("with
@@ -166,10 +170,10 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     );
   });
 
-  test("monte carlo constant + floor above spending: adequacy 0% with no caveat warning", () => {
+  test("monte carlo constant + floor above spending: adequacy 0% with no caveat warning", async () => {
     // Same gating on the Monte Carlo leg: floor above yearly
     // spending, adequacy 0, no caveat warning.
-    const floored = runRetirementMonteCarlo(
+    const floored = await runRetirementMonteCarlo(
       normalizedScenario({ minimumAnnualSpending: 150000 }),
     );
     const r = expectOk(floored);
@@ -179,7 +183,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     );
   });
 
-  test("minimumAnnualSpending is normalized with provenance and echoed", () => {
+  test("minimumAnnualSpending is normalized with provenance and echoed", async () => {
     const n = normalizeInputs(
       fictionalScenario({ minimumAnnualSpending: 150000 }),
     );
@@ -205,8 +209,8 @@ describe("E1-S1 spending adequacy (adapter)", () => {
     ).toBe("assumption");
   });
 
-  test("capability guide discloses funding vs adequacy", () => {
-    const caps = dispatchTool("retirement_describe_capabilities", {});
+  test("capability guide discloses funding vs adequacy", async () => {
+    const caps = await dispatchTool("retirement_describe_capabilities", {});
     const guide = expectOk(caps) as unknown as {
       limitations: string[];
       tools: Array<{ name: string; optional: string[]; resultSummary: string }>;
@@ -245,7 +249,7 @@ describe("E1-S1 spending adequacy (adapter)", () => {
 });
 
 describe("E1-S2 pre-retirement income (adapter)", () => {
-  test("income starting before retirement warns and prices like at-retirement", () => {
+  test("income starting before retirement warns and prices like at-retirement", async () => {
     // Primary Social Security $36,000/yr starting at 55, three
     // years before retirement at 58: the response warns that the
     // benefit is not accumulated — and its ending balance and
@@ -271,15 +275,15 @@ describe("E1-S2 pre-retirement income (adapter)", () => {
     );
   });
 
-  test("income starting at retirement carries no warning", () => {
+  test("income starting at retirement carries no warning", async () => {
     const r = calculateRetirement(
       normalizedScenario({ socialSecurityStartAge: 58 }),
     );
     expect(r.ok && r.warnings.join(" ")).not.toContain("not accumulated");
   });
 
-  test("capability guide discloses the pre-retirement-income limit and the tax-free sim", () => {
-    const caps = dispatchTool("retirement_describe_capabilities", {});
+  test("capability guide discloses the pre-retirement-income limit and the tax-free sim", async () => {
+    const caps = await dispatchTool("retirement_describe_capabilities", {});
     const guide = expectOk(caps) as unknown as {
       limitations: string[];
     };

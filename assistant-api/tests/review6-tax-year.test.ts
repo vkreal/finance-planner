@@ -148,7 +148,7 @@ const AT_75 = { currentAge: 75, spouseAge: 73, retirementAge: 75 };
 // ---------------------------------------------------------------------------
 
 describe("R6-S1 stock sales: direct-engine parity", () => {
-  test("no sale (omitted): no gain, no proceeds, no-sale warning", () => {
+  test("no sale (omitted): no gain, no proceeds, no-sale warning", async () => {
     const res = pricedWithParity({
       interestAnnual: 1000,
       ordinaryDividendsAnnual: 5000,
@@ -162,7 +162,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(warningsFor({})).toContain("No taxable share sale was entered");
   });
 
-  test("explicit zero sale: same figures as omitted, distinct warning", () => {
+  test("explicit zero sale: same figures as omitted, distinct warning", async () => {
     const omitted = pricedWithParity({});
     const zero = pricedWithParity({ stockSoldAnnual: 0, stockBasisAnnual: 0 });
     expect(zero).toEqual(omitted);
@@ -173,7 +173,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(wOmitted).not.toContain("explicit $0 share sale");
   });
 
-  test("positive gain: gain on the stack, proceeds in cash, sale-after-tax line", () => {
+  test("positive gain: gain on the stack, proceeds in cash, sale-after-tax line", async () => {
     const res = pricedWithParity({
       stockSoldAnnual: 50000,
       stockBasisAnnual: 30000,
@@ -189,7 +189,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(res.agi - noSale.agi).toBe(20000);
   });
 
-  test("sale at a loss: basis above proceeds prices a net capital loss, qualified dividends untouched", () => {
+  test("sale at a loss: basis above proceeds prices a net capital loss, qualified dividends untouched", async () => {
     // Engine rule (pricePlaygroundYear, rothOptimizer.ts): the loss
     // nets against NOTHING but the §1211(b) allowance — qualified
     // dividends stay whole on the preferential stack.
@@ -217,7 +217,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     })).toContain("realizes a loss of $10,000");
   });
 
-  test("all basis (sold == basis): no gain, proceeds still cash", () => {
+  test("all basis (sold == basis): no gain, proceeds still cash", async () => {
     const res = pricedWithParity({
       stockSoldAnnual: 40000,
       stockBasisAnnual: 40000,
@@ -230,7 +230,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(res.agi).toBe(noSale.agi);
   });
 
-  test("zero basis: omitted basis prices the whole proceeds as gain; explicit $0 prices the same", () => {
+  test("zero basis: omitted basis prices the whole proceeds as gain; explicit $0 prices the same", async () => {
     const omittedBasis = pricedWithParity({
       stockSoldAnnual: 40000,
     });
@@ -250,7 +250,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     })).not.toContain("No cost basis was entered");
   });
 
-  test("large gain crossing a federal capital-gains threshold: gains reach the 20% band", () => {
+  test("large gain crossing a federal capital-gains threshold: gains reach the 20% band", async () => {
     const res = pricedWithParity({
       spendingDrawAnnual: 400000,
       stockSoldAnnual: 500000,
@@ -268,7 +268,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(res.federalTax).toBeGreaterThan(smaller.federalTax);
   });
 
-  test("gain affecting ACA MAGI: the gain flips the household over the cliff", () => {
+  test("gain affecting ACA MAGI: the gain flips the household over the cliff", async () => {
     const base = {
       acaBenchmarkCouple: 12000,
       spendingDrawAnnual: 60000,
@@ -287,7 +287,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(over.acaMagi - under.acaMagi).toBe(30000);
   });
 
-  test("gain affecting NIIT: MAGI crosses $250,000 and NIIT appears", () => {
+  test("gain affecting NIIT: MAGI crosses $250,000 and NIIT appears", async () => {
     const under = pricedWithParity({ spendingDrawAnnual: 200000 });
     expect(under.niit).toBe(0);
     const over = pricedWithParity({
@@ -299,7 +299,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(over.niit).toBeGreaterThan(0);
   });
 
-  test("Washington capital-gains excise: a large gain prices WA tax; a small gain prices none", () => {
+  test("Washington capital-gains excise: a large gain prices WA tax; a small gain prices none", async () => {
     const big = pricedWithParity({
       state: "WA",
       stockSoldAnnual: 500000,
@@ -318,7 +318,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(small.stateTax).toBe(0);
   });
 
-  test("qualified dividends + realized gains in the same year: dividends counted once", () => {
+  test("qualified dividends + realized gains in the same year: dividends counted once", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 10000,
       qualifiedDividendsAnnual: 6000,
@@ -332,7 +332,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(res.ltcgPriced).toBe(26000);
   });
 
-  test("basis with no sale is inert: no phantom loss", () => {
+  test("basis with no sale is inert: no phantom loss", async () => {
     const res = pricedWithParity({ stockBasisAnnual: 30000 });
     expect(res.stockGain).toBe(0);
     expect(res.capitalLoss).toBe(0);
@@ -342,7 +342,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     );
   });
 
-  test("a sale above the typed taxable balance warns but still prices", () => {
+  test("a sale above the typed taxable balance warns but still prices", async () => {
     const res = pricedWithParity({
       stockSoldAnnual: 3000000,
       stockBasisAnnual: 1000000,
@@ -354,13 +354,13 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     })).toContain("exceeds the typed taxable balance");
   });
 
-  test("taxableBasisPct never prices a sale on its own", () => {
+  test("taxableBasisPct never prices a sale on its own", async () => {
     const res = pricedWithParity({ taxableBasisPct: 50 });
     expect(res.stockGain).toBe(0);
     expect(res.saleAfterTax).toBeNull();
   });
 
-  test("negative sale / basis / balance / received amounts are invalid_input", () => {
+  test("negative sale / basis / balance / received amounts are invalid_input", async () => {
     for (const bad of [
       { stockSoldAnnual: -1 },
       { stockBasisAnnual: -1 },
@@ -383,7 +383,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
     expect(nBool.error.error.code).toBe("invalid_input");
   });
 
-  test("a basis above the proceeds is accepted (loss), never a validation error", () => {
+  test("a basis above the proceeds is accepted (loss), never a validation error", async () => {
     const n = normalizeInputs(
       fictionalScenario({ stockSoldAnnual: 20000, stockBasisAnnual: 30000 }),
     );
@@ -396,7 +396,7 @@ describe("R6-S1 stock sales: direct-engine parity", () => {
 // ---------------------------------------------------------------------------
 
 describe("R6-S2 RMDs: direct-engine parity", () => {
-  test("younger than RMD age: balance entered, RMD $0, rmdPriced true", () => {
+  test("younger than RMD age: balance entered, RMD $0, rmdPriced true", async () => {
     // Born 1956 → RMD age 73; age 70 is below it.
     const res = pricedWithParity({
       currentAge: 70,
@@ -415,7 +415,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     })).toContain("below RMD age 73");
   });
 
-  test("at first RMD age: uniform divisor 26.5 at 73", () => {
+  test("at first RMD age: uniform divisor 26.5 at 73", async () => {
     // Born 1953 → RMD age 73. Spouse 71 (2 years younger) → Uniform.
     const res = pricedWithParity({
       ...AT_73,
@@ -428,7 +428,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdPriced).toBe(true);
   });
 
-  test("primary more than 10 years older than the spouse: Joint table", () => {
+  test("primary more than 10 years older than the spouse: Joint table", async () => {
     const res = pricedWithParity({
       ...AT_73,
       spouseAge: 60,
@@ -440,7 +440,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdPrimary).toBeLessThan(18867.92);
   });
 
-  test("older than RMD age: uniform divisor 24.6 at 75", () => {
+  test("older than RMD age: uniform divisor 24.6 at 75", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -450,7 +450,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdTable).toBe("uniform");
   });
 
-  test("explicit zero prior-year balance: RMD $0, rmdPriced true, distinct warning", () => {
+  test("explicit zero prior-year balance: RMD $0, rmdPriced true, distinct warning", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 0,
@@ -462,7 +462,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(w).not.toContain("No prior-year pre-tax balance is carried");
   });
 
-  test("missing prior-year balance: no RMD, rmdPriced false", () => {
+  test("missing prior-year balance: no RMD, rmdPriced false", async () => {
     const res = pricedWithParity({ ...AT_75 });
     expect(res.rmdPriced).toBe(false);
     expect(res.rmd).toBe(0);
@@ -472,7 +472,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     );
   });
 
-  test("married, different spouse ages: each RMD on its own balance and clock", () => {
+  test("married, different spouse ages: each RMD on its own balance and clock", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -486,7 +486,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdTable).toBe("uniform");
   });
 
-  test("spouse more than 10 years younger: primary Joint, spouse RMD $0 below RMD age", () => {
+  test("spouse more than 10 years younger: primary Joint, spouse RMD $0 below RMD age", async () => {
     const res = pricedWithParity({
       ...AT_75,
       spouseAge: 60,
@@ -499,7 +499,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdPrimary).toBeLessThan(24390.24);
   });
 
-  test("spouse balance alone: primary RMD $0, spouse RMD on the spouse's clock", () => {
+  test("spouse balance alone: primary RMD $0, spouse RMD on the spouse's clock", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxSpousePriorYearEndAnnual: 400000,
@@ -510,7 +510,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmdTable).toBe("uniform");
   });
 
-  test("spouse Joint table needs primarySoleBeneficiaryOfSpouse — the spouse-beneficiary fact is NOT reciprocal", () => {
+  test("spouse Joint table needs primarySoleBeneficiaryOfSpouse — the spouse-beneficiary fact is NOT reciprocal", async () => {
     // Spouse 75, primary 60: the spouse's RMD is the only RMD, so
     // rmdTable is the spouse's table.
     const base = {
@@ -537,7 +537,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     );
   });
 
-  test("primarySoleBeneficiaryOfSpouse assumption entry appears only when the fact is given (NICE-3)", () => {
+  test("primarySoleBeneficiaryOfSpouse assumption entry appears only when the fact is given (NICE-3)", async () => {
     const base = {
       currentAge: 60,
       spouseAge: 75,
@@ -603,7 +603,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(extraAbsent).toHaveLength(0);
   });
 
-  test("RMD + Roth conversion: both priced as ordinary income, overlap warning fires", () => {
+  test("RMD + Roth conversion: both priced as ordinary income, overlap warning fires", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -625,7 +625,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     })).toContain("priced as income in addition to the typed conversion");
   });
 
-  test("RMD + spending withdrawal: the draw prices beside the RMD, and rmdAlreadyReceived nets it out", () => {
+  test("RMD + spending withdrawal: the draw prices beside the RMD, and rmdAlreadyReceived nets it out", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -652,7 +652,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(round2(netted.agi)).toBe(round2(res.agi - 24390.24));
   });
 
-  test("RMD fully netted by rmdAlreadyReceived: no overlap warning, already-received note present", () => {
+  test("RMD fully netted by rmdAlreadyReceived: no overlap warning, already-received note present", async () => {
     const netted = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -681,7 +681,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(w).toContain("not counted twice");
   });
 
-  test("RMD partially netted: overlap warning quotes the net RMD, not the gross", () => {
+  test("RMD partially netted: overlap warning quotes the net RMD, not the gross", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -703,7 +703,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(w).not.toContain("The RMD ($24,390.24)");
   });
 
-  test("rmdAlreadyReceived above the computed RMD clamps to the gross RMD", () => {
+  test("rmdAlreadyReceived above the computed RMD clamps to the gross RMD", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -719,7 +719,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     })).toContain("exceeds the computed RMD");
   });
 
-  test("rmdAlreadyReceived with no balance entered has no effect", () => {
+  test("rmdAlreadyReceived with no balance entered has no effect", async () => {
     const res = pricedWithParity({
       ...AT_75,
       rmdAlreadyReceivedAnnual: 5000,
@@ -732,7 +732,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     })).toContain("no computed RMD to net it against");
   });
 
-  test("RMD year with taxable Social Security: SS pays, most of it taxable", () => {
+  test("RMD year with taxable Social Security: SS pays, most of it taxable", async () => {
     const res = pricedWithParity({
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -743,7 +743,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(res.rmd).toBe(24390.24);
   });
 
-  test("RMD effects on ACA: the RMD flips a younger-spouse household over the cliff", () => {
+  test("RMD effects on ACA: the RMD flips a younger-spouse household over the cliff", async () => {
     // Primary 75 is on Medicare; spouse 60 is not, so ACA applies.
     const base = {
       currentAge: 75,
@@ -764,7 +764,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(withRmd.aca.credit).toBe(0);
   });
 
-  test("RMD effects on IRMAA: the RMD lifts the premium-year tier", () => {
+  test("RMD effects on IRMAA: the RMD lifts the premium-year tier", async () => {
     const base = {
       ...AT_75,
       spendingDrawAnnual: 165000,
@@ -779,7 +779,7 @@ describe("R6-S2 RMDs: direct-engine parity", () => {
     expect(withRmd.irmaa.premiumYear).toBe(2028);
   });
 
-  test("spouse balance on a non-joint return is ignored", () => {
+  test("spouse balance on a non-joint return is ignored", async () => {
     const s = normalizedScenario({
       filingStatus: "single",
       currentAge: 75,
@@ -819,7 +819,7 @@ describe("R6 2025 law year (NICE-2)", () => {
     return env;
   }
 
-  test("2025 stock sale: parity on the 2025 law table, envelope reports taxLawYear 2025", () => {
+  test("2025 stock sale: parity on the 2025 law table, envelope reports taxLawYear 2025", async () => {
     const env = envelope2025({
       stockSoldAnnual: 50000,
       stockBasisAnnual: 30000,
@@ -841,7 +841,7 @@ describe("R6 2025 law year (NICE-2)", () => {
     expect(res.federalTax).not.toBe(y26.federalTax);
   });
 
-  test("2025 RMD: parity on the 2025 law table, divisor-derived figures", () => {
+  test("2025 RMD: parity on the 2025 law table, divisor-derived figures", async () => {
     // In tax year 2025 the priced ages are one less than
     // currentAge (agePrimary = currentAge + (taxYear − startYear),
     // startYear 2026), so age 75 in 2025 needs currentAge 76.
@@ -878,7 +878,7 @@ describe("R6 $100M bound (NICE-4)", () => {
     "rmdAlreadyReceivedAnnual",
   ] as const;
 
-  test("each new dollar field accepts $100,000,000 and rejects $100,000,001 naming the field", () => {
+  test("each new dollar field accepts $100,000,000 and rejects $100,000,001 naming the field", async () => {
     for (const field of DOLLAR_FIELDS) {
       const over = normalizeInputs(
         fictionalScenario({ [field]: 100_000_001 }),
@@ -894,8 +894,8 @@ describe("R6 $100M bound (NICE-4)", () => {
     }
   });
 
-  test("the cap holds at the MCP dispatch layer (stockSoldAnnual)", () => {
-    const over = dispatchTool(
+  test("the cap holds at the MCP dispatch layer (stockSoldAnnual)", async () => {
+    const over = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
         stockSoldAnnual: 100_000_001,
@@ -906,7 +906,7 @@ describe("R6 $100M bound (NICE-4)", () => {
     if (over.ok) throw new Error("over-cap sale should not dispatch");
     expect(over.error.code).toBe("invalid_input");
     expect(over.error.message).toContain("stockSoldAnnual");
-    const at = dispatchTool(
+    const at = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
         stockSoldAnnual: 100_000_000,
@@ -918,7 +918,7 @@ describe("R6 $100M bound (NICE-4)", () => {
     expect((at.results as PlaygroundYearResult).stockGain).toBe(100_000_000);
   });
 
-  test("primarySoleBeneficiaryOfSpouse is boolean, not dollar-capped", () => {
+  test("primarySoleBeneficiaryOfSpouse is boolean, not dollar-capped", async () => {
     // true/false normalize; a dollar figure — even exactly at the
     // $100M cap — is not a boolean and is rejected.
     expect(
@@ -946,7 +946,7 @@ describe("R6 $100M bound (NICE-4)", () => {
 // ---------------------------------------------------------------------------
 
 describe("R6 hand-built expected values (NICE-5 oracle independence)", () => {
-  test("spending draw only: exact figures derived by hand from the 2026 law table", () => {
+  test("spending draw only: exact figures derived by hand from the 2026 law table", async () => {
     // HAND DERIVATION — no pricePlaygroundYear, no directInputs
     // anywhere in this test. The expected values below are
     // literals computed here, step by step, from the published
@@ -1023,7 +1023,7 @@ describe("R6 hand-built expected values (NICE-5 oracle independence)", () => {
 // ---------------------------------------------------------------------------
 
 describe("R6 backward compatibility and contract", () => {
-  test("calls without the new fields price bit-identically to the old mapping", () => {
+  test("calls without the new fields price bit-identically to the old mapping", async () => {
     const s = normalizedScenario({
       taxYear: 2026,
       interestAnnual: 1000,
@@ -1071,7 +1071,7 @@ describe("R6 backward compatibility and contract", () => {
     expect(res.agi).toBe(140000);
   });
 
-  test("omitted vs explicit zero: warnings distinguish; the sale figures do not move, the RMD flag does", () => {
+  test("omitted vs explicit zero: warnings distinguish; the sale figures do not move, the RMD flag does", async () => {
     const omitted = pricedWithParity({});
     const explicitSale = pricedWithParity({
       stockSoldAnnual: 0,
@@ -1104,7 +1104,7 @@ describe("R6 backward compatibility and contract", () => {
     expect(explicitRmd.rmdPriced).toBe(true);
   });
 
-  test("new fields carry user provenance when given, assumption provenance when omitted", () => {
+  test("new fields carry user provenance when given, assumption provenance when omitted", async () => {
     const s = normalizedScenario({
       stockSoldAnnual: 20000,
       stockBasisAnnual: 12000,
@@ -1134,7 +1134,7 @@ describe("R6 backward compatibility and contract", () => {
     expect(extra[0]?.provenance).toBe("user");
   });
 
-  test("a sale + RMD call is deterministic across repeated calls", () => {
+  test("a sale + RMD call is deterministic across repeated calls", async () => {
     const overrides = {
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -1147,8 +1147,8 @@ describe("R6 backward compatibility and contract", () => {
     expect(second).toEqual(first);
   });
 
-  test("the new fields price through the MCP dispatch path", () => {
-    const res = dispatchTool(
+  test("the new fields price through the MCP dispatch path", async () => {
+    const res = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
         ...AT_75,
@@ -1164,7 +1164,7 @@ describe("R6 backward compatibility and contract", () => {
     expect(results.stockGain).toBe(20000);
   });
 
-  test("isolation: a sale + RMD prices identically with extreme balances and after the sample household is mutated", () => {
+  test("isolation: a sale + RMD prices identically with extreme balances and after the sample household is mutated", async () => {
     const overrides = {
       ...AT_75,
       pretaxPriorYearEndAnnual: 600000,
@@ -1224,7 +1224,7 @@ describe("NICE-7 below-100% warning: would-be vs is $0", () => {
   // is $0 — under 100% of the 2026-coverage poverty line for a
   // household of 2 ($21,150) — and the credit is $0 under the
   // standard §36B income test.
-  test("no benchmark entered: credit is null, warning says 'would be $0'", () => {
+  test("no benchmark entered: credit is null, warning says 'would be $0'", async () => {
     const res = pricedWithParity({});
     expect(res.aca.below100Fpl).toBe(true);
     expect(res.aca.credit).toBeNull();
@@ -1233,7 +1233,7 @@ describe("NICE-7 below-100% warning: would-be vs is $0", () => {
     expect(w).not.toContain("ACA credit is $0");
   });
 
-  test("benchmark entered: credit is priced $0, warning says 'is $0'", () => {
+  test("benchmark entered: credit is priced $0, warning says 'is $0'", async () => {
     const res = pricedWithParity({ acaBenchmarkCouple: 20000 });
     expect(res.aca.below100Fpl).toBe(true);
     expect(res.aca.credit).toBe(0);

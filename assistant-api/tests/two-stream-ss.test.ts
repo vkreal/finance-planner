@@ -115,7 +115,7 @@ function handNeverOut(
 }
 
 describe("Case A — primary only: exact parity with the legacy engine", () => {
-  test("a one-stream schedule prices identically to the legacy single stream", () => {
+  test("a one-stream schedule prices identically to the legacy single stream", async () => {
     const stream = { amountCents: c(36_000), startAge: 67 };
     const viaSchedule = engineInputs({ incomeSchedule: [stream] });
     const viaLegacy = engineInputs({
@@ -135,7 +135,7 @@ describe("Case A — primary only: exact parity with the legacy engine", () => {
     );
   });
 
-  test("no schedule at all is the old behavior, unchanged", () => {
+  test("no schedule at all is the old behavior, unchanged", async () => {
     const inputs = engineInputs({
       extraIncomeCents: c(36_000),
       extraIncomeStartAge: 67,
@@ -151,7 +151,7 @@ describe("Case A — primary only: exact parity with the legacy engine", () => {
 });
 
 describe("Case B — spouse only: starts in the correct calendar year", () => {
-  test("spouse stream offsets spending only from its start year", () => {
+  test("spouse stream offsets spending only from its start year", async () => {
     const stream = { amountCents: c(18_000), startAge: 69 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -168,7 +168,7 @@ describe("Case B — spouse only: starts in the correct calendar year", () => {
 });
 
 describe("Case C — same calendar-year start: benefits sum", () => {
-  test("two streams starting together equal their sum", () => {
+  test("two streams starting together equal their sum", async () => {
     const streams = [
       { amountCents: c(36_000), startAge: 70 },
       { amountCents: c(18_000), startAge: 70 },
@@ -189,7 +189,7 @@ describe("Case C — same calendar-year start: benefits sum", () => {
 });
 
 describe("Case D — different starts, both orders", () => {
-  test("spouse first, then primary: each stream joins when it begins", () => {
+  test("spouse first, then primary: each stream joins when it begins", async () => {
     const streams = [
       { amountCents: c(36_000), startAge: 70 },
       { amountCents: c(18_000), startAge: 69 },
@@ -207,7 +207,7 @@ describe("Case D — different starts, both orders", () => {
     expect(det.balances[det.balances.length - 1]).toBe(c(442_000));
   });
 
-  test("primary first, then spouse: same rule, reversed order", () => {
+  test("primary first, then spouse: same rule, reversed order", async () => {
     const streams = [
       { amountCents: c(36_000), startAge: 67 },
       { amountCents: c(18_000), startAge: 69 },
@@ -227,7 +227,7 @@ describe("Case D — different starts, both orders", () => {
 });
 
 describe("Case E — different spouse ages: per-spouse year offsets", () => {
-  test("adapter converts the spouse claiming age through the birth years", () => {
+  test("adapter converts the spouse claiming age through the birth years", async () => {
     // Fictional household: primary 54 claims 70 (16 years out),
     // spouse 52 claims 62 (10 years out — spouse turns 62 in the
     // year the primary turns 64).
@@ -257,7 +257,7 @@ describe("Case E — different spouse ages: per-spouse year offsets", () => {
     expect(netAt(70)).toBe(60_000);
   });
 
-  test("reversed order: primary first, spouse later (primary age 72)", () => {
+  test("reversed order: primary first, spouse later (primary age 72)", async () => {
     const s = normalizedScenario({
       socialSecurityAnnual: 36000,
       socialSecurityStartAge: 62,
@@ -278,7 +278,7 @@ describe("Case E — different spouse ages: per-spouse year offsets", () => {
     expect(netAt(72)).toBe(60_000);
   });
 
-  test("an older spouse's benefit starts before the primary's own age", () => {
+  test("an older spouse's benefit starts before the primary's own age", async () => {
     // Spouse 56 (two years OLDER than the primary 54) claims 67:
     // the benefit starts in the year the primary turns 65.
     const s = normalizedScenario({
@@ -296,7 +296,7 @@ describe("Case E — different spouse ages: per-spouse year offsets", () => {
 });
 
 describe("Case F — retirement boundary", () => {
-  test("income starting before retirement offsets only retired years", () => {
+  test("income starting before retirement offsets only retired years", async () => {
     const stream = { amountCents: c(36_000), startAge: 55 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -310,14 +310,14 @@ describe("Case F — retirement boundary", () => {
     );
   });
 
-  test("income starting exactly at retirement is active in the first retired year", () => {
+  test("income starting exactly at retirement is active in the first retired year", async () => {
     const stream = { amountCents: c(36_000), startAge: 58 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
     expect(det.netWithdrawals[58 - inputs.currentAge]).toBe(c(14_000));
   });
 
-  test("income starting after retirement joins mid-plan", () => {
+  test("income starting after retirement joins mid-plan", async () => {
     const stream = { amountCents: c(36_000), startAge: 65 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -330,7 +330,7 @@ describe("Case F — retirement boundary", () => {
 });
 
 describe("Case G — planning horizon", () => {
-  test("income starting in the final modeled year pays only that year", () => {
+  test("income starting in the final modeled year pays only that year", async () => {
     const stream = { amountCents: c(36_000), startAge: 75 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -342,7 +342,7 @@ describe("Case G — planning horizon", () => {
     expect(det.balances[det.balances.length - 1]).toBe(c(136_000));
   });
 
-  test("income starting after the horizon never pays", () => {
+  test("income starting after the horizon never pays", async () => {
     const stream = { amountCents: c(36_000), startAge: 76 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -356,7 +356,7 @@ describe("Case G — planning horizon", () => {
     expect(eventualIncomeCents(inputs)).toBe(0);
   });
 
-  test("an explicitly zero stream contributes nothing", () => {
+  test("an explicitly zero stream contributes nothing", async () => {
     const stream = { amountCents: 0, startAge: 67 };
     const inputs = engineInputs({ incomeSchedule: [stream] });
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -372,7 +372,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
   ];
   const inputs = engineInputs({ incomeSchedule: streams });
 
-  test("deterministic + success-only agree with the independent recomputation", () => {
+  test("deterministic + success-only agree with the independent recomputation", async () => {
     const det = simulateDetailed(inputs, zeroReturns(inputs));
     expect(det.balances[det.balances.length - 1]).toBe(
       handEnding(inputs, streams),
@@ -383,7 +383,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(runNeverRunsOut(inputs, zeroReturns(inputs))).toBe(true);
   });
 
-  test("Monte Carlo with zero mean and zero vol equals the deterministic path", () => {
+  test("Monte Carlo with zero mean and zero vol equals the deterministic path", async () => {
     const mc = runMonteCarlo(inputs, 0, 0, 42, 200);
     expect(mc).not.toBeNull();
     const det = simulateDetailed(inputs, zeroReturns(inputs));
@@ -395,7 +395,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(mc!.successRate).toBe(ending > 0 ? 100 : 0);
   });
 
-  test("historical never-out rate equals the independent window count", () => {
+  test("historical never-out rate equals the independent window count", async () => {
     // Re-enumerate the historical windows from the published
     // table (retirementData.HISTORICAL) and the engine's own
     // real-return formula, counting runNeverRunsOut per window.
@@ -422,7 +422,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(hist!.neverOutSuccessRate).toBe((neverOut / windows) * 100);
   });
 
-  test("max-spending solver at zero returns returns the hand-computed maximum", () => {
+  test("max-spending solver at zero returns returns the hand-computed maximum", async () => {
     // Start $100,000, retire 58, end 67 (10 retired years),
     // income $10,000/yr from 61 (7 years). Zero returns: the
     // binding constraint is the total, 10S − $70,000 ≤ $100,000,
@@ -451,7 +451,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(histSolved!.successRate).toBeGreaterThanOrEqual(85);
   });
 
-  test("adapter tools agree: MC deterministic leg equals calculate, max spending rises with the second stream", () => {
+  test("adapter tools agree: MC deterministic leg equals calculate, max spending rises with the second stream", async () => {
     const two = normalizedScenario({
       socialSecurityAnnual: 36000,
       socialSecurityStartAge: 70,
@@ -466,7 +466,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     });
     const calc = expectOk(calculateRetirement(two));
     const mc = expectOk(
-      runRetirementMonteCarlo(
+      await runRetirementMonteCarlo(
         normalizedScenario({
           socialSecurityAnnual: 36000,
           socialSecurityStartAge: 70,
@@ -477,8 +477,8 @@ describe("Case H — engine parity: one schedule, every path", () => {
       ),
     );
     expect(mc.deterministicEndingBalance).toBe(calc.endingBalance);
-    const maxTwo = expectOk(calculateMaxSpending(two));
-    const maxOne = expectOk(calculateMaxSpending(one));
+    const maxTwo = expectOk(await calculateMaxSpending(two));
+    const maxOne = expectOk(await calculateMaxSpending(one));
     expect(maxTwo.maxAnnualSpending).toBeGreaterThan(
       maxOne.maxAnnualSpending,
     );
@@ -488,7 +488,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     // the flake, not a change to anything asserted.
   }, 120_000);
 
-  test("no benefit is assumed when an amount is omitted", () => {
+  test("no benefit is assumed when an amount is omitted", async () => {
     const s = normalizedScenario({
       socialSecurityAnnual: 0,
       socialSecurityStartAge: undefined,
@@ -502,7 +502,7 @@ describe("Case H — engine parity: one schedule, every path", () => {
     expect(incomeCentsAt(sim, 70)).toBe(0);
   });
 
-  test("two-stream pricing is deterministic across repeated calls", () => {
+  test("two-stream pricing is deterministic across repeated calls", async () => {
     const s = normalizedScenario({
       socialSecurityAnnual: 36000,
       socialSecurityStartAge: 70,

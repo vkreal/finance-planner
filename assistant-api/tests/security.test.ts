@@ -164,7 +164,7 @@ describe("log hygiene and error hygiene", () => {
     };
     try {
       // In-process dispatch (logs tool name + ok + duration only).
-      dispatchTool("retirement_calculate", DISTINCTIVE_ARGS);
+      await dispatchTool("retirement_calculate", DISTINCTIVE_ARGS);
       // And the same call over HTTP (logs method/path/status/duration).
       const res = await rpcCall("tools/call", {
         name: "retirement_calculate",
@@ -327,7 +327,7 @@ describe("server behavior (rate limits, horizon cap, boot refusal)", () => {
     expect(text).toContain("invalid_input");
   });
 
-  test("non-loopback boot without a token throws", () => {
+  test("non-loopback boot without a token throws", async () => {
     const saved = process.env.ASSISTANT_API_TOKEN;
     delete process.env.ASSISTANT_API_TOKEN;
     try {

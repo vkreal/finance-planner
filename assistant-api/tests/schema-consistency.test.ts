@@ -27,15 +27,15 @@ function schemaProps(): string[] {
 }
 
 describe("advertised schema == accepting schema", () => {
-  test("BASE_INPUT_SCHEMA property names are exactly the zod keys", () => {
+  test("BASE_INPUT_SCHEMA property names are exactly the zod keys", async () => {
     expect(schemaProps()).toEqual(zodKeys);
   });
 
-  test("BASE_INPUT_SCHEMA required list is exactly the six essentials", () => {
+  test("BASE_INPUT_SCHEMA required list is exactly the six essentials", async () => {
     expect(BASE_INPUT_SCHEMA.required).toEqual([...ESSENTIAL_KEYS]);
   });
 
-  test("taxYear range in the advertised schema is derived from the law table", () => {
+  test("taxYear range in the advertised schema is derived from the law table", async () => {
     const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
       .properties as Record<string, Record<string, unknown>>;
     expect(props.taxYear.maximum).toBe(latestTaxLawYear());
@@ -44,20 +44,20 @@ describe("advertised schema == accepting schema", () => {
     );
   });
 
-  test("stateRatePct maximum is 50 in the advertised schema", () => {
+  test("stateRatePct maximum is 50 in the advertised schema", async () => {
     const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
       .properties as Record<string, Record<string, unknown>>;
     expect(props.stateRatePct.maximum).toBe(50);
   });
 
-  test("compareAges is 2–5 items in the advertised schema", () => {
+  test("compareAges is 2–5 items in the advertised schema", async () => {
     const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
       .properties as Record<string, Record<string, unknown>>;
     expect(props.compareAges.minItems).toBe(2);
     expect(props.compareAges.maxItems).toBe(5);
   });
 
-  test("medicareAgePrimary type and range agree between zod and the advertised schema", () => {
+  test("medicareAgePrimary type and range agree between zod and the advertised schema", async () => {
     const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
       .properties as Record<string, Record<string, unknown>>;
     // Advertised side must stay an integer-or-null 0–120, matching
@@ -68,7 +68,7 @@ describe("advertised schema == accepting schema", () => {
     expect(props.medicareAgePrimary.maximum).toBe(120);
   });
 
-  test("the old advertised names appear nowhere in the schema", () => {
+  test("the old advertised names appear nowhere in the schema", async () => {
     const props = schemaProps();
     for (const old of [
       "ssPrimaryAnnual",
@@ -86,8 +86,8 @@ describe("advertised schema == accepting schema", () => {
     }
   });
 
-  test("every guide entry's required/optional names are zod keys", () => {
-    const guide = dispatchTool("retirement_describe_capabilities", {});
+  test("every guide entry's required/optional names are zod keys", async () => {
+    const guide = await dispatchTool("retirement_describe_capabilities", {});
     if (!guide.ok) throw new Error(JSON.stringify(guide.error));
     const tools = (guide.results as Record<string, unknown>).tools as Array<{
       name: string;
@@ -102,7 +102,7 @@ describe("advertised schema == accepting schema", () => {
     }
   });
 
-  test("guide optional lists contain only inputs each tool prices (pass-3 S1)", () => {
+  test("guide optional lists contain only inputs each tool prices (pass-3 S1)", async () => {
     // Priced sets, pinned: the sim engines read no tax inputs, the
     // tax-aware compare reads no strategy/volatility, the single-year
     // pricer reads no portfolio assumptions or retirementAge/endAge.
@@ -246,7 +246,7 @@ describe("advertised schema == accepting schema", () => {
       retirement_tax_year: taxYear,
       retirement_describe_capabilities: [],
     };
-    const guide = dispatchTool("retirement_describe_capabilities", {});
+    const guide = await dispatchTool("retirement_describe_capabilities", {});
     if (!guide.ok) throw new Error(JSON.stringify(guide.error));
     const tools = (guide.results as Record<string, unknown>).tools as Array<{
       name: string;
@@ -257,8 +257,8 @@ describe("advertised schema == accepting schema", () => {
     }
   });
 
-  test("every tool's example call normalizes ok:true", () => {
-    const guide = dispatchTool("retirement_describe_capabilities", {});
+  test("every tool's example call normalizes ok:true", async () => {
+    const guide = await dispatchTool("retirement_describe_capabilities", {});
     if (!guide.ok) throw new Error(JSON.stringify(guide.error));
     const tools = (guide.results as Record<string, unknown>).tools as Array<{
       name: string;
@@ -274,7 +274,7 @@ describe("advertised schema == accepting schema", () => {
 });
 
 describe("canonical names land; old names are rejected", () => {
-  test("socialSecurityAnnual / expectedRealReturnPct / state land with user provenance", () => {
+  test("socialSecurityAnnual / expectedRealReturnPct / state land with user provenance", async () => {
     const n = normalizeInputs(
       fictionalScenario({
         expectedRealReturnPct: 5,
@@ -294,7 +294,7 @@ describe("canonical names land; old names are rejected", () => {
     expect(n.scenario.residenceState).toBe("WA");
   });
 
-  test("flat single-year fields land in the scenario", () => {
+  test("flat single-year fields land in the scenario", async () => {
     const n = normalizeInputs(
       fictionalScenario({
         interestAnnual: 1000,
@@ -340,7 +340,7 @@ describe("canonical names land; old names are rejected", () => {
     });
   });
 
-  test("the new single-year fields land in the scenario, with provenance", () => {
+  test("the new single-year fields land in the scenario, with provenance", async () => {
     const n = normalizeInputs(
       fictionalScenario({
         stockSoldAnnual: 20000,
@@ -403,7 +403,7 @@ describe("canonical names land; old names are rejected", () => {
     }
   });
 
-  test("old advertised names are rejected, not honored", () => {
+  test("old advertised names are rejected, not honored", async () => {
     // The strict schema rejects unrecognized fields outright — the
     // old advertised names are no longer silently stripped (that
     // stripping is the SHOULD-1 defect: a caller under the old name
@@ -436,7 +436,7 @@ describe("canonical names land; old names are rejected", () => {
     }
   });
 
-  test("taxYear 2027 is invalid_input, not a silent clamp", () => {
+  test("taxYear 2027 is invalid_input, not a silent clamp", async () => {
     const n = normalizeInputs(fictionalScenario({ taxYear: 2027 }));
     expect(n.ok).toBe(false);
     if (n.ok) throw new Error("2027 should not normalize");
@@ -445,8 +445,8 @@ describe("canonical names land; old names are rejected", () => {
 });
 
 describe("describeCapabilities reports the derived law year", () => {
-  test("envelope + engine block use latestTaxLawYear() and the full table", () => {
-    const guide = dispatchTool("retirement_describe_capabilities", {});
+  test("envelope + engine block use latestTaxLawYear() and the full table", async () => {
+    const guide = await dispatchTool("retirement_describe_capabilities", {});
     if (!guide.ok) throw new Error(JSON.stringify(guide.error));
     expect(guide.taxLawYear).toBe(latestTaxLawYear());
     const engine = (guide.results as Record<string, unknown>)

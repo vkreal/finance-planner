@@ -21,7 +21,7 @@ import {
 } from "./helpers";
 
 describe("dollars to cents", () => {
-  test("portfolioCents is the sum of the four balances in cents", () => {
+  test("portfolioCents is the sum of the four balances in cents", async () => {
     const s = normalizedScenario();
     expect(s.portfolioCents).toBe(
       (1250000 + 2100000 + 375000 + 62000) * 100,
@@ -32,13 +32,13 @@ describe("dollars to cents", () => {
     expect(s.hsaDollars).toBe(62000);
   });
 
-  test("annualSpendingCents = Math.round(monthly * 12 * 100)", () => {
+  test("annualSpendingCents = Math.round(monthly * 12 * 100)", async () => {
     const s = normalizedScenario();
     expect(s.annualSpendingCents).toBe(Math.round(9500 * 12 * 100));
     expect(s.annualSpendingCents).toBe(11_400_000);
   });
 
-  test("monthly to annual: a $9,500/mo habit is $114,000/yr in the echo", () => {
+  test("monthly to annual: a $9,500/mo habit is $114,000/yr in the echo", async () => {
     const res = expectEnvelope(calculateRetirement(normalizedScenario()));
     expect(res.effectiveInputs.monthlySpending).toBe(9500);
     expect(res.effectiveInputs.annualSpending).toBe(114000);
@@ -47,7 +47,7 @@ describe("dollars to cents", () => {
     );
   });
 
-  test("odd cents round: $9,500.555/mo rounds to whole cents", () => {
+  test("odd cents round: $9,500.555/mo rounds to whole cents", async () => {
     const s = normalizedScenario({ monthlySpending: 9500.555 });
     expect(s.annualSpendingCents).toBe(Math.round(9500.555 * 12 * 100));
     expect(Number.isInteger(s.annualSpendingCents)).toBe(true);
@@ -55,7 +55,7 @@ describe("dollars to cents", () => {
 });
 
 describe("explicit zero vs omitted", () => {
-  test("explicit zeros stay zero and normalize fine (single filer)", () => {
+  test("explicit zeros stay zero and normalize fine (single filer)", async () => {
     const n = normalizeInputs({
       pretax: 0,
       taxable: 0,
@@ -72,7 +72,7 @@ describe("explicit zero vs omitted", () => {
     expect(n.scenario.rothDollars).toBe(0);
   });
 
-  test("explicit zero is distinct from omitted: omitting roth is missing_input", () => {
+  test("explicit zero is distinct from omitted: omitting roth is missing_input", async () => {
     const { roth: _omit, ...withoutRoth } = fictionalScenario();
     const n = normalizeInputs(withoutRoth);
     expect(n.ok).toBe(false);
@@ -87,7 +87,7 @@ describe("explicit zero vs omitted", () => {
     ]);
   });
 
-  test("omitting one essential key names exactly that key", () => {
+  test("omitting one essential key names exactly that key", async () => {
     for (const key of ESSENTIAL_KEYS) {
       const input = { ...fictionalScenario() };
       delete (input as Record<string, unknown>)[key];
@@ -99,7 +99,7 @@ describe("explicit zero vs omitted", () => {
     }
   });
 
-  test("omitting all six essential keys names all six, in schema order", () => {
+  test("omitting all six essential keys names all six, in schema order", async () => {
     const n = normalizeInputs({});
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -115,7 +115,7 @@ describe("explicit zero vs omitted", () => {
     expect(n.error.error.questions).toHaveLength(6);
   });
 
-  test("an explicit zero SS amount needs no start age", () => {
+  test("an explicit zero SS amount needs no start age", async () => {
     const s = normalizedScenario({
       socialSecurityAnnual: 0,
       spouseSocialSecurityAnnual: 0,
@@ -126,7 +126,7 @@ describe("explicit zero vs omitted", () => {
 });
 
 describe("invalid values", () => {
-  test("negative balance is invalid_input", () => {
+  test("negative balance is invalid_input", async () => {
     const n = normalizeInputs(fictionalScenario({ pretax: -1 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -134,14 +134,14 @@ describe("invalid values", () => {
     expect(n.error.error.message).toContain("pretax");
   });
 
-  test("NaN balance is invalid_input", () => {
+  test("NaN balance is invalid_input", async () => {
     const n = normalizeInputs(fictionalScenario({ taxable: Number.NaN }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
     expect(n.error.error.code).toBe("invalid_input");
   });
 
-  test("string balance is invalid_input, not coerced", () => {
+  test("string balance is invalid_input, not coerced", async () => {
     const n = normalizeInputs(fictionalScenario({ roth: "375000" }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -149,14 +149,14 @@ describe("invalid values", () => {
     expect(n.error.error.message).toContain("roth");
   });
 
-  test("zero monthly spending is invalid_input (must be > 0)", () => {
+  test("zero monthly spending is invalid_input (must be > 0)", async () => {
     const n = normalizeInputs(fictionalScenario({ monthlySpending: 0 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
     expect(n.error.error.code).toBe("invalid_input");
   });
 
-  test("a dollar amount over $100,000,000 is rejected", () => {
+  test("a dollar amount over $100,000,000 is rejected", async () => {
     const n = normalizeInputs(fictionalScenario({ pretax: 100_000_001 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -168,7 +168,7 @@ describe("invalid values", () => {
     );
   });
 
-  test("taxYear outside the published law years is invalid_input naming them", () => {
+  test("taxYear outside the published law years is invalid_input naming them", async () => {
     // Derived from the engine table so the test stays correct when a
     // new year's tables publish: the first unpublished year fails,
     // every published year passes.
@@ -188,7 +188,7 @@ describe("invalid values", () => {
     }
   });
 
-  test("taxYear rejection names the app's carried-forward alternative", () => {
+  test("taxYear rejection names the app's carried-forward alternative", async () => {
     // Engine Review 3 NICE-2: the real caller path (through
     // normalize) must carry the pointer the adapter guard names
     // only for direct calls bypassing normalize — an unpublished
@@ -205,7 +205,7 @@ describe("invalid values", () => {
     expect(details).toContain("single-year action");
   });
 
-  test("retirementAge before currentAge is invalid_input", () => {
+  test("retirementAge before currentAge is invalid_input", async () => {
     const n = normalizeInputs(fictionalScenario({ retirementAge: 53 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -213,7 +213,7 @@ describe("invalid values", () => {
     expect(n.error.error.message).toContain("retirementAge");
   });
 
-  test("endAge at or before retirementAge is invalid_input", () => {
+  test("endAge at or before retirementAge is invalid_input", async () => {
     const at = normalizeInputs(
       fictionalScenario({ retirementAge: 58, endAge: 58 }),
     );
@@ -226,7 +226,7 @@ describe("invalid values", () => {
     if (!before.ok) expect(before.error.error.code).toBe("invalid_input");
   });
 
-  test("error details name fields only — no caller values leak", () => {
+  test("error details name fields only — no caller values leak", async () => {
     const n = normalizeInputs(fictionalScenario({ pretax: -1234567 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -240,7 +240,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
   // the field, never a silent strip. A misspelled field must not
   // silently drop the income it was meant to carry.
 
-  test("an unknown financial field is rejected with invalid_input", () => {
+  test("an unknown financial field is rejected with invalid_input", async () => {
     const n = normalizeInputs(fictionalScenario({ unknownBalance: 100000 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -249,7 +249,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(JSON.stringify(n.error.error.details)).toContain("unknownBalance");
   });
 
-  test("a misspelled Social Security field is rejected, naming it", () => {
+  test("a misspelled Social Security field is rejected, naming it", async () => {
     const n = normalizeInputs(
       fictionalScenario({ socialSecurityAnual: 48000 }),
     );
@@ -264,7 +264,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     ).toBe(true);
   });
 
-  test("a misspelled monthly spending field is rejected, naming it", () => {
+  test("a misspelled monthly spending field is rejected, naming it", async () => {
     const n = normalizeInputs(fictionalScenario({ monthlySpendin: 8000 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -272,7 +272,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(n.error.error.message).toContain("monthlySpendin");
   });
 
-  test("an unknown field with value 0 is rejected, not ignored", () => {
+  test("an unknown field with value 0 is rejected, not ignored", async () => {
     const n = normalizeInputs(fictionalScenario({ unknownField: 0 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -280,8 +280,8 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(n.error.error.message).toContain("unknownField");
   });
 
-  test("unknown fields never reach an engine: dispatch returns the error, no results", () => {
-    const res = dispatchTool(
+  test("unknown fields never reach an engine: dispatch returns the error, no results", async () => {
+    const res = await dispatchTool(
       "retirement_calculate",
       fictionalScenario({ socialSecurityAnual: 48000 }),
     );
@@ -291,7 +291,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect("results" in res).toBe(false);
   });
 
-  test("error messages name fields only — no caller values leak", () => {
+  test("error messages name fields only — no caller values leak", async () => {
     const n = normalizeInputs(fictionalScenario({ mysteryField: 987654 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -299,7 +299,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(JSON.stringify(n.error)).not.toContain("1250000");
   });
 
-  test("each rejected key gets its own message naming just that key", () => {
+  test("each rejected key gets its own message naming just that key", async () => {
     const n = normalizeInputs(
       fictionalScenario({ mysteryFieldA: 1, mysteryFieldB: 2 }),
     );
@@ -330,7 +330,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     expect(n.error.error.message).toContain("mysteryFieldB");
   });
 
-  test("a single rejected key keeps its existing message", () => {
+  test("a single rejected key keeps its existing message", async () => {
     const n = normalizeInputs(fictionalScenario({ mysteryField: 1 }));
     expect(n.ok).toBe(false);
     if (n.ok) return;
@@ -339,7 +339,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
     ]);
   });
 
-  test("all nine tools still accept the valid fictional scenario", () => {
+  test("all nine tools still accept the valid fictional scenario", async () => {
     const valid = fictionalScenario();
     for (const tool of [
       "retirement_calculate",
@@ -351,9 +351,9 @@ describe("unknown fields are rejected (strict input schema)", () => {
       "retirement_work_years",
       "retirement_tax_year",
     ]) {
-      expect(dispatchTool(tool, valid).ok).toBe(true);
+      expect((await dispatchTool(tool, valid)).ok).toBe(true);
     }
-    expect(dispatchTool("retirement_describe_capabilities", {}).ok).toBe(
+    expect((await dispatchTool("retirement_describe_capabilities", {})).ok).toBe(
       true,
     );
     // The dynamic-withdrawal leg re-prices the remaining horizon at
@@ -364,7 +364,7 @@ describe("unknown fields are rejected (strict input schema)", () => {
 });
 
 describe("missing ages and Social Security details", () => {
-  test("mfj without spouseAge is missing_input with a question", () => {
+  test("mfj without spouseAge is missing_input with a question", async () => {
     const { spouseAge: _omit, ...input } = fictionalScenario();
     const n = normalizeInputs(input);
     expect(n.ok).toBe(false);
@@ -376,14 +376,14 @@ describe("missing ages and Social Security details", () => {
     ]);
   });
 
-  test("single filing needs no spouseAge", () => {
+  test("single filing needs no spouseAge", async () => {
     const { spouseAge: _omit, ...input } = fictionalScenario({
       filingStatus: "single",
     });
     expect(normalizeInputs(input).ok).toBe(true);
   });
 
-  test("SS amount without a start age is missing_input with a question", () => {
+  test("SS amount without a start age is missing_input with a question", async () => {
     const { socialSecurityStartAge: _omit, ...input } = fictionalScenario();
     const n = normalizeInputs(input);
     expect(n.ok).toBe(false);
@@ -398,7 +398,7 @@ describe("missing ages and Social Security details", () => {
     );
   });
 
-  test("spouse SS amount without a spouse start age names that field", () => {
+  test("spouse SS amount without a spouse start age names that field", async () => {
     const { spouseSocialSecurityStartAge: _omit, ...input } =
       fictionalScenario();
     const n = normalizeInputs(input);
@@ -410,7 +410,7 @@ describe("missing ages and Social Security details", () => {
 });
 
 describe("effectiveInputs echo and assumption provenance", () => {
-  test("the envelope echoes the caller's inputs back", () => {
+  test("the envelope echoes the caller's inputs back", async () => {
     const res = expectEnvelope(calculateRetirement(normalizedScenario()));
     expect(res.effectiveInputs).toMatchObject({
       pretax: FICTIONAL.pretax,
@@ -431,7 +431,7 @@ describe("effectiveInputs echo and assumption provenance", () => {
     });
   });
 
-  test("every resolved field carries a provenance in user/assumption/engine_constant", () => {
+  test("every resolved field carries a provenance in user/assumption/engine_constant", async () => {
     const s = normalizedScenario();
     const provenances = new Set(["user", "assumption", "engine_constant"]);
     const expectedFields = [
@@ -507,7 +507,7 @@ describe("effectiveInputs echo and assumption provenance", () => {
     expect(byField.has("compareAges")).toBe(false);
   });
 
-  test("provenance distinguishes caller values from defaults", () => {
+  test("provenance distinguishes caller values from defaults", async () => {
     const s = normalizedScenario();
     const byField = new Map(s.assumptions.map((a) => [a.field, a]));
     expect(byField.get("pretax")?.provenance).toBe("user");
@@ -537,7 +537,7 @@ describe("effectiveInputs echo and assumption provenance", () => {
     ).toBe("engine_constant");
   });
 
-  test("no-ACA-benchmark warning rides along when no benchmark is given", () => {
+  test("no-ACA-benchmark warning rides along when no benchmark is given", async () => {
     const s = normalizedScenario();
     expect(s.warnings.join(" ")).toContain("No ACA benchmark provided");
     const res = expectEnvelope(calculateRetirement(s));
@@ -546,7 +546,7 @@ describe("effectiveInputs echo and assumption provenance", () => {
 });
 
 describe("compareAges guards (retirement ages must be live choices)", () => {
-  test("an age before currentAge is invalid_input", () => {
+  test("an age before currentAge is invalid_input", async () => {
     const n = normalizeInputs(
       fictionalScenario({ retirementAge: 58, compareAges: [30, 35] }),
     );
@@ -556,14 +556,14 @@ describe("compareAges guards (retirement ages must be live choices)", () => {
     expect(n.error.error.message).toContain("compareAges");
   });
 
-  test("an age at or after endAge is invalid_input", () => {
+  test("an age at or after endAge is invalid_input", async () => {
     const n = normalizeInputs(fictionalScenario({ compareAges: [59, 95] }));
     expect(n.ok).toBe(false);
     if (n.ok) throw new Error("age >= endAge should not normalize");
     expect(n.error.error.code).toBe("invalid_input");
   });
 
-  test("an age below retirementAge but at/after currentAge still prices", () => {
+  test("an age below retirementAge but at/after currentAge still prices", async () => {
     // Transcript (4) compares 56 vs 60 with retirementAge 58.
     const s = normalizedScenario({
       retirementAge: 58,
@@ -574,7 +574,7 @@ describe("compareAges guards (retirement ages must be live choices)", () => {
 });
 
 describe("taxYear default clamps to the latest published law year", () => {
-  test("no taxYear given → the current year clamped to the latest law year", () => {
+  test("no taxYear given → the current year clamped to the latest law year", async () => {
     const n = normalizeInputs(fictionalScenario({ taxYear: undefined }));
     expect(n.ok).toBe(true);
     if (!n.ok) throw new Error("fixture failed");
@@ -603,12 +603,12 @@ describe("strategy sub-parameter assumptions (pass-2 S3)", () => {
     return assumptions.find((a) => a.field === field);
   }
 
-  test('"percent" records percentOfPortfolio 5 as an engine constant', () => {
+  test('"percent" records percentOfPortfolio 5 as an engine constant', async () => {
     const a = knob(knobAssumptions("percent"), "percentOfPortfolio");
     expect(a).toMatchObject({ value: 5, provenance: "engine_constant" });
   });
 
-  test('"guardrails" records the 120/80/10 knobs as engine constants', () => {
+  test('"guardrails" records the 120/80/10 knobs as engine constants', async () => {
     const assumptions = knobAssumptions("guardrails");
     expect(knob(assumptions, "guardrailsCutPct")).toMatchObject({
       value: 120,
@@ -624,7 +624,7 @@ describe("strategy sub-parameter assumptions (pass-2 S3)", () => {
     });
   });
 
-  test('"phased" records the 75/1 knobs as engine constants', () => {
+  test('"phased" records the 75/1 knobs as engine constants', async () => {
     const assumptions = knobAssumptions("phased");
     expect(knob(assumptions, "phaseStartAge")).toMatchObject({
       value: 75,
@@ -636,7 +636,7 @@ describe("strategy sub-parameter assumptions (pass-2 S3)", () => {
     });
   });
 
-  test('"constant" records no strategy-knob assumptions', () => {
+  test('"constant" records no strategy-knob assumptions', async () => {
     const fields = knobAssumptions("constant").map((a) => a.field);
     for (const knobField of [
       "percentOfPortfolio",
