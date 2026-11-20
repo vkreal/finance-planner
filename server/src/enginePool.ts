@@ -252,6 +252,13 @@ export interface EnginePoolOptions {
   inThreadFallback?: boolean;
 }
 
+// Once-per-process marker: the first fallback job prints it;
+// never at import/enable time, never on --help/--list/describe
+// (those dispatch no pool job). The standalone suite asserts
+// --help stderr is "" and bare-describe stderr is exactly the one
+// adapter log line — a startup print would break them.
+let inThreadFallbackMarkerLogged = false;
+
 export class EnginePool {
   private nextJobId = 1;
   private lanes: Record<EngineLane, LaneState> = {
@@ -741,13 +748,6 @@ export class EnginePool {
     }
   }
 }
-
-// Once-per-process marker: the first fallback job prints it;
-// never at import/enable time, never on --help/--list/describe
-// (those dispatch no pool job). The standalone suite asserts
-// --help stderr is "" and bare-describe stderr is exactly the one
-// adapter log line — a startup print would break them.
-let inThreadFallbackMarkerLogged = false;
 
 // The process-wide pool (one per process, §1.1). Created lazily
 // on the first heavy call by the wrappers that use it — the

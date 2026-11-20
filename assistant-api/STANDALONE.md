@@ -169,9 +169,13 @@ non-taxable) — the response never merges them.
   the engine's fixed 1,000 runs).
 - Monte Carlo runs are capped at 5,000 simulations per call; the
   planning horizon ends at age 120.
-- There is no execution timeout: every call runs to completion
-  in-process, and killing a call yields no partial output (stdout is
-  written once, at the end). The slowest calls are the work-years
+- There is no execution timeout on a running job: a deadline cannot
+  interrupt a job once it has started in-process, and killing a call
+  yields no partial output (stdout is written once, at the end). But
+  the action's overall 100 s budget still applies: a multi-leg call
+  whose earlier legs consume the budget can still time out — a later
+  leg dispatched with no budget left is rejected with ENGINE_TIMEOUT
+  before it starts. The slowest calls are the work-years
   comparison (a minute or more) and the full-optimizer search
   (`comparisonScope: "full"`, ~77s quiet / ~216s loaded). What bounds
   them instead of a time limit is the work itself: a 256KB input cap,

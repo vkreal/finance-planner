@@ -183,7 +183,9 @@ async function runTool(
     // so the pool runs engine jobs in-thread instead of in a
     // worker. This is the ONLY call site of
     // enableStandaloneInThreadFallback — the server / MCP paths
-    // always use the worker pool.
+    // always use the worker pool. runTool also serves
+    // retirement_describe_capabilities, which dispatches no pool
+    // job, so enabling the fallback there is harmless.
     enableStandaloneInThreadFallback();
     envelope = await dispatchTool(toolName, args);
   } catch (err) {

@@ -469,6 +469,33 @@ describe("engine pool in-thread fallback (standalone single-file bundle)", () =>
     expect(pool.poolStats().inThreadJobs).toBe(1);
   }, 300_000);
 
+  test("fallback job dispatched with no remaining budget (timeoutMs 0) is rejected with ENGINE_TIMEOUT and never runs", async () => {
+    const pool = makePool({ inThreadFallback: true });
+    // The queued-deadline drop in pump() rejects the job before
+    // the fallback branch runs — the same gate the docs describe
+    // for a multi-leg action whose earlier legs consumed the
+    // action's budget. No in-thread job starts, so inThreadJobs
+    // must not increment.
+    const { promise } = pool.dispatch<any>(
+      "fixedAge",
+      stableEngineKey({ inputs: small5y(), searchOrders: false }),
+      { inputs: small5y(), searchOrders: false },
+      { timeoutMs: 0, detail: "full" },
+    );
+    let err: unknown;
+    try {
+      await promise;
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(EngineError);
+    expect((err as EngineError).code).toBe("ENGINE_TIMEOUT");
+    expect((err as EngineError).retryable).toBe(true);
+    expect(pool.poolStats().inThreadJobs).toBe(0);
+    expect(pool.poolStats().started).toBe(0);
+    expect(pool.poolStats().timeouts).toBe(1);
+  }, 300_000);
+
   test("a default pool reports isInThreadFallback() === false; enableInThreadFallback() is one-way and idempotent", async () => {
     const pool = makePool();
     expect(pool.isInThreadFallback()).toBe(false);
