@@ -13,11 +13,14 @@
 // in full-result form and defeat the compact cache (§2). The cache
 // lives on the main thread only.
 //
-// Return shape: `detail: "full"` posts the entire result (Phase 1:
-// every job). `detail: "summary"` is the Phase 2 compact summary
-// (JointOptimizerSummary) — not implemented yet; a summary job
-// posted to this worker fails loudly instead of silently
-// returning a full result.
+// Return shape: `detail: "full"` posts the entire result.
+// `detail: "summary"` (Phase 2 compact cache, §2.2) posts the
+// compact JointOptimizerSummary for the joint kinds — the worker
+// computes the FULL result, compacts it in-worker, and posts back
+// the summary, so the full result never exists on the main thread
+// in the production path. Other kinds have no summary shape: a
+// summary job for one fails loudly instead of silently returning
+// a full result.
 //
 // Engine throws (e.g. RangeError on invalid Monte Carlo options)
 // are caught and posted back as { name, message } — the pool
@@ -28,6 +31,7 @@
 // in-thread (no messages ever arrive there); as a worker entry it
 // is the message handler (same idiom as the C7 probe worker).
 import {
+  compactJointOptimizerResult,
   computeJointOptimizer,
   optimizerHeirSensitivity,
   optimizerSensitivity,
@@ -45,17 +49,28 @@ type JobMessage = {
 };
 
 function runJob(msg: JobMessage): unknown {
-  if (msg.detail === "summary") {
-    // Phase 2 (compact cache) implements the summary return.
-    // Fail loudly: silently returning a full result here would
-    // defeat the byte budget the summary exists to enforce.
-    throw new Error("engine worker: detail \"summary\" is not implemented yet (Phase 2)");
+  if (
+    msg.detail === "summary" &&
+    msg.kind !== "joint" &&
+    msg.kind !== "workYearsJoint"
+  ) {
+    // Only the joint kinds have a summary shape: silently returning
+    // a full result here would defeat the byte budget the summary
+    // exists to enforce. Fail loudly instead.
+    throw new Error(
+      `engine worker: detail "summary" is not supported for job kind ${JSON.stringify(msg.kind)}`,
+    );
   }
   const p = msg.payload;
   switch (msg.kind) {
     case "joint":
-    case "workYearsJoint":
-      return computeJointOptimizer(p.inputs);
+    case "workYearsJoint": {
+      const full = computeJointOptimizer(p.inputs);
+      // Phase 2 (§2.1–§2.2): the production miss path returns the
+      // compact summary; "full" is the fixture mode, which bypasses
+      // the main-thread cache entirely.
+      return msg.detail === "summary" ? compactJointOptimizerResult(full) : full;
+    }
     case "fixedAge":
       return runOptimizer(p.inputs, { searchOrders: p.searchOrders ?? true });
     case "sensitivity":

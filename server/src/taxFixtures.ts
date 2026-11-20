@@ -71,6 +71,7 @@ claimAgeCombos,
 claimAgeLabel,
 compareJointCandidates,
 compareScoredCandidates,
+computeJointOptimizer,
 consumeExecutionInputs,
 countCeilingViolations,
 executionDollarsFromCents,
@@ -120,6 +121,7 @@ type RothCompareBaseSaved,
 type RothCompareOverrides,
 type RothSavedLike,
 type ScoredCandidate,
+type ScoredCandidateSummary,
 } from "./rothOptimizer";
 import { parseRothBlobRevision } from "./rothRevisionCore";
 import { projTemplateFromStored, projTemplateToStored } from "./projTemplateCore";
@@ -6945,7 +6947,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         (s) => s.cost.netCost === joint.winner.cost.netCost,
       );
       const maxWealth = Math.max(...tied.map((s) => s.result.endingAfterTaxWealth));
-      const dnRank = (s: ScoredCandidate): number =>
+      const dnRank = (s: ScoredCandidate | ScoredCandidateSummary): number =>
         s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
       const oldPick = [...tied].sort(
         (x, y) =>
@@ -12038,7 +12040,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     actual: () => {
       const plan = goldenWorkPlan();
       if (!plan) return { candidates: null, totalViolations: null };
-      const joint = runJointOptimizer(plan);
+      // The one deep reader of tail-candidate years[] (C7 architecture
+      // §2.2): the full result, priced uncached via computeJointOptimizer
+      // — the memoized runJointOptimizer returns compact summaries whose
+      // tail candidates carry no years[].
+      const joint = computeJointOptimizer(plan);
       let total = 0;
       for (const s of joint.scored) total += countCeilingViolations(plan, s.spec, s.result);
       return { candidates: joint.candidatesTested, totalViolations: total };

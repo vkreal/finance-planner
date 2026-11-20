@@ -49,6 +49,10 @@
 // semantics, and the test names which figure moved.
 
 import { HISTORICAL } from "./retirementData";
+// Byte-budgeted cache (Engine Review C7 architecture, §2.3–§2.4): pure
+// container + estimator, no engine helper — the independence rule above
+// (no imports from retirementEngines.ts) stands.
+import { ByteBudgetCache, estimateValueBytes } from "./byteBudgetCache";
 
 export const REF_MONTE_CARLO_RUNS = 1000;
 export const REF_MONTE_CARLO_SEED_DEFAULT = 12345;
@@ -537,8 +541,33 @@ function refEvaluatePlan(
 // so caching them changes no result — it only keeps the
 // maximality grid enumeration (thousands of feasibility checks)
 // from re-drawing the same stream thousands of times. Callers
-// only read the cached arrays.
-const runReturnsCache = new Map<string, number[][]>();
+// only read the cached arrays. (Engine Review C7 architecture,
+// §2.3–§2.4 — Phase 2 cache.) The cache was fully unbounded; it
+// is now bounded by BYTES under a 64 MiB budget with oldest-first
+// LRU eviction (ByteBudgetCache), the same treatment as the joint
+// cache. Per-entry 0.44 MB (Monte Carlo) / 0.02 MB (historical),
+// so 64 MiB holds ~145 distinct Monte Carlo return streams. Its
+// no-clone read trust is KEPT — callers only read the arrays, and
+// cloning would cost per hit; the bounded budget now caps the blast
+// radius. Do not widen its caller set without re-checking the
+// read-only trust.
+export const RETURNS_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
+const runReturnsCache = new ByteBudgetCache<number[][]>(
+  RETURNS_CACHE_BUDGET_BYTES,
+  "runReturns",
+);
+
+// Observability (§2.4): entries, accounted bytes, hits, misses,
+// evictions — for tests and logs. No client-facing change.
+export function runReturnsCacheStats(): {
+  entries: number;
+  bytes: number;
+  hits: number;
+  misses: number;
+  evictions: number;
+} {
+  return runReturnsCache.stats();
+}
 function refRunReturns(
   base: RefInputs,
   stocksPct: number,
@@ -572,7 +601,7 @@ function refRunReturns(
       out.push(returns);
     }
   }
-  runReturnsCache.set(key, out);
+  runReturnsCache.set(key, out, estimateValueBytes(out));
   return out;
 }
 

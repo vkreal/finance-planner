@@ -19,7 +19,12 @@
 
 import { describe, test, expect, afterAll } from "bun:test";
 import { EnginePool, EngineError, stableEngineKey } from "./enginePool";
-import { jointInputsKey, runJointOptimizer, runOptimizer } from "./rothOptimizer";
+import {
+  compactJointOptimizerResult,
+  computeJointOptimizer,
+  jointInputsKey,
+  runOptimizer,
+} from "./rothOptimizer";
 import { runMonteCarlo } from "./retirementEngines";
 import { jointSmall, sampleRetirement, small5y } from "./performanceShapes";
 import { createHash } from "node:crypto";
@@ -79,7 +84,10 @@ describe("engine pool job keys", () => {
 describe("engine pool parity (worker vs in-thread, §1.6)", () => {
   test("joint 1-combo 5y: worker result is digest-identical to in-thread", async () => {
     const pool = makePool();
-    const inThread = runJointOptimizer(jointSmall());
+    // Full-detail comparison: the in-thread side is the uncached
+    // full computation — runJointOptimizer returns compact summaries
+    // now, so it cannot be the full side of this digest.
+    const inThread = computeJointOptimizer(jointSmall());
     const { promise } = pool.dispatch<any>(
       "joint",
       jointInputsKey(jointSmall()),
@@ -92,6 +100,37 @@ describe("engine pool parity (worker vs in-thread, §1.6)", () => {
       inThread.selectedWinner.cost.netCost,
     );
     expect(digest(viaWorker)).toBe(digest(inThread));
+  }, 300_000);
+
+  test("joint 1-combo 5y: worker summary is digest-identical to the in-thread compacted summary", async () => {
+    const pool = makePool();
+    const full = computeJointOptimizer(jointSmall());
+    const expected = compactJointOptimizerResult(full);
+    const { promise } = pool.dispatch<any>(
+      "joint",
+      jointInputsKey(jointSmall()),
+      { inputs: jointSmall() },
+      { detail: "summary" },
+    );
+    const viaWorker = await promise;
+    expect(digest(viaWorker)).toBe(digest(expected));
+    // The named set keeps its full march; the tail carries scalars
+    // only (yearCount, no years[]).
+    expect(viaWorker.scored.length).toBe(full.scored.length);
+    const withYears = viaWorker.scored.filter(
+      (s: any) => Array.isArray(s.result.years),
+    );
+    expect(withYears.length).toBeLessThanOrEqual(16);
+    expect(withYears.length).toBe(
+      expected.scored.filter((s: any) => Array.isArray(s.result.years))
+        .length,
+    );
+    const tail = viaWorker.scored.find(
+      (s: any) => !Array.isArray(s.result.years),
+    );
+    expect(tail).toBeDefined();
+    expect(tail.result.yearCount).toBe(full.winner.result.years.length);
+    expect("years" in tail.result).toBe(false);
   }, 300_000);
 
   test("fixed-age 1-order 5y: worker result is digest-identical to in-thread", async () => {

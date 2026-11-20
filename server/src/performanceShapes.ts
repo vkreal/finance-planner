@@ -18,6 +18,7 @@
 
 import type {
   JointOptimizerResult,
+  JointOptimizerSummary,
   OptimizerResult,
 } from "./rothOptimizer";
 import {
@@ -246,7 +247,9 @@ export function optimizerDigest(r: OptimizerResult): string {
   });
 }
 
-export function jointDigest(r: JointOptimizerResult): string {
+export function jointDigest(
+  r: JointOptimizerResult | JointOptimizerSummary,
+): string {
   return JSON.stringify({
     combosTested: r.jointSearch?.combosTested,
     candidatesTested: r.candidatesTested,
