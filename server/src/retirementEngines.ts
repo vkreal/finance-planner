@@ -18,6 +18,7 @@
 // documented in server/src/retirementFixtures.ts.
 
 import { HISTORICAL } from "./retirementData";
+import { dispatchEngineJob, stableEngineKey } from "./enginePool";
 
 export function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -994,6 +995,50 @@ export function runMonteCarlo(
     minimumAnnualSpendingCents:
       inputs.minimumAnnualSpendingCents ?? null,
   };
+}
+
+// --- Worker-pool async wrappers (Engine Review C7 architecture,
+// §1.2) ----------------------------------------------------------
+// Same contract as the sync functions above, on the SMALL lane:
+// the action paths await these so a 100,000-run Monte Carlo or a
+// guardrails solve never blocks the main thread. Validation
+// throws (run count / seed / return) still throw — the worker
+// posts the error back and the pool re-creates the same kind —
+// except the null answers, which cross back as null.
+export async function runMonteCarloAsync(
+  inputs: SimInputs,
+  expected: number,
+  vol: number,
+  seed: number,
+  runCount = MONTE_CARLO_TAB_RUNS,
+  opts?: { timeoutMs?: number },
+): Promise<McResult | null> {
+  const { promise } = dispatchEngineJob<McResult | null>(
+    "retirementMc",
+    stableEngineKey({ inputs, expected, vol, seed, runCount }),
+    { inputs, expected, vol, seed, runCount },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
+}
+
+export async function solveMaxSpendingAsync(
+  base: SimInputs,
+  stocksPct: number,
+  expected: number,
+  vol: number,
+  engine: "historical" | "montecarlo",
+  targetPct: number,
+  mcSeed: number = MONTE_CARLO_TAB_SEED_DEFAULT,
+  opts?: { timeoutMs?: number },
+): Promise<SolverResult | null> {
+  const { promise } = dispatchEngineJob<SolverResult | null>(
+    "solver",
+    stableEngineKey({ base, stocksPct, expected, vol, engine, targetPct, mcSeed }),
+    { inputs: base, stocksPct, expected, vol, engine, targetPct, mcSeed },
+    { timeoutMs: opts?.timeoutMs, detail: "full" },
+  );
+  return promise;
 }
 
 /* ----- Max spending solver -----

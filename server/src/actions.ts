@@ -214,9 +214,9 @@ blendedExpected,
 buildSimInputs as buildRetirementSimInputs,
 MONTE_CARLO_TAB_RUNS,
 runHistorical as runRetirementHistorical,
-runMonteCarlo as runRetirementMonteCarlo,
+runMonteCarloAsync as runRetirementMonteCarloAsync,
 simulate as simulateRetirement,
-solveMaxSpending as solveRetirementMaxSpending,
+solveMaxSpendingAsync as solveRetirementMaxSpendingAsync,
 STOCKS_PCT_DEFAULT,
 } from "./retirementEngines";
 import {
@@ -232,9 +232,9 @@ enteredClaimInfo,
 joinRothBlob,
 jointSearchNote,
 normalizeSsDeclarations,
-optimizerHeirSensitivity,
+optimizerHeirSensitivityAsync,
 optimizerImprovements,
-optimizerSensitivity,
+optimizerSensitivityAsync,
 planInputsFromSaved,
 planNetCost,
 playgroundPastePayload,
@@ -242,10 +242,11 @@ pricePlanYearDetail,
 pricePlaygroundYear,
 resolvePlanBalances,
 runJointOptimizer,
-runOptimizer,
+runJointOptimizerAsync,
+runOptimizerAsync,
 runRothCompare,
-runRothMonteCarloCheck,
-runRothMonteCarloStats,
+runRothMonteCarloCheckAsync,
+runRothMonteCarloStatsAsync,
 splitRothBlob,
 type ClaimAgeInfo,
 type OptimizerCandidateSpec,
@@ -265,7 +266,8 @@ type AcaHouseholdStep,
 type FillCeilings,
 type RothStrategy,
 } from "./taxEngine";
-import { runWorkYearsCompare } from "./workYears";
+import { runWorkYearsCompareAsync } from "./workYears";
+import { ENGINE_JOB_TIMEOUT_MS, EngineError } from "./enginePool";
 import { CURRENT_LAW, TAX_LAW_YEARS, lawForYear, lawProvenanceForYear } from "./taxLaw";
 import {
 BLANK_ROTH_GIFT,
@@ -3581,6 +3583,19 @@ const provenanceOut = z.object({
   lawYear: z.number().int(),
   lawYearsAvailable: z.array(z.number().int()),
 });
+
+// Engine-worker error surface (Engine Review C7 architecture,
+// §1.4): the three typed codes a worker job can fail with
+// (ENGINE_TIMEOUT / ENGINE_BUSY / ENGINE_CRASH — all retryable,
+// plain-language reason, no raw stack). Optional on the affected
+// responses, set only when ok is false because of a worker
+// failure. Additive only — the API contract version does not move
+// (E5–E8 precedent).
+const engineErrorCodeOut = z.enum([
+  "ENGINE_TIMEOUT",
+  "ENGINE_BUSY",
+  "ENGINE_CRASH",
+]);
 type Provenance = z.infer<typeof provenanceOut>;
 
 function apiProvenance(): Provenance {
@@ -13323,6 +13338,13 @@ export const Actions = {
       solverTarget: z.number(),
     }),
     response: z.object({
+      // Engine-worker failure code (§1.4): set only when the
+      // Monte Carlo / solver legs fail because a worker job
+      // timed out, the engine was busy, or a worker crashed —
+      // in which case the MC/solver fields below read null.
+      // Optional + additive.
+      code: engineErrorCodeOut.optional(),
+      retryable: z.boolean().optional(),
       baselineKind: z.enum(["saved", "session"]).nullable(),
       // Result-honesty marker (build v67, F07): true when a
       // baseline record EXISTS but cannot be read — distinct
@@ -13373,24 +13395,51 @@ export const Actions = {
         Array.from({ length: years }, () => expected),
       );
       const hist = runRetirementHistorical(inputs, stocks);
-      const mc = runRetirementMonteCarlo(
-        inputs,
-        expected,
-        vol,
-        args.mcSeed,
-        MONTE_CARLO_TAB_RUNS,
-      );
-      const target = Math.min(100, Math.max(0, args.solverTarget));
-      const solver = solveRetirementMaxSpending(
-        inputs,
-        stocks,
-        expected,
-        vol,
-        args.solverEngine,
-        target,
-        args.mcSeed,
-      );
+      // Monte Carlo + solver on the SMALL worker lane (§1.2):
+      // the two legs are independent, so both dispatch before
+      // either is awaited. The historical leg stays in-thread
+      // (cheap). A worker failure answers with nulls for the
+      // MC/solver fields plus the typed code — the projection
+      // and historical figures still stand.
+      const actionStartedAt = Date.now();
+      const remainingMs = () =>
+        Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - actionStartedAt));
+      let mc: Awaited<ReturnType<typeof runRetirementMonteCarloAsync>> | null = null;
+      let solver: Awaited<ReturnType<typeof solveRetirementMaxSpendingAsync>> | null = null;
+      let engineFailure: EngineError | null = null;
+      try {
+        const target = Math.min(100, Math.max(0, args.solverTarget));
+        [mc, solver] = await Promise.all([
+          runRetirementMonteCarloAsync(
+            inputs,
+            expected,
+            vol,
+            args.mcSeed,
+            MONTE_CARLO_TAB_RUNS,
+            { timeoutMs: remainingMs() },
+          ),
+          solveRetirementMaxSpendingAsync(
+            inputs,
+            stocks,
+            expected,
+            vol,
+            args.solverEngine,
+            target,
+            args.mcSeed,
+            { timeoutMs: remainingMs() },
+          ),
+        ]);
+      } catch (err) {
+        if (err instanceof EngineError) engineFailure = err;
+        else throw err;
+      }
       return {
+        ...(engineFailure
+          ? {
+              code: engineFailure.code,
+              retryable: engineFailure.retryable,
+            }
+          : {}),
         baselineKind: baselineRec.kind,
         baselineUnreadable: false,
         projectionEndingCents: projPath[projPath.length - 1] ?? null,
@@ -14183,6 +14232,11 @@ export const Actions = {
     response: z.object({
       ok: z.boolean(),
       reason: z.string(),
+      // Engine-worker failure code (§1.4): set only when ok is
+      // false because a worker job timed out, the engine was
+      // busy, or a worker crashed. Optional + additive.
+      code: engineErrorCodeOut.optional(),
+      retryable: z.boolean().optional(),
       provenance: provenanceOut,
       effectiveInputs: rothEffectiveInputsOut.nullable(),
       candidatesTested: z.number(),
@@ -14404,172 +14458,219 @@ export const Actions = {
           ...empty,
         };
       }
-      const res = runJointOptimizer(inputs);
-      const dnCost = res.doNothing.cost.netCost;
-      const winnerKey = res.winner.spec.key;
-      // Priced levers (build v69): price the entered plan
-      // itself as one fixed strategy — the same construction
-      // the planner prices it with (strategyFromSavedArgs over
-      // the resolved payload) at the entered claiming ages —
-      // then select the distinct searched candidates that beat
-      // its net cost from BOTH runs' scored lists (the joint
-      // run varies claiming ages; the fixed-age run below
-      // varies draw orders).
-      const savedStrategy = strategyFromSavedArgs(resolved);
-      const savedResult = simulateRothPlan(inputs, savedStrategy);
-      const savedCost = planNetCost(savedResult, inputs);
-      const savedPlanScore: ScoredCandidate = {
-        spec: {
-          key: "entered-plan",
-          name: "Your saved plan",
-          ceilings: savedStrategy.ceilings ?? {
-            bracketTopPct: null,
-            irmaaTierCap: null,
-            ltcgZeroCap: false,
-            acaCliffCap: false,
-            acaCliffCapFamilyOnly: false,
-            magiCap: null,
-            acaCliffBuffer: null,
+      // Worker-pool pricing (§1.2): the joint search (LARGE
+      // lane), the fixed-age run, and both sensitivity strips
+      // (SMALL lane) all run in worker threads, so the main
+      // thread stays free for light actions and /health. The
+      // single-march pricings above (saved plan) and below
+      // (toOptScore assembly) stay in-thread — ~15 ms each.
+      // Per-action deadline (§1.5): every job's effective
+      // deadline is min(actionDeadline, dispatch + 100 s).
+      const actionStartedAt = Date.now();
+      const remainingMs = () =>
+        Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - actionStartedAt));
+      try {
+          const res = await runJointOptimizerAsync(inputs, {
+            timeoutMs: remainingMs(),
+          });
+          const dnCost = res.doNothing.cost.netCost;
+        const winnerKey = res.winner.spec.key;
+        // Priced levers (build v69): price the entered plan
+        // itself as one fixed strategy — the same construction
+        // the planner prices it with (strategyFromSavedArgs over
+        // the resolved payload) at the entered claiming ages —
+        // then select the distinct searched candidates that beat
+        // its net cost from BOTH runs' scored lists (the joint
+        // run varies claiming ages; the fixed-age run below
+        // varies draw orders).
+        const savedStrategy = strategyFromSavedArgs(resolved);
+        const savedResult = simulateRothPlan(inputs, savedStrategy);
+        const savedCost = planNetCost(savedResult, inputs);
+        const savedPlanScore: ScoredCandidate = {
+          spec: {
+            key: "entered-plan",
+            name: "Your saved plan",
+            ceilings: savedStrategy.ceilings ?? {
+              bracketTopPct: null,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: false,
+              acaCliffCapFamilyOnly: false,
+              magiCap: null,
+              acaCliffBuffer: null,
+            },
+            windowStopAge: inputs.windowStopAge,
+            windowKind: "throughRmd",
+            windowLabel: "",
+            guardrail: savedStrategy.guardrail ?? false,
+            bunching: savedStrategy.bunching ?? false,
+            gainsHarvest: savedStrategy.gainsHarvest ?? false,
+            drawOrder: inputs.drawOrder,
           },
-          windowStopAge: inputs.windowStopAge,
-          windowKind: "throughRmd",
-          windowLabel: "",
-          guardrail: savedStrategy.guardrail ?? false,
-          bunching: savedStrategy.bunching ?? false,
-          gainsHarvest: savedStrategy.gainsHarvest ?? false,
-          drawOrder: inputs.drawOrder,
-        },
-        result: savedResult,
-        cost: savedCost,
-        integrity: assessCandidateIntegrity(savedResult),
-        claimAges: enteredClaimInfo(inputs),
-      };
-      // Draw-order search at the entered claiming ages: the
-      // fixed-age run, which prices all six draw orders against
-      // the full strategy set. When no claiming age was searched
-      // there is only one combination and the joint run above IS
-      // the fixed-age run — reuse it instead of pricing the same
-      // scan twice.
-      const fixedAge = res.jointSearch.combosTested > 1 ? runOptimizer(inputs) : res;
-      const fixedDnCost = fixedAge.doNothing.cost.netCost;
-      const orderWinnerIsDoNothing = fixedAge.winner.spec.key === DO_NOTHING_SPEC.key;
-      const orderWinnerIsCurrent =
-        !orderWinnerIsDoNothing &&
-        drawOrderKey(fixedAge.winner.spec.drawOrder) === drawOrderKey(inputs.drawOrder);
-      const pricedLevers = optimizerImprovements(
-        [res.scored, fixedAge.scored],
-        savedCost.netCost,
-      );
-      const sensitivity = [-1, 1].map((delta) => {
-        const s = optimizerSensitivity(inputs, delta);
-        return {
-          returnPct: Math.round(s.returnPct * 100) / 100,
-          winnerName: s.winner.spec.name,
-          windowLabel: s.winner.spec.windowLabel,
-          drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
-          gainsHarvest: s.winner.spec.gainsHarvest ?? false,
-          netCost: s.winner.cost.netCost,
-          ssCollected: s.winner.cost.ssCollected,
-          changed: s.winner.spec.key !== winnerKey,
-          // E4-S2: the strip holds the draw order and the
-          // claiming ages fixed — only the return moves.
-          heldFixed: [
-            `draw order (${drawOrderLabel(inputs.drawOrder)})`,
-            "claiming ages (entered ages)",
-          ],
+          result: savedResult,
+          cost: savedCost,
+          integrity: assessCandidateIntegrity(savedResult),
+          claimAges: enteredClaimInfo(inputs),
         };
-      });
-      const heirRateSensitivity = [0, 22, 32].map((rate) => {
-        const s = optimizerHeirSensitivity(inputs, rate);
-        return {
-          heirRatePct: rate,
-          winnerName: s.winner.spec.name,
-          windowLabel: s.winner.spec.windowLabel,
-          drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
-          guardrail: s.winner.spec.guardrail,
-          bunching: s.winner.spec.bunching,
-          gainsHarvest: s.winner.spec.gainsHarvest ?? false,
-          netCost: s.winner.cost.netCost,
-          ssCollected: s.winner.cost.ssCollected,
-          savingVsDoNothing:
-            Math.round((s.doNothing.cost.netCost - s.winner.cost.netCost) * 100) / 100,
-          isCurrentRate: rate === inputs.heirRatePct,
-          // E4-S2: same candidate set, same draw order, same
-          // entered claiming ages — only the heir rate moves.
-          heldFixed: [
-            `draw order (${drawOrderLabel(inputs.drawOrder)})`,
-            "claiming ages (entered ages)",
-          ],
-        };
-      });
-      return {
-        ok: true,
-        reason:
+        // Draw-order search at the entered claiming ages: the
+        // fixed-age run, which prices all six draw orders against
+        // the full strategy set. When no claiming age was searched
+        // there is only one combination and the joint run above IS
+        // the fixed-age run — reuse it instead of pricing the same
+        // scan twice.
+        const fixedAge =
           res.jointSearch.combosTested > 1
-            ? `Searched ${res.jointSearch.combosTested} claiming-age combinations jointly with the conversion strategies — screened each combination, then fully priced ${res.candidatesTested} candidates (including Do Nothing) across every combination.`
-            : `Tested ${res.candidatesTested} strategies (including Do Nothing), each a full lifetime simulation.`,
-        provenance: apiProvenance(),
-        effectiveInputs,
-        candidatesTested: res.candidatesTested,
-        validCandidatesTested: res.validCandidatesTested,
-        invalidCandidatesTested: res.invalidCandidatesTested,
-        doNothing: toOptScore(res.doNothing, dnCost),
-        winner: toOptScore(res.winner, dnCost),
-        selectedWinner: toOptScore(res.selectedWinner, dnCost),
-        winnerByNetCost: toOptScore(res.winnerByNetCost, dnCost),
-        winnerByEndingWealth: toOptScore(res.winnerByEndingWealth, dnCost),
-        winnersDiffer: res.winnersDiffer,
-        winnerQualified: res.winnerQualified,
-        excludedInvalidWinner:
-          res.excludedInvalidWinner == null
-            ? null
-            : {
-                candidate: toOptScore(res.excludedInvalidWinner.candidate, dnCost),
-                reasons: res.excludedInvalidWinner.integrity.reasons,
-              },
-        objective: res.objective,
-        searchScope: {
-          description: res.searchScope.description,
-          drawOrdersSearched: res.searchScope.drawOrdersSearched,
-          claimingAgesSearched: res.searchScope.claimingAgesSearched,
-          claimingAgeCombinations: res.searchScope.claimingAgeCombinations,
-          heldFixed: res.searchScope.heldFixed,
-        },
-        runnersUp: res.runnersUp.map((s) => toOptScore(s, dnCost)),
-        savedPlan: toOptScore(savedPlanScore, dnCost),
-        improvements: pricedLevers.improvements.map(
-          ({ candidate, gainVsSavedPlan }) => ({
-            ...toOptScore(candidate, dnCost),
-            gainVsSavedPlan,
-          }),
-        ),
-        excludedInvalidLevers: pricedLevers.excludedInvalidLevers,
-        winnerIsDoNothing: winnerKey === res.doNothing.spec.key,
-        orderTested: fixedAge.candidatesTested,
-        orderWinner: toOptScore(fixedAge.winner, fixedDnCost),
-        orderDoNothing: toOptScore(fixedAge.doNothing, fixedDnCost),
-        orderRunnersUp: fixedAge.runnersUp.map((s) => toOptScore(s, fixedDnCost)),
-        orderWinnerIsCurrent,
-        orderWinnerIsDoNothing,
-        orderWinnerByEndingWealth: fixedAge.winnersDiffer
-          ? toOptScore(fixedAge.winnerByEndingWealth, fixedDnCost)
-          : null,
-        orderWinnersDiffer: fixedAge.winnersDiffer,
-        sensitivity,
-        heirRateSensitivity,
-        claimCombosTested: res.jointSearch.combosTested,
-        claimSearchNote: jointSearchNote(res.jointSearch),
-        claimAgeFloor: res.jointSearch.claimAgeFloor ?? null,
-        claimAgeFloorMet: res.claimAgeFloorMet,
-        claimAgeTable: res.claimAgeTable.map((row) => ({
-          primaryAge: row.primaryAge,
-          primaryAnnual: row.primaryAnnual,
-          survivorAnnual: row.survivorAnnual,
-          belowFloor: row.belowFloor,
-          isWinner: row.isWinner,
-          best: toOptScore(row.best, dnCost),
-        })),
-      };
+            ? await runOptimizerAsync(inputs, { timeoutMs: remainingMs() })
+            : res;
+        const fixedDnCost = fixedAge.doNothing.cost.netCost;
+        const orderWinnerIsDoNothing = fixedAge.winner.spec.key === DO_NOTHING_SPEC.key;
+        const orderWinnerIsCurrent =
+          !orderWinnerIsDoNothing &&
+          drawOrderKey(fixedAge.winner.spec.drawOrder) === drawOrderKey(inputs.drawOrder);
+        const pricedLevers = optimizerImprovements(
+          [res.scored, fixedAge.scored],
+          savedCost.netCost,
+        );
+        // The two return-strip legs are independent: both
+        // dispatch before either is awaited (they queue on the
+        // SMALL lane, concurrency 1, in dispatch order).
+        const sensitivityRuns = await Promise.all(
+          [-1, 1].map((delta) =>
+            optimizerSensitivityAsync(inputs, delta, {
+              timeoutMs: remainingMs(),
+            }),
+          ),
+        );
+        const sensitivity = sensitivityRuns.map((s) => {
+          return {
+            returnPct: Math.round(s.returnPct * 100) / 100,
+            winnerName: s.winner.spec.name,
+            windowLabel: s.winner.spec.windowLabel,
+            drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
+            gainsHarvest: s.winner.spec.gainsHarvest ?? false,
+            netCost: s.winner.cost.netCost,
+            ssCollected: s.winner.cost.ssCollected,
+            changed: s.winner.spec.key !== winnerKey,
+            // E4-S2: the strip holds the draw order and the
+            // claiming ages fixed — only the return moves.
+            heldFixed: [
+              `draw order (${drawOrderLabel(inputs.drawOrder)})`,
+              "claiming ages (entered ages)",
+            ],
+          };
+        });
+        // Same for the three heir-rate legs.
+        const heirRuns = await Promise.all(
+          [0, 22, 32].map((rate) =>
+            optimizerHeirSensitivityAsync(inputs, rate, {
+              timeoutMs: remainingMs(),
+            }),
+          ),
+        );
+        const heirRateSensitivity = heirRuns.map((s) => {
+          return {
+            heirRatePct: s.heirRatePct,
+            winnerName: s.winner.spec.name,
+            windowLabel: s.winner.spec.windowLabel,
+            drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
+            guardrail: s.winner.spec.guardrail,
+            bunching: s.winner.spec.bunching,
+            gainsHarvest: s.winner.spec.gainsHarvest ?? false,
+            netCost: s.winner.cost.netCost,
+            ssCollected: s.winner.cost.ssCollected,
+            savingVsDoNothing:
+              Math.round((s.doNothing.cost.netCost - s.winner.cost.netCost) * 100) / 100,
+            isCurrentRate: s.heirRatePct === inputs.heirRatePct,
+            // E4-S2: same candidate set, same draw order, same
+            // entered claiming ages — only the heir rate moves.
+            heldFixed: [
+              `draw order (${drawOrderLabel(inputs.drawOrder)})`,
+              "claiming ages (entered ages)",
+            ],
+          };
+        });
+        return {
+          ok: true,
+          reason:
+            res.jointSearch.combosTested > 1
+              ? `Searched ${res.jointSearch.combosTested} claiming-age combinations jointly with the conversion strategies — screened each combination, then fully priced ${res.candidatesTested} candidates (including Do Nothing) across every combination.`
+              : `Tested ${res.candidatesTested} strategies (including Do Nothing), each a full lifetime simulation.`,
+          provenance: apiProvenance(),
+          effectiveInputs,
+          candidatesTested: res.candidatesTested,
+          validCandidatesTested: res.validCandidatesTested,
+          invalidCandidatesTested: res.invalidCandidatesTested,
+          doNothing: toOptScore(res.doNothing, dnCost),
+          winner: toOptScore(res.winner, dnCost),
+          selectedWinner: toOptScore(res.selectedWinner, dnCost),
+          winnerByNetCost: toOptScore(res.winnerByNetCost, dnCost),
+          winnerByEndingWealth: toOptScore(res.winnerByEndingWealth, dnCost),
+          winnersDiffer: res.winnersDiffer,
+          winnerQualified: res.winnerQualified,
+          excludedInvalidWinner:
+            res.excludedInvalidWinner == null
+              ? null
+              : {
+                  candidate: toOptScore(res.excludedInvalidWinner.candidate, dnCost),
+                  reasons: res.excludedInvalidWinner.integrity.reasons,
+                },
+          objective: res.objective,
+          searchScope: {
+            description: res.searchScope.description,
+            drawOrdersSearched: res.searchScope.drawOrdersSearched,
+            claimingAgesSearched: res.searchScope.claimingAgesSearched,
+            claimingAgeCombinations: res.searchScope.claimingAgeCombinations,
+            heldFixed: res.searchScope.heldFixed,
+          },
+          runnersUp: res.runnersUp.map((s) => toOptScore(s, dnCost)),
+          savedPlan: toOptScore(savedPlanScore, dnCost),
+          improvements: pricedLevers.improvements.map(
+            ({ candidate, gainVsSavedPlan }) => ({
+              ...toOptScore(candidate, dnCost),
+              gainVsSavedPlan,
+            }),
+          ),
+          excludedInvalidLevers: pricedLevers.excludedInvalidLevers,
+          winnerIsDoNothing: winnerKey === res.doNothing.spec.key,
+          orderTested: fixedAge.candidatesTested,
+          orderWinner: toOptScore(fixedAge.winner, fixedDnCost),
+          orderDoNothing: toOptScore(fixedAge.doNothing, fixedDnCost),
+          orderRunnersUp: fixedAge.runnersUp.map((s) => toOptScore(s, fixedDnCost)),
+          orderWinnerIsCurrent,
+          orderWinnerIsDoNothing,
+          orderWinnerByEndingWealth: fixedAge.winnersDiffer
+            ? toOptScore(fixedAge.winnerByEndingWealth, fixedDnCost)
+            : null,
+          orderWinnersDiffer: fixedAge.winnersDiffer,
+          sensitivity,
+          heirRateSensitivity,
+          claimCombosTested: res.jointSearch.combosTested,
+          claimSearchNote: jointSearchNote(res.jointSearch),
+          claimAgeFloor: res.jointSearch.claimAgeFloor ?? null,
+          claimAgeFloorMet: res.claimAgeFloorMet,
+          claimAgeTable: res.claimAgeTable.map((row) => ({
+            primaryAge: row.primaryAge,
+            primaryAnnual: row.primaryAnnual,
+            survivorAnnual: row.survivorAnnual,
+            belowFloor: row.belowFloor,
+            isWinner: row.isWinner,
+            best: toOptScore(row.best, dnCost),
+          })),
+        };
+      } catch (err) {
+        if (err instanceof EngineError) {
+          return {
+            ok: false,
+            reason: err.message,
+            code: err.code,
+            retryable: err.retryable,
+            provenance: apiProvenance(),
+            effectiveInputs,
+            ...empty,
+          };
+        }
+        throw err;
+      }
     },
   }),
 
@@ -14834,6 +14935,11 @@ export const Actions = {
     response: z.object({
       ok: z.boolean(),
       reason: z.string(),
+      // Engine-worker failure code (§1.4): set only when ok is
+      // false because a worker job timed out, the engine was
+      // busy, or a worker crashed. Optional + additive.
+      code: engineErrorCodeOut.optional(),
+      retryable: z.boolean().optional(),
       provenance: provenanceOut,
       effectiveInputs: rothEffectiveInputsOut.nullable(),
       pathsRun: z.number(),
@@ -14882,16 +14988,34 @@ export const Actions = {
           ...empty,
         };
       }
-      const check = runRothMonteCarloCheck(
-        inputs,
-        mcCandidateFromScore(args.winner, false),
-        mcCandidateFromScore(args.doNothing, true),
-        {
-          volatilityPct: args.mcVolatilityPct,
-          pathCount: ROTH_MC_CHECK_PATHS,
-          seed: ROTH_MC_CHECK_SEED,
-        },
-      );
+      // Monte Carlo check on the SMALL worker lane (§1.2).
+      let check: Awaited<ReturnType<typeof runRothMonteCarloCheckAsync>>;
+      try {
+        check = await runRothMonteCarloCheckAsync(
+          inputs,
+          mcCandidateFromScore(args.winner, false),
+          mcCandidateFromScore(args.doNothing, true),
+          {
+            volatilityPct: args.mcVolatilityPct,
+            pathCount: ROTH_MC_CHECK_PATHS,
+            seed: ROTH_MC_CHECK_SEED,
+          },
+          { timeoutMs: ENGINE_JOB_TIMEOUT_MS },
+        );
+      } catch (err) {
+        if (err instanceof EngineError) {
+          return {
+            ok: false,
+            reason: err.message,
+            code: err.code,
+            retryable: err.retryable,
+            provenance: apiProvenance(),
+            effectiveInputs,
+            ...empty,
+          };
+        }
+        throw err;
+      }
       return {
         ok: true,
         reason: `Priced the winning strategy and Do Nothing across ${check.pathsRun} varied-return paths at ${args.mcVolatilityPct}% volatility.`,
@@ -14957,6 +15081,11 @@ export const Actions = {
     response: z.object({
       ok: z.boolean(),
       reason: z.string(),
+      // Engine-worker failure code (§1.4): set only when ok is
+      // false because a worker job timed out, the engine was
+      // busy, or a worker crashed. Optional + additive.
+      code: engineErrorCodeOut.optional(),
+      retryable: z.boolean().optional(),
       provenance: provenanceOut,
       effectiveInputs: rothEffectiveInputsOut.nullable(),
       volatilityPct: z.number(),
@@ -14988,17 +15117,36 @@ export const Actions = {
     async handler(ctx, args) {
       const capturedYear = new Date().getUTCFullYear();
       const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args, capturedYear);
-      const result = runRothMonteCarloStats(
-        resolved,
-        args.scenarios.map((s) => ({ name: s.name, overrides: s.overrides })),
-        capturedYear,
-        {
-          volatilityPct: args.volatilityPct,
-          pathCount: ROTH_MC_CHECK_PATHS,
-          seed: ROTH_MC_CHECK_SEED,
-          taxReturnActuals: await readStoredTaxReturn(ctx),
-        },
-      );
+      // Monte Carlo stats on the SMALL worker lane (§1.2).
+      let result: Awaited<ReturnType<typeof runRothMonteCarloStatsAsync>>;
+      try {
+        result = await runRothMonteCarloStatsAsync(
+          resolved,
+          args.scenarios.map((s) => ({ name: s.name, overrides: s.overrides })),
+          capturedYear,
+          {
+            volatilityPct: args.volatilityPct,
+            pathCount: ROTH_MC_CHECK_PATHS,
+            seed: ROTH_MC_CHECK_SEED,
+            taxReturnActuals: await readStoredTaxReturn(ctx),
+          },
+          { timeoutMs: ENGINE_JOB_TIMEOUT_MS },
+        );
+      } catch (err) {
+        if (err instanceof EngineError) {
+          return {
+            ok: false,
+            reason: err.message,
+            code: err.code,
+            retryable: err.retryable,
+            provenance: apiProvenance(),
+            effectiveInputs,
+            volatilityPct: args.volatilityPct,
+            scenarios: [],
+          };
+        }
+        throw err;
+      }
       return {
         ok: result.ok,
         reason: result.reason,
@@ -15083,6 +15231,11 @@ export const Actions = {
     response: z.object({
       ok: z.boolean(),
       reason: z.string(),
+      // Engine-worker failure code (§1.4): set only when ok is
+      // false because a worker job timed out, the engine was
+      // busy, or a worker crashed. Optional + additive.
+      code: engineErrorCodeOut.optional(),
+      retryable: z.boolean().optional(),
       provenance: provenanceOut,
       effectiveInputs: rothEffectiveInputsOut.nullable(),
       rows: z.array(workYearsRowOut),
@@ -15127,7 +15280,28 @@ export const Actions = {
             ? args.priorYearWagesCents / 100
             : null,
       };
-      const compared = runWorkYearsCompare(inputs, job, ages);
+      // Work-years compare: each quit age's joint search runs
+      // as one LARGE-lane worker job (§1.2); the roll stays
+      // in-thread inside the async compare.
+      let compared: Awaited<ReturnType<typeof runWorkYearsCompareAsync>>;
+      try {
+        compared = await runWorkYearsCompareAsync(inputs, job, ages, {
+          timeoutMs: ENGINE_JOB_TIMEOUT_MS,
+        });
+      } catch (err) {
+        if (err instanceof EngineError) {
+          return {
+            ok: false,
+            reason: err.message,
+            code: err.code,
+            retryable: err.retryable,
+            provenance: apiProvenance(),
+            effectiveInputs,
+            rows: [],
+          };
+        }
+        throw err;
+      }
       return {
         ok: true,
         reason:
