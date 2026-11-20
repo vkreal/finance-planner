@@ -13,7 +13,7 @@ import { runDynamicOptimizer, type DynamicOptimizerResult } from "../../server/s
 import { expectEnvelope, expectOk, fictionalScenario, normalizedScenario } from "./helpers";
 
 describe("C10 — adapter parity for retirement_dynamic_withdrawal", () => {
-  test("adapter result equals the direct engine result to the cent", () => {
+  test("adapter result equals the direct engine result to the cent", async () => {
     const scenario = normalizedScenario({ endAge: 70 });
     const viaAdapter = expectOk(dynamicWithdrawal(scenario));
     const direct = runDynamicOptimizer(buildRothPlanInputs(scenario));
@@ -33,8 +33,8 @@ describe("C10 — adapter parity for retirement_dynamic_withdrawal", () => {
     }
   }, 300_000);
 
-  test("dispatchTool wires the tool and reports contract 165", () => {
-    const result = dispatchTool(
+  test("dispatchTool wires the tool and reports contract 165", async () => {
+    const result = await dispatchTool(
       "retirement_dynamic_withdrawal",
       fictionalScenario({ endAge: 70 }),
     );

@@ -144,127 +144,127 @@ const byNetCost = (
 // --- Memoized expensive adapter runs (one engine price each). ---
 
 type WorkYearsResponse = Extract<
-  ReturnType<typeof compareRetirementAges>,
+  Awaited<ReturnType<typeof compareRetirementAges>>,
   { ok: true }
 >;
 
 let cachedSalary: WorkYearsResponse | null = null;
-function salaryCompare() {
-  if (cachedSalary === null) {
-    cachedSalary = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 120000,
-          spouseSocialSecurityAnnual: 0,
-          compareAges: [60, 62],
-        }),
-      ),
-    );
-  }
-  return cachedSalary;
+async function salaryCompare(): Promise<WorkYearsResponse> {
+  if (cachedSalary !== null) return cachedSalary;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 120000,
+        spouseSocialSecurityAnnual: 0,
+        compareAges: [60, 62],
+      }),
+    ),
+  );
+  cachedSalary = fresh;
+  return fresh;
 }
 
 let cachedNoSalary: WorkYearsResponse | null = null;
-function noSalaryCompare() {
-  if (cachedNoSalary === null) {
-    cachedNoSalary = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({ compareAges: [60, 62] }),
-      ),
-    );
-  }
-  return cachedNoSalary;
+async function noSalaryCompare(): Promise<WorkYearsResponse> {
+  if (cachedNoSalary !== null) return cachedNoSalary;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({ compareAges: [60, 62] }),
+    ),
+  );
+  cachedNoSalary = fresh;
+  return fresh;
 }
 
 let cachedHighSalary: WorkYearsResponse | null = null;
-function highSalaryCompare() {
-  if (cachedHighSalary === null) {
-    cachedHighSalary = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 240000,
-          spouseSocialSecurityAnnual: 0,
-          compareAges: [60, 62],
-        }),
-      ),
-    );
-  }
-  return cachedHighSalary;
+async function highSalaryCompare(): Promise<WorkYearsResponse> {
+  if (cachedHighSalary !== null) return cachedHighSalary;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 240000,
+        spouseSocialSecurityAnnual: 0,
+        compareAges: [60, 62],
+      }),
+    ),
+  );
+  cachedHighSalary = fresh;
+  return fresh;
 }
 
 let cachedEmployer: WorkYearsResponse | null = null;
-function employerCompare() {
-  if (cachedEmployer === null) {
-    cachedEmployer = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 120000,
-          employer401kAnnual: 20000,
-          spouseSocialSecurityAnnual: 0,
-          compareAges: [60, 62],
-        }),
-      ),
-    );
-  }
-  return cachedEmployer;
+async function employerCompare(): Promise<WorkYearsResponse> {
+  if (cachedEmployer !== null) return cachedEmployer;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 120000,
+        employer401kAnnual: 20000,
+        spouseSocialSecurityAnnual: 0,
+        compareAges: [60, 62],
+      }),
+    ),
+  );
+  cachedEmployer = fresh;
+  return fresh;
 }
 
 let cachedMedicare: WorkYearsResponse | null = null;
-function medicareCompare() {
-  if (cachedMedicare === null) {
-    cachedMedicare = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 120000,
-          employer401kAnnual: 5000,
-          employerHsaAnnual: 1000,
-          medicareAgePrimary: 65,
-          spouseSocialSecurityAnnual: 0,
-          retirementAge: 63,
-          compareAges: [63, 67],
-        }),
-      ),
-    );
-  }
-  return cachedMedicare;
+async function medicareCompare(): Promise<WorkYearsResponse> {
+  if (cachedMedicare !== null) return cachedMedicare;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 120000,
+        employer401kAnnual: 5000,
+        employerHsaAnnual: 1000,
+        medicareAgePrimary: 65,
+        spouseSocialSecurityAnnual: 0,
+        retirementAge: 63,
+        compareAges: [63, 67],
+      }),
+    ),
+  );
+  cachedMedicare = fresh;
+  return fresh;
 }
 
 // Review 8 NICEs (P1-1): a $0 salary prices no salary leg —
 // memoized like the other compares because the retirement-only
 // march still runs per quit age.
 let cachedZeroSalary: WorkYearsResponse | null = null;
-function zeroSalaryCompare() {
-  if (cachedZeroSalary === null) {
-    cachedZeroSalary = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 0,
-          compareAges: [60, 62],
-        }),
-      ),
-    );
-  }
-  return cachedZeroSalary;
+async function zeroSalaryCompare(): Promise<WorkYearsResponse> {
+  if (cachedZeroSalary !== null) return cachedZeroSalary;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 0,
+        compareAges: [60, 62],
+      }),
+    ),
+  );
+  cachedZeroSalary = fresh;
+  return fresh;
 }
 
 // Review 8 NICEs (P3-1): a salary leg that prices zero HSA
 // (no qualifying HDHP coverage) — the no-enrollment warning
 // must not claim HSA contributions continue.
 let cachedNoHsaSalary: WorkYearsResponse | null = null;
-function noHsaSalaryCompare() {
-  if (cachedNoHsaSalary === null) {
-    cachedNoHsaSalary = expectEnvelope(
-      compareRetirementAges(
-        normalizedScenario({
-          salaryAnnual: 120000,
-          hsaCoverage: "none",
-          spouseSocialSecurityAnnual: 0,
-          compareAges: [60, 62],
-        }),
-      ),
-    );
-  }
-  return cachedNoHsaSalary;
+async function noHsaSalaryCompare(): Promise<WorkYearsResponse> {
+  if (cachedNoHsaSalary !== null) return cachedNoHsaSalary;
+  const fresh = expectEnvelope(
+    await compareRetirementAges(
+      normalizedScenario({
+        salaryAnnual: 120000,
+        hsaCoverage: "none",
+        spouseSocialSecurityAnnual: 0,
+        compareAges: [60, 62],
+      }),
+    ),
+  );
+  cachedNoHsaSalary = fresh;
+  return fresh;
 }
 
 // The scenario + job the adapter builds for a salary compare, so
@@ -304,7 +304,7 @@ function directInputs(
 }
 
 describe("medicareAgePrimary input (E8-S1)", () => {
-  test("65 normalizes with user provenance and echoes in effectiveInputs", () => {
+  test("65 normalizes with user provenance and echoes in effectiveInputs", async () => {
     const n = normalizeInputs(
       fictionalScenario({ medicareAgePrimary: 65 }),
     );
@@ -318,7 +318,7 @@ describe("medicareAgePrimary input (E8-S1)", () => {
     expect(entry?.note).toMatch(/HSA contributions/);
   });
 
-  test("explicit null normalizes as no modeled enrollment", () => {
+  test("explicit null normalizes as no modeled enrollment", async () => {
     const n = normalizeInputs(
       fictionalScenario({ medicareAgePrimary: null }),
     );
@@ -327,7 +327,7 @@ describe("medicareAgePrimary input (E8-S1)", () => {
     expect(n.scenario.medicareAgePrimary).toBeNull();
   });
 
-  test("omitted stays null with an assumption (never defaulted to 65)", () => {
+  test("omitted stays null with an assumption (never defaulted to 65)", async () => {
     const n = normalizeInputs(fictionalScenario({}));
     expect(n.ok).toBe(true);
     if (!n.ok) throw new Error("fixture failed");
@@ -340,7 +340,7 @@ describe("medicareAgePrimary input (E8-S1)", () => {
     expect(entry?.note).toMatch(/Eligibility at 65 is not enrollment/);
   });
 
-  test("non-integer, negative, over-120, and string values are invalid_input", () => {
+  test("non-integer, negative, over-120, and string values are invalid_input", async () => {
     for (const bad of [65.5, -1, 121, "65"]) {
       const n = normalizeInputs(
         fictionalScenario({ medicareAgePrimary: bad }),
@@ -351,7 +351,7 @@ describe("medicareAgePrimary input (E8-S1)", () => {
     }
   });
 
-  test("the field is priced by retirement_work_years and ignored without a salary", () => {
+  test("the field is priced by retirement_work_years and ignored without a salary", async () => {
     // Priced: with a salary the work-years leg runs and the
     // enrollment stop can bite (see the roll tests below).
     const withSalary = normalizedScenario({
@@ -363,13 +363,13 @@ describe("medicareAgePrimary input (E8-S1)", () => {
     // enrollment age prices nothing — the drift table says so
     // (pricedInputs conditionalReason), and the no-salary
     // comparison carries no Medicare warning either.
-    const res = noSalaryCompare();
+    const res = await noSalaryCompare();
     expect(res.warnings.join(" ")).not.toMatch(/No Medicare enrollment age/);
   });
 });
 
 describe("Medicare enrollment stops HSA contributions (engine rule)", () => {
-  test("contributionStack: HSA stops at the enrollment age, both sides", () => {
+  test("contributionStack: HSA stops at the enrollment age, both sides", async () => {
     const law = lawForYear(2026)!;
     const at65null = contributionStack(65, 120000, 5000, 1000, "mfj", law, null, null);
     const at65enr = contributionStack(65, 120000, 5000, 1000, "mfj", law, null, 65);
@@ -387,7 +387,7 @@ describe("Medicare enrollment stops HSA contributions (engine rule)", () => {
     expect(at65enr.hsaBucket).toBe(0);
   });
 
-  test("enrollment at 70 preserves HSA at 64 and stops it at 70", () => {
+  test("enrollment at 70 preserves HSA at 64 and stops it at 70", async () => {
     const law = lawForYear(2026)!;
     const at64 = contributionStack(64, 120000, 5000, 1000, "mfj", law, null, 70);
     const at70 = contributionStack(70, 120000, 5000, 1000, "mfj", law, null, 70);
@@ -397,7 +397,7 @@ describe("Medicare enrollment stops HSA contributions (engine rule)", () => {
     expect(at70.employerHsa).toBe(0);
   });
 
-  test("enrollment before 65 stops HSA from that age on", () => {
+  test("enrollment before 65 stops HSA from that age on", async () => {
     const law = lawForYear(2026)!;
     const at59 = contributionStack(59, 120000, 5000, 1000, "mfj", law, null, 60);
     const at60 = contributionStack(60, 120000, 5000, 1000, "mfj", law, null, 60);
@@ -427,7 +427,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     return rollWorkYears(plan, job, 67);
   }
 
-  test("enrollment at 65 stops HSA from the 65 line on (2 of 4 years)", () => {
+  test("enrollment at 65 stops HSA from the 65 line on (2 of 4 years)", async () => {
     const r = roll(65);
     expect(r.lines.map((l) => l.age)).toEqual([63, 64, 65, 66]);
     expect(r.lines[0]!.stack.hsaBucket).toBeGreaterThan(0);
@@ -444,7 +444,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     );
   });
 
-  test("enrollment at 70 preserves HSA through every year to 66", () => {
+  test("enrollment at 70 preserves HSA through every year to 66", async () => {
     const r = roll(70);
     for (const line of r.lines) {
       expect(line.stack.hsaBucket).toBeGreaterThan(0);
@@ -454,7 +454,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     );
   });
 
-  test("omitted enrollment age preserves HSA (no-enrollment assumption)", () => {
+  test("omitted enrollment age preserves HSA (no-enrollment assumption)", async () => {
     const r = roll(null);
     for (const line of r.lines) {
       expect(line.stack.hsaBucket).toBeGreaterThan(0);
@@ -464,7 +464,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     );
   });
 
-  test("enrollment before 65: zero HSA contributions across the window", () => {
+  test("enrollment before 65: zero HSA contributions across the window", async () => {
     // Window 60-62, enrolled at 60: every work year is at or
     // after enrollment, so no HSA contribution of either source
     // lands in any year — the "zero HSA contributions" case.
@@ -490,7 +490,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     expect(r.totals.hsaContributions).toBe(0);
   });
 
-  test("retirement at the enrollment age: the quit year itself contributes nothing either way", () => {
+  test("retirement at the enrollment age: the quit year itself contributes nothing either way", async () => {
     // Window start 65, quit 67, enrolled at 65: work years 65,
     // 66 are both at/after enrollment, so HSA is $0 throughout;
     // the quit-65 row prices zero work years, so enrollment at
@@ -515,7 +515,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     expect(zero.totals.hsaContributions).toBe(0);
   });
 
-  test("continuing employment after 65: HSA stops at enrollment, salary does not", () => {
+  test("continuing employment after 65: HSA stops at enrollment, salary does not", async () => {
     // Enrolled at 65, still working to 67: the 65/66 lines
     // price salary and payroll tax in full — only the HSA
     // stops. (Retirement after the enrollment age.)
@@ -527,7 +527,7 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
     expect(r.lines[3]!.stack.hsaBucket).toBe(0);
   });
 
-  test("zero employer HSA: the employer side stays $0 while the employee side contributes", () => {
+  test("zero employer HSA: the employer side stays $0 while the employee side contributes", async () => {
     const { plan } = directInputs({
       retirementAge: 63,
       compareAges: [63, 67],
@@ -549,8 +549,8 @@ describe("Medicare enrollment through the work-years roll (E8-S1)", () => {
 });
 
 describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
-  test("without a salary the winners are retirement-only and there is no overall recommendation", () => {
-    const res = noSalaryCompare();
+  test("without a salary the winners are retirement-only and there is no overall recommendation", async () => {
+    const res = await noSalaryCompare();
     const r = res.results;
     expect(r.workYears).toEqual([]);
     expect(r.workYearsComparison).toBeNull();
@@ -597,8 +597,8 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
   // Review 8 NICEs (P1-1): a $0 salary is no salary — the
   // salary leg does not run, there is no salary-aware model,
   // and comparisonModels does not claim includesSalary.
-  test("with a $0 salary the winners are retirement-only, like no salary at all", () => {
-    const res = zeroSalaryCompare();
+  test("with a $0 salary the winners are retirement-only, like no salary at all", async () => {
+    const res = await zeroSalaryCompare();
     const r = res.results;
     expect(r.workYears).toEqual([]);
     expect(r.workYearsComparison).toBeNull();
@@ -618,7 +618,7 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     // The retirement-only march prices identically to the
     // omitted-salary run (yearlySalaryCents is work-years-only
     // input — the compare march never reads it).
-    expect(r.scenarios).toEqual(noSalaryCompare().results.scenarios);
+    expect(r.scenarios).toEqual((await noSalaryCompare()).results.scenarios);
     const byCost = [...r.scenarios].sort(byNetCost)[0]!;
     const byWealth = [...r.scenarios].sort(
       (a, b) => b.endingWealth - a.endingWealth,
@@ -627,8 +627,8 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     expect(r.retirementOnly.winnerByEndingWealth).toBe(byWealth.name);
   }, 120000);
 
-  test("with a salary the salary-aware winners come from the work-years rows", () => {
-    const res = salaryCompare();
+  test("with a salary the salary-aware winners come from the work-years rows", async () => {
+    const res = await salaryCompare();
     const r = res.results;
     expect(r.workYears.map((w) => w.quitAge)).toEqual([60, 62]);
     const byTax = [...r.workYears].sort((a, b) => a.allInTax - b.allInTax)[0]!;
@@ -699,8 +699,8 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
     }
   }, 300000);
 
-  test("omitted salary cannot produce a misleading overall winner (MCP path too)", () => {
-    const via = dispatchTool(
+  test("omitted salary cannot produce a misleading overall winner (MCP path too)", async () => {
+    const via = await dispatchTool(
       "retirement_work_years",
       fictionalScenario({ compareAges: [60, 62] }),
     );
@@ -713,9 +713,9 @@ describe("retirement-age winner semantics (E8-S2, comparisonModels)", () => {
 });
 
 describe("salary-aware comparison responds to its inputs", () => {
-  test("a higher salary changes the salary-aware comparison", () => {
-    const base = salaryCompare().results;
-    const high = highSalaryCompare().results;
+  test("a higher salary changes the salary-aware comparison", async () => {
+    const base = (await salaryCompare()).results;
+    const high = (await highSalaryCompare()).results;
     // Same ages, same balances — only the salary differs, so the
     // work-years rows must move (more salary tax, more growth).
     expect(high.workYears).not.toEqual(base.workYears);
@@ -731,9 +731,9 @@ describe("salary-aware comparison responds to its inputs", () => {
     }
   }, 300000);
 
-  test("a higher employer 401(k) changes the work-years results", () => {
-    const base = salaryCompare().results;
-    const emp = employerCompare().results;
+  test("a higher employer 401(k) changes the work-years results", async () => {
+    const base = (await salaryCompare()).results;
+    const emp = (await employerCompare()).results;
     expect(emp.workYears).not.toEqual(base.workYears);
     // The extra employer contributions land in the rolled pre-tax
     // balance, so ending after-tax wealth moves on the working row.
@@ -750,7 +750,7 @@ describe("salary-aware comparison responds to its inputs", () => {
 });
 
 describe("work-years engine identities (§6: counted once)", () => {
-  test("payroll taxes are included exactly once (direct engine)", () => {
+  test("payroll taxes are included exactly once (direct engine)", async () => {
     const { plan, job } = directInputs();
     const rows = runWorkYearsCompare(plan, job, [60, 62]);
     for (const row of rows) {
@@ -769,7 +769,7 @@ describe("work-years engine identities (§6: counted once)", () => {
     }
   }, 300000);
 
-  test("salary is counted once: gross salary is salary x work years", () => {
+  test("salary is counted once: gross salary is salary x work years", async () => {
     const { plan, job } = directInputs();
     const roll62 = rollWorkYears(plan, job, 62);
     expect(roll62.totals.years).toBe(2);
@@ -785,7 +785,7 @@ describe("work-years engine identities (§6: counted once)", () => {
     expect(roll62.totals.fica).toBe(sumFica);
   });
 
-  test("employer contributions land in the correct accounts", () => {
+  test("employer contributions land in the correct accounts", async () => {
     const { plan } = directInputs({
       employer401kAnnual: 5000,
       employerHsaAnnual: 1000,
@@ -811,8 +811,8 @@ describe("work-years engine identities (§6: counted once)", () => {
     );
   });
 
-  test("the zero-work-years row preserves the engine baseline", () => {
-    const res = salaryCompare();
+  test("the zero-work-years row preserves the engine baseline", async () => {
+    const res = await salaryCompare();
     const row60 = res.results.workYears.find((w) => w.quitAge === 60)!;
     expect(row60.workYears).toBe(0);
     expect(row60.workTax).toBe(0);
@@ -844,7 +844,7 @@ describe("work-years engine identities (§6: counted once)", () => {
 });
 
 describe("comparability across quit ages (D11)", () => {
-  test("rows share one terminal age, so ending wealth is comparable", () => {
+  test("rows share one terminal age, so ending wealth is comparable", async () => {
     const { plan, job, ages } = directInputs();
     const rows = runWorkYearsCompare(plan, job, ages);
     for (const row of rows) {
@@ -862,7 +862,7 @@ describe("comparability across quit ages (D11)", () => {
       }
       expect(Number.isFinite(row.endingAfterTax)).toBe(true);
     }
-    const res = salaryCompare();
+    const res = await salaryCompare();
     expect(res.warnings.join(" ")).not.toMatch(/not like-for-like/);
     expect(res.warnings.join(" ")).toMatch(/same terminal age/);
     // The salary-aware wealth winner is the argmax of the rows'
@@ -877,8 +877,8 @@ describe("comparability across quit ages (D11)", () => {
 });
 
 describe("adapter vs engine parity", () => {
-  test("adapter work-years rows match direct runWorkYearsCompare() to the cent", () => {
-    const res = salaryCompare();
+  test("adapter work-years rows match direct runWorkYearsCompare() to the cent", async () => {
+    const res = await salaryCompare();
     const { plan, job, ages } = directInputs();
     const direct = runWorkYearsCompare(plan, job, ages);
     expect(direct.map((d) => d.quitAge)).toEqual(
@@ -909,8 +909,8 @@ describe("adapter vs engine parity", () => {
     }
   }, 300_000);
 
-  test("adapter rows with medicareAgePrimary 65 match the direct engine", () => {
-    const res = medicareCompare();
+  test("adapter rows with medicareAgePrimary 65 match the direct engine", async () => {
+    const res = await medicareCompare();
     const scenario = normalizedScenario({
       salaryAnnual: 120000,
       employer401kAnnual: 5000,
@@ -945,7 +945,7 @@ describe("adapter vs engine parity", () => {
     // given); the no-enrollment disclosure appears only when the
     // age is absent.
     expect(res.warnings.join(" ")).not.toMatch(/No Medicare enrollment age/);
-    const noMed = salaryCompare();
+    const noMed = await salaryCompare();
     expect(noMed.warnings.join(" ")).toMatch(/No Medicare enrollment age/);
     // (Review 8 NICEs fix: the pre-existing regex below read
     // /Eligibility at 65 is not enrollment/ with a capital E,
@@ -963,15 +963,15 @@ describe("adapter vs engine parity", () => {
   // (no qualifying HDHP coverage) the no-enrollment warning must
   // not claim HSA contributions continue — it keeps the
   // no-enrollment disclosure without that clause.
-  test("no-enrollment warning drops the HSA clause when the salary leg prices zero HSA", () => {
-    const res = noHsaSalaryCompare();
+  test("no-enrollment warning drops the HSA clause when the salary leg prices zero HSA", async () => {
+    const res = await noHsaSalaryCompare();
     const warnings = res.warnings.join(" ");
     expect(warnings).toMatch(/No Medicare enrollment age/);
     expect(warnings).not.toMatch(/continue through the work years/);
     expect(warnings).toMatch(/Medicare eligibility at 65 is not enrollment/);
     // Control: the same call with HSA priced keeps the full
     // warning, contributions-continue clause included.
-    expect(salaryCompare().warnings.join(" ")).toMatch(
+    expect((await salaryCompare()).warnings.join(" ")).toMatch(
       /HSA contributions \(employee and employer\) continue through the work years/,
     );
     // And the priced HSA really is zero on the no-HSA run: the
@@ -986,13 +986,13 @@ describe("adapter vs engine parity", () => {
 });
 
 describe("MCP path + input isolation", () => {
-  test("the MCP tool returns the same comparison as the direct adapter call", () => {
-    const via = dispatchTool(
+  test("the MCP tool returns the same comparison as the direct adapter call", async () => {
+    const via = await dispatchTool(
       "retirement_work_years",
       fictionalScenario({ compareAges: [60, 62] }),
     );
     if (!via.ok) throw new Error(JSON.stringify(via.error));
-    const direct = noSalaryCompare();
+    const direct = await noSalaryCompare();
     expect(via.results).toEqual(direct.results);
     expect(via.warnings).toEqual(direct.warnings);
     // The standalone bundle is not in this tree (no STANDALONE.md /
@@ -1001,12 +1001,12 @@ describe("MCP path + input isolation", () => {
     // the documented gap, not asserted as a pass.
   }, 120_000);
 
-  test("the comparison follows the caller's inputs, not stored data", () => {
+  test("the comparison follows the caller's inputs, not stored data", async () => {
     const a = expectEnvelope(
-      compareRetirementAges(normalizedScenario({ compareAges: [60, 62] })),
+      await compareRetirementAges(normalizedScenario({ compareAges: [60, 62] })),
     );
     const b = expectEnvelope(
-      compareRetirementAges(
+      await compareRetirementAges(
         normalizedScenario({ pretax: 1500000, compareAges: [60, 62] }),
       ),
     );
@@ -1021,7 +1021,7 @@ describe("MCP path + input isolation", () => {
 });
 
 describe("cross-engine matrix (§5): the same fact, two engines", () => {
-  test("Income: the sim, the work-years roll, and the single-year pricer time Social Security identically", () => {
+  test("Income: the sim, the work-years roll, and the single-year pricer time Social Security identically", async () => {
     // Fictional household: primary $36,000/yr at 67, spouse
     // $18,000/yr at the spouse's own age 67 (primary age 69 —
     // ages 54/52, two years apart). Hand-derived: $0 at 66,
@@ -1067,7 +1067,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(priced.agi).toBe(50000 + 34050);
   });
 
-  test("Federal tax: the adapter's single-year price equals the direct engine price, field for field", () => {
+  test("Federal tax: the adapter's single-year price equals the direct engine price, field for field", async () => {
     const overrides = {
       interestAnnual: 10000,
       ordinaryDividendsAnnual: 5000,
@@ -1117,7 +1117,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     );
   });
 
-  test("Federal tax: a conversion is a transfer, not new wealth or new cash", () => {
+  test("Federal tax: a conversion is a transfer, not new wealth or new cash", async () => {
     const base = {
       interestAnnual: 10000,
       ordinaryDividendsAnnual: 5000,
@@ -1141,7 +1141,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(withConversion.results.conversion).toBe(20000);
   });
 
-  test("Federal tax: a taxable sale creates no wealth — only the gain is income", () => {
+  test("Federal tax: a taxable sale creates no wealth — only the gain is income", async () => {
     const base = {
       interestAnnual: 10000,
       ordinaryDividendsAnnual: 5000,
@@ -1162,7 +1162,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(withSale.results.cashIn - noSale.results.cashIn).toBe(20000);
   });
 
-  test("ACA: the single-year credit equals the direct helper on the same MAGI, and is counted once", () => {
+  test("ACA: the single-year credit equals the direct helper on the same MAGI, and is counted once", async () => {
     const scenario = normalizedScenario({
       interestAnnual: 10000,
       ordinaryDividendsAnnual: 5000,
@@ -1199,7 +1199,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(r.netTaxBill).toBe(r.totalTax);
   });
 
-  test("RMD: the single-year price and the shared helper agree to the cent", () => {
+  test("RMD: the single-year price and the shared helper agree to the cent", async () => {
     // Primary 73 (birth year 1953, RMD age 73), spouse 70 —
     // a 3-year gap, so the Uniform Lifetime Table applies.
     // Hand-derived: $1,000,000 / 26.5 = $37,735.85. Social
@@ -1242,7 +1242,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(r.agi).toBe(37735.85);
   });
 
-  test("IRMAA: the single-year forward IRMAA equals the direct tier lookup, and the premium carries no IRMAA", () => {
+  test("IRMAA: the single-year forward IRMAA equals the direct tier lookup, and the premium carries no IRMAA", async () => {
     // Primary 66, spouse 64, conversion $250,000: MAGI $250,000.
     // Premium year is the priced year + 2 (2028); both spouses
     // are 65+ by then, so two persons are graded.
@@ -1295,9 +1295,9 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     );
   });
 
-  test("Monte Carlo: the adapter and the direct engine return the same seeded run", () => {
+  test("Monte Carlo: the adapter and the direct engine return the same seeded run", async () => {
     const scenario = normalizedScenario({});
-    const viaAdapter = runRetirementMonteCarlo(scenario);
+    const viaAdapter = await runRetirementMonteCarlo(scenario);
     expect(viaAdapter.ok).toBe(true);
     if (!viaAdapter.ok) throw new Error("fixture failed");
     const { inputs } = toSimInputs(scenario);
@@ -1325,9 +1325,9 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     expect(a.seed).toBe(scenario.mcSeed);
   });
 
-  test("Roth candidate: the adapter's full-mode winner is the direct optimizer's winner", () => {
+  test("Roth candidate: the adapter's full-mode winner is the direct optimizer's winner", async () => {
     const scenario = normalizedScenario({ comparisonScope: "full" });
-    const viaAdapter = compareRothConversions(scenario);
+    const viaAdapter = await compareRothConversions(scenario);
     expect(viaAdapter.ok).toBe(true);
     if (!viaAdapter.ok) throw new Error(JSON.stringify(viaAdapter.error));
     const plan = buildRothPlanInputs(scenario);
@@ -1353,7 +1353,7 @@ describe("cross-engine matrix (§5): the same fact, two engines", () => {
     );
   }, 300000);
 
-  test("Education credits: the adapter prices none, so none can be counted twice", () => {
+  test("Education credits: the adapter prices none, so none can be counted twice", async () => {
     // The adapter exposes no education inputs (no AOTC/LLC
     // fields in the schema), so the single-year price can never
     // price a refundable education credit — and the march's

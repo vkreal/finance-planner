@@ -72,7 +72,7 @@ function yearOf(
 // ---------------------------------------------------------------------------
 
 describe("E5 §3 — first-RMD deferral through the march", () => {
-  test("no election vs explicit false: bit-identical years", () => {
+  test("no election vs explicit false: bit-identical years", async () => {
     const omitted = march();
     const explicit = march({ firstRmdDeferralPrimary: false });
     expect(explicit.years).toEqual(omitted.years);
@@ -82,7 +82,7 @@ describe("E5 §3 — first-RMD deferral through the march", () => {
     );
   });
 
-  test("deferred year prices $0 and names the deferred amount", () => {
+  test("deferred year prices $0 and names the deferred amount", async () => {
     const immediate = march();
     const deferred = march({ firstRmdDeferralPrimary: true });
     const carry = yearOf(immediate, 2047).rmdPrimaryCents;
@@ -96,7 +96,7 @@ describe("E5 §3 — first-RMD deferral through the march", () => {
     expect(d2047.rmdDeferredSpouseCents).toBe(0);
   });
 
-  test("following year pays both RMDs, deferred dollars grown one year", () => {
+  test("following year pays both RMDs, deferred dollars grown one year", async () => {
     const immediate = march();
     const deferred = march({ firstRmdDeferralPrimary: true });
     const carry = yearOf(immediate, 2047).rmdPrimaryCents;
@@ -123,7 +123,7 @@ describe("E5 §3 — first-RMD deferral through the march", () => {
 // ---------------------------------------------------------------------------
 
 describe("E5 §2 — survivor Social Security through the march", () => {
-  test("death after both claim, enhanced at 60: $25,740/yr", () => {
+  test("death after both claim, enhanced at 60: $25,740/yr", async () => {
     // Primary dies 2043 (age 71, spouse 69). Death year: both
     // benefits in full, $36,000 + $18,000 = $54,000. Survivor
     // years: PIA $36,000 × 0.715 = $25,740 (the survivor's own
@@ -142,7 +142,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(yearOf(enhanced, 2042).survivorSsMode).toBeNull();
   });
 
-  test("same death, simplified (no claiming age): $36,000/yr", () => {
+  test("same death, simplified (no claiming age): $36,000/yr", async () => {
     // No claiming age → the simplified max-of-two-benefits rule:
     // max($36,000, $18,000) = $36,000 from the year after death.
     const simplified = march({
@@ -156,7 +156,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(yearOf(simplified, 2044).survivorClaimAge).toBeNull();
   });
 
-  test("death before either claims: enhanced pays from 60, simplified $0 until 67", () => {
+  test("death before either claims: enhanced pays from 60, simplified $0 until 67", async () => {
     // Primary dies 2035 (age 63, spouse 61) — before either
     // benefit begins. Enhanced at 60: base PIA $36,000 (no
     // DRCs — died before FRA) × 0.715 = $25,740 from the year
@@ -179,7 +179,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(yearOf(simplified, 2039).ssCollectedCents).toBe(3600000);
   });
 
-  test("after a death the survivor's RMD runs on the combined balance", () => {
+  test("after a death the survivor's RMD runs on the combined balance", async () => {
     // Spouse's RMD age is 75 (2049). In survivor years the
     // primary's RMD stops and the spouse's prices on the
     // combined inherited balance.
@@ -193,14 +193,14 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(yearOf(run, 2049).rmdSpouseCents).toBeGreaterThan(0);
   });
 
-  test("no survivor scenario vs explicit off: bit-identical years", () => {
+  test("no survivor scenario vs explicit off: bit-identical years", async () => {
     const omitted = march();
     const explicit = march({ survivorEnabled: false });
     expect(explicit.years).toEqual(omitted.years);
     expect(explicit.netCostCents).toBe(omitted.netCostCents);
   });
 
-  test("death in the first RMD year voids a new deferral (spec §3)", () => {
+  test("death in the first RMD year voids a new deferral (spec §3)", async () => {
     // The primary's first RMD year is 2047. Dying that year
     // with the election on takes the RMD in the death year —
     // the amount is owed, so it is not deferred — and the year
@@ -219,7 +219,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(d2047.rmdDeferredPaidPrimaryCents).toBe(0);
   });
 
-  test("defer in year 1, die in year 2: the pending amount is paid in the death year", () => {
+  test("defer in year 1, die in year 2: the pending amount is paid in the death year", async () => {
     // Defer the 2047 first RMD, die in 2048. The death year
     // pays its own RMD plus the full pending amount — the same
     // two-RMD total as the no-death deferred run (the death
@@ -245,7 +245,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
     expect(yearOf(died, 2049).rmdPrimaryCents).toBe(0);
   });
 
-  test("a $0-balance first RMD year still counts: the combined year cannot defer", () => {
+  test("a $0-balance first RMD year still counts: the combined year cannot defer", async () => {
     // Spouse born 1974, first RMD year 2049. The primary dies
     // in 2049 — in the death year the spouse's own RMD is $0
     // (her pre-tax balance is $0), but 2049 IS her first RMD
@@ -281,7 +281,7 @@ describe("E5 §2 — survivor Social Security through the march", () => {
 // ---------------------------------------------------------------------------
 
 describe("E5 §7 — adapter: single-year deferral", () => {
-  test("the tax-year tool prices the deferral and echoes it", () => {
+  test("the tax-year tool prices the deferral and echoes it", async () => {
     // Primary 73 in 2026 (born 1953), first RMD year, $600,000
     // prior-year-end balance: 600,000 / 26.5 = $22,641.51.
     // (The priced age reads off currentAge + taxYear −
@@ -301,7 +301,7 @@ describe("E5 §7 — adapter: single-year deferral", () => {
     expect(res.rmd).toBe(0);
   });
 
-  test("the tax-year tool prices the two-RMD year from the carry", () => {
+  test("the tax-year tool prices the two-RMD year from the carry", async () => {
     const s = normalizedScenario({
       currentAge: 74,
       spouseAge: 72,
@@ -317,8 +317,8 @@ describe("E5 §7 — adapter: single-year deferral", () => {
 });
 
 describe("E5 §7 — adapter: survivor scenario guards + disclosures", () => {
-  test("survivor enabled without a death year is missing_input", () => {
-    const result = dispatchTool(
+  test("survivor enabled without a death year is missing_input", async () => {
+    const result = await dispatchTool(
       "retirement_roth_conversion",
       fictionalScenario({ survivorEnabled: true }),
     );
@@ -328,9 +328,9 @@ describe("E5 §7 — adapter: survivor scenario guards + disclosures", () => {
     expect(result.error.missing).toContain("survivorDeathYear");
   });
 
-  test("a claiming age with no survivor scenario is warned, not priced", () => {
+  test("a claiming age with no survivor scenario is warned, not priced", async () => {
     const s = normalizedScenario({ survivorClaimAge: 60 });
-    const result = compareRothConversions(s);
+    const result = await compareRothConversions(s);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok, got an error");
     expect(
@@ -338,14 +338,14 @@ describe("E5 §7 — adapter: survivor scenario guards + disclosures", () => {
     ).toBe(true);
   });
 
-  test("the roth tool's yearly table names the enhanced mode", () => {
+  test("the roth tool's yearly table names the enhanced mode", async () => {
     const s = normalizedScenario({
       survivorEnabled: true,
       survivorWho: "primary",
       survivorDeathYear: 2043,
       survivorClaimAge: 60,
     });
-    const res = expectOk(compareRothConversions(s)) as unknown as {
+    const res = expectOk(await compareRothConversions(s)) as unknown as {
       yearly: Array<{
         year: number;
         ssCollected: number;
@@ -376,9 +376,9 @@ describe("E5 §7 — adapter: survivor scenario guards + disclosures", () => {
     }
   });
 
-  test("the roth tool's deferral summary names the two-RMD year", () => {
+  test("the roth tool's deferral summary names the two-RMD year", async () => {
     const s = normalizedScenario({ firstRmdDeferralPrimary: true });
-    const res = expectOk(compareRothConversions(s)) as unknown as {
+    const res = expectOk(await compareRothConversions(s)) as unknown as {
       yearly: Array<{
         year: number;
         rmdDeferredPrimary: number;

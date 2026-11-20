@@ -1,16 +1,23 @@
-// Engine Review C7 architecture (§1.7, §4.3) — /health under load.
+// Engine Review C7 architecture (§1.7, §4.3) — /health under load,
+// proven through an ACTUAL MCP tool call.
 //
-// Starts the real assistant-api server, dispatches a full-scope
-// optimizer job through the engine pool in-process, and polls
-// /health every 250 ms while the worker burns: every poll must
-// answer in <1 s (the A2 measurement it replaces: 295,409 ms).
+// Starts the real assistant-api server, starts a full-scope optimizer
+// job (retirement_roth_conversion, comparisonScope "full", 6y horizon —
+// the smallest full optimizer) through a raw JSON-RPC tools/call POST
+// to /mcp, and polls /health every 250 ms while the worker burns:
+// every poll must answer in <1 s (the A2 measurement it replaces:
+// 295,409 ms). The adapter prices through the engine pool in this
+// build, so the MCP call's CPU runs in a worker and the main thread's
+// event loop — and /health — stay free.
 //
-// The pool lives in server/src and is shared by both processes;
-// the assistant-api's MCP tools still price in-thread in this
-// build (dispatchTool is synchronous end-to-end — migrating the
-// adapter is a follow-on), so this test proves the mechanism in
-// this process: a worker burning CPU leaves the main thread's
-// event loop — and /health — free.
+// Load note: the 6y full optimizer is ~6 s of engine CPU but the
+// worker deadline is a 100 s WALL deadline, and this VM stretches
+// wall ~10x under load — at load ~12 the job times out with
+// ENGINE_TIMEOUT (measured), at load ~4 it completes in ~77 s. The
+// test's verdict is the /health polls, not the job: a timeout still
+// proves the property (the worker burned for the full 100 s while
+// every poll answered), so an ENGINE_TIMEOUT result is accepted and
+// logged rather than failing the test.
 //
 // Run: bun test tests/engine-pool-health.test.ts
 // (assistant-api tests run from assistant-api/; the pool import
@@ -18,14 +25,14 @@
 
 import { describe, test, expect, afterAll } from "bun:test";
 import { createServer } from "../src/server";
-import { dispatchEngineJob, enginePool } from "../../server/src/enginePool";
-import { jointInputsKey } from "../../server/src/rothOptimizer";
-import { jointSmall } from "../../server/src/performanceShapes";
+import { dispatchTool } from "../src/tools";
+import { enginePool } from "../../server/src/enginePool";
+import { FICTIONAL } from "./helpers";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("assistant-api /health under worker load (C7 §1.7)", () => {
-  test("every /health poll answers in <1 s while a full-scope optimizer job runs", async () => {
+  test("every /health poll answers in <1 s while a full-scope optimizer job runs via MCP", async () => {
     const server = createServer({ port: 0, host: "127.0.0.1" });
     try {
       const base = `http://127.0.0.1:${server.port}`;
@@ -34,41 +41,65 @@ describe("assistant-api /health under worker load (C7 §1.7)", () => {
       expect(warm.status).toBe(200);
       expect((await warm.json() as { ok: unknown }).ok).toBe(true);
 
-      // Full-scope optimizer job (5y 1-combo joint — the
-      // heaviest shape that completes on this VM) through the
-      // pool. The promise is awaited at the end; the polls run
-      // while it is in flight.
-      const { promise: job } = dispatchEngineJob<any>(
-        "joint",
-        jointInputsKey(jointSmall()),
-        { inputs: jointSmall() },
-        { detail: "full" },
+      // Warm the worker (pays the cold module import) with a tiny
+      // Monte Carlo dispatch, so the measured job's wall is compute,
+      // not import.
+      const warmed: any = await dispatchTool("retirement_monte_carlo", {
+        ...FICTIONAL,
+        mcRuns: 200,
+      });
+      expect(warmed.ok).toBe(true);
+
+      // Full-scope optimizer job through the MCP path: raw JSON-RPC
+      // tools/call POST, not awaited — the polls run while it is in
+      // flight.
+      const mcp = fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "retirement_roth_conversion",
+            arguments: { ...FICTIONAL, endAge: 60, comparisonScope: "full" },
+          },
+        }),
+      });
+      let settled = false;
+      mcp.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
       );
       const latencies: number[] = [];
-      let done = false;
-      job.then(
-        () => {
-          done = true;
-        },
-        () => {
-          done = true;
-        },
-      );
-      while (!done) {
+      while (!settled) {
         const t0 = Date.now();
         const res = await fetch(`${base}/health`);
         latencies.push(Date.now() - t0);
         expect(res.status).toBe(200);
         await sleep(250);
       }
-      expect(latencies.length).toBeGreaterThan(0);
+      expect(latencies.length).toBeGreaterThan(10);
       const max = Math.max(...latencies);
-      console.log(
-        `[health-under-load] polls=${latencies.length} maxMs=${max}`,
-      );
+      console.log(`[health-under-load] polls=${latencies.length} maxMs=${max}`);
       expect(max).toBeLessThan(1000);
-      const result = await job;
-      expect(result.candidatesTested).toBe(3025);
+
+      const rpc: any = await (await mcp).json();
+      if (rpc.error) {
+        // Known load artifact (see header): the worker burned for
+        // the full deadline while every /health poll answered.
+        expect(rpc.error.code).toBe(-32000);
+        expect(rpc.error.data?.code).toBe("ENGINE_TIMEOUT");
+        console.log("[health-under-load] job timed out (load artifact); polls still prove /health");
+      } else {
+        const content = rpc.result?.structuredContent;
+        expect(content?.ok).toBe(true);
+        expect(content?.results?.comparisonScope?.evaluatedCandidates).toBe(3025);
+      }
     } finally {
       server.stop();
     }

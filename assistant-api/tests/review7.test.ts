@@ -114,7 +114,7 @@ describe("R7-S1 exact probability conversion", () => {
     },
   );
 
-  test("the old r2 rounding differs exactly where the review found it", () => {
+  test("the old r2 rounding differs exactly where the review found it", async () => {
     // 84.6% and 85.4% both collapsed to 0.85; 99.9% collapsed to 1.0.
     expect(oldRounded(84.6)).toBe(0.85);
     expect(ratePercentToFraction(84.6, 1000)).toBe(0.846);
@@ -126,9 +126,9 @@ describe("R7-S1 exact probability conversion", () => {
 });
 
 describe("R7-S1 Monte Carlo adapter parity", () => {
-  test("fictional household, 1,000 runs, seed 42: 93% reads 0.93 with 930 successful runs", () => {
+  test("fictional household, 1,000 runs, seed 42: 93% reads 0.93 with 930 successful runs", async () => {
     const s = normalizedScenario({ mcRuns: 1000, mcSeed: 42 });
-    const res = expectOk(runRetirementMonteCarlo(s));
+    const res = expectOk(await runRetirementMonteCarlo(s));
     const mc = runMonteCarlo(
       directSimInputs(),
       s.expectedReturnPct / 100,
@@ -147,19 +147,19 @@ describe("R7-S1 Monte Carlo adapter parity", () => {
     expect(res.seed).toBe(42);
   }, 30_000);
 
-  test("fictional household, 200 runs, seed 42: 94% reads 0.94 with 188 successful runs", () => {
+  test("fictional household, 200 runs, seed 42: 94% reads 0.94 with 188 successful runs", async () => {
     const s = normalizedScenario({ mcRuns: 200, mcSeed: 42 });
-    const res = expectOk(runRetirementMonteCarlo(s));
+    const res = expectOk(await runRetirementMonteCarlo(s));
     expect(res.successRate).toBe(0.94);
     expect(res.successfulRuns).toBe(188);
     expect(res.runs).toBe(200);
   }, 30_000);
 
-  test("same seed twice is identical; the run count is reported", () => {
-    const run = (seed: number) =>
+  test("same seed twice is identical; the run count is reported", async () => {
+    const run = async (seed: number) =>
       runRetirementMonteCarlo(normalizedScenario({ mcRuns: 200, mcSeed: seed }));
-    const first = run(42);
-    const second = run(42);
+    const first = await run(42);
+    const second = await run(42);
     expect(JSON.stringify(second)).toBe(JSON.stringify(first));
     if (!first.ok) throw new Error("expected ok");
     expect(first.results.runs).toBe(200);
@@ -170,7 +170,7 @@ describe("R7-S1 Monte Carlo adapter parity", () => {
 });
 
 describe("R7-S1 historical adapter parity", () => {
-  test("calculateRetirement reports the historical rate at whole-run precision over hist.count", () => {
+  test("calculateRetirement reports the historical rate at whole-run precision over hist.count", async () => {
     const s = normalizedScenario();
     const res = expectOk(calculateRetirement(s));
     const hist = runHistorical(directSimInputs(), s.stocksPct);
@@ -187,11 +187,11 @@ describe("R7-S1 historical adapter parity", () => {
 });
 
 describe("R7-S2 max spending: target, feasibility, meanings", () => {
-  test("constant strategy: full engine parity, target echoed, feasible, MC and historical legs labeled separately", () => {
+  test("constant strategy: full engine parity, target echoed, feasible, MC and historical legs labeled separately", async () => {
     // mcSeed 42 pins the literals (the README transcript-3 call):
     // the default seed solves to a different maximum.
     const s = normalizedScenario({ mcSeed: 42 });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     const inputs = directSimInputs();
     const solved = solveMaxSpending(
       inputs,
@@ -251,9 +251,9 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(res.successfulRuns).not.toBe(res.historicalSuccessfulRuns);
   }, 30_000);
 
-  test("target achievement: re-evaluating at the returned level meets 85%; $100/yr more fails it", () => {
+  test("target achievement: re-evaluating at the returned level meets 85%; $100/yr more fails it", async () => {
     const s = normalizedScenario({ mcSeed: 42 });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     expect(res.feasible).toBe(true);
     const inputs = directSimInputs();
     const atLevel = runMonteCarlo(
@@ -279,9 +279,9 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(oneStepUp!.neverOutSuccessRate).toBeLessThan(85);
   }, 30_000);
 
-  test("percent strategy: solver percent reported verbatim on both legs; cap flagged at 30", () => {
+  test("percent strategy: solver percent reported verbatim on both legs; cap flagged at 30", async () => {
     const s = normalizedScenario({ strategy: "percent" });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     const inputs = directSimInputs("percent");
     const solved = solveMaxSpending(
       inputs,
@@ -328,9 +328,9 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     );
   }, 30_000);
 
-  test("phased strategy: starting-spending meaning, no percent, feasible", () => {
+  test("phased strategy: starting-spending meaning, no percent, feasible", async () => {
     const s = normalizedScenario({ strategy: "phased" });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     const solved = solveMaxSpending(
       directSimInputs("phased"),
       s.stocksPct,
@@ -375,9 +375,9 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(res.historicalCappedAtPercentBound).toBe(false);
   }, 30_000);
 
-  test("guardrails strategy: base-spending meaning, no percent, feasible", () => {
+  test("guardrails strategy: base-spending meaning, no percent, feasible", async () => {
     const s = normalizedScenario({ strategy: "guardrails" });
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     const solved = solveMaxSpending(
       directSimInputs("guardrails"),
       s.stocksPct,
@@ -423,7 +423,7 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(res.historicalCappedAtPercentBound).toBe(false);
   }, 120_000);
 
-  test("spendingAmountMeaning is distinct for every strategy", () => {
+  test("spendingAmountMeaning is distinct for every strategy", async () => {
     const meanings = (
       ["constant", "percent", "phased", "guardrails"] as SpendingStrategy[]
     ).map((strategy) => spendingAmountMeaning(strategy));
@@ -434,9 +434,9 @@ describe("R7-S2 max spending: target, feasibility, meanings", () => {
     expect(meanings[3]).toContain("Base spending");
   }, 30_000);
 
-  test("mcRuns stays inert for max spending: runs still reports the fixed 1,000", () => {
+  test("mcRuns stays inert for max spending: runs still reports the fixed 1,000", async () => {
     const res = expectOk(
-      calculateMaxSpending(normalizedScenario({ mcRuns: 5000 })),
+      await calculateMaxSpending(normalizedScenario({ mcRuns: 5000 })),
     );
     expect(res.runs).toBe(1000);
     expect(res.successRate).toBe(0.85);
@@ -466,10 +466,10 @@ describe("R7-S2 cap detector (review pass 1): the bound is a step count", () => 
     });
   }
 
-  test("$1,000,050 portfolio at the bound: capped is true even though the percent reads 29.9985…, not 30", () => {
+  test("$1,000,050 portfolio at the bound: capped is true even though the percent reads 29.9985…, not 30", async () => {
     const s = probeScenario(1_000_050);
     expect(s.portfolioCents).toBe(100_005_000);
-    const raw = calculateMaxSpending(s);
+    const raw = await calculateMaxSpending(s);
     const res = expectOk(raw);
     // The solver returns its maxSteps result on both legs:
     // $300,000/yr at pctFor(3,000) = 29.99850007499625.
@@ -488,27 +488,27 @@ describe("R7-S2 cap detector (review pass 1): the bound is a step count", () => 
     ).toBe(true);
   }, 30_000);
 
-  test("$1,000,000 control: the capped percent reads exactly 30 and capped is true", () => {
+  test("$1,000,000 control: the capped percent reads exactly 30 and capped is true", async () => {
     const s = probeScenario(1_000_000);
     expect(s.portfolioCents).toBe(100_000_000);
-    const res = expectOk(calculateMaxSpending(s));
+    const res = expectOk(await calculateMaxSpending(s));
     expect(res.maxAnnualSpending).toBe(300000);
     expect(res.solvedPortfolioWithdrawalPct).toBe(30);
     expect(res.cappedAtPercentBound).toBe(true);
     expect(res.historicalCappedAtPercentBound).toBe(true);
   }, 30_000);
 
-  test("historical cap flag matches the MC flag on a percent solve, and both are false off the percent strategy", () => {
+  test("historical cap flag matches the MC flag on a percent solve, and both are false off the percent strategy", async () => {
     // Fictional household, percent strategy: both legs hit the
     // bound (percent 30 on both — see the percent test above).
     const percent = expectOk(
-      calculateMaxSpending(normalizedScenario({ strategy: "percent" })),
+      await calculateMaxSpending(normalizedScenario({ strategy: "percent" })),
     );
     expect(percent.cappedAtPercentBound).toBe(true);
     expect(percent.historicalCappedAtPercentBound).toBe(true);
     // Constant strategy: no percent on either leg, so neither
     // leg can be at the percent bound.
-    const constant = expectOk(calculateMaxSpending(normalizedScenario()));
+    const constant = expectOk(await calculateMaxSpending(normalizedScenario()));
     expect(constant.solvedPortfolioWithdrawalPct).toBeNull();
     expect(constant.historicalSolvedPortfolioWithdrawalPct).toBeNull();
     expect(constant.cappedAtPercentBound).toBe(false);
@@ -526,14 +526,14 @@ describe("R7-S2 cap detector (review pass 1): the bound is a step count", () => 
 });
 
 describe("R7-S2 feasibility and cap helpers", () => {
-  test("feasible is false only when $0 spending still misses the target", () => {
+  test("feasible is false only when $0 spending still misses the target", async () => {
     expect(maxSpendingFeasible(0, 84.9)).toBe(false);
     expect(maxSpendingFeasible(0, 0)).toBe(false);
     expect(maxSpendingFeasible(0, 85)).toBe(true);
     expect(maxSpendingFeasible(10000, 50)).toBe(true);
   }, 30_000);
 
-  test("capped is decided by the solved dollars against the engine's bound step count, not by the percent reading 30", () => {
+  test("capped is decided by the solved dollars against the engine's bound step count, not by the percent reading 30", async () => {
     // $1,000,050 portfolio: maxSteps = floor(100,005,000 * 0.3 /
     // 10,000) = 3,000; pctFor(3,000) = 29.99850007499625, not 30 —
     // yet the solver's maxSteps result IS at the bound. The old
@@ -573,7 +573,7 @@ describe("R7-S2 feasibility and cap helpers", () => {
     expect(maxSpendingCappedAtPercentBound(30, 3000 * 10000, 0)).toBe(false);
   }, 30_000);
 
-  test("note: the at-zero-fails branch is defensive — $0 spending cannot fail the engine's never-runs-out test (a $0 net withdrawal never exceeds the balance), so no public input reaches feasible: false; the flag and warning exist for the solver's own verdict if it ever does", () => {
+  test("note: the at-zero-fails branch is defensive — $0 spending cannot fail the engine's never-runs-out test (a $0 net withdrawal never exceeds the balance), so no public input reaches feasible: false; the flag and warning exist for the solver's own verdict if it ever does", async () => {
     // Covered at the helper level above; every adapter-level solve
     // in this file reports feasible: true.
     expect(maxSpendingFeasible(0, 100)).toBe(true);
@@ -581,7 +581,7 @@ describe("R7-S2 feasibility and cap helpers", () => {
 });
 
 describe("R7 docs: the limitations are stated where clients read them", () => {
-  test("tool descriptions disclose precision, conditionality, feasibility, and the cap", () => {
+  test("tool descriptions disclose precision, conditionality, feasibility, and the cap", async () => {
     const byName = new Map(TOOLS.map((t) => [t.name, t.description]));
     const mc = byName.get("retirement_monte_carlo") ?? "";
     expect(mc).toContain("whole-run precision");
@@ -595,8 +595,8 @@ describe("R7 docs: the limitations are stated where clients read them", () => {
     expect(max).toContain("spendingAmountMeaning");
   }, 30_000);
 
-  test("describe_capabilities lists the cap limitation and the precision rule", () => {
-    const res = dispatchTool("retirement_describe_capabilities", {});
+  test("describe_capabilities lists the cap limitation and the precision rule", async () => {
+    const res = await dispatchTool("retirement_describe_capabilities", {});
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("describe failed");
     const results = res.results as { limitations: string[] };

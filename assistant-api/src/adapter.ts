@@ -179,10 +179,10 @@ import {
   PHASE_START_AGE_DEFAULT,
   horizonYears,
   runHistorical,
-  runMonteCarlo,
+  runMonteCarloAsync,
   runNeverRunsOut,
   simulateDetailed,
-  solveMaxSpending,
+  solveMaxSpendingAsync,
   type IncomeStream,
   type SimInputs,
   type SpendingStrategy,
@@ -190,7 +190,7 @@ import {
 import {
   pricePlaygroundYear,
   runDynamicOptimizer,
-  runOptimizer,
+  runOptimizerAsync,
   runRothCompare,
   harvestGatePasses,
   DO_NOTHING_SPEC,
@@ -220,14 +220,19 @@ import {
   type LawProvenance,
 } from "../../server/src/taxLaw";
 import {
-  runWorkYearsCompare,
+  runWorkYearsCompareAsync,
   type WorkYearJob,
   type WorkYearsCompareRow,
 } from "../../server/src/workYears";
 import {
+  ENGINE_JOB_TIMEOUT_MS,
+  EngineError,
+} from "../../server/src/enginePool";
+import {
   ADAPTER_VERSION,
   API_CONTRACT_VERSION_REPORTED,
   type AdapterError,
+  type AdapterErrorCode,
   type AdapterResponse,
   type AdapterResult,
   type Assumption,
@@ -406,13 +411,26 @@ function roundDeep<T>(value: T): T {
   return value;
 }
 
-function engineError(message: string): AdapterError {
+/**
+ * Engine failure envelope. The default is the generic
+ * engine_error; the pool's typed errors pass their own code
+ * plus retryable: true (see guardAsync).
+ */
+function engineError(
+  message: string,
+  code: AdapterErrorCode = "engine_error",
+  retryable?: boolean,
+): AdapterError {
   return {
     ok: false,
     source: "finance-planner-engine",
     adapterVersion: ADAPTER_VERSION,
     apiContractVersion: API_CONTRACT_VERSION_REPORTED,
-    error: { code: "engine_error", message },
+    error: {
+      code,
+      message,
+      ...(retryable === undefined ? {} : { retryable }),
+    },
   };
 }
 
@@ -433,6 +451,42 @@ function guard<T>(fn: () => AdapterResult<T>): AdapterResult<T> {
   } catch {
     return engineError("The engine could not price this scenario.");
   }
+}
+
+/**
+ * Async guard: like guard(), but awaits the body and maps a pool
+ * EngineError (ENGINE_TIMEOUT / ENGINE_BUSY / ENGINE_CRASH) to
+ * the typed adapter error — same code, retryable, plain-language
+ * reason, no stack — instead of collapsing it into engine_error.
+ * Any other throw is still the generic engine_error, exactly as
+ * the sync guard maps it. The pool re-creates engine validation
+ * throws (RangeError et al.) by kind, so those still land here
+ * as engine_error, never as an EngineError.
+ */
+async function guardAsync<T>(
+  fn: () => Promise<AdapterResult<T>>,
+): Promise<AdapterResult<T>> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof EngineError) {
+      return engineError(err.message, err.code, err.retryable);
+    }
+    return engineError("The engine could not price this scenario.");
+  }
+}
+
+/**
+ * Per-action deadline (Engine Review C7 architecture, §1.5): a
+ * job's effective deadline is min(actionDeadline, dispatch +
+ * 100 s). Each migrated function captures its start and passes
+ * remainingMs() at each dispatch, mirroring the space worker's
+ * runRothOptimizer action.
+ */
+function actionDeadline(): () => number {
+  const startedAt = Date.now();
+  return () =>
+    Math.max(0, ENGINE_JOB_TIMEOUT_MS - (Date.now() - startedAt));
 }
 
 /**
@@ -1979,41 +2033,48 @@ export function calculateRetirement(
 // 2. Monte Carlo
 // ---------------------------------------------------------------------------
 
-export function runRetirementMonteCarlo(
+export async function runRetirementMonteCarlo(
   scenario: NormalizedScenario,
-): AdapterResult<{
-  successRate: number;
-  successfulRuns: number;
-  endingP10: number;
-  endingP50: number;
-  endingP90: number;
-  lowestSpending: number | null;
-  averageSpending: number | null;
-  medianFinalYearSpending: number | null;
-  medianFirstRetiredYearSpending: number | null;
-  // Spending adequacy (E1-S1): the share of runs in which every
-  // retired year's GROSS spending met or beat the
-  // minimum-annual-spending floor — null when no floor was set.
-  // Read beside successRate, never instead of it: a high
-  // funding-success rate is not proof spending held the floor.
-  spendingAdequacyRate: number | null;
-  // The floor the adequacy rate is measured against, $/yr — null
-  // when no floor was set.
-  minimumAnnualSpending: number | null;
-  runs: number;
-  seed: number;
-  chart: Array<{ age: number; median: number; p10: number; p90: number }>;
-  deterministicEndingBalance: number;
-}> {
-  return guard(() => {
+): Promise<
+  AdapterResult<{
+    successRate: number;
+    successfulRuns: number;
+    endingP10: number;
+    endingP50: number;
+    endingP90: number;
+    lowestSpending: number | null;
+    averageSpending: number | null;
+    medianFinalYearSpending: number | null;
+    medianFirstRetiredYearSpending: number | null;
+    // Spending adequacy (E1-S1): the share of runs in which every
+    // retired year's GROSS spending met or beat the
+    // minimum-annual-spending floor — null when no floor was set.
+    // Read beside successRate, never instead of it: a high
+    // funding-success rate is not proof spending held the floor.
+    spendingAdequacyRate: number | null;
+    // The floor the adequacy rate is measured against, $/yr — null
+    // when no floor was set.
+    minimumAnnualSpending: number | null;
+    runs: number;
+    seed: number;
+    chart: Array<{ age: number; median: number; p10: number; p90: number }>;
+    deterministicEndingBalance: number;
+  }>
+> {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const { inputs, warnings } = toSimInputs(scenario);
-    // D1: the engine takes decimals, not percents.
-    const mc = runMonteCarlo(
+    // D1: the engine takes decimals, not percents. The Monte
+    // Carlo leg runs in the worker pool (SMALL lane, §1.2), so a
+    // 5,000-run call no longer blocks the request thread; the
+    // deterministic cross-check beside it stays in-thread (~ms).
+    const mc = await runMonteCarloAsync(
       inputs,
       scenario.expectedReturnPct / 100,
       scenario.volatilityPct / 100,
       scenario.mcSeed,
       scenario.mcRuns,
+      { timeoutMs: remainingMs() },
     );
     if (mc === null) {
       return engineError(
@@ -2123,25 +2184,26 @@ export function runRetirementMonteCarlo(
 // 3. Max sustainable spending (Monte Carlo target + historical cross-check)
 // ---------------------------------------------------------------------------
 
-export function calculateMaxSpending(
+export async function calculateMaxSpending(
   scenario: NormalizedScenario,
-): AdapterResult<{
-  maxMonthlySpending: number;
-  maxAnnualSpending: number;
-  successRate: number;
-  successfulRuns: number;
-  medianEnding: number;
-  approximate: boolean;
-  runs: number;
-  targetSuccessRate: number;
-  spendingStrategy: string;
-  spendingAmountMeaning: string;
-  seed: number;
-  feasible: boolean;
-  solvedPortfolioWithdrawalPct: number | null;
-  cappedAtPercentBound: boolean;
-  historicalMaxMonthlySpending: number | null;
-  historicalMaxAnnualSpending: number | null;
+): Promise<
+  AdapterResult<{
+    maxMonthlySpending: number;
+    maxAnnualSpending: number;
+    successRate: number;
+    successfulRuns: number;
+    medianEnding: number;
+    approximate: boolean;
+    runs: number;
+    targetSuccessRate: number;
+    spendingStrategy: string;
+    spendingAmountMeaning: string;
+    seed: number;
+    feasible: boolean;
+    solvedPortfolioWithdrawalPct: number | null;
+    cappedAtPercentBound: boolean;
+    historicalMaxMonthlySpending: number | null;
+    historicalMaxAnnualSpending: number | null;
   // Feasibility metadata (Engine Review 2, E2-S1): rates here are
   // 0–1 fractions, like successRate above — targetSuccessRate is
   // the 85% target (0.85), achievedSuccessRate mirrors
@@ -2170,13 +2232,21 @@ export function calculateMaxSpending(
   historicalSuccessfulRuns: number | null;
   historicalSolvedPortfolioWithdrawalPct: number | null;
   historicalCappedAtPercentBound: boolean;
-}> {
-  return guard(() => {
+  }>
+> {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const { inputs, warnings } = toSimInputs(scenario);
     const expected = scenario.expectedReturnPct / 100;
     const vol = scenario.volatilityPct / 100;
-    // D2: the engine's target is percent units (0-100).
-    const solved = solveMaxSpending(
+    // D2: the engine's target is percent units (0-100). Both
+    // solver legs run in the worker pool (SMALL lane, §1.2) — the
+    // Monte Carlo leg first, the historical cross-check after it
+    // (its null short-circuit above is preserved: a null Monte
+    // Carlo solve answers unsupported without pricing the
+    // historical leg). Each leg dispatches with the action's
+    // remaining budget (§1.5).
+    const solved = await solveMaxSpendingAsync(
       inputs,
       scenario.stocksPct,
       expected,
@@ -2184,6 +2254,7 @@ export function calculateMaxSpending(
       "montecarlo",
       85,
       scenario.mcSeed,
+      { timeoutMs: remainingMs() },
     );
     if (solved === null) {
       return unsupported(
@@ -2199,7 +2270,7 @@ export function calculateMaxSpending(
         `No spending level reaches the 85% target — even $0/yr falls short at ${(Math.round(solved.successRate * 10) / 10).toFixed(1)}% success. The reported $0 maximum is not a sustainable spending level.`,
       );
     }
-    const histSolved = solveMaxSpending(
+    const histSolved = await solveMaxSpendingAsync(
       inputs,
       scenario.stocksPct,
       expected,
@@ -2207,6 +2278,7 @@ export function calculateMaxSpending(
       "historical",
       85,
       scenario.mcSeed,
+      { timeoutMs: remainingMs() },
     );
     const maxAnnual = centsToDollars(solved.maxSpendingCents);
     const histAnnual =
@@ -2558,10 +2630,10 @@ export type RothConversionResults = {
   };
 };
 
-export function compareRothConversions(
+export async function compareRothConversions(
   scenario: NormalizedScenario,
-): AdapterResult<RothConversionResults> {
-  return guard(() => {
+): Promise<AdapterResult<RothConversionResults>> {
+  return guardAsync(async () => {
     if (scenario.comparisonScope === "full") {
       return compareRothConversionsFull(scenario);
     }
@@ -2652,12 +2724,20 @@ export function compareRothConversions(
  * into engine_error — the caller gets a failure, not a quiet
  * limited comparison.
  */
-function compareRothConversionsFull(
+async function compareRothConversionsFull(
   scenario: NormalizedScenario,
-): AdapterResult<RothConversionResults> {
-  return guard(() => {
+): Promise<AdapterResult<RothConversionResults>> {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     const planInputs = buildRothPlanInputs(scenario);
-    const result = runOptimizer(planInputs);
+    // Full mode: the fixed-age optimizer search runs in the
+    // worker pool (SMALL lane, §1.2), so a 3,025-candidate search
+    // no longer blocks the request thread — the S1 headline
+    // (295,602 ms wall over HTTP/MCP, /health delayed 295,409 ms)
+    // was this call priced in-thread.
+    const result = await runOptimizerAsync(planInputs, {
+      timeoutMs: remainingMs(),
+    });
     const winner = result.winner;
     const doNothing = result.doNothing;
     // Both objective winners come from the ENGINE (E4-S2):
@@ -2963,11 +3043,12 @@ export function dynamicWithdrawal(
 // 6. Retirement-age compare (tax-aware Roth compare + work-years leg)
 // ---------------------------------------------------------------------------
 
-export function compareRetirementAges(
+export async function compareRetirementAges(
   scenario: NormalizedScenario,
-): AdapterResult<{
-  baselineName: string;
-  scenarios: Array<MappedCompareScenario & { retirementAge: number }>;
+): Promise<
+  AdapterResult<{
+    baselineName: string;
+    scenarios: Array<MappedCompareScenario & { retirementAge: number }>;
   winnerByEndingWealth: string | null;
   winnerByNetCost: string | null;
   deltas: Array<{
@@ -3040,8 +3121,10 @@ export function compareRetirementAges(
    *  disagreeing objectives, or the missing salary). */
   overallRecommendationNote: string;
   comparisonScope: ComparisonScopeInfo;
-}> {
-  return guard(() => {
+  }>
+> {
+  return guardAsync(async () => {
+    const remainingMs = actionDeadline();
     // No full mode exists for the quit-age comparison: each age
     // prices one fixed strategy, and full conversion search is a
     // per-age operation (retirement_roth_conversion, full). A
@@ -3157,10 +3240,18 @@ export function compareRetirementAges(
         hsaEligible: scenario.hsaEligible,
         priorYearWages: scenario.priorYearWagesAnnual,
       };
-      const wyRows: WorkYearsCompareRow[] = runWorkYearsCompare(
+      // The work-years leg runs in the worker pool (LARGE lane,
+      // §1.2): each quit age's joint search is one worker job,
+      // so a multi-minute salary leg no longer blocks the
+      // request thread. The retirement-only legs above stay
+      // in-thread (runRothCompare, ~1 s at the capped size).
+      // One opts object carries the action's remaining budget
+      // (§1.5), as the space worker's work-years action does.
+      const wyRows: WorkYearsCompareRow[] = await runWorkYearsCompareAsync(
         planInputs,
         job,
         ages,
+        { timeoutMs: remainingMs() },
       );
       workYears.push(
         ...wyRows.map((row) => ({

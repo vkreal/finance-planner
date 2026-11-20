@@ -52,7 +52,11 @@ export interface McpToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: unknown) => AdapterResult<unknown>;
+  // Async: the heavy tools price in the worker pool (Engine
+  // Review C7 architecture, §1.2), so every handler returns a
+  // promise; light handlers still compute synchronously and
+  // their value is awaited the same way.
+  handler: (args: unknown) => AdapterResult<unknown> | Promise<AdapterResult<unknown>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,10 +523,12 @@ const EMPTY_INPUT_SCHEMA: Record<string, unknown> = {
 // normalize entirely — it needs no financial inputs.
 // ---------------------------------------------------------------------------
 
-function normalized(
+async function normalized(
   args: unknown,
-  fn: (scenario: Parameters<typeof calculateRetirement>[0]) => AdapterResult<unknown>,
-): AdapterResult<unknown> {
+  fn: (
+    scenario: Parameters<typeof calculateRetirement>[0],
+  ) => AdapterResult<unknown> | Promise<AdapterResult<unknown>>,
+): Promise<AdapterResult<unknown>> {
   const n = normalizeInputs(args);
   if (!n.ok) return n.error;
   return fn(n.scenario);
@@ -969,16 +975,24 @@ function describeCapabilities(): AdapterResult<unknown> {
 // Dispatch. Unknown tool name -> throw (the server maps it to JSON-RPC
 // -32602). Normalize failures and adapter envelopes are returned as-is,
 // never thrown. Logs only tool name + ok + duration (never inputs/results).
+// Async: the heavy tools price in the worker pool, so dispatch awaits
+// the handler; a pool EngineError is already mapped to a typed
+// envelope by the adapter's guardAsync — dispatch never sees one as
+// a throw. The server maps the typed envelope to the JSON-RPC /
+// HTTP error shape (§1.4).
 // ---------------------------------------------------------------------------
 
-export function dispatchTool(name: string, args: unknown): AdapterResult<unknown> {
+export async function dispatchTool(
+  name: string,
+  args: unknown,
+): Promise<AdapterResult<unknown>> {
   const started = Date.now();
   const def = TOOLS_BY_NAME.get(name);
   if (!def) {
     throw new Error(`Unknown tool: ${name}`);
   }
   try {
-    const result = def.handler(args);
+    const result = await def.handler(args);
     console.error(
       `[assistant-api] tool=${name} ok=${result.ok} ms=${Date.now() - started}`,
     );

@@ -154,7 +154,7 @@ const SIX_ORDER_NAMES = [
 ];
 
 describe("withdrawal orders — full mode (R4-S1)", () => {
-  test("(1) full mode evaluates all six engine draw orders", () => {
+  test("(1) full mode evaluates all six engine draw orders", async () => {
     const results = expectOk(
       compareWithdrawalStrategies(
         normalizedScenario({ comparisonScope: "full" }),
@@ -170,7 +170,7 @@ describe("withdrawal orders — full mode (R4-S1)", () => {
     assertBaselineOnce(results);
   });
 
-  test("(2) identical non-order inputs per order: adapter matches runRothCompare to the cent", () => {
+  test("(2) identical non-order inputs per order: adapter matches runRothCompare to the cent", async () => {
     const s = normalizedScenario({ comparisonScope: "full" });
     const results = expectOk(compareWithdrawalStrategies(s)) as unknown as CompareResults;
     // The same base object prices all six orders — any non-order
@@ -205,7 +205,7 @@ describe("withdrawal orders — full mode (R4-S1)", () => {
     }
   });
 
-  test("(3)(4)(5)(6) baseline once, deltas reconcile, winners are min cost / max wealth", () => {
+  test("(3)(4)(5)(6) baseline once, deltas reconcile, winners are min cost / max wealth", async () => {
     for (const scope of ["limited", "full"] as const) {
       const results = expectOk(
         compareWithdrawalStrategies(normalizedScenario({ comparisonScope: scope })),
@@ -216,7 +216,7 @@ describe("withdrawal orders — full mode (R4-S1)", () => {
     }
   });
 
-  test("(12) repeated full-mode calls are bit-identical", () => {
+  test("(12) repeated full-mode calls are bit-identical", async () => {
     const s = normalizedScenario({ comparisonScope: "full" });
     const a = compareWithdrawalStrategies(s);
     const b = compareWithdrawalStrategies(s);
@@ -231,7 +231,7 @@ describe("withdrawal + Roth — exact ties are deterministic (R4-S1/S2)", () => 
     roth: 0,
     hsa: 0,
   };
-  test("(7) all-zero household ties at $0; first in list order wins, repeatably", () => {
+  test("(7) all-zero household ties at $0; first in list order wins, repeatably", async () => {
     const s = normalizedScenario(zero);
     const w1 = expectOk(compareWithdrawalStrategies(s)) as unknown as CompareResults;
     const w2 = expectOk(compareWithdrawalStrategies(s)) as unknown as CompareResults;
@@ -254,7 +254,7 @@ describe("withdrawal + Roth — exact ties are deterministic (R4-S1/S2)", () => 
     expect(wf.winnerByNetCost).toBe("taxable-first");
     expect(wf.winnerByEndingWealth).toBe("taxable-first");
     // The Roth side ties the same way: every fill converts $0.
-    const r = expectOk(compareRothConversions(s)) as unknown as CompareResults;
+    const r = expectOk(await compareRothConversions(s)) as unknown as CompareResults;
     for (const scen of r.scenarios) {
       expect(scen.lifetimeNetCost).toBe(0);
       expect(scen.endingWealth).toBe(0);
@@ -266,9 +266,9 @@ describe("withdrawal + Roth — exact ties are deterministic (R4-S1/S2)", () => 
 });
 
 describe("Roth conversion — limited mode (R4-S2/S3)", () => {
-  test("(8)(10) limited mode: four strategies, Do Nothing benchmark, never globally optimal", () => {
+  test("(8)(10) limited mode: four strategies, Do Nothing benchmark, never globally optimal", async () => {
     const results = expectOk(
-      compareRothConversions(normalizedScenario()),
+      await compareRothConversions(normalizedScenario()),
     ) as unknown as CompareResults;
     expect(results.scenarios).toHaveLength(4);
     expect(results.scenarios.map((s) => s.name)).toEqual([
@@ -291,10 +291,10 @@ describe("Roth conversion — limited mode (R4-S2/S3)", () => {
     expect(results.winnerByNetCost).not.toBe(results.winnerByEndingWealth);
   });
 
-  test("(12) repeated limited Roth calls are bit-identical", () => {
+  test("(12) repeated limited Roth calls are bit-identical", async () => {
     const s = normalizedScenario();
-    expect(JSON.stringify(compareRothConversions(s))).toBe(
-      JSON.stringify(compareRothConversions(s)),
+    expect(JSON.stringify(await compareRothConversions(s))).toBe(
+      JSON.stringify(await compareRothConversions(s)),
     );
   });
 });
@@ -302,7 +302,7 @@ describe("Roth conversion — limited mode (R4-S2/S3)", () => {
 describe("Roth conversion — full optimizer mode (R4-S2)", () => {
   test(
     "(9) full optimizer returns actual engine candidates + winner metadata (parity vs runOptimizer)",
-    () => {
+    async () => {
       // Shorter horizon (end at 80, not 95) for this parity run
       // only: the searched candidate set is horizon-independent
       // (same ceilings, windows, orders, harvest gate — the
@@ -313,7 +313,7 @@ describe("Roth conversion — full optimizer mode (R4-S2)", () => {
       // example: same winner, same 3,025 candidates).
       const s = normalizedScenario({ comparisonScope: "full", endAge: 80 });
       const adapterResults = expectOk(
-        compareRothConversions(s),
+        await compareRothConversions(s),
       ) as unknown as RothConversionResults;
       // Direct engine call, identical inputs: the independent
       // numerical evidence for every figure below.
@@ -454,7 +454,7 @@ describe("Roth conversion — full optimizer mode (R4-S2)", () => {
     900_000,
   );
 
-  test("(9b) candidate count is pinned at the full horizon: 3,024 specs at endAge 95", () => {
+  test("(9b) candidate count is pinned at the full horizon: 3,024 specs at endAge 95", async () => {
     // Builds specs only (~2s) — no pricing. The count is
     // horizon-independent: test (9) pins parity at endAge 80,
     // where the same builder also yields 3,024, and the README's
@@ -470,9 +470,9 @@ describe("Roth conversion — full optimizer mode (R4-S2)", () => {
 
 describe("ACA-sensitive households (R4-S2)", () => {
   const aca = { acaBenchmarkCouple: 21000 };
-  test("(11) ACA-aware strategies price credit; the optimizer search contains ACA-cliff candidates", () => {
+  test("(11) ACA-aware strategies price credit; the optimizer search contains ACA-cliff candidates", async () => {
     const s = normalizedScenario(aca);
-    const roth = expectOk(compareRothConversions(s)) as unknown as CompareResults;
+    const roth = expectOk(await compareRothConversions(s)) as unknown as CompareResults;
     // Do Nothing keeps the credit; the fills forfeit it by
     // pushing MAGI over the cliff — the ACA lever is priced,
     // not assumed.
@@ -504,9 +504,9 @@ describe("ACA-sensitive households (R4-S2)", () => {
 });
 
 describe("isolation + compatibility (R4-S2/S3)", () => {
-  test("(13) rewriting SAMPLE_HOUSEHOLD moves no comparison figure", () => {
+  test("(13) rewriting SAMPLE_HOUSEHOLD moves no comparison figure", async () => {
     const before = JSON.stringify(compareWithdrawalStrategies(normalizedScenario()));
-    const beforeRoth = JSON.stringify(compareRothConversions(normalizedScenario()));
+    const beforeRoth = JSON.stringify(await compareRothConversions(normalizedScenario()));
     const household = sampleHousehold.SAMPLE_HOUSEHOLD as unknown as {
       balancesCents: Record<string, number>;
       annualSpendingCents: number;
@@ -529,7 +529,7 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
       household.socialSecurity.primaryAnnualCents = 1;
       household.socialSecurity.spouseAnnualCents = 1;
       expect(JSON.stringify(compareWithdrawalStrategies(normalizedScenario()))).toBe(before);
-      expect(JSON.stringify(compareRothConversions(normalizedScenario()))).toBe(beforeRoth);
+      expect(JSON.stringify(await compareRothConversions(normalizedScenario()))).toBe(beforeRoth);
     } finally {
       household.balancesCents = saved.balancesCents;
       household.annualSpendingCents = saved.annualSpendingCents;
@@ -538,7 +538,7 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
     }
   });
 
-  test("(14) default calls are unchanged: old shapes, old names, old counts", () => {
+  test("(14) default calls are unchanged: old shapes, old names, old counts", async () => {
     const w = expectOk(
       compareWithdrawalStrategies(normalizedScenario()),
     ) as unknown as CompareResults;
@@ -548,7 +548,7 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
       "roth-first",
     ]);
     const r = expectOk(
-      compareRothConversions(normalizedScenario()),
+      await compareRothConversions(normalizedScenario()),
     ) as unknown as CompareResults;
     expect(r.scenarios.map((s) => s.name)).toEqual([
       "do-nothing",
@@ -573,20 +573,20 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
     if (!bad.ok) expect(bad.error.error.code).toBe("invalid_input");
     // The work-years tool has no full mode: "full" is refused
     // explicitly, never run as a quiet limited comparison.
-    const wy = compareRetirementAges(
+    const wy = await compareRetirementAges(
       normalizedScenario({ comparisonScope: "full" }),
     );
     expect(wy.ok).toBe(false);
     if (!wy.ok) expect(wy.error.code).toBe("unsupported");
     // ...while its default call gains the scope block and stays limited.
     const wyLim = expectOk(
-      compareRetirementAges(normalizedScenario()),
+      await compareRetirementAges(normalizedScenario()),
     ) as unknown as CompareResults;
     assertLimitedScope(wyLim);
     assertBaselineOnce(wyLim);
   });
 
-  test("(14) still 9 tools: full mode is a scope, not a new tool", () => {
+  test("(14) still 9 tools: full mode is a scope, not a new tool", async () => {
     expect(TOOLS).toHaveLength(9);
     expect(TOOLS.map((t) => t.name)).toEqual([
       "retirement_calculate",
@@ -601,22 +601,22 @@ describe("isolation + compatibility (R4-S2/S3)", () => {
     ]);
   });
 
-  test("(8) work-years scope never claims global optimality", () => {
+  test("(8) work-years scope never claims global optimality", async () => {
     const wy = expectOk(
-      compareRetirementAges(normalizedScenario()),
+      await compareRetirementAges(normalizedScenario()),
     ) as unknown as CompareResults;
     expect(wy.comparisonScope.scope).toBe("limited");
     expect(wy.comparisonScope.globalOptimalityClaimed).toBe(false);
     expect(wy.comparisonScope.evaluatedCandidates).toBe(
       wy.scenarios.length,
     );
-    const guide = dispatchTool("retirement_describe_capabilities", {});
+    const guide = await dispatchTool("retirement_describe_capabilities", {});
     expect(guide.ok).toBe(true);
   });
 });
 
 describe("comparisonScope input", () => {
-  test("comparisonScope normalizes with user provenance when given", () => {
+  test("comparisonScope normalizes with user provenance when given", async () => {
     const n = normalizeInputs(
       fictionalScenario({ comparisonScope: "full" }),
     );
@@ -628,7 +628,7 @@ describe("comparisonScope input", () => {
     ).toMatchObject({ value: "full", provenance: "user" });
   });
 
-  test("comparisonScope defaults to limited with an assumption entry", () => {
+  test("comparisonScope defaults to limited with an assumption entry", async () => {
     const s: NormalizedScenario = normalizedScenario();
     expect(s.comparisonScope).toBe("limited");
     expect(
@@ -691,7 +691,7 @@ describe("yearly table provenance (Review 3 P3-S1)", () => {
     expect(row2028!.stateTaxProvenance.kind).toBe("flat-rate-estimate");
   }
 
-  test("withdrawal compare: every yearly row carries both provenances; 2028 reads carried-forward / flat-rate-estimate", () => {
+  test("withdrawal compare: every yearly row carries both provenances; 2028 reads carried-forward / flat-rate-estimate", async () => {
     const envelope = compareWithdrawalStrategies(normalizedScenario());
     if (!envelope.ok) throw new Error("expected ok envelope");
     assertYearlyProvenance(envelope.results.yearly);
@@ -700,8 +700,8 @@ describe("yearly table provenance (Review 3 P3-S1)", () => {
     );
   });
 
-  test("Roth conversion (limited): every yearly row carries both provenances; the response warns the flat-rate state tax is an estimate", () => {
-    const envelope = compareRothConversions(normalizedScenario());
+  test("Roth conversion (limited): every yearly row carries both provenances; the response warns the flat-rate state tax is an estimate", async () => {
+    const envelope = await compareRothConversions(normalizedScenario());
     if (!envelope.ok) throw new Error("expected ok envelope");
     assertYearlyProvenance(envelope.results.yearly);
     // The estimate label rides the response, not just the rows:
@@ -713,8 +713,8 @@ describe("yearly table provenance (Review 3 P3-S1)", () => {
 
   test(
     "work-years (salary): yearly rows carry both provenances and the response-level note covers the work-years tax totals",
-    () => {
-      const envelope = compareRetirementAges(
+    async () => {
+      const envelope = await compareRetirementAges(
         normalizedScenario({
           salaryAnnual: 120000,
           spouseSocialSecurityAnnual: 0,

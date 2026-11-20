@@ -39,7 +39,7 @@ type CompareResults = {
 };
 
 describe("C9 Build 3 — adapter: the compare verdict reaches the caller", () => {
-  test("depleted household: mapped scenarios carry integrity, winner unqualified, warning present", () => {
+  test("depleted household: mapped scenarios carry integrity, winner unqualified, warning present", async () => {
     // Every order shorts $2,777,689.88 of spending (unpaid tax
     // $0 — the shortfall is spending, not tax, and the two
     // signals stay distinct). The mapped scenarios carry the
@@ -73,7 +73,7 @@ describe("C9 Build 3 — adapter: the compare verdict reaches the caller", () =>
     expect(res.warnings).toContain(UNQUALIFIED_WARNING);
   });
 
-  test("valid household control: qualified, nothing excluded, no unqualified warning", () => {
+  test("valid household control: qualified, nothing excluded, no unqualified warning", async () => {
     const res = compareWithdrawalStrategies(normalizedScenario());
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("fixture failed");
@@ -85,7 +85,7 @@ describe("C9 Build 3 — adapter: the compare verdict reaches the caller", () =>
 });
 
 describe("C9 Build 3 NICEs — N6: no valid winner is claimed when none exists", () => {
-  test("full optimizer, depleted household: the warnings never claim a cheapest valid candidate", () => {
+  test("full optimizer, depleted household: the warnings never claim a cheapest valid candidate", async () => {
     // Every candidate shorts spending, so the search is
     // all-invalid (3,025 candidates, 0 valid — the builder's
     // own probe on this shape, re-verified by execution).
@@ -95,7 +95,7 @@ describe("C9 Build 3 NICEs — N6: no valid winner is claimed when none exists",
     // no valid candidate behind it. The exclusion line still
     // names the cheapest priced candidate and its reason; only
     // the false valid-winner sentence is gone.
-    const res = compareRothConversions(
+    const res = await compareRothConversions(
       normalizedScenario({
         pretax: 10000,
         taxable: 10000,
@@ -123,7 +123,7 @@ describe("C9 Build 3 NICEs — N6: no valid winner is claimed when none exists",
     // as the other full-optimizer tests do.
   }, 300000);
 
-  test("full optimizer, mixed household: the cheapest valid candidate sentence IS present", () => {
+  test("full optimizer, mixed household: the cheapest valid candidate sentence IS present", async () => {
     // The mixed shape (Engine Review C9, Build 3 NICEs, N6 —
     // the sentence's first execution in a test): the fictional
     // household at half balances ($625,000 pre-tax / $1,050,000
@@ -138,7 +138,7 @@ describe("C9 Build 3 NICEs — N6: no valid winner is claimed when none exists",
     // "cheapest valid candidate" sentence for the crowned
     // winner; the "No tested candidate was valid" line is
     // absent — this run HAS a valid winner.
-    const res = compareRothConversions(
+    const res = await compareRothConversions(
       normalizedScenario({
         pretax: 625000,
         taxable: 1050000,

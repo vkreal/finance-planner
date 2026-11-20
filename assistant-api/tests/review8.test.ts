@@ -63,11 +63,11 @@ function ignoredField(
 }
 
 /** Dispatch a financial tool and return the ok envelope. */
-function dispatchOk(
+async function dispatchOk(
   tool: string,
   args: Record<string, unknown>,
-): AdapterResponse<unknown> {
-  const res = dispatchTool(tool, args);
+): Promise<AdapterResponse<unknown>> {
+  const res = await dispatchTool(tool, args);
   if (!res.ok) throw new Error(`${tool} failed: ${JSON.stringify(res.error)}`);
   return res;
 }
@@ -77,9 +77,9 @@ function dispatchOk(
 // ---------------------------------------------------------------------------
 
 describe("R8-S1 ignored inputs are reported and change nothing", () => {
-  test("conversionAnnual to retirement_calculate: ignored, named, results unchanged to the cent", () => {
-    const base = dispatchOk("retirement_calculate", fictionalScenario({}));
-    const withConversion = dispatchOk(
+  test("conversionAnnual to retirement_calculate: ignored, named, results unchanged to the cent", async () => {
+    const base = await dispatchOk("retirement_calculate", fictionalScenario({}));
+    const withConversion = await dispatchOk(
       "retirement_calculate",
       fictionalScenario({ conversionAnnual: 20000 }),
     );
@@ -110,12 +110,12 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     ).toBe(ignoredOf(base).length + 1);
   });
 
-  test("taxYear to a multi-year comparison: inert, results identical, envelope taxLawYear is the march start", () => {
-    const y2026 = dispatchOk(
+  test("taxYear to a multi-year comparison: inert, results identical, envelope taxLawYear is the march start", async () => {
+    const y2026 = await dispatchOk(
       "retirement_roth_conversion",
       fictionalScenario({ taxYear: 2026 }),
     );
-    const y2025 = dispatchOk(
+    const y2025 = await dispatchOk(
       "retirement_roth_conversion",
       fictionalScenario({ taxYear: 2025 }),
     );
@@ -127,12 +127,12 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     );
   });
 
-  test("volatilityPct to a deterministic tax comparison: inert, results identical", () => {
-    const base = dispatchOk(
+  test("volatilityPct to a deterministic tax comparison: inert, results identical", async () => {
+    const base = await dispatchOk(
       "retirement_compare_strategies",
       fictionalScenario({}),
     );
-    const vol = dispatchOk(
+    const vol = await dispatchOk(
       "retirement_compare_strategies",
       fictionalScenario({ volatilityPct: 50 }),
     );
@@ -145,9 +145,9 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
 
   test(
     "mcRuns to max-spending: inert (solver runs a fixed 1,000), results identical",
-    () => {
-      const omitted = dispatchOk("retirement_max_spending", fictionalScenario({}));
-      const ten = dispatchOk(
+    async () => {
+      const omitted = await dispatchOk("retirement_max_spending", fictionalScenario({}));
+      const ten = await dispatchOk(
         "retirement_max_spending",
         fictionalScenario({ mcRuns: 10 }),
       );
@@ -160,9 +160,9 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     60000,
   );
 
-  test("stockSoldAnnual to a non-single-year tool: ignored, results unchanged", () => {
-    const base = dispatchOk("retirement_calculate", fictionalScenario({}));
-    const sold = dispatchOk(
+  test("stockSoldAnnual to a non-single-year tool: ignored, results unchanged", async () => {
+    const base = await dispatchOk("retirement_calculate", fictionalScenario({}));
+    const sold = await dispatchOk(
       "retirement_calculate",
       fictionalScenario({ stockSoldAnnual: 20000, stockBasisAnnual: 12000 }),
     );
@@ -175,10 +175,10 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     );
   });
 
-  test("omitted fields never appear as user-supplied ignored fields; essentials never appear", () => {
+  test("omitted fields never appear as user-supplied ignored fields; essentials never appear", async () => {
     // Minimal call: only the six essentials + spouseAge (mfj).
     // Every supplied field is priced by calculate, so nothing is ignored.
-    const res = dispatchOk("retirement_calculate", {
+    const res = await dispatchOk("retirement_calculate", {
       pretax: 1250000,
       taxable: 2100000,
       roth: 375000,
@@ -200,7 +200,7 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     }
   });
 
-  test("suppliedFields records caller keys in FIELD_ORDER, regardless of caller key order", () => {
+  test("suppliedFields records caller keys in FIELD_ORDER, regardless of caller key order", async () => {
     const n = normalizeInputs({
       monthlySpending: 9500,
       currentAge: 54,
@@ -225,8 +225,8 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     ]);
   });
 
-  test("conditional ignore: spouse fields on a single return price nothing for this scenario", () => {
-    const res = dispatchOk(
+  test("conditional ignore: spouse fields on a single return price nothing for this scenario", async () => {
+    const res = await dispatchOk(
       "retirement_calculate",
       fictionalScenario({
         filingStatus: "single",
@@ -242,8 +242,8 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     expect(spouseAge!.reason).toContain("no spouse is modeled");
   });
 
-  test("conditional ignore: a WA state rate prices via the excise path, not the rate", () => {
-    const res = dispatchOk(
+  test("conditional ignore: a WA state rate prices via the excise path, not the rate", async () => {
+    const res = await dispatchOk(
       "retirement_tax_year",
       fictionalScenario({ state: "WA", stateRatePct: 5 }),
     );
@@ -252,8 +252,8 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     expect(rate!.reason).toContain("WA");
   });
 
-  test("unknown fields still fail strict validation, naming the property", () => {
-    const res = dispatchTool(
+  test("unknown fields still fail strict validation, naming the property", async () => {
+    const res = await dispatchTool(
       "retirement_calculate",
       fictionalScenario({ conversionAnual: 20000 }),
     );
@@ -263,8 +263,8 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
     expect(res.error.message).toContain("conversionAnual");
   });
 
-  test("missing essentials return missing_input explicitly (not undefined)", () => {
-    const none = dispatchTool("retirement_calculate", {});
+  test("missing essentials return missing_input explicitly (not undefined)", async () => {
+    const none = await dispatchTool("retirement_calculate", {});
     expect(none.ok).toBe(false);
     if (none.ok) throw new Error("empty input should not normalize");
     expect(none.error.code).toBe("missing_input");
@@ -281,7 +281,7 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
       expect(typeof q.question).toBe("string");
       expect(q.question.length).toBeGreaterThan(0);
     }
-    const one = dispatchTool(
+    const one = await dispatchTool(
       "retirement_calculate",
       fictionalScenario({ pretax: undefined }),
     );
@@ -293,7 +293,7 @@ describe("R8-S1 ignored inputs are reported and change nothing", () => {
 });
 
 describe("R8-S1 positive controls: priced optionals genuinely move the answer", () => {
-  test("calculate: expectedRealReturnPct moves the ending balance", () => {
+  test("calculate: expectedRealReturnPct moves the ending balance", async () => {
     const low = expectOk(calculateRetirement(normalizedScenario({})));
     const high = expectOk(
       calculateRetirement(normalizedScenario({ expectedRealReturnPct: 8 })),
@@ -301,10 +301,10 @@ describe("R8-S1 positive controls: priced optionals genuinely move the answer", 
     expect(high.endingBalance).not.toBe(low.endingBalance);
   });
 
-  test("monte_carlo: expectedRealReturnPct moves the median ending balance", () => {
-    const low = expectOk(runRetirementMonteCarlo(normalizedScenario({})));
+  test("monte_carlo: expectedRealReturnPct moves the median ending balance", async () => {
+    const low = expectOk(await runRetirementMonteCarlo(normalizedScenario({})));
     const high = expectOk(
-      runRetirementMonteCarlo(
+      await runRetirementMonteCarlo(
         normalizedScenario({ expectedRealReturnPct: 0 }),
       ),
     );
@@ -313,22 +313,22 @@ describe("R8-S1 positive controls: priced optionals genuinely move the answer", 
 
   test(
     "max_spending: expectedRealReturnPct moves the max spending level",
-    () => {
-      const low = expectOk(calculateMaxSpending(normalizedScenario({})));
+    async () => {
+      const low = expectOk(await calculateMaxSpending(normalizedScenario({})));
       const high = expectOk(
-        calculateMaxSpending(normalizedScenario({ expectedRealReturnPct: 8 })),
+        await calculateMaxSpending(normalizedScenario({ expectedRealReturnPct: 8 })),
       );
       expect(high.maxMonthlySpending).not.toBe(low.maxMonthlySpending);
     },
     60000,
   );
 
-  test("compare_strategies: taxableBasisPct moves the comparison", () => {
-    const low = dispatchOk(
+  test("compare_strategies: taxableBasisPct moves the comparison", async () => {
+    const low = await dispatchOk(
       "retirement_compare_strategies",
       fictionalScenario({}),
     );
-    const high = dispatchOk(
+    const high = await dispatchOk(
       "retirement_compare_strategies",
       fictionalScenario({ taxableBasisPct: 100 }),
     );
@@ -337,9 +337,9 @@ describe("R8-S1 positive controls: priced optionals genuinely move the answer", 
     );
   });
 
-  test("roth_conversion: taxableBasisPct moves the comparison", () => {
-    const low = dispatchOk("retirement_roth_conversion", fictionalScenario({}));
-    const high = dispatchOk(
+  test("roth_conversion: taxableBasisPct moves the comparison", async () => {
+    const low = await dispatchOk("retirement_roth_conversion", fictionalScenario({}));
+    const high = await dispatchOk(
       "retirement_roth_conversion",
       fictionalScenario({ taxableBasisPct: 100 }),
     );
@@ -348,14 +348,14 @@ describe("R8-S1 positive controls: priced optionals genuinely move the answer", 
     );
   });
 
-  test("work_years: compareAges moves the comparison (no salary, so no earned-income leg)", () => {
+  test("work_years: compareAges moves the comparison (no salary, so no earned-income leg)", async () => {
     const a = expectOk(
-      compareRetirementAges(
+      await compareRetirementAges(
         normalizedScenario({ compareAges: [58, 60, 63] }),
       ),
     );
     const b = expectOk(
-      compareRetirementAges(
+      await compareRetirementAges(
         normalizedScenario({ compareAges: [58, 62, 65] }),
       ),
     );
@@ -363,14 +363,14 @@ describe("R8-S1 positive controls: priced optionals genuinely move the answer", 
     expect(a.workYears).toEqual([]);
   });
 
-  test("tax_year: interestAnnual moves the federal tax", () => {
+  test("tax_year: interestAnnual moves the federal tax", async () => {
     // Other ordinary income lifts taxable income above the standard
     // deduction, so the interest difference actually moves the tax.
-    const low = dispatchOk(
+    const low = await dispatchOk(
       "retirement_tax_year",
       fictionalScenario({ interestAnnual: 1000, otherOrdinaryAnnual: 60000 }),
     );
-    const high = dispatchOk(
+    const high = await dispatchOk(
       "retirement_tax_year",
       fictionalScenario({ interestAnnual: 5000, otherOrdinaryAnnual: 60000 }),
     );
@@ -457,7 +457,7 @@ function pricedWithParity(
 }
 
 describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
-  test("$10,000 ordinary / $6,000 qualified is valid", () => {
+  test("$10,000 ordinary / $6,000 qualified is valid", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 10000,
       qualifiedDividendsAnnual: 6000,
@@ -465,7 +465,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.qualifiedDividends).toBe(6000);
   });
 
-  test("$10,000 ordinary / $0 qualified is valid", () => {
+  test("$10,000 ordinary / $0 qualified is valid", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 10000,
       qualifiedDividendsAnnual: 0,
@@ -473,7 +473,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.qualifiedDividends).toBe(0);
   });
 
-  test("$10,000 ordinary / $10,000 qualified is valid (all qualified)", () => {
+  test("$10,000 ordinary / $10,000 qualified is valid (all qualified)", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 10000,
       qualifiedDividendsAnnual: 10000,
@@ -481,7 +481,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.qualifiedDividends).toBe(10000);
   });
 
-  test("$0 / $0 is valid", () => {
+  test("$0 / $0 is valid", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 0,
       qualifiedDividendsAnnual: 0,
@@ -489,13 +489,13 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.qualifiedDividends).toBe(0);
   });
 
-  test("omitted qualified with ordinary present is valid", () => {
+  test("omitted qualified with ordinary present is valid", async () => {
     const res = pricedWithParity({ ordinaryDividendsAnnual: 10000 });
     expect(res.qualifiedDividends).toBe(0);
   });
 
-  test("$4,000 ordinary / $6,000 qualified is rejected invalid_input naming both fields", () => {
-    const res = dispatchTool(
+  test("$4,000 ordinary / $6,000 qualified is rejected invalid_input naming both fields", async () => {
+    const res = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
         ordinaryDividendsAnnual: 4000,
@@ -514,8 +514,8 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     ]);
   });
 
-  test("omitted ordinary with qualified > $0 is rejected (ordinary counts as $0)", () => {
-    const res = dispatchTool(
+  test("omitted ordinary with qualified > $0 is rejected (ordinary counts as $0)", async () => {
+    const res = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({ qualifiedDividendsAnnual: 6000 }),
     );
@@ -524,8 +524,8 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.error.code).toBe("invalid_input");
   });
 
-  test("the rejection happens on every tool, before any engine runs", () => {
-    const res = dispatchTool(
+  test("the rejection happens on every tool, before any engine runs", async () => {
+    const res = await dispatchTool(
       "retirement_calculate",
       fictionalScenario({
         ordinaryDividendsAnnual: 4000,
@@ -537,7 +537,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.error.code).toBe("invalid_input");
   });
 
-  test("qualified dividends enter AGI once and the preferential stack once", () => {
+  test("qualified dividends enter AGI once and the preferential stack once", async () => {
     // Other ordinary income lifts taxable income above the standard
     // deduction, so the preferential rate on qualified dividends
     // actually moves the federal tax.
@@ -560,7 +560,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(noneQualified.qualifiedDividends).toBe(0);
   });
 
-  test("NIIT parity at high MAGI: adapter and direct engine agree to the cent", () => {
+  test("NIIT parity at high MAGI: adapter and direct engine agree to the cent", async () => {
     const res = pricedWithParity({
       ordinaryDividendsAnnual: 10000,
       qualifiedDividendsAnnual: 6000,
@@ -570,8 +570,8 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
     expect(res.niit).toBeGreaterThan(0);
   });
 
-  test("envelope reports contract 165 on the tax-year tool", () => {
-    const res = dispatchTool(
+  test("envelope reports contract 165 on the tax-year tool", async () => {
+    const res = await dispatchTool(
       "retirement_tax_year",
       fictionalScenario({
         ordinaryDividendsAnnual: 10000,
@@ -594,7 +594,7 @@ describe("R8-S2 dividend validation (Box 1a total / Box 1b portion)", () => {
 });
 
 describe("R8-S1 mapping table is the single source (spot checks)", () => {
-  test("pricedBy names the tools that price a field", () => {
+  test("pricedBy names the tools that price a field", async () => {
     expect(pricedBy("conversionAnnual")).toEqual(["retirement_tax_year"]);
     expect(pricedBy("mcRuns")).toEqual(["retirement_monte_carlo"]);
     expect(pricedBy("volatilityPct")).toEqual([
@@ -609,7 +609,7 @@ describe("R8-S1 mapping table is the single source (spot checks)", () => {
     ]);
   });
 
-  test("every optional field is priced by at least one tool; every FIELD_ORDER entry is a schema key", () => {
+  test("every optional field is priced by at least one tool; every FIELD_ORDER entry is a schema key", async () => {
     const zodKeys = new Set(Object.keys(RetirementQuestionInputs.shape));
     for (const field of FIELD_ORDER) {
       expect(zodKeys.has(field)).toBe(true);

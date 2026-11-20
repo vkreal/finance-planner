@@ -105,9 +105,9 @@ function yearRow(results: CompareResultsShape, year: number) {
 }
 
 describe("R3-S1 health premiums", () => {
-  test("1. all premium fields omitted — existing outputs unchanged, warning present", () => {
+  test("1. all premium fields omitted — existing outputs unchanged, warning present", async () => {
     const envelope = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_roth_conversion",
         fictionalScenario(BENCHMARKS),
       ),
@@ -139,9 +139,9 @@ describe("R3-S1 health premiums", () => {
     );
   });
 
-  test("2. all premium fields explicitly zero — no insurance expense, credit capped at $0", () => {
+  test("2. all premium fields explicitly zero — no insurance expense, credit capped at $0", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           healthPremiumAcaHouseholdAnnual: 0,
@@ -166,7 +166,7 @@ describe("R3-S1 health premiums", () => {
     }
   });
 
-  test("null-tier assumption notes state the benchmark fallback when the term is active (pass-1 SHOULD-1)", () => {
+  test("null-tier assumption notes state the benchmark fallback when the term is active (pass-1 SHOULD-1)", async () => {
     // Household-only premium, term active: the null single tier
     // falls back to the year's benchmark, so its note must say
     // so — "no premium modeled" would be false (the call prices
@@ -203,9 +203,9 @@ describe("R3-S1 health premiums", () => {
     );
   });
 
-  test("3. ACA household premium only — correct years, single years fall back to the single benchmark", () => {
+  test("3. ACA household premium only — correct years, single years fall back to the single benchmark", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           healthPremiumAcaHouseholdAnnual: 20000,
@@ -224,9 +224,9 @@ describe("R3-S1 health premiums", () => {
     expect(yearRow(results, 2039).healthPremiumGross).toBe(0);
   });
 
-  test("4. ACA single premium only — household years fall back to the couple benchmark, transition at 65", () => {
+  test("4. ACA single premium only — household years fall back to the couple benchmark, transition at 65", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           healthPremiumAcaSingleAnnual: 12000,
@@ -246,9 +246,9 @@ describe("R3-S1 health premiums", () => {
     expect(yearRow(results, 2039).healthPremiumGross).toBe(0);
   });
 
-  test("5. Medicare premium per person only, no benchmarks — priced when each spouse reaches 65", () => {
+  test("5. Medicare premium per person only, no benchmarks — priced when each spouse reaches 65", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           healthPremiumMedicarePerPersonAnnual: 3600,
           spendingIncludesHealthPremiums: false,
@@ -269,9 +269,9 @@ describe("R3-S1 health premiums", () => {
     expect(yearRow(results, 2067).healthPremiumGross).toBe(7200);
   });
 
-  test("6. ACA credit — gross less eligible credit = net, per year and lifetime", () => {
+  test("6. ACA credit — gross less eligible credit = net, per year and lifetime", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -309,9 +309,9 @@ describe("R3-S1 health premiums", () => {
     expect(y2039.healthPremiumNet).toBe(7200);
   });
 
-  test("7. IRMAA — a separate surcharge, never folded into the Medicare base premium", () => {
+  test("7. IRMAA — a separate surcharge, never folded into the Medicare base premium", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -336,7 +336,7 @@ describe("R3-S1 health premiums", () => {
     ).toBeCloseTo(baseline.lifetimeHealthPremiumNet, 2);
   });
 
-  test("8. mixed-age married household — the premium schedule follows each spouse's own 65", () => {
+  test("8. mixed-age married household — the premium schedule follows each spouse's own 65", async () => {
     // Fictional ages 60/57 (not the user's): primary reaches 65
     // in 2031, spouse in 2034; retire 62 (2028), end 95 (2061).
     //   2028–2030 both on the marketplace: $20,000 x 3 = 60,000
@@ -344,7 +344,7 @@ describe("R3-S1 health premiums", () => {
     //   2034–2061 both on Medicare: $7,200 x 28 = 201,600
     // Lifetime gross = $308,400.
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -365,9 +365,9 @@ describe("R3-S1 health premiums", () => {
     expect(yearRow(results, 2061).healthPremiumGross).toBe(7200);
   });
 
-  test("9. monthly spending includes premiums — no double counting; results identical to omitting them", () => {
+  test("9. monthly spending includes premiums — no double counting; results identical to omitting them", async () => {
     const included = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_roth_conversion",
         fictionalScenario({
           ...BENCHMARKS,
@@ -377,7 +377,7 @@ describe("R3-S1 health premiums", () => {
       ),
     );
     const omitted = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_roth_conversion",
         fictionalScenario(BENCHMARKS),
       ),
@@ -408,9 +408,9 @@ describe("R3-S1 health premiums", () => {
     expect(included.warnings).not.toContain(NOT_MODELED);
   });
 
-  test("10. monthly spending excludes premiums — the premium is funded on top, net cost rises", () => {
+  test("10. monthly spending excludes premiums — the premium is funded on top, net cost rises", async () => {
     const results = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -431,7 +431,7 @@ describe("R3-S1 health premiums", () => {
     );
   });
 
-  test("11. tax-aware engine direct call vs adapter call — identical results for identical inputs", () => {
+  test("11. tax-aware engine direct call vs adapter call — identical results for identical inputs", async () => {
     // The engine base built by hand, mirroring the adapter's
     // buildRothCompareBase for the fictional household.
     const cents = (d: number) => Math.round(d * 100);
@@ -527,7 +527,7 @@ describe("R3-S1 health premiums", () => {
       (s) => s.name === "Do Nothing",
     )!;
     const adapter = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -577,7 +577,7 @@ describe("R3-S1 health premiums", () => {
       (s) => s.name === "Do Nothing",
     )!;
     const adapterZero = expectOk(
-      compareRothConversions(
+      await compareRothConversions(
         normalizedScenario({
           ...BENCHMARKS,
           healthPremiumAcaHouseholdAnnual: 0,
@@ -595,10 +595,10 @@ describe("R3-S1 health premiums", () => {
     );
   });
 
-  test("12. sample household mutation — no effect on calculation", () => {
+  test("12. sample household mutation — no effect on calculation", async () => {
     const inputBefore = JSON.stringify(fictionalScenario());
     const fixtureBefore = JSON.stringify(FICTIONAL);
-    const premiumCall = dispatchTool(
+    const premiumCall = await dispatchTool(
       "retirement_roth_conversion",
       fictionalScenario({
         ...BENCHMARKS,
@@ -612,13 +612,13 @@ describe("R3-S1 health premiums", () => {
     expect(JSON.stringify(FICTIONAL)).toBe(fixtureBefore);
     // And a later baseline call prices the same as before.
     const later = expectOk(
-      compareRothConversions(normalizedScenario(BENCHMARKS)),
+      await compareRothConversions(normalizedScenario(BENCHMARKS)),
     );
     expect(baselineOf(later).lifetimeNetCost).toBe(1189888.62);
     expect(baselineOf(later).lifetimeHealthPremiumGross).toBe(0);
   });
 
-  test("13. A → B → A calls — no retained financial state", () => {
+  test("13. A → B → A calls — no retained financial state", async () => {
     const a = normalizedScenario({
       ...BENCHMARKS,
       ...FULL_PREMIUMS,
@@ -631,9 +631,9 @@ describe("R3-S1 health premiums", () => {
       healthPremiumMedicarePerPersonAnnual: 4800,
       spendingIncludesHealthPremiums: false,
     });
-    const first = expectOk(compareRothConversions(a));
-    const middle = expectOk(compareRothConversions(b));
-    const again = expectOk(compareRothConversions(a));
+    const first = expectOk(await compareRothConversions(a));
+    const middle = expectOk(await compareRothConversions(b));
+    const again = expectOk(await compareRothConversions(a));
     expect(baselineOf(middle).lifetimeHealthPremiumGross).not.toBe(
       baselineOf(first).lifetimeHealthPremiumGross,
     );
@@ -641,8 +641,8 @@ describe("R3-S1 health premiums", () => {
     expect(roundDeep(again.yearly)).toEqual(roundDeep(first.yearly));
   });
 
-  test("premiums without a spending convention are rejected as missing_input", () => {
-    const result = dispatchTool(
+  test("premiums without a spending convention are rejected as missing_input", async () => {
+    const result = await dispatchTool(
       "retirement_roth_conversion",
       fictionalScenario({ ...BENCHMARKS, ...FULL_PREMIUMS }),
     );
@@ -655,7 +655,7 @@ describe("R3-S1 health premiums", () => {
     );
   });
 
-  test("negative and non-finite premiums are invalid_input", () => {
+  test("negative and non-finite premiums are invalid_input", async () => {
     for (const bad of [-1, Number.POSITIVE_INFINITY]) {
       const n = normalizeInputs(
         fictionalScenario({
@@ -669,9 +669,9 @@ describe("R3-S1 health premiums", () => {
     }
   });
 
-  test("portfolio-only tools warn when premiums were supplied to charge, and stay silent when they are inside spending", () => {
+  test("portfolio-only tools warn when premiums were supplied to charge, and stay silent when they are inside spending", async () => {
     const charged = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_calculate",
         fictionalScenario({
           ...FULL_PREMIUMS,
@@ -685,7 +685,7 @@ describe("R3-S1 health premiums", () => {
       ),
     ).toBe(true);
     const included = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_calculate",
         fictionalScenario({
           ...FULL_PREMIUMS,
@@ -700,9 +700,9 @@ describe("R3-S1 health premiums", () => {
     ).toBe(false);
   });
 
-  test("work-years leg carries the premiums (compare ages 58 and 60)", () => {
+  test("work-years leg carries the premiums (compare ages 58 and 60)", async () => {
     const results = expectOk(
-      compareRetirementAges(
+      await compareRetirementAges(
         normalizedScenario({
           ...BENCHMARKS,
           ...FULL_PREMIUMS,
@@ -724,7 +724,7 @@ describe("R3-S1 health premiums", () => {
 });
 
 describe("R3-S1 single-year tax tool", () => {
-  test("both on the marketplace in the priced year — the household tier, net of the credit", () => {
+  test("both on the marketplace in the priced year — the household tier, net of the credit", async () => {
     const results = expectOk(
       calculateSingleYearTax(
         normalizedScenario({
@@ -747,7 +747,7 @@ describe("R3-S1 single-year tax tool", () => {
     );
   });
 
-  test("one on Medicare in the priced year — the single tier plus that person's Medicare base", () => {
+  test("one on Medicare in the priced year — the single tier plus that person's Medicare base", async () => {
     // Fictional ages 66/64 in 2026: primary on Medicare, spouse
     // on the marketplace. Gross = single $12,000 + Medicare $3,600.
     const results = expectOk(
@@ -775,7 +775,7 @@ describe("R3-S1 single-year tax tool", () => {
     );
   });
 
-  test("both on Medicare in the priced year — Medicare base only, no ACA credit, IRMAA separate", () => {
+  test("both on Medicare in the priced year — Medicare base only, no ACA credit, IRMAA separate", async () => {
     // Fictional ages 67/66 in 2026: both on Medicare.
     const results = expectOk(
       calculateSingleYearTax(
@@ -804,9 +804,9 @@ describe("R3-S1 single-year tax tool", () => {
     expect(results.healthPremiumNet).toBe(7200);
   });
 
-  test("premiums omitted — the single-year tool warns and prices no premium", () => {
+  test("premiums omitted — the single-year tool warns and prices no premium", async () => {
     const envelope = expectEnvelope(
-      dispatchTool(
+      await dispatchTool(
         "retirement_tax_year",
         fictionalScenario(BENCHMARKS),
       ),

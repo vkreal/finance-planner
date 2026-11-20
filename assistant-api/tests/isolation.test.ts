@@ -98,7 +98,7 @@ describe("structural isolation: no sample or storage import", () => {
     },
   );
 
-  test("no adapter file references localStorage or the seeding helpers at all", () => {
+  test("no adapter file references localStorage or the seeding helpers at all", async () => {
     const forbiddenStrings = [
       "localStorage",
       "getRothPlanner",
@@ -116,13 +116,20 @@ describe("structural isolation: no sample or storage import", () => {
     }
   });
 
-  test("the adapter's engine imports are the five pure modules only", () => {
+  // C7 architecture: the adapter also imports the engine pool
+  // (DESIGN §1.1 — one pool per process, and the adapter dispatches
+  // its heavy calls through it). The pool is pure infrastructure —
+  // it forwards to the same pure engines in workers and imports no
+  // sample / storage / seeding module — so it joins the allowlist;
+  // the ban on sample / storage / seeding imports stands.
+  test("the adapter's engine imports are the five pure modules plus the engine pool only", async () => {
     const specifiers = importSpecifiers(srcText("../src/adapter.ts"));
     const engineImports = specifiers.filter((s) =>
       s.startsWith("../../server/src/"),
     );
     expect([...engineImports].sort()).toEqual(
       [
+        "../../server/src/enginePool",
         "../../server/src/retirementEngines",
         "../../server/src/rothOptimizer",
         "../../server/src/taxEngine",
@@ -134,7 +141,7 @@ describe("structural isolation: no sample or storage import", () => {
 });
 
 describe("behavioral isolation: extremes price independently", () => {
-  test("a $0 household prices sanely (single filer, no SS)", () => {
+  test("a $0 household prices sanely (single filer, no SS)", async () => {
     const n = normalizeInputs({
       pretax: 0,
       taxable: 0,
@@ -156,7 +163,7 @@ describe("behavioral isolation: extremes price independently", () => {
     expect(n.scenario.portfolioCents).toBe(0);
   });
 
-  test("a $99,000,000 household prices sanely at $199,000/mo spending", () => {
+  test("a $99,000,000 household prices sanely at $199,000/mo spending", async () => {
     const n = normalizeInputs({
       pretax: 99000000,
       taxable: 0,
@@ -176,7 +183,7 @@ describe("behavioral isolation: extremes price independently", () => {
     expect(Number.isFinite(res.endingBalance)).toBe(true);
   });
 
-  test("the two extremes differ — the $0 run is not a cached sample answer", () => {
+  test("the two extremes differ — the $0 run is not a cached sample answer", async () => {
     const zero = normalizedScenario({
       pretax: 0,
       taxable: 0,
@@ -225,18 +232,18 @@ describe("behavioral isolation: A, B, A is bit-identical", () => {
     mcSeed: 7,
   };
 
-  test("calculate + Monte Carlo + Roth compare repeat bit-identically", () => {
-    const runAll = (overrides: Record<string, unknown>) => {
+  test("calculate + Monte Carlo + Roth compare repeat bit-identically", async () => {
+    const runAll = async (overrides: Record<string, unknown>) => {
       const s = normalizedScenario({ mcRuns: 200, mcSeed: 7, ...overrides });
       return {
         calc: calculateRetirement(s),
-        mc: runRetirementMonteCarlo(s),
-        roth: compareRothConversions(s),
+        mc: await runRetirementMonteCarlo(s),
+        roth: await compareRothConversions(s),
       };
     };
-    const a1 = runAll({});
-    const b = runAll(householdB);
-    const a2 = runAll({});
+    const a1 = await runAll({});
+    const b = await runAll(householdB);
+    const a2 = await runAll({});
 
     // B really is a different answer (the runs are not all one constant).
     expect(JSON.stringify(a1.calc)).not.toBe(JSON.stringify(b.calc));
@@ -258,7 +265,7 @@ describe("behavioral isolation: A, B, A is bit-identical", () => {
 });
 
 describe("behavioral isolation: mutating the sample module moves nothing", () => {
-  test("rewriting SAMPLE_HOUSEHOLD leaves adapter outputs unchanged", () => {
+  test("rewriting SAMPLE_HOUSEHOLD leaves adapter outputs unchanged", async () => {
     const before = calculateRetirement(normalizedScenario());
     expect(before.ok).toBe(true);
     const beforeJson = JSON.stringify(before);

@@ -2119,14 +2119,14 @@ export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult 
 
 // --- Worker-pool async wrappers (Engine Review C7 architecture,
 // §1.2) ----------------------------------------------------------
-// The action paths (server/src/actions.ts) await these; the sync
-// functions above stay for fixtures, tests, and the in-thread
-// callers that cannot await (the accuracy suites price small
-// shapes in-thread by design, and the assistant-api adapter is
-// synchronous end-to-end — its migration is a follow-on, not
-// part of this build). The wrappers change the THREAD, not the
-// math: the worker calls the same engine functions with the same
-// inputs, and the results are bit-identical (§1.6, parity set).
+// The action paths (server/src/actions.ts) and the
+// assistant-api adapter (assistant-api/src/adapter.ts) await
+// these; the sync functions above stay for fixtures, tests, and
+// the in-thread callers that cannot await (the accuracy suites
+// price small shapes in-thread by design). The wrappers change
+// the THREAD, not the math: the worker calls the same engine
+// functions with the same inputs, and the results are
+// bit-identical (§1.6, parity set).
 // `timeoutMs` is the action's remaining budget (§1.5): a job's
 // effective deadline is min(actionDeadline, dispatch + 100 s).
 // On a miss the joint wrapper stores the worker's result in the

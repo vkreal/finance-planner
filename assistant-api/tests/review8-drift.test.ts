@@ -44,8 +44,8 @@ const FINANCIAL_TOOLS: FinancialToolName[] = [
 ];
 
 /** The guide's per-tool optional lists, from describeCapabilities. */
-function guideOptionals(): Record<string, string[]> {
-  const guide = dispatchTool("retirement_describe_capabilities", {});
+async function guideOptionals(): Promise<Record<string, string[]>> {
+  const guide = await dispatchTool("retirement_describe_capabilities", {});
   if (!guide.ok) throw new Error(JSON.stringify(guide.error));
   const tools = (guide.results as Record<string, unknown>).tools as Array<{
     name: string;
@@ -56,8 +56,8 @@ function guideOptionals(): Record<string, string[]> {
 }
 
 describe("drift: mapping table == capability guide == JSON Schema", () => {
-  test("guide optional list equals PRICED_OPTIONAL for every financial tool", () => {
-    const guide = guideOptionals();
+  test("guide optional list equals PRICED_OPTIONAL for every financial tool", async () => {
+    const guide = await guideOptionals();
     for (const tool of FINANCIAL_TOOLS) {
       expect([...guide[tool]!].sort()).toEqual(
         [...PRICED_OPTIONAL[tool]].sort(),
@@ -67,18 +67,18 @@ describe("drift: mapping table == capability guide == JSON Schema", () => {
     expect(guide["retirement_describe_capabilities"]).toEqual([]);
   });
 
-  test("JSON Schema property names are exactly the zod keys (the advertised field set)", () => {
+  test("JSON Schema property names are exactly the zod keys (the advertised field set)", async () => {
     const zodKeys = Object.keys(RetirementQuestionInputs.shape).sort();
     const props = (BASE_INPUT_SCHEMA as Record<string, unknown>)
       .properties as Record<string, unknown>;
     expect(Object.keys(props).sort()).toEqual(zodKeys);
   });
 
-  test("FIELD_ORDER is exactly the zod shape's key order", () => {
+  test("FIELD_ORDER is exactly the zod shape's key order", async () => {
     expect(FIELD_ORDER).toEqual(Object.keys(RetirementQuestionInputs.shape));
   });
 
-  test("every mapping entry is a zod key, and every optional schema field is priced by at least one tool", () => {
+  test("every mapping entry is a zod key, and every optional schema field is priced by at least one tool", async () => {
     const zodKeys = new Set(Object.keys(RetirementQuestionInputs.shape));
     const required = new Set(
       (BASE_INPUT_SCHEMA as Record<string, unknown>)
@@ -96,9 +96,9 @@ describe("drift: mapping table == capability guide == JSON Schema", () => {
     }
   });
 
-  test("guide optional lists contain only zod keys", () => {
+  test("guide optional lists contain only zod keys", async () => {
     const zodKeys = new Set(Object.keys(RetirementQuestionInputs.shape));
-    const guide = guideOptionals();
+    const guide = await guideOptionals();
     for (const tool of FINANCIAL_TOOLS) {
       for (const field of guide[tool]!) {
         expect(zodKeys.has(field)).toBe(true);
@@ -108,7 +108,7 @@ describe("drift: mapping table == capability guide == JSON Schema", () => {
 });
 
 describe("drift: tool descriptions agree with the mapping", () => {
-  test("every financial tool description carries an inert-input disclaimer", () => {
+  test("every financial tool description carries an inert-input disclaimer", async () => {
     // Coarse guard: the prose must say, in words, that some inputs
     // do not change this tool's answer. A description that drops
     // the disclaimer while the mapping still reports ignored inputs
@@ -121,7 +121,7 @@ describe("drift: tool descriptions agree with the mapping", () => {
     }
   });
 
-  test("the tax-year description states the Box 1a/1b dividend rule and the rejection", () => {
+  test("the tax-year description states the Box 1a/1b dividend rule and the rejection", async () => {
     const byName = new Map(TOOLS.map((t) => [t.name, t.description]));
     const desc = byName.get("retirement_tax_year")!;
     expect(desc).toContain("1099-DIV Box 1a");
@@ -129,15 +129,15 @@ describe("drift: tool descriptions agree with the mapping", () => {
     expect(desc).toContain("rejected as invalid input");
   });
 
-  test("the max-spending description states mcRuns is not used and the fixed 1,000 runs", () => {
+  test("the max-spending description states mcRuns is not used and the fixed 1,000 runs", async () => {
     const byName = new Map(TOOLS.map((t) => [t.name, t.description]));
     const desc = byName.get("retirement_max_spending")!;
     expect(desc).toContain("mcRuns is not used");
     expect(desc).toContain("1,000 simulations");
   });
 
-  test("every financial tool response carries ignoredInputFields; describe carries an empty one", () => {
-    const describe = dispatchTool("retirement_describe_capabilities", {});
+  test("every financial tool response carries ignoredInputFields; describe carries an empty one", async () => {
+    const describe = await dispatchTool("retirement_describe_capabilities", {});
     if (!describe.ok) throw new Error(JSON.stringify(describe.error));
     expect(describe.ignoredInputFields).toEqual([]);
     // Cheap financial calls (the work-years example is slow and is
@@ -146,7 +146,7 @@ describe("drift: tool descriptions agree with the mapping", () => {
       ["retirement_calculate", fictionalScenario({})],
       ["retirement_tax_year", fictionalScenario({})],
     ] as const) {
-      const res = dispatchTool(tool, args);
+      const res = await dispatchTool(tool, args);
       if (!res.ok) throw new Error(`${tool}: ${JSON.stringify(res.error)}`);
       expect(Array.isArray(res.ignoredInputFields)).toBe(true);
     }
@@ -154,7 +154,7 @@ describe("drift: tool descriptions agree with the mapping", () => {
 });
 
 describe("drift: future fields stay out until their review lands", () => {
-  test("medicareAgePrimary (Review 5 reservation) is exposed by Engine Review 7", () => {
+  test("medicareAgePrimary (Review 5 reservation) is exposed by Engine Review 7", async () => {
     // The Review 5 reservation retired when Engine Review 7
     // exposed the field in the schema alongside hsaCoverage,
     // hsaEligible, and priorYearWagesAnnual: it must now be a
@@ -176,7 +176,7 @@ describe("drift: future fields stay out until their review lands", () => {
     // Sending it is accepted now, and the value echoes in the
     // effective inputs (the pricing itself is pinned by the
     // review8-cross-engine suite).
-    const res = dispatchTool(
+    const res = await dispatchTool(
       "retirement_work_years",
       fictionalScenario({ medicareAgePrimary: 65 }),
     );
