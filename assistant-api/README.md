@@ -1009,8 +1009,8 @@ Honest and complete — read before relying on an answer.
 needs substantially more than 6 GB.** Verified OOM in this VM,
 twice, even with only 2 quit ages. Without the spouse benefit it
 completes — 2 ages took ~95s on this VM under load (a quiet run
-measured ~27s for 3 ages); the suite's work-years test carries a
-180s timeout for it). If the household has a spouse
+measured ~27s for 3 ages); the suite's work-years tests carry a 240s
+timeout in the parity suite and 1800s in the standalone suite. If the household has a spouse
 benefit, run the comparison without it and say so, or run it on a
 bigger host. The Roth-compare legs are unaffected (they complete
 with spouse SS present).
