@@ -12064,8 +12064,8 @@ function runDynamicOptimizer(base, opts) {
     state.rothContribEmpP = state.rothContribEmpP == null ? null : y0.detail.rothContribEmployerEnd;
     state.rothContribIraS = state.rothContribIraS == null ? null : y0.detail.rothContribIraEndSpouse;
     state.rothContribEmpS = state.rothContribEmpS == null ? null : y0.detail.rothContribEmployerEndSpouse;
-    state.rothLotsP = state.rothLotsEnteredP ? y0.detail.rothLotsEndP.map((l) => ({ ...l })) : lotsP;
-    state.rothLotsS = state.rothLotsEnteredS ? y0.detail.rothLotsEndS.map((l) => ({ ...l })) : lotsS;
+    state.rothLotsP = state.rothLotsEnteredP ? (y0.detail.rothLotsEndP ?? []).map((l) => ({ ...l })) : lotsP;
+    state.rothLotsS = state.rothLotsEnteredS ? (y0.detail.rothLotsEndS ?? []).map((l) => ({ ...l })) : lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
     state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
     const ageSpouse = base.birthYearSpouse != null ? year - base.birthYearSpouse : null;

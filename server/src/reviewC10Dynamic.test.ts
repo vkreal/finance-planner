@@ -831,19 +831,53 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
     // the next Roth draw reaching the lots tier shielded
     // that much earnings income (greedy $2,635.73 cheaper,
     // first divergence 2027, worst tax $3,048.19, pre-fix).
-    // The detail pins the mechanism directly: the appended
-    // lot is the net amount, and the year-end lot is the
-    // net amount less the $60,000 the 2026 draw consumed
+    // ATTRIBUTION (fix round 4, reviewer B5): this shape
+    // pins the stage-1 ∨ stage-2 DISJUNCTION, not the net
+    // append alone. The direct assertions below read the
+    // MARCH's detail (the publication — the rolled lots are
+    // never read anywhere: rolled.greedyYears rows carry no
+    // lots), and the rolled side is pinned only through
+    // checkShapeWith's per-year tax/balance parity. The
+    // stage-2 lots-end resume overwrites the stage-1
+    // append's work every year whenever the lots are
+    // entered, so the append amount cannot reach any priced
+    // figure on the current tree: with the gross append
+    // restored and the resume kept, all three shapes still
+    // pass (reviewB5-expB-*.log); with both stages removed
+    // the shape fails (pre-fix log). A revert of stage 1
+    // alone would pass 59/59 silently.
+    // STAGE-1 DECISION (fix round 4): the net append is
+    // kept as resume-masked defense-in-depth, with NO
+    // white-box pin. A pin through public behavior is
+    // impossible — the masking is structural (the resume
+    // overwrites the append's lots for entered ledgers, and
+    // the re-anchor gate passes null for unentered ones, so
+    // the append's output reaches no march either way) —
+    // and a direct unit pin would need extracting the
+    // inline advance out of runDynamicOptimizer into a
+    // testable helper, a testability refactor of the
+    // optimizer's core loop that is itself a behavior-change
+    // risk. Accepted: a stage-1-only revert is
+    // behaviorally harmless today (the resume covers it),
+    // and the tripwire that remains is the disjunction —
+    // reverting BOTH stages fails all three shapes
+    // pre-fix (56/3). What the direct assertions below do
+    // check is the march's publication: the appended lot is
+    // the net amount, and the year-end lot is the net
+    // amount less the $60,000 the 2026 draw consumed
     // ($200,000 of contributions first, then the lot).
     // Shape note: the reviewer's $220,000 variant carries
     // the same mechanism (greedy $2,419.00 cheaper
     // pre-fix) and is verified by probe post-fix (net
     // $0.00, tax $0.00 every year); the committed shape
     // uses the reviewer's $260,000 variant because the
-    // $220,000 variant's taxable-balance carry drifts 4c
-    // by 2031 — the known r2-dust class, not a mechanism
-    // (tax $0.00, basis 1c, net $0.00) — which would trip
-    // this harness's 2c bar.
+    // $220,000 variant's taxable-balance carry drifts 2c
+    // by 2031, 3c by 2033, 4c by 2035 (first divergence
+    // 2029, −1c) — the known r2-dust class, not a mechanism
+    // (tax $0.00 every year, basis 1c, net $0.00) — which
+    // would trip this harness's 2c bar in 2033. The drift
+    // plateaus at −$0.04 from 2035 through end 75, so a
+    // longer horizon trips no larger bar.
     const { march } = checkShapeWith(
       {
         endAgePrimary: 67,
@@ -880,11 +914,21 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
     // YTD amount — as a fresh lot. The $10,000 phantom lot
     // shielded a later Roth draw (greedy $2,514.04
     // cheaper, first divergence 2031, pre-fix). The old
-    // YTD test pinned conversion AMOUNTS only; this shape
-    // draws Roth to the lots tier after the YTD year and
-    // pins LOT COMPOSITION: the 2026 appended lot is $0
-    // against a $10,000 conversion, and no lot bearing
-    // year 2026 ever stands in any year's year-end lots.
+    // YTD test pinned conversion AMOUNTS only.
+    // ATTRIBUTION (fix round 4, reviewer B5): like the
+    // withholding shape above, this shape pins the stage-1
+    // ∨ stage-2 DISJUNCTION, not the net append alone — it
+    // passes with either stage alone and fails only with
+    // both removed (pre-fix). The direct assertions below
+    // read the MARCH's year-end lots, not the rolled lots;
+    // the rolled composition is pinned only indirectly,
+    // through the 2031 tax divergence when the $300,000
+    // draw reaches the lots tier. What the shape does pin
+    // directly is the march's publication: the 2026
+    // appended lot is $0 against a $10,000 conversion, and
+    // no lot bearing year 2026 ever stands in any year's
+    // year-end lots. (See the stage-1 decision in the
+    // withholding shape's comment above.)
     const { march } = checkShapeWith(
       {
         endAgePrimary: 67,
@@ -918,9 +962,19 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
     // $307.79 in 2027) — then switches to Roth-first, so
     // the later draws reach the shrunk lots (greedy
     // $169.41 cheaper, first divergence 2030, pre-fix
-    // with the appended-amount fix alone). The detail pins
-    // the shrink directly: the year-end lots are the
-    // appended amounts less the top-up, with $0 drawn.
+    // with the appended-amount fix alone). The top-up is a live
+    // MUST-class term, not a caveat — resolved by stage 2, not by
+    // proof of absence.
+    // ATTRIBUTION (fix round 4, reviewer B5): this is the one
+    // shape that isolates a single stage — STAGE 2. With the
+    // resume removed (net append kept) it FAILS on the
+    // federalTax parity (reviewB5-expA-topup.log), while
+    // stage-1-only code diverges −$169.41 on the isolation
+    // shape. The direct assertions below read the MARCH's
+    // year-end lots (the publication: the appended amounts
+    // less the top-up, with $0 drawn); the rolled side is
+    // pinned through checkShapeWith parity, which is what
+    // fails without the resume.
     const { march } = checkShapeWith(
       {
         endAgePrimary: 67,

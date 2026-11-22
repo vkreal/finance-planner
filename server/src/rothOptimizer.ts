@@ -12642,11 +12642,16 @@ export function runDynamicOptimizer(
     // maintain: an unentered ledger keeps the debit model's
     // lots (the re-anchor gate nulls them out anyway, so
     // they never reach a march as if entered).
+    // The `?? []` guards are defense-in-depth (fix round 4):
+    // the field is required by the detail type and set at
+    // the single detail construction site, so the fallback
+    // is unreachable in-repo — it only mirrors the `?? 0`
+    // on the lot amount above.
     state.rothLotsP = state.rothLotsEnteredP
-      ? y0.detail.rothLotsEndP.map((l) => ({ ...l }))
+      ? (y0.detail.rothLotsEndP ?? []).map((l) => ({ ...l }))
       : lotsP;
     state.rothLotsS = state.rothLotsEnteredS
-      ? y0.detail.rothLotsEndS.map((l) => ({ ...l }))
+      ? (y0.detail.rothLotsEndS ?? []).map((l) => ({ ...l }))
       : lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
     state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
