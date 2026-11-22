@@ -24,7 +24,7 @@ import {
   trackEligibleEnd,
   trackTaxableBasisEnd,
 } from "./rothOptimizer";
-import { NO_CEILINGS, simulateRothPlan, type DrawOrder, type RothPlanInputs } from "./taxEngine";
+import { NO_CEILINGS, simulateRothPlan, type DrawOrder, type FillCeilings, type RothPlanInputs } from "./taxEngine";
 import { samplePlanInputs } from "./sampleHousehold";
 
 /* The sample household, end age 70 (2026–2038, primary 58–70):
@@ -274,7 +274,14 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
   // (not only the floor-rescued `years`) — the M-1 class of
   // divergence hid exactly there, with the floor binding and
   // publishing fixed-march rows while greedyYears mispriced.
-  function checkShape(overrides: Partial<RothPlanInputs>) {
+  // The policy/order default to the taxable-first fill-12%
+  // shape; the Roth-first exhaustion and survivor shapes
+  // pass their own.
+  function checkShapeWith(
+    overrides: Partial<RothPlanInputs>,
+    policy: typeof POLICY = POLICY,
+    order: DrawOrder = ORDER,
+  ) {
     const inputs = samplePlanInputs({
       endAgePrimary: 67,
       windowStopAge: 67,
@@ -282,12 +289,12 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
       ...overrides,
     });
     const march = simulateRothPlan(
-      { ...inputs, windowStopAge: 67, drawOrder: [...ORDER] },
-      { id: "parity", name: "Fill 12%", ceilings: POLICY.ceilings, guardrail: false },
+      { ...inputs, windowStopAge: 67, drawOrder: [...order] },
+      { id: "parity", name: "Fill 12%", ceilings: policy.ceilings, guardrail: false },
       undefined,
       { leanDetail: true },
     );
-    const rolled = runDynamicOptimizer(inputs, { policies: [POLICY] });
+    const rolled = runDynamicOptimizer(inputs, { policies: [policy] });
     expect(rolled.ok).toBe(true);
     expect(rolled.floorBound).toBe(false);
     expect(rolled.greedyYears.length).toBe(march.years.length);
@@ -333,6 +340,20 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
     ).toBeLessThanOrEqual(0.25);
     return { inputs, march, rolled };
   }
+
+  function checkShape(overrides: Partial<RothPlanInputs>) {
+    return checkShapeWith(overrides);
+  }
+
+  const ROTH_FIRST_ORDER: DrawOrder = ["roth", "taxable", "pretax"];
+  const ROTH_FIRST_POLICY = {
+    key: "fill12|stop67|roth-taxable-pretax",
+    name: "Fill 12% · stop 67",
+    ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
+    guardrail: false,
+    windowStopAge: 67,
+    drawOrder: ROTH_FIRST_ORDER,
+  };
 
   test("plain control reproduces its march on greedy rows", () => {
     checkShape({});
@@ -392,6 +413,141 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
       spendFromCashPct: 50,
       spendFromCashSleeveStart: 100000,
     });
+  });
+
+  test("Roth IRA/employer split reproduces its march on greedy rows", () => {
+    // MUST-C1 (fix round): the re-anchor used to rebuild
+    // Roth at the plan's OPENING split every year (the grown
+    // rothStart was ignored whenever rothIraStart was
+    // entered), so a split plan's Roth never compounded
+    // across re-anchors.
+    checkShape({ rothIraStart: 300000, rothEmployerStart: 100000 });
+  });
+
+  test("Roth split with a spouse share reproduces its march on greedy rows", () => {
+    checkShape({
+      rothIraStart: 300000,
+      rothEmployerStart: 100000,
+      rothIraStartSpouse: 120000,
+      rothEmployerStartSpouse: 40000,
+    });
+  });
+
+  test("Roth split, employer-only control, reproduces its march on greedy rows", () => {
+    // Control: with rothIraStart absent the fallback
+    // (iraTotal = rothStart − employer) let the grown total
+    // flow through even before the fix — this shape passed
+    // pre-fix and must keep passing.
+    checkShape({ rothEmployerStart: 100000 });
+  });
+
+  test("Roth split with Roth-first draws exhausts Roth on the march's schedule", () => {
+    // The exhaustion shape: Roth-first, $300,000/yr spending
+    // to 75 — the true march exhausts Roth in 2032, while
+    // the pre-fix roll reset the pool every year and drew
+    // from Roth forever (greedy $253,002.82 cheaper than
+    // fixed, floor unbound). The taxable-first variant
+    // leaves net cost blind to the Roth balance; this one
+    // does not.
+    checkShapeWith(
+      {
+        endAgePrimary: 75,
+        annualSpending: 300000,
+        rothIraStart: 300000,
+        rothEmployerStart: 100000,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("education refund deposits once, in the year after the refund", () => {
+    // SHOULD-C1 (fix round): the refundable credit was
+    // scored but never deposited in the next re-anchored
+    // march, so the balance never received it.
+    checkShape({ educationStudents: [{ year: 2026, expenses: 10000, aotcEligible: true }] });
+  });
+
+  test("education refund in a mid-roll year deposits the next year", () => {
+    checkShape({ educationStudents: [{ year: 2028, expenses: 10000, aotcEligible: true }] });
+  });
+
+  test("flexible spending cuts after a negative-return year", () => {
+    // SHOULD-C2 (fix round): every re-anchored march priced
+    // its first year with no prior-year return (never cut),
+    // while the uninterrupted march cuts every retirement
+    // year once the prior year's return is negative. The
+    // shape also pins the underwater-basis carry the cut
+    // exposes: the −10% run carries basis above the balance
+    // (109.2% in 2030), and the pct round-trip clamped it to
+    // 100 at every re-anchor — the 2031 re-anchor haircut
+    // $96,145.26, pricing $630.64 of extra tax. The dollars
+    // carry (taxableBasisStartDollars) closes it; parity is
+    // now within 1¢ per year.
+    checkShape({ expectedReturnPct: -10, flexCutPct: 20, flexFloorPct: 80 });
+  });
+
+  test("sustained -10% return with tiers closes basis to the cent", () => {
+    // SHOULD-A1 (fix round): the re-anchor's cent-rounded
+    // taxableEnd re-based the tier ledger by up to $0.004
+    // per re-anchor; the dust tipped the fully-consumed cash
+    // tier's residual basis in 2033 (-$5,281.34, -$8,182.51
+    // by 2035). Starting from the ledger's raw balances
+    // closes it — this shape pins per-year basis parity to
+    // 2c through the whole horizon.
+    checkShape({
+      expectedReturnPct: -10,
+      taxableTiers: [
+        { sharePct: 50, basisPct: 40 },
+        { sharePct: 50, basisPct: 100 },
+      ],
+    });
+  });
+
+  test("survivor year with Roth draws reproduces its march on greedy rows", () => {
+    // Survivor-year Roth-lot debit order (fix round): the
+    // primary dies in 2030; survivor years price alone with
+    // Roth-first draws, entered basis per owner, and a
+    // 5-year clock unmet in the survivor years, so the
+    // composition attribution prices. Pre-fix the first
+    // survivor year diverged (the re-anchor passed the
+    // march-appended conversion lots as if entered, flipping
+    // an unknown ledger to known: the draw priced $58,100
+    // of earnings income the true march prices $0, and the
+    // conversion fill crowded to $0).
+    checkShapeWith(
+      {
+        endAgePrimary: 75,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2030,
+        rothContributionBasisPrimary: 200000,
+        rothContributionBasisSpouse: 100000,
+        firstRothYearPrimary: 2028,
+        firstRothYearSpouse: 2028,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("survivor year, spouse dies, reproduces its march on greedy rows", () => {
+    // Same shape with the fold in the other direction (the
+    // primary survives).
+    checkShapeWith(
+      {
+        endAgePrimary: 75,
+        survivorEnabled: true,
+        survivorWho: "spouse",
+        survivorDeathYear: 2030,
+        rothContributionBasisPrimary: 200000,
+        rothContributionBasisSpouse: 100000,
+        firstRothYearPrimary: 2028,
+        firstRothYearSpouse: 2028,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
   });
 });
 
@@ -561,16 +717,17 @@ describe("C10 — Pass 1 fix (S1): the fixed-policy floor return path", () => {
     const { best, scored } = priceFixedDynamicPolicies(inputs, policies);
     expect(best).not.toBeNull();
     const bestFixed = best!;
-    const basisStart = (inputs.taxableBasisPct / 100) * inputs.taxableStart;
     // The floor's rows: the best fixed policy's uninterrupted
-    // march, re-expressed as schedule rows.
-    const floorRows = dynamicRowsFromFixedMarch(bestFixed.result, bestFixed.policy, inputs, basisStart);
+    // march, re-expressed as schedule rows. The rows read
+    // each year's basis from the march's own detail (the
+    // walk is gone — see dynamicRowsFromFixedMarch).
+    const floorRows = dynamicRowsFromFixedMarch(bestFixed.result, bestFixed.policy, inputs);
     expect(floorRows.length).toBe(bestFixed.result.years.length);
     // The greedy trajectory the floor replaces: the Do Nothing
     // march's rows (a different, worse trajectory on the same
     // inputs), with its own worse net cost beside them.
     const doNothing = scored.find((s) => s.policy.ceilings == null)!;
-    const greedyRows = dynamicRowsFromFixedMarch(doNothing.result, doNothing.policy, inputs, basisStart);
+    const greedyRows = dynamicRowsFromFixedMarch(doNothing.result, doNothing.policy, inputs);
     expect(doNothing.netCost).toBeGreaterThan(bestFixed.netCost + 0.1);
     const result = dynamicResultFromRows({
       rows: floorRows,
@@ -1049,6 +1206,44 @@ describe("C10 — A-vs-B equal-income-budget experiment", () => {
     expect(bYear1.acaMagi).toBeGreaterThan(aYear1.acaMagi);
     expect(bYear1.conversion).toBe(100000);
     expect(aYear1.conversion).toBe(0);
+  }, 300_000);
+
+  test("A/B unrealized gains on the tiers shape match the march's own ending basis to the cent", () => {
+    // SHOULD-A2 (fix round): the A/B arms read unrealized
+    // gains from the basis WALK, which the tiered, gift, and
+    // sleeve probes proved wrong (tiers -$200k) — on this
+    // shape arm A overstated unrealized by $249,534.72 and
+    // arm B by $399,655.88. Both arms now read each year's
+    // detail.taxableBasisDollars; the true figures below are
+    // the arms' own uninterrupted marches, priced directly.
+    const inputs = shortInputs({
+      taxableTiers: [
+        { sharePct: 50, basisPct: 40 },
+        { sharePct: 50, basisPct: 100 },
+      ],
+    });
+    const rows = runDynamicAbExperiment(inputs, [100000]);
+    expect(rows.length).toBe(1);
+    const row = rows[0]!;
+    const trueUnrealized = (drawOrder: DrawOrder, ceilings: FillCeilings | null) => {
+      const march = simulateRothPlan(
+        { ...inputs, annualSpending: 100000, drawOrder: [...drawOrder] },
+        { id: "ab-true", name: "arm", ceilings, guardrail: false },
+        undefined,
+        { leanDetail: true },
+      );
+      const last = march.years[march.years.length - 1]!;
+      return Math.max(0, last.taxableEnd - last.detail.taxableBasisDollars);
+    };
+    expect(
+      Math.abs(row.a.unrealizedGains - trueUnrealized(["pretax", "taxable", "roth"], null)),
+    ).toBeLessThanOrEqual(0.01);
+    expect(
+      Math.abs(
+        row.b.unrealizedGains -
+          trueUnrealized(["taxable", "roth", "pretax"], { ...NO_CEILINGS, bracketTopPct: 12 }),
+      ),
+    ).toBeLessThanOrEqual(0.01);
   }, 300_000);
 });
 

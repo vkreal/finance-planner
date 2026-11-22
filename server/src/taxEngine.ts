@@ -3616,6 +3616,23 @@ export type RothPlanInputs = {
   // Optional so every pre-existing constructor keeps its
   // meaning (an explicit pct is a modeled basis).
   taxableBasisBlank?: boolean;
+  // TAXABLE BASIS, EXACT DOLLARS (Engine Review core
+  // 2026-11-21, Build 1 fix round — SHOULD-C2): the taxable
+  // pool's starting basis in dollars, used by the dynamic
+  // roll-forward to resume from a committed year's exact
+  // year-end basis. Present (and the basis not blank) WINS
+  // over taxableBasisPct at the ledger's start — the same
+  // lossy-round-trip defect as the tier ledger above: the
+  // pct is clamped to 100 at construction, so an underwater
+  // pool — basis above balance, reachable on a
+  // negative-return year (the flex shape's −10% run carries
+  // 109.2% in 2030) — would lose basis at every re-anchor
+  // (the 2031 re-anchor haircut $96,145.26, pricing $630.64
+  // of extra tax and $82,484.86 of extra consumed basis).
+  // Null / absent = the percentage path exactly. Floored at
+  // $0 at the start (the ledger invariant: basis ≥ 0, and it
+  // may pass the balance).
+  taxableBasisStartDollars?: number | null;
   // BASIS TIERS (optional): the taxable pool split into lots,
   // each a share of the pool (taxable + cash, as the pool is
   // priced) carrying its own starting basis %. When present
@@ -3768,6 +3785,15 @@ export type RothPlanInputs = {
   //   alone never turns anything on.
   flexCutPct?: number | null;
   flexFloorPct?: number | null;
+  // FLEXIBLE-SPENDING PRIOR-YEAR RETURN (Engine Review core
+  // 2026-11-21, Build 1 fix round — SHOULD-C2): the applied
+  // return of the year BEFORE this march starts, seeding the
+  // march's priorYearReturnPct instead of null. The dynamic
+  // roll-forward carries it (the uninterrupted march updates
+  // it every year from the applied return); a fresh march
+  // with it absent prices exactly as before (null = no prior
+  // simulated year, never cut).
+  priorYearReturnPctStart?: number | null;
   annualSpending: number;
   retirementAge: number;
   expectedReturnPct: number; // real, blended — from the Retirement calc
@@ -3787,6 +3813,17 @@ export type RothPlanInputs = {
   otherOrdinaryAnnual: number;
   taxExemptInterestAnnual: number;
   convertedAlreadyThisYear: number;
+  // PENDING EDUCATION-REFUND DEPOSIT (Engine Review core
+  // 2026-11-21, Build 1 fix round — SHOULD-C1): a refundable
+  // education credit from the year BEFORE this march starts,
+  // deposited into the taxable pool at the start of this
+  // march's first year (at 100% basis, exactly like the
+  // march's own start-of-year deposit of the prior year's
+  // refund). The dynamic roll-forward carries it (the
+  // uninterrupted march pends each year's refund for the
+  // next); a fresh march with it absent starts at $0, as
+  // before.
+  pendingEduRefundStart?: number | null;
   windowStartAge: number;
   windowStopAge: number;
   payTaxFrom: "taxable" | "conversion";
@@ -4626,6 +4663,24 @@ export type RothYearDetail = {
   // march. Each entry carries the cash-tier flag (the cash
   // tier's identity across re-anchors).
   tiersEnd: TierLedgerSnapshotEntry[] | null;
+  // YEAR-END ROTH ACCOUNT SPLIT (Engine Review core
+  // 2026-11-21, Build 1 fix round — MUST-C1): the Roth
+  // pool's split between the Roth IRA and the designated
+  // Roth employer plan at year end, totals and the spouse's
+  // share of each, at full precision like tiersEnd above
+  // (the balances carry full precision; rounding them
+  // here would drift the re-anchored balance by sub-cents
+  // per re-anchor). The dynamic roll-forward resumes from
+  // this split, so a re-anchored march rebuilds its Roth
+  // ledgers from the grown split instead of the plan's
+  // opening split. The primary's share of each account is
+  // the total less the spouse's share. Published
+  // unconditionally, like tiersEnd — the lean marches the
+  // optimizer prices still carry it.
+  rothIraEnd: number;
+  rothEmployerEnd: number;
+  rothIraEndSpouse: number;
+  rothEmployerEndSpouse: number;
   // BASIS-DRIFT surfacing (display only): the year's realized
   // gain from ORDINARY draws alone — tax payments taken from
   // Taxable plus spending draws, priced pro-rata at the basis
@@ -5445,8 +5500,12 @@ export function deriveSpendFromCashSleeveStartDollars(
   // percentage tiers are stale by construction on a
   // re-anchored march (they describe the plan's opening
   // pool), so deriving from them here would double-spend
-  // or lose the sleeve.
-  if (Array.isArray(inputs.taxableTierLedger) && inputs.taxableTierLedger.length > 0) {
+  // or lose the sleeve. The branch is also gated on a
+  // non-blank basis (NICE-A1, fix round), matching the
+  // engine's own tiersActive condition — a blank-basis plan
+  // builds no tier state, so a hand-built ledger must not
+  // price a sleeve the march never sees.
+  if (Array.isArray(inputs.taxableTierLedger) && inputs.taxableTierLedger.length > 0 && inputs.taxableBasisBlank !== true) {
     const flagged = inputs.taxableTierLedger.find((t) => t.cash === true);
     if (flagged != null) return Math.min(Math.max(0, flagged.bal), Math.max(0, inputs.taxableStart));
     for (const t of inputs.taxableTierLedger) {
@@ -5826,7 +5885,16 @@ export function simulateRothPlan(
   // input = 65 — the pre-field boundary, bit-identical.
   const spouseAcaEndAge = inputs.acaSpouseEndAge ?? 65;
   const basisPctClamped = Math.min(100, Math.max(0, inputs.taxableBasisPct)) / 100;
-  let taxableBasisDollars = basisPctClamped * inputs.taxableStart;
+  // EXACT-DOLLARS BASIS (fix round — SHOULD-C2): when the
+  // caller carries the starting basis in dollars (the dynamic
+  // re-anchor does), it wins over the percentage — the pct
+  // round-trips through a clamp to 100 and loses underwater
+  // basis. Gated on drift: a blank basis keeps its legacy
+  // path bit-identically (the dollars are inert there).
+  let taxableBasisDollars =
+    driftOn && inputs.taxableBasisStartDollars != null
+      ? Math.max(0, inputs.taxableBasisStartDollars)
+      : basisPctClamped * inputs.taxableStart;
   // BASIS TIERS: when the plan carries tiers (and an entered
   // basis — the record layer never pairs tiers with a blank
   // basis), the single basis ledger above becomes a per-tier
@@ -5857,7 +5925,12 @@ export function simulateRothPlan(
     // inflow false (a later buy creates a fresh inflow tier —
     // pricing-neutral: both are 100%-basis, sales rank by
     // ratio), cash from the snapshot flag, with the ratio
-    // rule as the fallback for a flag-less ledger.
+    // rule as the fallback for a flag-less ledger. The
+    // fallback's precondition (NICE-A2, fix round): it can
+    // only identify the cash tier when no UNDERWATER non-cash
+    // tier (basis > balance) precedes it — such a tier also
+    // satisfies basis >= bal. Snapshots always carry flags,
+    // so only hand-built flag-less ledgers can hit it.
     const snapshot = inputs.taxableTierLedger;
     const flaggedIndex = snapshot.findIndex((t) => t.cash === true);
     let fallbackClaimed = false;
@@ -5950,7 +6023,7 @@ export function simulateRothPlan(
   // score counted a dollar no balance ever received. $0 in
   // every year of a plan with no refundable credit, so such
   // plans price bit-identically to before.
-  let pendingEduRefund = 0;
+  let pendingEduRefund = Math.max(0, inputs.pendingEduRefundStart ?? 0);
   let lifetimeAmt = 0;
   let lifetimeSsCollected = 0;
   let lifetimeUnpaidTax = 0;
@@ -6004,7 +6077,8 @@ export function simulateRothPlan(
   // the growth step of every simulated year, retired or not,
   // so the first retirement year's trigger reads the last
   // pre-retirement year's return.
-  let priorYearReturnPct: number | null = null;
+  let priorYearReturnPct: number | null =
+    inputs.priorYearReturnPctStart ?? null;
 
   // First-RMD deferral state (Engine Review 5, E5-S2): carried
   // across the march's years by settleFirstRmdDeferral. Seeded
@@ -11054,6 +11128,13 @@ export function simulateRothPlan(
             .filter((t) => !(t.bal <= 0 && t.basis <= 0))
             .map((t) => ({ bal: t.bal, basis: t.basis, cash: t.cash === true }))
         : null,
+      // Year-end Roth split, from the grown ledgers (see the
+      // RothYearDetail note): the re-anchor resumes from
+      // these, not from the plan's opening split.
+      rothIraEnd: rothLedP.ira.balance + rothLedS.ira.balance,
+      rothEmployerEnd: rothLedP.employer.balance + rothLedS.employer.balance,
+      rothIraEndSpouse: rothLedS.ira.balance,
+      rothEmployerEndSpouse: rothLedS.employer.balance,
       drawGains: r2(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,

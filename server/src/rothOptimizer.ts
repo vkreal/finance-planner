@@ -11319,6 +11319,58 @@ type DynamicLedgerState = {
       re-anchor then nulls giftOutflowAge, so no later march
       re-gifts the amount. */
   giftApplied: boolean;
+  /** ROTH IRA / EMPLOYER SPLIT (Engine Review core
+      2026-11-21, Build 1 fix round — MUST-C1): the
+      committed year's year-end Roth split (detail
+      rothIraEnd / rothEmployerEnd / rothIraEndSpouse /
+      rothEmployerEndSpouse), totals and the spouse's share
+      of each account. The re-anchor passes it as
+      rothIraStart / rothEmployerStart (+ spouse shares) so
+      the next march rebuilds its Roth ledgers from the grown
+      split — the re-anchor used to spread ...base, whose
+      split describes the plan's OPENING year only, so every
+      re-anchored march rebuilt Roth at the opening split.
+      Seeded from the plan's entered split (or the march's
+      own fallback resolution); advanced from each committed
+      year's detail. */
+  rothIra: number;
+  rothEmployer: number;
+  rothIraS: number;
+  rothEmployerS: number;
+  /** ROTH LOTS ENTERED (fix round — survivor-year debit
+      order): whether each owner's OPENING conversion lots
+      were entered (non-null). A Roth ledger's `known` flag
+      is set at init from the opening inputs and never
+      recomputed mid-march, so a ledger whose opening lots
+      were unentered stays unknown even after the march
+      appends conversion lots — and an unknown ledger's
+      draws price $0 income without consuming lots. The
+      re-anchor must therefore pass lots only when entered
+      (passing the march-appended lots as if entered flips
+      an unknown ledger to known and misprices every later
+      Roth draw that reaches the lots/earnings tier).
+      Seeded from the plan's own lots inputs; never flips. */
+  rothLotsEnteredP: boolean;
+  rothLotsEnteredS: boolean;
+  /** PENDING EDUCATION REFUND (SHOULD-C1): the committed
+      year's refundable education credit, to be deposited
+      into the taxable pool at the start of the next
+      re-anchored march (at 100% basis, like the march's own
+      deposit). Advanced from each committed year's
+      detail.educationRefundable — except in the plan's
+      final year, where the march adds the refund to the
+      ending taxable balance directly instead of pending it,
+      so nothing is carried. Seeded $0. */
+  pendingEduRefund: number;
+  /** PRIOR-YEAR APPLIED RETURN (SHOULD-C2): the committed
+      year's applied return (the return-series value for
+      that year when the plan carries a series, else the
+      plan's expectedReturnPct) — the trigger the next
+      year's flexible-spending need reads. The re-anchor
+      seeds the next march's priorYearReturnPct from it.
+      Null until the first committed year (the plan's true
+      first year is never cut). */
+  priorYearReturn: number | null;
   /** IRMAA LOOKBACK carried across re-anchors (Engine Review
       C10, Pass 1 fix — M1): the committed years' MAGI with
       the filing status each was priced under, in the engine's
@@ -11345,14 +11397,50 @@ function dynamicReanchorInputs(
 ): RothPlanInputs {
   const taxableBasisPct =
     state.taxable > 0 ? (state.taxableBasis / state.taxable) * 100 : 100;
+  // TAXABLE START FROM THE RAW LEDGER (Engine Review core
+  // 2026-11-21, Build 1 fix round — SHOULD-A1): when a tier
+  // ledger is carried, the march must start from the
+  // ledger's own raw balances, not from the cent-rounded
+  // taxableEnd — the re-basing re-prices the tier ledger by
+  // up to $0.004 per re-anchor, and the dust accumulates
+  // into a real basis gap on a sustained-decline shape
+  // (first dust $0.0036 in 2031 on the -10% tiers shape,
+  // tipping the fully-consumed cash tier's residual basis
+  // in 2033). The ledger sum IS the pool (the snapshot
+  // drops only empty tiers), so starting from it reproduces
+  // the uninterrupted march to float noise.
+  const tiersLedger =
+    state.tiersLedger != null && state.tiersLedger.length > 0
+      ? state.tiersLedger
+      : null;
+  const taxableStart =
+    tiersLedger != null
+      ? tiersLedger.reduce((s, t) => s + t.bal, 0)
+      : state.taxable;
   return {
     ...base,
     startYear: year,
     pretaxStart: state.pretaxP,
     pretaxSpouseStart: state.pretaxS,
     rothStart: state.roth,
-    taxableStart: state.taxable,
+    // ROTH SPLIT (MUST-C1, fix round): the grown split, not
+    // the plan's opening split — ...base above still carries
+    // the opening rothIraStart / rothEmployerStart, so the
+    // override must name all four.
+    rothIraStart: state.rothIra,
+    rothEmployerStart: state.rothEmployer,
+    rothIraStartSpouse: state.rothIraS,
+    rothEmployerStartSpouse: state.rothEmployerS,
+    taxableStart,
     taxableBasisPct,
+    // EXACT-DOLLARS BASIS (fix round — SHOULD-C2): the
+    // committed year's basis in dollars. The pct above is
+    // still passed (the blank/legacy path and the harvest
+    // gate read it), but the march starts its drift ledger
+    // from these dollars when drift is on — the pct
+    // round-trips through a clamp to 100 and loses underwater
+    // basis (109.2% in the flex shape's 2030).
+    taxableBasisStartDollars: state.taxableBasis,
     hsaStart: state.hsa,
     annualSpending,
     // retirementAge and windowStartAge stay the plan's own:
@@ -11368,8 +11456,24 @@ function dynamicReanchorInputs(
     pretax401kEligibleSpouse: state.eligS,
     rothContributionBasisPrimary: state.rothContribP,
     rothContributionBasisSpouse: state.rothContribS,
-    rothConversionLotsPrimary: state.rothLotsP.length > 0 ? state.rothLotsP : null,
-    rothConversionLotsSpouse: state.rothLotsS.length > 0 ? state.rothLotsS : null,
+    // CONVERSION LOTS — ENTERED ONLY (fix round, survivor
+    // debit order): the lots ride along only when the
+    // plan's OPENING lots were entered. A ledger whose
+    // opening lots were unentered is UNKNOWN, and stays
+    // unknown even after the march appends conversion lots
+    // — passing the appended lots as if entered flips it to
+    // known and misprices every later Roth draw that
+    // reaches the lots/earnings tier (proved on the
+    // survivor shape: the first survivor year's draw priced
+    // $58,100 of earnings income the true march prices $0).
+    // An entered-empty list still rides (as []), which is
+    // what keeps such a ledger known.
+    rothConversionLotsPrimary: state.rothLotsEnteredP
+      ? state.rothLotsP.map((l) => ({ ...l }))
+      : null,
+    rothConversionLotsSpouse: state.rothLotsEnteredS
+      ? state.rothLotsS.map((l) => ({ ...l }))
+      : null,
     // IRMAA LOOKBACK CARRY (Engine Review C10, Pass 1 fix —
     // M1): the re-anchored march is seeded with every
     // committed year's MAGI + effective filing status (plus
@@ -11431,6 +11535,16 @@ function dynamicReanchorInputs(
     // nulled — the fresh march then never fires it again
     // (amount/basis ride along inert).
     giftOutflowAge: state.giftApplied ? null : base.giftOutflowAge,
+    // PENDING EDUCATION REFUND (SHOULD-C1): the committed
+    // year's refundable credit, deposited into the taxable
+    // pool at the start of this march's first year (at 100%
+    // basis, exactly like the march's own deposit).
+    pendingEduRefundStart: state.pendingEduRefund,
+    // PRIOR-YEAR RETURN (SHOULD-C2): the committed year's
+    // applied return, seeding this march's flexible-spending
+    // trigger (null on the plan's true first year, which is
+    // never cut).
+    priorYearReturnPctStart: state.priorYearReturn,
   };
 }
 
@@ -11439,11 +11553,18 @@ function dynamicReanchorInputs(
    FIFO, then earnings as the residual): returns the updated
    contribution basis and lots. Lots created by this module
    are fully taxable conversions (nontaxable $0), so a lot's
-   remaining taxable amount IS its remaining balance. */
+   remaining taxable amount IS its remaining balance.
+   `known` mirrors the march's ledger `known` flag (the
+   opening composition was entered): on an UNKNOWN ledger
+   the march's debit consumes contributions only — entered
+   lots are NOT consumed by an unknown draw — so this
+   function must not consume them either, or the tracked
+   lots would drain while the march's stand. */
 function dynamicDebitRothDraw(
   contrib: number | null,
   lots: RothConversionLotInput[],
   draw: number,
+  known: boolean,
 ): { contrib: number | null; lots: RothConversionLotInput[] } {
   if (draw <= 0) return { contrib, lots };
   let remaining = draw;
@@ -11453,6 +11574,7 @@ function dynamicDebitRothDraw(
     nextContrib -= take;
     remaining -= take;
   }
+  if (!known) return { contrib: nextContrib, lots };
   const nextLots: RothConversionLotInput[] = [];
   for (const lot of lots) {
     if (remaining <= 0) {
@@ -11767,36 +11889,24 @@ export function dynamicResultFromRows(args: {
    (the floor's return path — see runDynamicOptimizer): the rows
    a fixed trajectory contributes when the floor binds. Exported
    for the floor test (S1): the floor branch itself is the only
-   caller in production. */
+   caller in production. The row's taxableBasisEnd is the
+   march's own year-end ledger figure (SHOULD-A2, fix round) —
+   the basis walk understated it across tiered pools (blended
+   pct start), gift years (no gift term), and cash-sleeve years,
+   so floor rows and the step-up figures derived from them
+   overstated unrealized gains by up to ~$200k on tiered
+   shapes. The walk helper (dynamicBasisWalkYears) stays for
+   the A/B fallback and its unit tests. */
 export function dynamicRowsFromFixedMarch(
   result: RothPlanResult,
   policy: DynamicPolicy,
   base: RothPlanInputs,
-  basisStart: number,
 ): DynamicYearRow[] {
-  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
   const rmdAge = Math.ceil(rmdAgeForBirthYear(base.birthYearPrimary));
   const ssStartAge = base.ssPrimaryStartAge ?? null;
   const rows: DynamicYearRow[] = [];
-  let basis = basisStart;
-  let taxableStart = base.taxableStart;
   for (const y of result.years) {
-    const sold = y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
-    basis = trackTaxableBasisEnd({
-      taxableStart,
-      basisStart: basis,
-      taxableSold: sold,
-      drawGains: y.detail.drawGains,
-      taxableEnd: y.taxableEnd,
-      growthFactor,
-      yieldReinvested: dynamicYieldForYear({
-        taxableStart,
-        dividendYieldPct: base.taxableDividendYieldPct,
-        interestYieldPct: base.taxableInterestYieldPct,
-      }),
-    });
-    rows.push(dynamicRowFromYear(y, policy, basis, rmdAge, ssStartAge));
-    taxableStart = y.taxableEnd;
+    rows.push(dynamicRowFromYear(y, policy, y.detail.taxableBasisDollars, rmdAge, ssStartAge));
   }
   return rows;
 }
@@ -11846,6 +11956,29 @@ export function runDynamicOptimizer(
     tiersLedger: null,
     sleeve: deriveSpendFromCashSleeveStartDollars(base),
     giftApplied: false,
+    // ROTH SPLIT (MUST-C1, fix round): seeded from the
+    // plan's entered split, with the march's own fallback
+    // resolution when a share is absent (iraTotal =
+    // rothIraStart ?? rothStart − employer; employer =
+    // rothEmployerStart ?? 0; spouse shares $0 when
+    // absent). The first re-anchor therefore passes the
+    // plan's own split exactly as a fresh march would
+    // resolve it; the detail takes over from the first
+    // committed year.
+    rothIra:
+      base.rothIraStart ?? Math.max(0, base.rothStart - (base.rothEmployerStart ?? 0)),
+    rothEmployer: base.rothEmployerStart ?? 0,
+    rothIraS: base.rothIraStartSpouse ?? 0,
+    rothEmployerS: base.rothEmployerStartSpouse ?? 0,
+    // LOTS ENTERED (fix round): the opening lots inputs
+    // themselves decide — non-null (even []) means entered.
+    rothLotsEnteredP: base.rothConversionLotsPrimary != null,
+    rothLotsEnteredS: base.rothConversionLotsSpouse != null,
+    // PENDING EDUCATION REFUND (SHOULD-C1) / PRIOR-YEAR
+    // RETURN (SHOULD-C2): nothing pends before the plan's
+    // first year; no prior simulated year exists to cut on.
+    pendingEduRefund: 0,
+    priorYearReturn: null,
   };
 
   const rows: DynamicYearRow[] = [];
@@ -11983,12 +12116,82 @@ export function runDynamicOptimizer(
       pretaxEnd: y0.pretaxSpouseEnd,
       growthFactor,
     });
+    // SURVIVOR MERGE (fix round): in a survivor year the
+    // march merges the deceased's Roth ledgers onto the
+    // survivor at the year's start — contributions add, lots
+    // concatenate FIFO — so the tracked state must merge
+    // BEFORE debiting the year's draw, or the draw would
+    // debit the split ledgers the march no longer has.
+    // Mirrors mergeRothOwnerLedgers, per owner (lots live on
+    // the IRA): a side whose IRA balance is $0 contributes
+    // no lots, the contributions add (r2), and an unentered
+    // contribution basis on a side holding dollars keeps the
+    // merged basis unentered (null). The split balances fold
+    // too (the deceased's share moves to the survivor); the
+    // detail overwrite below replaces them with the
+    // committed year's own split either way, so the folded
+    // values live only for the debit's `known` computation.
+    // survivorWho names who DIED: "primary" died → the
+    // spouse survives; "spouse" died → the primary survives.
+    if (y0.isSurvivorYear) {
+      const survivorIsPrimary = (base.survivorWho ?? "primary") === "spouse";
+      const deadIra = survivorIsPrimary ? state.rothIraS : state.rothIra;
+      const deadEmp = survivorIsPrimary ? state.rothEmployerS : state.rothEmployer;
+      const liveIra = survivorIsPrimary ? state.rothIra : state.rothIraS;
+      const liveEmp = survivorIsPrimary ? state.rothEmployer : state.rothEmployerS;
+      const deadContrib = survivorIsPrimary ? state.rothContribS : state.rothContribP;
+      const liveContrib = survivorIsPrimary ? state.rothContribP : state.rothContribS;
+      const deadLots = survivorIsPrimary ? state.rothLotsS : state.rothLotsP;
+      const liveLots = survivorIsPrimary ? state.rothLotsP : state.rothLotsS;
+      const mergedContrib =
+        (deadContrib == null && deadIra + deadEmp > 0) ||
+        (liveContrib == null && liveIra + liveEmp > 0)
+          ? null
+          : r2((deadContrib ?? 0) + (liveContrib ?? 0));
+      const mergedLots = [
+        ...(deadIra > 0 ? deadLots : []),
+        ...(liveIra > 0 ? liveLots : []),
+      ]
+        .map((l) => ({ ...l }))
+        .sort((a, b) => a.year - b.year);
+      if (survivorIsPrimary) {
+        state.rothContribP = mergedContrib;
+        state.rothLotsP = mergedLots;
+        state.rothContribS = 0;
+        state.rothLotsS = [];
+        state.rothIra = liveIra + deadIra;
+        state.rothEmployer = liveEmp + deadEmp;
+        state.rothIraS = 0;
+        state.rothEmployerS = 0;
+      } else {
+        state.rothContribS = mergedContrib;
+        state.rothLotsS = mergedLots;
+        state.rothContribP = 0;
+        state.rothLotsP = [];
+        state.rothIraS = liveIra + deadIra;
+        state.rothEmployerS = liveEmp + deadEmp;
+        state.rothIra = 0;
+        state.rothEmployer = 0;
+      }
+    }
     // Roth draws debit the primary's ledgers first, then the
     // spouse's (the conversion attribution below is primary-
     // first too, matching the engine's conversion order, and
     // is exact whenever the spouse's pre-tax balance is $0).
+    // In a survivor year the fold above already moved
+    // everything onto the survivor, so the primary-first
+    // debit drains the (empty) deceased side first and the
+    // survivor's merged ledgers second — matching the
+    // march's merged debit. `known` mirrors each side's
+    // ledger `known` flag (opening composition entered, or
+    // a $0 IRA balance): an unknown ledger's draws consume
+    // contributions only, never lots.
     let rothDrawLeft = y0.funding.rothDraw;
-    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft);
+    const knownP =
+      (state.rothContribP != null && state.rothLotsEnteredP) || state.rothIra <= 0;
+    const knownS =
+      (state.rothContribS != null && state.rothLotsEnteredS) || state.rothIraS <= 0;
+    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft, knownP);
     rothDrawLeft = Math.max(
       0,
       rothDrawLeft -
@@ -11996,14 +12199,25 @@ export function runDynamicOptimizer(
         (state.rothLotsP.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0) -
           debitP.lots.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0)),
     );
-    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft);
+    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft, knownS);
     let lotsP = debitP.lots;
     let lotsS = debitS.lots;
     if (y0.funding.conversion > 0) {
-      const primaryConverted = Math.min(
-        y0.funding.conversion,
-        Math.max(0, state.pretaxP - y0.detail.rmdPrimary),
-      );
+      // In a survivor year the march combines the pre-tax
+      // balances onto the survivor at the year's start, so
+      // the whole conversion lands on the survivor's lots;
+      // otherwise the conversion draws primary-first, as the
+      // march's conversion does.
+      const survivorIsPrimary =
+        y0.isSurvivorYear && (base.survivorWho ?? "primary") === "spouse";
+      const primaryConverted = y0.isSurvivorYear
+        ? survivorIsPrimary
+          ? y0.funding.conversion
+          : 0
+        : Math.min(
+            y0.funding.conversion,
+            Math.max(0, state.pretaxP - y0.detail.rmdPrimary),
+          );
       const spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
       if (primaryConverted > 0.005) {
         lotsP = [...lotsP, { year, taxableAmount: r2(primaryConverted), nontaxableAmount: 0 }];
@@ -12025,9 +12239,37 @@ export function runDynamicOptimizer(
     state.lossCarryLt = y0.detail.lossCarryOutLt;
     state.lossCarryStWa = y0.detail.lossCarryOutWaSt;
     state.lossCarryLtWa = y0.detail.lossCarryOutWaLt;
+    // An empty tier snapshot is null (NICE-A4, fix round):
+    // [] falls back to the opening pct tiers exactly as
+    // null does, so normalizing removes the trap without
+    // moving any figure.
     state.tiersLedger =
-      y0.detail.tiersEnd != null ? y0.detail.tiersEnd.map((t) => ({ ...t })) : null;
+      y0.detail.tiersEnd != null && y0.detail.tiersEnd.length > 0
+        ? y0.detail.tiersEnd.map((t) => ({ ...t }))
+        : null;
     state.sleeve = y0.detail.cashSleeveEnd;
+    // ROTH SPLIT (MUST-C1): the committed year's year-end
+    // split, from the grown ledgers.
+    state.rothIra = y0.detail.rothIraEnd;
+    state.rothEmployer = y0.detail.rothEmployerEnd;
+    state.rothIraS = y0.detail.rothIraEndSpouse;
+    state.rothEmployerS = y0.detail.rothEmployerEndSpouse;
+    // PENDING EDUCATION REFUND (SHOULD-C1): the committed
+    // year's refundable credit pends for the next march —
+    // except in the plan's final year, where the march adds
+    // it to the ending taxable balance directly instead of
+    // pending it, so nothing is carried (carrying it would
+    // deposit it a second time).
+    state.pendingEduRefund =
+      y0.agePrimary >= base.endAgePrimary ? 0 : y0.detail.educationRefundable;
+    // PRIOR-YEAR RETURN (SHOULD-C2): the return the
+    // committed year applied — the plan's expected return.
+    // (The optimizer's re-anchored marches never carry a
+    // return series — simulateRothPlan is called with the
+    // series undefined — so the constant expected return is
+    // exactly what the committed year applied; a series-
+    // priced fixed march is outside the optimizer's scope.)
+    state.priorYearReturn = base.expectedReturnPct;
     // GIFT (S-13): the gift fires in the committed year
     // exactly when the engine's own gate fires — the gift
     // age reached with a positive amount — so the next
@@ -12107,7 +12349,6 @@ export function runDynamicOptimizer(
       fixed.best.result,
       fixed.best.policy,
       { ...base, annualSpending },
-      (base.taxableBasisPct / 100) * base.taxableStart,
     );
     return dynamicResultFromRows({
       rows: floorRows,
@@ -12171,15 +12412,23 @@ function dynamicAbArm(
   inputs: RothPlanInputs,
 ): DynamicAbTargetResult["a"] {
   const cost = planNetCost(result, inputs);
-  const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
-  const basisEnd = dynamicBasisWalkYears(
-    result.years,
-    base.taxableStart,
-    (base.taxableBasisPct / 100) * base.taxableStart,
-    growthFactor,
-    base.taxableDividendYieldPct,
-    base.taxableInterestYieldPct,
-  );
+  // Ending basis is the march's own year-end ledger figure
+  // (SHOULD-A2, fix round) — the walk overstated unrealized
+  // gains by $249,534.72 (arm A) / $399,655.88 (arm B) on
+  // the tiers shape. The walk survives only as the fallback
+  // for a march with no years.
+  const lastYear = result.years[result.years.length - 1];
+  const basisEnd =
+    lastYear != null
+      ? lastYear.detail.taxableBasisDollars
+      : dynamicBasisWalkYears(
+          result.years,
+          base.taxableStart,
+          (base.taxableBasisPct / 100) * base.taxableStart,
+          Math.max(0, 1 + base.expectedReturnPct / 100),
+          base.taxableDividendYieldPct,
+          base.taxableInterestYieldPct,
+        );
   const unrealizedGains = Math.max(0, r2(result.endingTaxable - basisEnd));
   return {
     netCost: cost.netCost,
