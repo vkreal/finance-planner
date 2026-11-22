@@ -60,6 +60,7 @@ import {
   reinvestYieldIntoTiers,
   sellFromTiers,
   type TierLedgerEntry,
+  type TierLedgerSnapshotEntry,
 } from "./tierLedger";
 
 export type { FilingStatus };
@@ -3634,6 +3635,17 @@ export type RothPlanInputs = {
   // whose shares sum to something else still splits the
   // whole pool.
   taxableTiers?: TaxableTier[] | null;
+  // TAXABLE TIER LEDGER, EXACT DOLLARS (Engine Review core
+  // 2026-11-21, Build 1 — dynamic re-anchor state): the
+  // march's tier ledger as dollar balances + basis, used by
+  // the dynamic roll-forward to resume from a committed
+  // year's exact year-end ledger. Present and non-empty WINS
+  // over taxableTiers (the percentage round-trip is lossy:
+  // construction clamps basisPct to 100, so an underwater
+  // tier — basis above balance, reachable on a negative-
+  // return year — would lose basis at every re-anchor).
+  // Null / absent / empty = the percentage path exactly.
+  taxableTierLedger?: TierLedgerSnapshotEntry[] | null;
   // TAXABLE YIELDS (optional): the taxable pool's annual
   // dividend and interest yields, each a % of the year's
   // STARTING taxable balance (the balance the year opens with,
@@ -4602,6 +4614,18 @@ export type RothYearDetail = {
   // stepped it up; basis dollars never grow.
   gainsHarvested: number;
   taxableBasisDollars: number;
+  // YEAR-END TIER LEDGER (Engine Review core 2026-11-21,
+  // Build 1 — dynamic re-anchor state): the taxable pool's
+  // tier ledger at year end, null when tiers are inactive.
+  // The dynamic roll-forward resumes from this snapshot, so
+  // a re-anchored march carries the exact dollar ledger
+  // instead of the lossy percentage round-trip. Tiers with
+  // bal<=0 AND basis<=0 are dropped as empty; bal=0/basis>0
+  // tiers are kept — their basis counts in
+  // taxableBasisDollars exactly as in the uninterrupted
+  // march. Each entry carries the cash-tier flag (the cash
+  // tier's identity across re-anchors).
+  tiersEnd: TierLedgerSnapshotEntry[] | null;
   // BASIS-DRIFT surfacing (display only): the year's realized
   // gain from ORDINARY draws alone — tax payments taken from
   // Taxable plus spending draws, priced pro-rata at the basis
@@ -5411,6 +5435,25 @@ export function deriveSpendFromCashSleeveStartDollars(
   const pctRaw = inputs.spendFromCashPct ?? null;
   const pct = pctRaw == null ? 0 : Math.min(100, Math.max(0, pctRaw));
   if (pct <= 0) return 0;
+  // LEDGER FIRST (Engine Review core 2026-11-21, Build 1):
+  // when the march carries an exact dollar tier ledger, the
+  // sleeve IS the cash tier's balance in that ledger — the
+  // flag identifies it (a cash tier's basis ratio decays
+  // below 100% as its balance grows, so the ratio rule below
+  // cannot re-identify it after a growth year), with the
+  // ratio rule as the fallback for a flag-less ledger. The
+  // percentage tiers are stale by construction on a
+  // re-anchored march (they describe the plan's opening
+  // pool), so deriving from them here would double-spend
+  // or lose the sleeve.
+  if (Array.isArray(inputs.taxableTierLedger) && inputs.taxableTierLedger.length > 0) {
+    const flagged = inputs.taxableTierLedger.find((t) => t.cash === true);
+    if (flagged != null) return Math.min(Math.max(0, flagged.bal), Math.max(0, inputs.taxableStart));
+    for (const t of inputs.taxableTierLedger) {
+      if (t.bal > 0 && t.basis >= t.bal) return Math.min(Math.max(0, t.bal), Math.max(0, inputs.taxableStart));
+    }
+    return 0;
+  }
   const tiersActive =
     inputs.taxableBasisBlank !== true &&
     Array.isArray(inputs.taxableTiers) &&
@@ -5795,12 +5838,39 @@ export function simulateRothPlan(
   // normalization is float dust there). A single tier at the
   // plan's basis % reproduces the single pool to the cent: its
   // one ratio IS the pool ratio at every step.
-  const tiersActive =
+  // EXACT LEDGER (Engine Review core 2026-11-21, Build 1):
+  // when the march carries a dollar tier ledger it wins over
+  // the percentage form (the pct round-trip is lossy for
+  // underwater tiers — see the taxableTierLedger note).
+  const ledgerActive =
     driftOn &&
-    Array.isArray(inputs.taxableTiers) &&
-    inputs.taxableTiers.length > 0;
+    Array.isArray(inputs.taxableTierLedger) &&
+    inputs.taxableTierLedger.length > 0;
+  const tiersActive =
+    ledgerActive ||
+    (driftOn &&
+      Array.isArray(inputs.taxableTiers) &&
+      inputs.taxableTiers.length > 0);
   let tierState: TierLedger[] | null = null;
-  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
+  if (ledgerActive && Array.isArray(inputs.taxableTierLedger)) {
+    // Rebuild tierState from the snapshot: cloned dollars,
+    // inflow false (a later buy creates a fresh inflow tier —
+    // pricing-neutral: both are 100%-basis, sales rank by
+    // ratio), cash from the snapshot flag, with the ratio
+    // rule as the fallback for a flag-less ledger.
+    const snapshot = inputs.taxableTierLedger;
+    const flaggedIndex = snapshot.findIndex((t) => t.cash === true);
+    let fallbackClaimed = false;
+    tierState = snapshot.map((t, i) => {
+      const cash =
+        flaggedIndex >= 0
+          ? i === flaggedIndex
+          : !fallbackClaimed && t.bal > 0 && t.basis >= t.bal;
+      if (cash) fallbackClaimed = true;
+      return { bal: t.bal, basis: t.basis, inflow: false, cash };
+    });
+    taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+  } else if (tiersActive && Array.isArray(inputs.taxableTiers)) {
     const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce(
       (s, t) => s + Math.max(0, t.sharePct),
@@ -10979,6 +11049,11 @@ export function simulateRothPlan(
         : 0,
       gainsHarvested: r2(gainsHarvested),
       taxableBasisDollars: r2(taxableBasisDollars),
+      tiersEnd: tierState != null
+        ? tierState
+            .filter((t) => !(t.bal <= 0 && t.basis <= 0))
+            .map((t) => ({ bal: t.bal, basis: t.basis, cash: t.cash === true }))
+        : null,
       drawGains: r2(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,

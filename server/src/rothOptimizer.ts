@@ -68,6 +68,7 @@ acaFirstStepYear,
 acaHouseholdSizeForYear,
 ceilingsActive,
 debitRothOwnerLedger,
+deriveSpendFromCashSleeveStartDollars,
 drawOrderFromKey,
 drawOrderKey,
 drawOrderLabel,
@@ -122,6 +123,7 @@ type LawProvenance,
 export { fullRetirementAgeMonths, ssAnnualAtClaimAge, ssBenefitFactor };
 import { irmaaTierFor, irmaaTierUpTo } from "./taxEngine";
 import { applyLossLedger } from "./lossLedger";
+import { type TierLedgerSnapshotEntry } from "./tierLedger";
 import {
   impliedYieldPctsFromTaxReturn,
   type RothTaxReturnStored,
@@ -11165,6 +11167,12 @@ export type DynamicYearRow = {
   rothEnd: number;
   taxableEnd: number;
   taxableBasisEnd: number;
+  /** The year's realized gain from ORDINARY draws alone
+      (Engine Review core 2026-11-21, Build 1 — S-12): the
+      march's drawGains, carried so the parity test can pin
+      the tier/sleeve gain path directly — a tier-order gain
+      error shows here even when the balances agree. */
+  drawGains: number;
   hsaEnd: number;
   settlementConverged: boolean;
   spendShortfall: number;
@@ -11277,6 +11285,40 @@ type DynamicLedgerState = {
   // early while the uninterrupted march still deferred it.
   firstRmdPricedP: boolean;
   firstRmdPricedS: boolean;
+  /** CAPITAL-LOSS CARRYFORWARD (Engine Review core 2026-11-21,
+      Build 1 — M-1): the loss ledger carried across
+      re-anchors, federal and Washington, short and long.
+      The re-anchor used to drop it (dynamicReanchorInputs
+      spread ...base, whose carry-ins describe the plan's
+      opening year only), so later years repriced gains
+      without the carried losses. Seeded from the plan's
+      carry-ins; advanced from each committed year's
+      lossCarryOut*. */
+  lossCarrySt: number;
+  lossCarryLt: number;
+  lossCarryStWa: number;
+  lossCarryLtWa: number;
+  /** TAXABLE-BASIS TIER LEDGER (M-1): the committed year's
+      year-end tier snapshot (detail.tiersEnd), null until
+      the first committed year publishes one. The re-anchor
+      passes it as taxableTierLedger so the next march
+      rebuilds its tierState from the exact dollar ledger
+      instead of the plan's opening percentage tiers. Null
+      on a plan with no tiers (the pct path is untouched). */
+  tiersLedger: TierLedgerSnapshotEntry[] | null;
+  /** SPEND-FROM-CASH SLEEVE (M-1): the committed year's
+      year-end sleeve dollars (detail.cashSleeveEnd). The
+      re-anchor passes it as spendFromCashSleeveStart so a
+      single-pool march does not re-spend the opening sleeve
+      every year; in tiers mode the sleeve helper derives it
+      from the carried tier ledger instead. */
+  sleeve: number;
+  /** ONE-TIME GIFT APPLIED (S-13): flips once the committed
+      year fires the gift outflow (the engine's own gate:
+      giftOutflowAge reached with a positive amount). The
+      re-anchor then nulls giftOutflowAge, so no later march
+      re-gifts the amount. */
+  giftApplied: boolean;
   /** IRMAA LOOKBACK carried across re-anchors (Engine Review
       C10, Pass 1 fix — M1): the committed years' MAGI with
       the filing status each was priced under, in the engine's
@@ -11354,6 +11396,41 @@ function dynamicReanchorInputs(
     firstRmdDeferralSpouse: state.firstRmdPricedS ? false : base.firstRmdDeferralSpouse,
     firstRmdDeferredCarryPrimary: state.rmdDeferredPendingP,
     firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS,
+    // CAPITAL-LOSS CARRYFORWARD (Engine Review core 2026-11-21,
+    // Build 1 — M-1): the committed years' carried losses,
+    // not the plan's opening carry-ins — the march chains
+    // them itself (carryOut of one year is carryIn of the
+    // next), so the re-anchor must hand over the current
+    // ledger, not restart it.
+    capitalLossCarryInSt: state.lossCarrySt,
+    capitalLossCarryInLt: state.lossCarryLt,
+    capitalLossCarryInStWa: state.lossCarryStWa,
+    capitalLossCarryInLtWa: state.lossCarryLtWa,
+    // EXACT TIER LEDGER (M-1): the committed year's year-end
+    // snapshot, cloned per march. Null until the first
+    // committed year publishes one — the pct tiers in
+    // ...base above then price the first year exactly as the
+    // uninterrupted march does. (taxableTiers is deliberately
+    // NOT nulled: harvestGatePasses reads the pct tiers, and
+    // the ledger wins by precedence in the two places that
+    // matter — tier construction and the sleeve helper.)
+    taxableTierLedger: state.tiersLedger != null ? state.tiersLedger.map((t) => ({ ...t })) : null,
+    // CASH SLEEVE (M-1): the committed year's year-end
+    // sleeve dollars. In tiers mode the sleeve helper
+    // derives it from the carried ledger and ignores this;
+    // in single-pool mode it stops the opening sleeve from
+    // being re-spent every year.
+    spendFromCashSleeveStart: state.sleeve,
+    // YEAR-TO-DATE CONVERSION (S-11): the already-converted
+    // amount is the plan's TRUE first year only. The
+    // re-anchor sets startYear: year, and the march's gate
+    // (year === inputs.startYear) would otherwise re-price
+    // it in every re-anchored march's first year.
+    convertedAlreadyThisYear: year === base.startYear ? base.convertedAlreadyThisYear : 0,
+    // ONE-TIME GIFT (S-13): once gifted, the gift age is
+    // nulled — the fresh march then never fires it again
+    // (amount/basis ride along inert).
+    giftOutflowAge: state.giftApplied ? null : base.giftOutflowAge,
   };
 }
 
@@ -11452,6 +11529,7 @@ function dynamicRowFromYear(
     rothEnd: y.rothEnd,
     taxableEnd: y.taxableEnd,
     taxableBasisEnd,
+    drawGains: d.drawGains,
     hsaEnd: y.hsaEnd,
     settlementConverged: y.settlementConverged,
     spendShortfall: f.spendShortfall,
@@ -11755,6 +11833,19 @@ export function runDynamicOptimizer(
     // The plan's own supplied prior returns lead the lookback;
     // each committed year appends below as it prices.
     irmaaLookback: [...(base.irmaaLookbackSeed ?? [])],
+    // RE-ANCHOR STATE (Engine Review core 2026-11-21, Build 1):
+    // the loss ledger starts at the plan's carry-ins, the tier
+    // ledger at null (the first re-anchor passes the plan's
+    // own pct tiers; the snapshot arrives with the first
+    // committed year), the sleeve at the plan's derived
+    // opening sleeve, the gift unapplied.
+    lossCarrySt: Math.max(0, base.capitalLossCarryInSt ?? 0),
+    lossCarryLt: Math.max(0, base.capitalLossCarryInLt ?? 0),
+    lossCarryStWa: Math.max(0, base.capitalLossCarryInStWa ?? 0),
+    lossCarryLtWa: Math.max(0, base.capitalLossCarryInLtWa ?? 0),
+    tiersLedger: null,
+    sleeve: deriveSpendFromCashSleeveStartDollars(base),
+    giftApplied: false,
   };
 
   const rows: DynamicYearRow[] = [];
@@ -11859,21 +11950,13 @@ export function runDynamicOptimizer(
         searchLimits: DYNAMIC_SEARCH_LIMITS,
       };
     }
-    const sold = y0.funding.taxableSoldForSpending + y0.funding.taxableSoldForTax;
-    const basisEnd = trackTaxableBasisEnd({
-      taxableStart: state.taxable,
-      basisStart: state.taxableBasis,
-      taxableSold: sold,
-      drawGains: y0.detail.drawGains,
-      taxableEnd: y0.taxableEnd,
-      growthFactor,
-      yieldReinvested: dynamicYieldForYear({
-        taxableStart: state.taxable,
-        dividendYieldPct: base.taxableDividendYieldPct,
-        interestYieldPct: base.taxableInterestYieldPct,
-      }),
-    });
-    const row = dynamicRowFromYear(y0, best.policy, basisEnd, rmdAge, ssStartAge);
+    // TAXABLE BASIS (Engine Review core 2026-11-21, Build 1):
+    // the march's own exact year-end ledger — the walk
+    // (trackTaxableBasisEnd) understated basis across gift
+    // years (no gift term), tiered pools (blended pct), and
+    // cash-sleeve years (cash spend is not a sale). The walk
+    // helper stays for the fixed-policy row builder above.
+    const row = dynamicRowFromYear(y0, best.policy, y0.detail.taxableBasisDollars, rmdAge, ssStartAge);
     rows.push(row);
     sunkNetCost = r2(sunkNetCost + row.netCostYear);
     // Record this committed year in the IRMAA lookback (M1):
@@ -11933,7 +12016,29 @@ export function runDynamicOptimizer(
     state.pretaxS = y0.pretaxSpouseEnd;
     state.roth = y0.rothEnd;
     state.taxable = y0.taxableEnd;
-    state.taxableBasis = basisEnd;
+    state.taxableBasis = y0.detail.taxableBasisDollars;
+    // RE-ANCHOR STATE ADVANCE (Build 1): the loss ledger,
+    // tier snapshot, and sleeve all advance from the
+    // committed year's own outputs — never re-derived from
+    // the plan's opening inputs.
+    state.lossCarrySt = y0.detail.lossCarryOutSt;
+    state.lossCarryLt = y0.detail.lossCarryOutLt;
+    state.lossCarryStWa = y0.detail.lossCarryOutWaSt;
+    state.lossCarryLtWa = y0.detail.lossCarryOutWaLt;
+    state.tiersLedger =
+      y0.detail.tiersEnd != null ? y0.detail.tiersEnd.map((t) => ({ ...t })) : null;
+    state.sleeve = y0.detail.cashSleeveEnd;
+    // GIFT (S-13): the gift fires in the committed year
+    // exactly when the engine's own gate fires — the gift
+    // age reached with a positive amount — so the next
+    // re-anchor nulls the gift age and never re-gifts.
+    if (
+      base.giftOutflowAge != null &&
+      (base.giftOutflowAmount ?? 0) > 0 &&
+      y0.agePrimary >= base.giftOutflowAge
+    ) {
+      state.giftApplied = true;
+    }
     state.hsa = y0.hsaEnd;
     state.eligP = eligP;
     state.eligS = eligS;

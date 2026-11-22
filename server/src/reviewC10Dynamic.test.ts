@@ -252,6 +252,149 @@ describe("C10 — roll-forward parity (shared-engine proof)", () => {
   });
 });
 
+describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () => {
+  const ORDER: DrawOrder = ["taxable", "pretax", "roth"];
+  const POLICY = {
+    key: "fill12|stop67|taxable-pretax-roth",
+    name: "Fill 12% · stop 67",
+    ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
+    guardrail: false,
+    windowStopAge: 67,
+    drawOrder: ORDER,
+  };
+  // 2c per flow field, in integer cents — the fields are
+  // cent-rounded dollars, and a raw-float `<= 0.02` fails a
+  // true 2c difference on float noise alone (same note as the
+  // plain-shape parity test above).
+  const within2c = (a: number, b: number) =>
+    Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= 2;
+
+  // One shape: a single fill-12% policy rolled forward must
+  // reproduce its own uninterrupted march on the GREEDY rows
+  // (not only the floor-rescued `years`) — the M-1 class of
+  // divergence hid exactly there, with the floor binding and
+  // publishing fixed-march rows while greedyYears mispriced.
+  function checkShape(overrides: Partial<RothPlanInputs>) {
+    const inputs = samplePlanInputs({
+      endAgePrimary: 67,
+      windowStopAge: 67,
+      retirementAge: 62,
+      ...overrides,
+    });
+    const march = simulateRothPlan(
+      { ...inputs, windowStopAge: 67, drawOrder: [...ORDER] },
+      { id: "parity", name: "Fill 12%", ceilings: POLICY.ceilings, guardrail: false },
+      undefined,
+      { leanDetail: true },
+    );
+    const rolled = runDynamicOptimizer(inputs, { policies: [POLICY] });
+    expect(rolled.ok).toBe(true);
+    expect(rolled.floorBound).toBe(false);
+    expect(rolled.greedyYears.length).toBe(march.years.length);
+    for (let i = 0; i < march.years.length; i++) {
+      const m = march.years[i]!;
+      const r = rolled.greedyYears[i]!;
+      expect(r.year).toBe(m.year);
+      expect(within2c(r.federalTax, m.federalTax)).toBe(true);
+      expect(within2c(r.conversion, m.funding.conversion)).toBe(true);
+      expect(within2c(r.pretaxDraw, m.funding.pretaxDraw)).toBe(true);
+      expect(within2c(r.taxableSoldForSpending, m.funding.taxableSoldForSpending)).toBe(true);
+      expect(within2c(r.taxableSoldForTax, m.funding.taxableSoldForTax)).toBe(true);
+      expect(within2c(r.rothDraw, m.funding.rothDraw)).toBe(true);
+      expect(within2c(r.rmd, m.funding.rmd)).toBe(true);
+      expect(within2c(r.magi, m.magi)).toBe(true);
+      expect(within2c(r.acaCreditKept, m.acaCreditKept)).toBe(true);
+      expect(within2c(r.pretaxEnd, m.pretaxEnd)).toBe(true);
+      expect(within2c(r.rothEnd, m.rothEnd)).toBe(true);
+      expect(within2c(r.taxableEnd, m.taxableEnd)).toBe(true);
+      // The gain path, pinned directly: drawGains is the
+      // realized-gain figure the basis walk reads, so a
+      // tier-order or sleeve gain error shows here even when
+      // the balances agree — and the basis ledger itself.
+      expect(within2c(r.drawGains, m.detail.drawGains)).toBe(true);
+      expect(within2c(r.taxableBasisEnd, m.detail.taxableBasisDollars)).toBe(true);
+    }
+    // Ending balances within $0.50, lifetime net cost within
+    // $0.25 — the re-anchor rounding bars for the trajectory.
+    const lastR = rolled.greedyYears[rolled.greedyYears.length - 1]!;
+    const lastM = march.years[march.years.length - 1]!;
+    expect(Math.abs(lastR.pretaxEnd - lastM.pretaxEnd)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(lastR.rothEnd - lastM.rothEnd)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(lastR.taxableEnd - lastM.taxableEnd)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(lastR.hsaEnd - lastM.hsaEnd)).toBeLessThanOrEqual(0.5);
+    expect(
+      Math.abs(
+        rolled.lifetimeNetCost -
+          netCostBreakdown(march, inputs.heirRatePct, {
+            preservePretax: inputs.preservePretax ?? 0,
+            preserveExitRatePct: inputs.preserveExitRatePct ?? inputs.heirRatePct,
+          }).netCost,
+      ),
+    ).toBeLessThanOrEqual(0.25);
+    return { inputs, march, rolled };
+  }
+
+  test("plain control reproduces its march on greedy rows", () => {
+    checkShape({});
+  });
+
+  test("tiered basis reproduces its march on greedy rows", () => {
+    checkShape({
+      taxableTiers: [
+        { sharePct: 50, basisPct: 40 },
+        { sharePct: 50, basisPct: 100 },
+      ],
+    });
+  });
+
+  test("loss carry-in reproduces its march on greedy rows", () => {
+    checkShape({ capitalLossCarryInSt: 50000 });
+  });
+
+  test("cash sleeve reproduces its march on greedy rows", () => {
+    checkShape({ spendFromCashPct: 50, spendFromCashSleeveStart: 100000 });
+  });
+
+  test("year-to-date conversion prices once, in the first year only", () => {
+    const { inputs, rolled } = checkShape({ convertedAlreadyThisYear: 10000 });
+    // The already-converted amount is the plan's first-year
+    // conversion; no later year re-prices it. The pre-window
+    // years (primary under the retirement age) convert $0 in
+    // the march — pre-fix the phantom re-priced $10,000
+    // there — while the window years convert NEW fill money
+    // ($11,200 / $8,600 / $6,200 / $5,500 / $3,400 in the
+    // march, 2030–2034), which is legitimate conversion, not
+    // the phantom; checkShape's per-year parity already pins
+    // rolled == march there.
+    expect(within2c(rolled.greedyYears[0]!.conversion, 10000)).toBe(true);
+    for (const r of rolled.greedyYears.slice(1)) {
+      if (r.agePrimary < (inputs.retirementAge ?? 62)) {
+        expect(within2c(r.conversion, 0)).toBe(true);
+      }
+    }
+  });
+
+  test("one-time gift fires once and never re-gifts", () => {
+    checkShape({ giftOutflowAge: 63, giftOutflowAmount: 100000 });
+  });
+
+  test("tiered basis plus cash sleeve reproduces its march on greedy rows", () => {
+    // Combined shape: the ledger's cash tier must survive the
+    // re-anchor as the cash tier — a ratio test cannot
+    // re-identify it after a growth year (its basis ratio
+    // decays below 100% as its balance grows), so the
+    // snapshot carries the flag.
+    checkShape({
+      taxableTiers: [
+        { sharePct: 50, basisPct: 40 },
+        { sharePct: 50, basisPct: 100 },
+      ],
+      spendFromCashPct: 50,
+      spendFromCashSleeveStart: 100000,
+    });
+  });
+});
+
 describe("C10 — dynamic optimizer (full set, short horizon)", () => {
   test("dynamic is valid and never worse than the best fixed policy", () => {
     const inputs = shortInputs();

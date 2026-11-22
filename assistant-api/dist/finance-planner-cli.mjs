@@ -6978,6 +6978,16 @@ function deriveSpendFromCashSleeveStartDollars(inputs) {
   const pct = pctRaw == null ? 0 : Math.min(100, Math.max(0, pctRaw));
   if (pct <= 0)
     return 0;
+  if (Array.isArray(inputs.taxableTierLedger) && inputs.taxableTierLedger.length > 0) {
+    const flagged = inputs.taxableTierLedger.find((t) => t.cash === true);
+    if (flagged != null)
+      return Math.min(Math.max(0, flagged.bal), Math.max(0, inputs.taxableStart));
+    for (const t of inputs.taxableTierLedger) {
+      if (t.bal > 0 && t.basis >= t.bal)
+        return Math.min(Math.max(0, t.bal), Math.max(0, inputs.taxableStart));
+    }
+    return 0;
+  }
   const tiersActive = inputs.taxableBasisBlank !== true && Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0;
   if (tiersActive && Array.isArray(inputs.taxableTiers)) {
     const rawTiers = inputs.taxableTiers;
@@ -7073,9 +7083,21 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   const spouseAcaEndAge = inputs.acaSpouseEndAge ?? 65;
   const basisPctClamped = Math.min(100, Math.max(0, inputs.taxableBasisPct)) / 100;
   let taxableBasisDollars = basisPctClamped * inputs.taxableStart;
-  const tiersActive = driftOn && Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0;
+  const ledgerActive = driftOn && Array.isArray(inputs.taxableTierLedger) && inputs.taxableTierLedger.length > 0;
+  const tiersActive = ledgerActive || driftOn && Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0;
   let tierState = null;
-  if (tiersActive && Array.isArray(inputs.taxableTiers)) {
+  if (ledgerActive && Array.isArray(inputs.taxableTierLedger)) {
+    const snapshot = inputs.taxableTierLedger;
+    const flaggedIndex = snapshot.findIndex((t) => t.cash === true);
+    let fallbackClaimed = false;
+    tierState = snapshot.map((t, i) => {
+      const cash = flaggedIndex >= 0 ? i === flaggedIndex : !fallbackClaimed && t.bal > 0 && t.basis >= t.bal;
+      if (cash)
+        fallbackClaimed = true;
+      return { bal: t.bal, basis: t.basis, inflow: false, cash };
+    });
+    taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+  } else if (tiersActive && Array.isArray(inputs.taxableTiers)) {
     const rawTiers = inputs.taxableTiers;
     const shareTotal = rawTiers.reduce((s, t) => s + Math.max(0, t.sharePct), 0);
     let cashTierClaimed = false;
@@ -9011,6 +9033,7 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       acaPremiumAdjustment: premiumReconcile ? r22(Math.max(0, benchmark - settled.feedbackCredit) - premiumEmbeddedDollars) : 0,
       gainsHarvested: r22(gainsHarvested),
       taxableBasisDollars: r22(taxableBasisDollars),
+      tiersEnd: tierState != null ? tierState.filter((t) => !(t.bal <= 0 && t.basis <= 0)).map((t) => ({ bal: t.bal, basis: t.basis, cash: t.cash === true })) : null,
       drawGains: r22(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,
@@ -11449,7 +11472,15 @@ function dynamicReanchorInputs(base, state, year, policy, annualSpending) {
     firstRmdDeferralPrimary: state.firstRmdPricedP ? false : base.firstRmdDeferralPrimary,
     firstRmdDeferralSpouse: state.firstRmdPricedS ? false : base.firstRmdDeferralSpouse,
     firstRmdDeferredCarryPrimary: state.rmdDeferredPendingP,
-    firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS
+    firstRmdDeferredCarrySpouse: state.rmdDeferredPendingS,
+    capitalLossCarryInSt: state.lossCarrySt,
+    capitalLossCarryInLt: state.lossCarryLt,
+    capitalLossCarryInStWa: state.lossCarryStWa,
+    capitalLossCarryInLtWa: state.lossCarryLtWa,
+    taxableTierLedger: state.tiersLedger != null ? state.tiersLedger.map((t) => ({ ...t })) : null,
+    spendFromCashSleeveStart: state.sleeve,
+    convertedAlreadyThisYear: year === base.startYear ? base.convertedAlreadyThisYear : 0,
+    giftOutflowAge: state.giftApplied ? null : base.giftOutflowAge
   };
 }
 function dynamicDebitRothDraw(contrib, lots, draw) {
@@ -11528,6 +11559,7 @@ function dynamicRowFromYear(y, policy, taxableBasisEnd, rmdAge, ssStartAge) {
     rothEnd: y.rothEnd,
     taxableEnd: y.taxableEnd,
     taxableBasisEnd,
+    drawGains: d.drawGains,
     hsaEnd: y.hsaEnd,
     settlementConverged: y.settlementConverged,
     spendShortfall: f.spendShortfall,
@@ -11680,7 +11712,14 @@ function runDynamicOptimizer(base, opts) {
     rmdDeferredPendingS: base.firstRmdDeferredCarrySpouse ?? 0,
     firstRmdPricedP: false,
     firstRmdPricedS: false,
-    irmaaLookback: [...base.irmaaLookbackSeed ?? []]
+    irmaaLookback: [...base.irmaaLookbackSeed ?? []],
+    lossCarrySt: Math.max(0, base.capitalLossCarryInSt ?? 0),
+    lossCarryLt: Math.max(0, base.capitalLossCarryInLt ?? 0),
+    lossCarryStWa: Math.max(0, base.capitalLossCarryInStWa ?? 0),
+    lossCarryLtWa: Math.max(0, base.capitalLossCarryInLtWa ?? 0),
+    tiersLedger: null,
+    sleeve: deriveSpendFromCashSleeveStartDollars(base),
+    giftApplied: false
   };
   const rows = [];
   let sunkNetCost = 0;
@@ -11774,21 +11813,7 @@ function runDynamicOptimizer(base, opts) {
         searchLimits: DYNAMIC_SEARCH_LIMITS
       };
     }
-    const sold = y0.funding.taxableSoldForSpending + y0.funding.taxableSoldForTax;
-    const basisEnd = trackTaxableBasisEnd({
-      taxableStart: state.taxable,
-      basisStart: state.taxableBasis,
-      taxableSold: sold,
-      drawGains: y0.detail.drawGains,
-      taxableEnd: y0.taxableEnd,
-      growthFactor,
-      yieldReinvested: dynamicYieldForYear({
-        taxableStart: state.taxable,
-        dividendYieldPct: base.taxableDividendYieldPct,
-        interestYieldPct: base.taxableInterestYieldPct
-      })
-    });
-    const row = dynamicRowFromYear(y0, best.policy, basisEnd, rmdAge, ssStartAge);
+    const row = dynamicRowFromYear(y0, best.policy, y0.detail.taxableBasisDollars, rmdAge, ssStartAge);
     rows.push(row);
     sunkNetCost = r23(sunkNetCost + row.netCostYear);
     state.irmaaLookback.push({
@@ -11828,7 +11853,16 @@ function runDynamicOptimizer(base, opts) {
     state.pretaxS = y0.pretaxSpouseEnd;
     state.roth = y0.rothEnd;
     state.taxable = y0.taxableEnd;
-    state.taxableBasis = basisEnd;
+    state.taxableBasis = y0.detail.taxableBasisDollars;
+    state.lossCarrySt = y0.detail.lossCarryOutSt;
+    state.lossCarryLt = y0.detail.lossCarryOutLt;
+    state.lossCarryStWa = y0.detail.lossCarryOutWaSt;
+    state.lossCarryLtWa = y0.detail.lossCarryOutWaLt;
+    state.tiersLedger = y0.detail.tiersEnd != null ? y0.detail.tiersEnd.map((t) => ({ ...t })) : null;
+    state.sleeve = y0.detail.cashSleeveEnd;
+    if (base.giftOutflowAge != null && (base.giftOutflowAmount ?? 0) > 0 && y0.agePrimary >= base.giftOutflowAge) {
+      state.giftApplied = true;
+    }
     state.hsa = y0.hsaEnd;
     state.eligP = eligP;
     state.eligS = eligS;

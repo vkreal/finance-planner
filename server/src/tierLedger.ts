@@ -28,6 +28,18 @@
 // basis paid) — basis is dollars paid, floored at $0 only.
 export type TierLedgerEntry = { bal: number; basis: number };
 
+// A year-end tier-ledger snapshot (Engine Review core 2026-11-21,
+// Build 1 — dynamic re-anchor state): the march's tier ledger at
+// year end, published on RothYearDetail.tiersEnd so a re-anchored
+// march resumes from the exact dollar ledger instead of the
+// lossy percentage round-trip. The `cash` flag is the cash tier's
+// identity across re-anchors: a cash tier's basis ratio decays
+// below 100% as its balance grows at the plan's return, so the
+// ratio rule (first tier with basis >= bal) cannot re-identify
+// it after a growth year — the flag rides the snapshot, with
+// the ratio rule kept as the fallback for a flag-less ledger.
+export type TierLedgerSnapshotEntry = TierLedgerEntry & { cash?: boolean };
+
 // Consume `amount` of balance from a tier ledger, HIGHEST
 // current basis ratio first ("highest" — ordinary sales: sell
 // the least-gain shares first) or LOWEST first ("lowest" —
