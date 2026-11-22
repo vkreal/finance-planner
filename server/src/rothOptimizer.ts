@@ -11269,8 +11269,44 @@ type DynamicLedgerState = {
   hsa: number;
   eligP: number | null;
   eligS: number | null;
-  rothContribP: number | null;
-  rothContribS: number | null;
+  /** PER-ACCOUNT CONTRIBUTION BASIS (Engine Review core
+      2026-11-21, Build 1 fix round 2 — SHOULD-C2-2): each
+      owner's remaining contribution basis, split by
+      account (Roth IRA / designated Roth employer plan).
+      The march debits the IRA account first, then the
+      employer plan, so after an IRA-first draw the
+      remaining basis sits in the employer account only —
+      a per-owner TOTAL cannot express that, and the
+      re-anchor used to re-split the remaining total by
+      current balances, resurrecting basis in the IRA (or
+      losing employer basis). Null = unentered (the march
+      prices that account's draws $0-unknown); the debit
+      preserves null. Seeded from the plan's entered basis
+      through the march's own split + init clamp; advanced
+      by the per-account debit, then overwritten from the
+      committed year's detail values (null-ness preserved
+      from state — the detail carries values only). */
+  rothContribIraP: number | null;
+  rothContribEmpP: number | null;
+  rothContribIraS: number | null;
+  rothContribEmpS: number | null;
+  /** MERGED 5-YEAR CLOCKS (fix round 2 — SHOULD-C2-1):
+      each owner's Roth IRA clock (firstRothYear) and
+      designated-Roth clock (firstDesignatedRothYear). The
+      march merges the two owners' clocks at the survivor
+      fold (earlier of the two first years per account);
+      the re-anchor used to spread ...base, so after the
+      fold the survivor's ORIGINAL clock governed and the
+      merged clock survived exactly one re-anchor. The fold
+      merges these (per account, $0 side ignored); the
+      re-anchor overrides the plan's original clocks with
+      them. Null = no clock established. Unchanged outside
+      a survivor year (the march never re-dates a clock
+      mid-march). */
+  firstRothP: number | null;
+  firstRothS: number | null;
+  firstDesigP: number | null;
+  firstDesigS: number | null;
   rothLotsP: RothConversionLotInput[];
   rothLotsS: RothConversionLotInput[];
   rmdDeferredPendingP: number;
@@ -11454,8 +11490,35 @@ function dynamicReanchorInputs(
     drawOrder: [...policy.drawOrder],
     pretax401kEligiblePrimary: state.eligP,
     pretax401kEligibleSpouse: state.eligS,
-    rothContributionBasisPrimary: state.rothContribP,
-    rothContributionBasisSpouse: state.rothContribS,
+    // PER-ACCOUNT CONTRIBUTION BASIS (fix round 2 —
+    // SHOULD-C2-2): the carried per-account split, not a
+    // re-split of the remaining total — the march debits
+    // the IRA first, so the split the debit leaves is the
+    // split the next march must resume from. The total is
+    // passed too (null when either account is unentered)
+    // as the fallback for the split path; the per-account
+    // values win whenever both are defined for an owner.
+    rothContributionBasisPrimary:
+      state.rothContribIraP != null && state.rothContribEmpP != null
+        ? r2(state.rothContribIraP + state.rothContribEmpP)
+        : null,
+    rothContributionBasisSpouse:
+      state.rothContribIraS != null && state.rothContribEmpS != null
+        ? r2(state.rothContribIraS + state.rothContribEmpS)
+        : null,
+    rothContributionBasisIraPrimary: state.rothContribIraP,
+    rothContributionBasisEmployerPrimary: state.rothContribEmpP,
+    rothContributionBasisIraSpouse: state.rothContribIraS,
+    rothContributionBasisEmployerSpouse: state.rothContribEmpS,
+    // MERGED 5-YEAR CLOCKS (fix round 2 — SHOULD-C2-1):
+    // the carried clocks, not the plan's originals — after
+    // a survivor fold the survivor's clock is the MERGED
+    // clock (earlier of the two), and ...base above still
+    // carries the originals.
+    firstRothYearPrimary: state.firstRothP,
+    firstRothYearSpouse: state.firstRothS,
+    firstDesignatedRothYearPrimary: state.firstDesigP,
+    firstDesignatedRothYearSpouse: state.firstDesigS,
     // CONVERSION LOTS — ENTERED ONLY (fix round, survivor
     // debit order): the lots ride along only when the
     // plan's OPENING lots were entered. A ledger whose
@@ -11598,6 +11661,79 @@ function dynamicDebitRothDraw(
     }
   }
   return { contrib: nextContrib, lots: nextLots };
+}
+
+/* Debit one owner's Roth draw in the march's account
+   order — IRA first, then the employer plan (fix round 2
+   — SHOULD-C2-2): the march debits the IRA account fully
+   (contributions, then lots FIFO, then earnings) before
+   touching the employer plan, so a draw that reaches the
+   IRA's earnings leaves the employer's contribution basis
+   standing. The old per-owner-total debit consumed the
+   TOTAL basis first and silently spent the employer's
+   basis on an IRA draw. Each account's take is capped at
+   its debit-time balance — the IRA's cap adds this year's
+   conversion share, which the settlement appends to the
+   IRA before debiting (fix round 2 — MUST-C2-1) — so a
+   draw larger than the opening IRA balance spills to the
+   employer only past the conversion top-up, exactly as
+   the march's settlement does. `knownIra` gates lot
+   consumption (the IRA's `known` flag); the employer
+   holds no lots, so its basis is consumed regardless.
+   Returns the updated per-account basis and lots, plus
+   the draw left for the next owner. */
+function dynamicDebitRothOwner(args: {
+  contribIra: number | null;
+  contribEmp: number | null;
+  lots: RothConversionLotInput[];
+  draw: number;
+  iraBal: number;
+  empBal: number;
+  convertedIra: number;
+  knownIra: boolean;
+}): {
+  contribIra: number | null;
+  contribEmp: number | null;
+  lots: RothConversionLotInput[];
+  drawLeft: number;
+} {
+  let drawLeft = Math.max(0, args.draw);
+  // IRA first, capped at its debit-time balance (opening
+  // balance + this year's conversion, appended before the
+  // debit in the settlement).
+  const iraTake = Math.min(drawLeft, Math.max(0, args.iraBal + args.convertedIra));
+  const iraDebit = dynamicDebitRothDraw(args.contribIra, args.lots, iraTake, args.knownIra);
+  drawLeft = Math.max(0, drawLeft - iraTake);
+  // Employer plan: contributions only (no lots ever); the
+  // residual past the IRA's balance is all that reaches it.
+  const empTake = Math.min(drawLeft, Math.max(0, args.empBal));
+  let nextContribEmp = args.contribEmp;
+  if (nextContribEmp != null && nextContribEmp > 0 && empTake > 0) {
+    nextContribEmp = Math.max(0, nextContribEmp - Math.min(nextContribEmp, empTake));
+  }
+  drawLeft = Math.max(0, drawLeft - empTake);
+  return { contribIra: iraDebit.contrib, contribEmp: nextContribEmp, lots: iraDebit.lots, drawLeft };
+}
+
+/* Merge two 5-year clocks the way mergeRothOwnerLedgers
+   does (fix round 2 — SHOULD-C2-1): a $0-balance side
+   contributes nothing — its first year must not pull the
+   merged clock earlier — otherwise the earlier of the two
+   first years (either null yields the other; both null
+   yields null). */
+function mergeRothFirstYear(
+  xBal: number,
+  xYear: number | null,
+  yBal: number,
+  yYear: number | null,
+): number | null {
+  const xEmpty = xBal <= 0;
+  const yEmpty = yBal <= 0;
+  if (xEmpty) return yEmpty ? null : yYear;
+  if (yEmpty) return xYear;
+  if (xYear == null) return yYear;
+  if (yYear == null) return xYear;
+  return Math.min(xYear, yYear);
 }
 
 function dynamicRowFromYear(
@@ -11923,17 +12059,63 @@ export function runDynamicOptimizer(
   const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
   const ssStartAge = base.ssPrimaryStartAge ?? null;
 
+  // PER-ACCOUNT CONTRIBUTION SEED (fix round 2 —
+  // SHOULD-C2-2 / MUST-A2-2): seed each owner's basis
+  // through the march's own split + init clamp
+  // (splitRothBasisAcrossAccounts, then min(value, account
+  // balance) exactly as initRothAccountLedger clamps) — a
+  // $0-balance side seeds $0, never the raw entered number:
+  // the raw seed let a $0 side's entered basis materialize
+  // at the survivor fold. Balances resolve exactly as the
+  // march resolves them (spouse shares clamped to their
+  // account totals).
+  const seedIraTotal =
+    base.rothIraStart ?? Math.max(0, base.rothStart - (base.rothEmployerStart ?? 0));
+  const seedEmpTotal = base.rothEmployerStart ?? 0;
+  const seedIraS = Math.min(Math.max(0, base.rothIraStartSpouse ?? 0), Math.max(0, seedIraTotal));
+  const seedEmpS = Math.min(Math.max(0, base.rothEmployerStartSpouse ?? 0), Math.max(0, seedEmpTotal));
+  const seedSplitP = splitRothBasisAcrossAccounts(
+    base.rothContributionBasisPrimary,
+    Math.max(0, seedIraTotal - seedIraS),
+    Math.max(0, seedEmpTotal - seedEmpS),
+  );
+  const seedSplitS = splitRothBasisAcrossAccounts(base.rothContributionBasisSpouse, seedIraS, seedEmpS);
+  const clampSeedContrib = (v: number | null, bal: number): number | null =>
+    v == null ? null : Math.min(Math.max(0, v), Math.max(0, bal));
+
   const state: DynamicLedgerState = {
     pretaxP: base.pretaxStart,
     pretaxS: base.pretaxSpouseStart ?? 0,
     roth: base.rothStart,
     taxable: base.taxableStart,
-    taxableBasis: (base.taxableBasisPct / 100) * base.taxableStart,
+    // TAXABLE BASIS (fix round 2 — NICE-C2-1): clamped to
+    // [0, the starting balance] exactly like the march's
+    // own opening ledger (basisPctClamped) — an entered pct
+    // above 100 used to ride into the first re-anchored
+    // march as dollars and price gains off a 120% basis
+    // the fresh march never has. Only the INIT is clamped:
+    // the advance carries the detail's dollars, which may
+    // legitimately exceed the balance underwater.
+    taxableBasis: Math.min(
+      Math.max(0, (base.taxableBasisPct / 100) * base.taxableStart),
+      Math.max(0, base.taxableStart),
+    ),
     hsa: base.hsaStart,
     eligP: base.pretax401kEligiblePrimary ?? null,
     eligS: base.pretax401kEligibleSpouse ?? null,
-    rothContribP: base.rothContributionBasisPrimary ?? null,
-    rothContribS: base.rothContributionBasisSpouse ?? null,
+    // PER-ACCOUNT CONTRIBUTION BASIS (fix round 2 —
+    // SHOULD-C2-2): seeded through the march's own split +
+    // init clamp (see above) — never the raw entered total.
+    rothContribIraP: clampSeedContrib(seedSplitP.ira, Math.max(0, seedIraTotal - seedIraS)),
+    rothContribEmpP: clampSeedContrib(seedSplitP.employer, Math.max(0, seedEmpTotal - seedEmpS)),
+    rothContribIraS: clampSeedContrib(seedSplitS.ira, seedIraS),
+    rothContribEmpS: clampSeedContrib(seedSplitS.employer, seedEmpS),
+    // MERGED 5-YEAR CLOCKS (fix round 2 — SHOULD-C2-1):
+    // the plan's own clocks; the survivor fold merges them.
+    firstRothP: base.firstRothYearPrimary ?? null,
+    firstRothS: base.firstRothYearSpouse ?? null,
+    firstDesigP: base.firstDesignatedRothYearPrimary ?? null,
+    firstDesigS: base.firstDesignatedRothYearSpouse ?? null,
     rothLotsP: (base.rothConversionLotsPrimary ?? []).map((l) => ({ ...l })),
     rothLotsS: (base.rothConversionLotsSpouse ?? []).map((l) => ({ ...l })),
     rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
@@ -11961,15 +12143,15 @@ export function runDynamicOptimizer(
     // resolution when a share is absent (iraTotal =
     // rothIraStart ?? rothStart − employer; employer =
     // rothEmployerStart ?? 0; spouse shares $0 when
-    // absent). The first re-anchor therefore passes the
-    // plan's own split exactly as a fresh march would
-    // resolve it; the detail takes over from the first
+    // absent, clamped to their account totals exactly as
+    // the march clamps them). The first re-anchor therefore
+    // passes the plan's own split exactly as a fresh march
+    // would resolve it; the detail takes over from the first
     // committed year.
-    rothIra:
-      base.rothIraStart ?? Math.max(0, base.rothStart - (base.rothEmployerStart ?? 0)),
-    rothEmployer: base.rothEmployerStart ?? 0,
-    rothIraS: base.rothIraStartSpouse ?? 0,
-    rothEmployerS: base.rothEmployerStartSpouse ?? 0,
+    rothIra: seedIraTotal,
+    rothEmployer: seedEmpTotal,
+    rothIraS: seedIraS,
+    rothEmployerS: seedEmpS,
     // LOTS ENTERED (fix round): the opening lots inputs
     // themselves decide — non-null (even []) means entered.
     rothLotsEnteredP: base.rothConversionLotsPrimary != null,
@@ -12103,114 +12285,208 @@ export function runDynamicOptimizer(
       magi: y0.magi,
       filingStatus: y0.isSurvivorYear ? "single" : base.filingStatus,
     });
-    // Advance the ledgers from the priced year's outputs.
-    const eligP = trackEligibleEnd({
-      eligibleStart: state.eligP,
-      pretaxStart: state.pretaxP,
-      pretaxEnd: y0.pretaxPrimaryEnd,
-      growthFactor,
-    });
-    const eligS = trackEligibleEnd({
-      eligibleStart: state.eligS,
-      pretaxStart: state.pretaxS,
-      pretaxEnd: y0.pretaxSpouseEnd,
-      growthFactor,
-    });
+    // RULE-OF-55 ELIGIBILITY (fix round 2 — MUST-C2-2): in
+    // a survivor year the march has ALREADY combined the
+    // deceased's pre-tax onto the survivor at the year's
+    // start, so the year's pretax ends are COMBINED ends —
+    // feeding the combined end against the survivor's OWN
+    // opening balance understates outflows (negative) and
+    // inflates the eligible balance by the deceased's
+    // dollars. Fold first, exactly as the march's own
+    // combine does (eligible dollars add; an unanswered
+    // side nulls the pool ONLY when it holds nonzero
+    // dollars — a $0 side's null counts as $0), then run
+    // trackEligibleEnd on the COMBINED pool and hand the
+    // result to the survivor. In a non-survivor year each
+    // owner's ledger tracks separately, as before.
+    let eligP: number | null;
+    let eligS: number | null;
+    if (y0.isSurvivorYear) {
+      const survivorIsPrimary = (base.survivorWho ?? "primary") === "spouse";
+      const combinedEligStart =
+        (state.eligP == null && state.pretaxP > 0) ||
+        (state.eligS == null && state.pretaxS > 0)
+          ? null
+          : (state.eligP ?? 0) + (state.eligS ?? 0);
+      const combinedEligEnd = trackEligibleEnd({
+        eligibleStart: combinedEligStart,
+        pretaxStart: state.pretaxP + state.pretaxS,
+        pretaxEnd: y0.pretaxPrimaryEnd + y0.pretaxSpouseEnd,
+        growthFactor,
+      });
+      if (survivorIsPrimary) {
+        eligP = combinedEligEnd;
+        eligS = null;
+      } else {
+        eligS = combinedEligEnd;
+        eligP = null;
+      }
+    } else {
+      eligP = trackEligibleEnd({
+        eligibleStart: state.eligP,
+        pretaxStart: state.pretaxP,
+        pretaxEnd: y0.pretaxPrimaryEnd,
+        growthFactor,
+      });
+      eligS = trackEligibleEnd({
+        eligibleStart: state.eligS,
+        pretaxStart: state.pretaxS,
+        pretaxEnd: y0.pretaxSpouseEnd,
+        growthFactor,
+      });
+    }
     // SURVIVOR MERGE (fix round): in a survivor year the
     // march merges the deceased's Roth ledgers onto the
     // survivor at the year's start — contributions add, lots
-    // concatenate FIFO — so the tracked state must merge
-    // BEFORE debiting the year's draw, or the draw would
-    // debit the split ledgers the march no longer has.
-    // Mirrors mergeRothOwnerLedgers, per owner (lots live on
-    // the IRA): a side whose IRA balance is $0 contributes
-    // no lots, the contributions add (r2), and an unentered
-    // contribution basis on a side holding dollars keeps the
-    // merged basis unentered (null). The split balances fold
-    // too (the deceased's share moves to the survivor); the
-    // detail overwrite below replaces them with the
-    // committed year's own split either way, so the folded
-    // values live only for the debit's `known` computation.
-    // survivorWho names who DIED: "primary" died → the
-    // spouse survives; "spouse" died → the primary survives.
+    // concatenate FIFO, clocks take the earlier first year —
+    // so the tracked state must merge BEFORE debiting the
+    // year's draw, or the draw would debit the split
+    // ledgers the march no longer has. Mirrors
+    // mergeRothOwnerLedgers PER ACCOUNT (the IRA and the
+    // employer plan merge separately): a side whose account
+    // balance is $0 contributes nothing to that account —
+    // its basis is $0 there (fix round 2 — MUST-A2-2: the
+    // old fold added a $0 side's raw entered basis as real
+    // dollars), its lots are dropped, its clock is ignored,
+    // and it cannot poison `known`; merged `known` is the
+    // per-account AND of the sides' own known-ness with the
+    // $0 escape (fix round 2 — MUST-A2-1: the old fold
+    // computed the survivor's `known` from the survivor's
+    // own lots-entered flag alone, so a $0 survivor side
+    // with unentered lots flipped a known merged ledger
+    // unknown, and vice versa). The merged known-ness is
+    // what the survivor's lots-entered flag becomes — it is
+    // the flag the next re-anchor reads to decide whether
+    // the merged lots ride as entered, and the re-anchor's
+    // init then reproduces the merged `known` exactly
+    // (contrib non-null + lots non-null ⟺ known, when the
+    // balance is positive; the employer side needs only
+    // contrib non-null, its lots always being entered-empty).
+    // Balances here are per-owner shares (state.rothIra is
+    // the TOTAL IRA — the primary's share is the total less
+    // the spouse's share — the old fold read the total as
+    // the dead primary's share and double-counted). The
+    // split balances fold too; the detail overwrite below
+    // replaces them with the committed year's own split
+    // either way, so the folded values live only for the
+    // debit's `known` computation. survivorWho names who
+    // DIED: "primary" died → the spouse survives; "spouse"
+    // died → the primary survives. The fold is idempotent
+    // across later survivor years (the dead side sits at $0
+    // with entered-empty composition, contributing nothing).
     if (y0.isSurvivorYear) {
       const survivorIsPrimary = (base.survivorWho ?? "primary") === "spouse";
-      const deadIra = survivorIsPrimary ? state.rothIraS : state.rothIra;
-      const deadEmp = survivorIsPrimary ? state.rothEmployerS : state.rothEmployer;
-      const liveIra = survivorIsPrimary ? state.rothIra : state.rothIraS;
-      const liveEmp = survivorIsPrimary ? state.rothEmployer : state.rothEmployerS;
-      const deadContrib = survivorIsPrimary ? state.rothContribS : state.rothContribP;
-      const liveContrib = survivorIsPrimary ? state.rothContribP : state.rothContribS;
+      const deadIra = survivorIsPrimary ? state.rothIraS : Math.max(0, state.rothIra - state.rothIraS);
+      const deadEmp = survivorIsPrimary
+        ? state.rothEmployerS
+        : Math.max(0, state.rothEmployer - state.rothEmployerS);
+      const liveIra = survivorIsPrimary ? Math.max(0, state.rothIra - state.rothIraS) : state.rothIraS;
+      const liveEmp = survivorIsPrimary
+        ? Math.max(0, state.rothEmployer - state.rothEmployerS)
+        : state.rothEmployerS;
+      const deadContribIra = survivorIsPrimary ? state.rothContribIraS : state.rothContribIraP;
+      const deadContribEmp = survivorIsPrimary ? state.rothContribEmpS : state.rothContribEmpP;
+      const liveContribIra = survivorIsPrimary ? state.rothContribIraP : state.rothContribIraS;
+      const liveContribEmp = survivorIsPrimary ? state.rothContribEmpP : state.rothContribEmpS;
       const deadLots = survivorIsPrimary ? state.rothLotsS : state.rothLotsP;
       const liveLots = survivorIsPrimary ? state.rothLotsP : state.rothLotsS;
-      const mergedContrib =
-        (deadContrib == null && deadIra + deadEmp > 0) ||
-        (liveContrib == null && liveIra + liveEmp > 0)
-          ? null
-          : r2((deadContrib ?? 0) + (liveContrib ?? 0));
+      const deadLotsEntered = survivorIsPrimary ? state.rothLotsEnteredS : state.rothLotsEnteredP;
+      const liveLotsEntered = survivorIsPrimary ? state.rothLotsEnteredP : state.rothLotsEnteredS;
+      const deadFirstRoth = survivorIsPrimary ? state.firstRothS : state.firstRothP;
+      const liveFirstRoth = survivorIsPrimary ? state.firstRothP : state.firstRothS;
+      const deadFirstDesig = survivorIsPrimary ? state.firstDesigS : state.firstDesigP;
+      const liveFirstDesig = survivorIsPrimary ? state.firstDesigP : state.firstDesigS;
+      // One account's merge: a side holding dollars with an
+      // unentered basis keeps the merged basis unentered
+      // (null); a $0 side contributes $0 (its basis there is
+      // $0 by the march's own split + init clamp, whatever
+      // it entered); otherwise the clamped sides add (r2).
+      const mergeContrib = (
+        deadC: number | null,
+        deadBal: number,
+        liveC: number | null,
+        liveBal: number,
+      ): number | null => {
+        if ((deadC == null && deadBal > 0) || (liveC == null && liveBal > 0)) return null;
+        const dead = deadC == null ? 0 : Math.min(Math.max(0, deadC), Math.max(0, deadBal));
+        const live = liveC == null ? 0 : Math.min(Math.max(0, liveC), Math.max(0, liveBal));
+        return r2(dead + live);
+      };
+      const mergedContribIra = mergeContrib(deadContribIra, deadIra, liveContribIra, liveIra);
+      const mergedContribEmp = mergeContrib(deadContribEmp, deadEmp, liveContribEmp, liveEmp);
+      // The merged IRA `known`, per the march's merge rule:
+      // a side is known when its composition was entered
+      // (basis AND lots) or its balance is $0; the merge is
+      // known only when both sides are.
+      const deadKnownIra =
+        (deadContribIra != null && deadLotsEntered) || deadIra <= 0;
+      const liveKnownIra =
+        (liveContribIra != null && liveLotsEntered) || liveIra <= 0;
+      const mergedKnownIra = deadKnownIra && liveKnownIra;
       const mergedLots = [
         ...(deadIra > 0 ? deadLots : []),
         ...(liveIra > 0 ? liveLots : []),
       ]
         .map((l) => ({ ...l }))
         .sort((a, b) => a.year - b.year);
+      const mergedFirstRoth = mergeRothFirstYear(deadIra, deadFirstRoth, liveIra, liveFirstRoth);
+      const mergedFirstDesig = mergeRothFirstYear(deadEmp, deadFirstDesig, liveEmp, liveFirstDesig);
       if (survivorIsPrimary) {
-        state.rothContribP = mergedContrib;
+        state.rothContribIraP = mergedContribIra;
+        state.rothContribEmpP = mergedContribEmp;
         state.rothLotsP = mergedLots;
-        state.rothContribS = 0;
+        state.rothLotsEnteredP = mergedKnownIra;
+        state.firstRothP = mergedFirstRoth;
+        state.firstDesigP = mergedFirstDesig;
+        state.rothContribIraS = 0;
+        state.rothContribEmpS = 0;
         state.rothLotsS = [];
+        state.rothLotsEnteredS = true;
+        state.firstRothS = null;
+        state.firstDesigS = null;
         state.rothIra = liveIra + deadIra;
         state.rothEmployer = liveEmp + deadEmp;
         state.rothIraS = 0;
         state.rothEmployerS = 0;
       } else {
-        state.rothContribS = mergedContrib;
+        state.rothContribIraS = mergedContribIra;
+        state.rothContribEmpS = mergedContribEmp;
         state.rothLotsS = mergedLots;
-        state.rothContribP = 0;
+        state.rothLotsEnteredS = mergedKnownIra;
+        state.firstRothS = mergedFirstRoth;
+        state.firstDesigS = mergedFirstDesig;
+        state.rothContribIraP = 0;
+        state.rothContribEmpP = 0;
         state.rothLotsP = [];
+        state.rothLotsEnteredP = true;
+        state.firstRothP = null;
+        state.firstDesigP = null;
         state.rothIraS = liveIra + deadIra;
         state.rothEmployerS = liveEmp + deadEmp;
         state.rothIra = 0;
         state.rothEmployer = 0;
       }
     }
-    // Roth draws debit the primary's ledgers first, then the
-    // spouse's (the conversion attribution below is primary-
-    // first too, matching the engine's conversion order, and
-    // is exact whenever the spouse's pre-tax balance is $0).
-    // In a survivor year the fold above already moved
-    // everything onto the survivor, so the primary-first
-    // debit drains the (empty) deceased side first and the
-    // survivor's merged ledgers second — matching the
-    // march's merged debit. `known` mirrors each side's
-    // ledger `known` flag (opening composition entered, or
-    // a $0 IRA balance): an unknown ledger's draws consume
-    // contributions only, never lots.
-    let rothDrawLeft = y0.funding.rothDraw;
-    const knownP =
-      (state.rothContribP != null && state.rothLotsEnteredP) || state.rothIra <= 0;
-    const knownS =
-      (state.rothContribS != null && state.rothLotsEnteredS) || state.rothIraS <= 0;
-    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft, knownP);
-    rothDrawLeft = Math.max(
-      0,
-      rothDrawLeft -
-        ((state.rothContribP ?? 0) - (debitP.contrib ?? 0)) -
-        (state.rothLotsP.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0) -
-          debitP.lots.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0)),
-    );
-    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft, knownS);
-    let lotsP = debitP.lots;
-    let lotsS = debitS.lots;
+    // THE YEAR'S CONVERSION LANDS BEFORE THE DRAW (fix round
+    // 2 — MUST-C2-1): the march's settlement appends the
+    // year's conversion lot to the settlement ledgers BEFORE
+    // the spending draw debits them, so a lot the true march
+    // consumes in the same year's draw must be debitable by
+    // this advance too — debiting first left it standing to
+    // shield the next year's earnings. The attribution is
+    // primary-first (exact whenever the spouse's pre-tax
+    // balance is $0); in a survivor year the whole conversion
+    // lands on the survivor's lots. The shares below also cap
+    // each owner's IRA take in the debit (the conversion
+    // tops the IRA up before the draw debits it).
+    let primaryConverted = 0;
+    let spouseConverted = 0;
+    let lotsP = state.rothLotsP;
+    let lotsS = state.rothLotsS;
     if (y0.funding.conversion > 0) {
-      // In a survivor year the march combines the pre-tax
-      // balances onto the survivor at the year's start, so
-      // the whole conversion lands on the survivor's lots;
-      // otherwise the conversion draws primary-first, as the
-      // march's conversion does.
       const survivorIsPrimary =
         y0.isSurvivorYear && (base.survivorWho ?? "primary") === "spouse";
-      const primaryConverted = y0.isSurvivorYear
+      primaryConverted = y0.isSurvivorYear
         ? survivorIsPrimary
           ? y0.funding.conversion
           : 0
@@ -12218,7 +12494,7 @@ export function runDynamicOptimizer(
             y0.funding.conversion,
             Math.max(0, state.pretaxP - y0.detail.rmdPrimary),
           );
-      const spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+      spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
       if (primaryConverted > 0.005) {
         lotsP = [...lotsP, { year, taxableAmount: r2(primaryConverted), nontaxableAmount: 0 }];
       }
@@ -12226,6 +12502,48 @@ export function runDynamicOptimizer(
         lotsS = [...lotsS, { year, taxableAmount: r2(spouseConverted), nontaxableAmount: 0 }];
       }
     }
+    // Roth draws debit the primary's ledgers first, then the
+    // spouse's, IRA account first within each owner (the
+    // march's debitRothLedgers / debitRothOwnerLedger
+    // order). In a survivor year the fold above already moved
+    // everything onto the survivor, so the primary-first
+    // debit drains the (empty) deceased side first and the
+    // survivor's merged ledgers second — matching the
+    // march's merged debit. `knownIra` mirrors each side's
+    // IRA ledger `known` flag (opening composition entered,
+    // or a $0 IRA balance): an unknown ledger's draws consume
+    // contributions only, never lots. Balances are the
+    // opening balances at debit time (post-fold);
+    // state.rothIra is the TOTAL IRA, so the primary's share
+    // is the total less the spouse's share.
+    const iraP = Math.max(0, state.rothIra - state.rothIraS);
+    const empP = Math.max(0, state.rothEmployer - state.rothEmployerS);
+    const knownIraP =
+      (state.rothContribIraP != null && state.rothLotsEnteredP) || iraP <= 0;
+    const knownIraS =
+      (state.rothContribIraS != null && state.rothLotsEnteredS) || state.rothIraS <= 0;
+    const debitP = dynamicDebitRothOwner({
+      contribIra: state.rothContribIraP,
+      contribEmp: state.rothContribEmpP,
+      lots: lotsP,
+      draw: y0.funding.rothDraw,
+      iraBal: iraP,
+      empBal: empP,
+      convertedIra: primaryConverted,
+      knownIra: knownIraP,
+    });
+    const debitS = dynamicDebitRothOwner({
+      contribIra: state.rothContribIraS,
+      contribEmp: state.rothContribEmpS,
+      lots: lotsS,
+      draw: debitP.drawLeft,
+      iraBal: state.rothIraS,
+      empBal: state.rothEmployerS,
+      convertedIra: spouseConverted,
+      knownIra: knownIraS,
+    });
+    lotsP = debitP.lots;
+    lotsS = debitS.lots;
     state.pretaxP = y0.pretaxPrimaryEnd;
     state.pretaxS = y0.pretaxSpouseEnd;
     state.roth = y0.rothEnd;
@@ -12284,8 +12602,23 @@ export function runDynamicOptimizer(
     state.hsa = y0.hsaEnd;
     state.eligP = eligP;
     state.eligS = eligS;
-    state.rothContribP = debitP.contrib;
-    state.rothContribS = debitS.contrib;
+    // PER-ACCOUNT CONTRIBUTION BASIS (fix round 2 —
+    // SHOULD-C2-2): the committed year's own year-end
+    // ledgers are the authority for the VALUES (they absorb
+    // anything the debit model does not — the top-up's
+    // residual composition consumption, the $0-balance
+    // backstop, a year-end growth clearing); entered-ness
+    // (null-ness) is preserved from state, which the debit
+    // and the fold maintain — the detail carries values
+    // only, and an unentered ledger's value is $0 there.
+    state.rothContribIraP =
+      state.rothContribIraP == null ? null : y0.detail.rothContribIraEnd;
+    state.rothContribEmpP =
+      state.rothContribEmpP == null ? null : y0.detail.rothContribEmployerEnd;
+    state.rothContribIraS =
+      state.rothContribIraS == null ? null : y0.detail.rothContribIraEndSpouse;
+    state.rothContribEmpS =
+      state.rothContribEmpS == null ? null : y0.detail.rothContribEmployerEndSpouse;
     state.rothLotsP = lotsP;
     state.rothLotsS = lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
@@ -12414,9 +12747,11 @@ function dynamicAbArm(
   const cost = planNetCost(result, inputs);
   // Ending basis is the march's own year-end ledger figure
   // (SHOULD-A2, fix round) — the walk overstated unrealized
-  // gains by $249,534.72 (arm A) / $399,655.88 (arm B) on
-  // the tiers shape. The walk survives only as the fallback
-  // for a march with no years.
+  // gains by $199,999.97 (arm A) / $200,000.02 (arm B) on
+  // the tiers shape at the $100,000 target (the walk's error
+  // there is the $200,000 blended-pct start, on both arms).
+  // The walk survives only as the fallback for a march with
+  // no years.
   const lastYear = result.years[result.years.length - 1];
   const basisEnd =
     lastYear != null

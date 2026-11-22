@@ -23,6 +23,7 @@ import {
   runDynamicOptimizer,
   trackEligibleEnd,
   trackTaxableBasisEnd,
+  type DynamicPolicy,
 } from "./rothOptimizer";
 import { NO_CEILINGS, simulateRothPlan, type DrawOrder, type FillCeilings, type RothPlanInputs } from "./taxEngine";
 import { samplePlanInputs } from "./sampleHousehold";
@@ -279,7 +280,7 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
   // pass their own.
   function checkShapeWith(
     overrides: Partial<RothPlanInputs>,
-    policy: typeof POLICY = POLICY,
+    policy: DynamicPolicy = POLICY,
     order: DrawOrder = ORDER,
   ) {
     const inputs = samplePlanInputs({
@@ -346,13 +347,41 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
   }
 
   const ROTH_FIRST_ORDER: DrawOrder = ["roth", "taxable", "pretax"];
-  const ROTH_FIRST_POLICY = {
+  const ROTH_FIRST_POLICY: DynamicPolicy = {
     key: "fill12|stop67|roth-taxable-pretax",
     name: "Fill 12% · stop 67",
     ceilings: { ...NO_CEILINGS, bracketTopPct: 12 },
     guardrail: false,
     windowStopAge: 67,
     drawOrder: ROTH_FIRST_ORDER,
+  };
+  // Do-nothing, pretax-first (ceilings null: no conversions) —
+  // the Rule-of-55 eligible-fold shape's policy (fix round 2):
+  // no conversion lot exists to confuse the eligible ledger.
+  const DO_NOTHING_PF_POLICY: DynamicPolicy = {
+    key: "donothing|pretax-taxable-roth",
+    name: "Do nothing",
+    ceilings: null,
+    guardrail: false,
+    windowStopAge: 67,
+    drawOrder: ["pretax", "taxable", "roth"],
+  };
+  // Shared survivor base for the fix-round-2 asymmetric-lots
+  // shapes (reviewer A2): Roth-first, entered basis per
+  // owner, 5-year clock unmet in the survivor years. Short
+  // horizon (end 67): every mechanism window here is
+  // 2030–2032, and the r2 dust the roll-forward accumulates
+  // stays within the 2c bar through 2035 (it reaches 3–5c
+  // only past 2040 on the end-75 horizon — the same dust
+  // class the reviewers' own probes show on passing shapes).
+  const SURV_ASYM_BASE = {
+    endAgePrimary: 67,
+    survivorEnabled: true,
+    survivorDeathYear: 2030,
+    rothContributionBasisPrimary: 200000,
+    rothContributionBasisSpouse: 100000,
+    firstRothYearPrimary: 2028,
+    firstRothYearSpouse: 2028,
   };
 
   test("plain control reproduces its march on greedy rows", () => {
@@ -548,6 +577,248 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
       ROTH_FIRST_POLICY,
       ROTH_FIRST_ORDER,
     );
+  });
+
+  test("survivor fold, dead lots entered / survivor lots unentered, reproduces its march", () => {
+    // MUST-A2-1 (fix round 2, ASYM-3): the spouse holds $0
+    // Roth, so the march's merge lets her unentered lots
+    // escape — the merged ledger is known from the primary's
+    // entered side. The old fold read the survivor's own
+    // lots-entered flag alone, flipped the merged ledger
+    // unknown, and priced the 2032 draw at $3,280 tax
+    // against the true $42,020 (greedy $57,969.25 cheaper,
+    // floor unbound). Both earlier survivor tests used lots
+    // null on BOTH sides, so the fold's `known` path was
+    // never exercised non-degenerately.
+    checkShapeWith(
+      {
+        ...SURV_ASYM_BASE,
+        survivorWho: "primary",
+        rothConversionLotsPrimary: [],
+        rothConversionLotsSpouse: null,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("survivor fold, dead lots unentered / survivor lots entered, primary dies", () => {
+    // MUST-A2-1 mirror (ASYM-1): the dead side poisons the
+    // merged ledger unknown while the survivor's side is
+    // entered — the old fold treated the merged ledger as
+    // known (greedy $36,258.24 more expensive, floor bound).
+    checkShapeWith(
+      {
+        ...SURV_ASYM_BASE,
+        survivorWho: "primary",
+        rothConversionLotsPrimary: null,
+        rothConversionLotsSpouse: [],
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("survivor fold, dead lots unentered / survivor lots entered, spouse dies", () => {
+    // MUST-A2-1 mirror (ASYM-2): same mechanism with the
+    // sides swapped (greedy $13,886.87 cheaper, floor
+    // unbound, pre-fix).
+    checkShapeWith(
+      {
+        ...SURV_ASYM_BASE,
+        survivorWho: "spouse",
+        rothConversionLotsPrimary: [],
+        rothConversionLotsSpouse: null,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("survivor fold with both lots entered does not merge a $0 side's basis", () => {
+    // MUST-A2-2 (fix round 2, D3): the spouse holds $0 Roth
+    // but entered $100,000 of basis — the march splits it to
+    // $0 against her $0 balances, while the old fold added
+    // the raw $100,000 to the survivor's basis, letting a
+    // $41,900 conversion lot survive the 2031 debit and
+    // shelter the 2032 draw (tax $29,486 vs $42,020, greedy
+    // $12,058.10 cheaper, floor unbound, pre-fix).
+    checkShapeWith(
+      {
+        ...SURV_ASYM_BASE,
+        survivorWho: "primary",
+        rothConversionLotsPrimary: [],
+        rothConversionLotsSpouse: [],
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("phantom conversion lot without a survivor reproduces its march", () => {
+    // MUST-C2-1 (fix round 2, P2b): the state advance used
+    // to debit the Roth draw BEFORE appending the year's
+    // conversion lot — the opposite of the march's
+    // settlement order — so a lot the true march consumed
+    // in the same year's draw survived and shielded ~$102k
+    // of earnings the next year (greedy $28,885.69 cheaper,
+    // floor unbound, ending wealth overstated $54,611,
+    // pre-fix). No survivor at all: a general advance-order
+    // bug, not survivor-specific. Short horizon (end 67):
+    // the first divergence is 2031, and the r2 dust stays
+    // within the 2c bar through 2035 (3–5c only past 2039
+    // on the end-75 horizon).
+    checkShapeWith(
+      {
+        endAgePrimary: 67,
+        annualSpending: 300000,
+        rothContributionBasisPrimary: 200000,
+        rothConversionLotsPrimary: [],
+        firstRothYearPrimary: 2028,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("Rule-of-55 eligible balance folds onto the survivor", () => {
+    // MUST-C2-2 (fix round 2, P5c): the advance fed the
+    // march's COMBINED pretax end against the survivor's
+    // OWN opening balance into trackEligibleEnd, inflating
+    // the death-year eligible balance by the deceased's
+    // dollars (greedy $20,041.30 cheaper, floor unbound,
+    // pre-fix). The fold now combines the eligible balances
+    // with the pretax balances before tracking the end.
+    // Do-nothing, pretax-first: no conversion lot exists to
+    // confuse the eligible ledger; the shelter exhausts
+    // inside the penalty window, where the inflation priced.
+    checkShapeWith(
+      {
+        endAgePrimary: 70,
+        retirementAge: 57,
+        annualSpending: 300000,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2027,
+        pretaxStart: 750000,
+        pretaxSpouseStart: 750000,
+        pretax401kEligiblePrimary: 300000,
+        pretax401kEligibleSpouse: 300000,
+      },
+      DO_NOTHING_PF_POLICY,
+      ["pretax", "taxable", "roth"],
+    );
+  });
+
+  test("survivor merged 5-year clock survives the fold", () => {
+    // SHOULD-C2-1 (fix round 2, shape 6): the primary dies
+    // in the FIRST dynamic year with an early clock (2020)
+    // against the spouse's late clock (2028) — the march
+    // merges to the earlier clock, but the re-anchor used
+    // to spread the plan's original clocks, so after the
+    // fold the survivor's late clock governed and the 2030
+    // draw priced $280,000 of earnings income the true
+    // march prices $0 (greedy $124,858.56 more expensive,
+    // floor bound, pre-fix). Short horizon (end 67): the
+    // divergence is 2030, and the r2 dust stays within the
+    // 2c bar through 2035.
+    checkShapeWith(
+      {
+        endAgePrimary: 67,
+        annualSpending: 300000,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2026,
+        rothContributionBasisPrimary: 10000,
+        rothContributionBasisSpouse: 10000,
+        rothConversionLotsPrimary: [],
+        rothConversionLotsSpouse: [],
+        firstRothYearPrimary: 2020,
+        firstRothYearSpouse: 2028,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+  });
+
+  test("per-account Roth contribution split survives an IRA-first draw", () => {
+    // SHOULD-C2-2 (fix round 2, P1/shape 9): split IRA
+    // $300,000 / employer $100,000 with $100,000 of basis
+    // splits $75,000 / $25,000; the $300,000 Roth-first
+    // draw consumes the IRA's $75,000 and its earnings,
+    // leaving the employer's $25,000 standing. The old
+    // re-anchor re-split the remaining TOTAL by balances,
+    // resurrecting basis in the IRA (2031 tax $43,468 vs
+    // the true $36,374; greedy $8,536.63 more expensive,
+    // floor bound, pre-fix). Short horizon (end 67): the
+    // divergence is 2031, and the r2 dust stays within the
+    // 2c bar through 2035. The march detail's own split
+    // pins the mechanism directly: after the 2030 draw the
+    // IRA holds $0 of basis and the employer $25,000.
+    const { march } = checkShapeWith(
+      {
+        endAgePrimary: 67,
+        annualSpending: 300000,
+        rothIraStart: 300000,
+        rothEmployerStart: 100000,
+        rothContributionBasisPrimary: 100000,
+        rothConversionLotsPrimary: [],
+        firstRothYearPrimary: 2028,
+        firstDesignatedRothYearPrimary: 2028,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+    const y2030 = march.years.find((y) => y.year === 2030)!;
+    // The per-account fields are new in this round; the `as
+    // any` read keeps this file compilable on the pre-fix
+    // tree for the discrimination run (there the fields are
+    // undefined and these assertions fail, as they should).
+    const d2030 = y2030.detail as any;
+    expect(within2c(d2030.rothContribIraEnd, 0)).toBe(true);
+    expect(within2c(d2030.rothContribEmployerEnd, 25000)).toBe(true);
+  });
+
+  test("fresh plan with basis pct above 100 prices on the clamped basis", () => {
+    // NICE-C2-1 (fix round 2, PCT120): an entered pct of
+    // 120 used to ride into the first re-anchored march as
+    // dollars (rolled year-1 basis $2,421,500 against the
+    // fresh march's clamped $2,021,500; tax diverged from
+    // 2030), because the state init never clamped like the
+    // march's own opening ledger. Unreachable from saved
+    // plans (the save boundary clamps pct to [0,100]);
+    // defense in depth for direct engine calls.
+    checkShape({ taxableBasisPct: 120 });
+  });
+
+  test("Roth split detail fields carry the IRA/employer split", () => {
+    // NICE-B2 (fix round 2): the split shapes pinned only
+    // the TOTAL rothEnd — a sub-balance swap with a correct
+    // total would have passed. The detail fields the fix
+    // publishes as the re-anchor's source of truth get
+    // their own pin: year 0 is the entered $300,000 /
+    // $100,000 grown one year at the sample's 5% (no Roth
+    // draw or conversion before the window), and every
+    // year's split foots to the row total.
+    const { march } = checkShape({
+      rothIraStart: 300000,
+      rothEmployerStart: 100000,
+    });
+    const y0 = march.years[0]!;
+    expect(within2c(y0.detail.rothIraEnd, 315000)).toBe(true);
+    expect(within2c(y0.detail.rothEmployerEnd, 105000)).toBe(true);
+    for (const m of march.years) {
+      expect(within2c(m.detail.rothIraEnd + m.detail.rothEmployerEnd, m.rothEnd)).toBe(true);
+    }
+    const { march: marchS } = checkShape({
+      rothIraStart: 300000,
+      rothEmployerStart: 100000,
+      rothIraStartSpouse: 120000,
+      rothEmployerStartSpouse: 40000,
+    });
+    const y0s = marchS.years[0]!;
+    expect(within2c(y0s.detail.rothIraEndSpouse, 126000)).toBe(true);
+    expect(within2c(y0s.detail.rothEmployerEndSpouse, 42000)).toBe(true);
   });
 });
 
@@ -767,6 +1038,11 @@ describe("C10 — Pass 1 fix (S1): the fixed-policy floor return path", () => {
       expect(r.pretaxEnd).toBe(m.pretaxEnd);
       expect(r.rothEnd).toBe(m.rothEnd);
       expect(r.taxableEnd).toBe(m.taxableEnd);
+      // NICE-C2-2 (fix round 2): the floor rows read basis
+      // from the march's own detail — pin it per row, so
+      // the A2 floor-rows fix is covered at row level, not
+      // only by the A/B unrealized-gains pin.
+      expect(r.taxableBasisEnd).toBe(m.detail.taxableBasisDollars);
     }
     // The floored lifetime net cost is the fixed policy's own
     // net cost (recomputed from the rows + the terminal term),

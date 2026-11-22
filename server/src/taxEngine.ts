@@ -3560,6 +3560,26 @@ export type RothPlanInputs = {
   // NEVER defaulted to the full balance.
   rothContributionBasisPrimary?: number | null;
   rothContributionBasisSpouse?: number | null;
+  // PER-ACCOUNT CONTRIBUTION BASIS (Engine Review core
+  // 2026-11-21, Build 1 fix round 2 — SHOULD-C2-2): the
+  // same entered basis, split per account (Roth IRA /
+  // designated Roth employer plan) instead of per owner.
+  // When BOTH per-account values for an owner are defined
+  // (each may still be null = unentered), they override the
+  // balance-proportional split of the owner's total above:
+  // the march debits the IRA account first, then the
+  // employer plan, so after an IRA-first draw the remaining
+  // basis sits in the employer account only — re-splitting
+  // the remaining TOTAL by current balances would resurrect
+  // basis in the IRA (or lose employer basis). Only the
+  // dynamic roll-forward passes these (it carries the split
+  // in state and publishes it on RothYearDetail); every
+  // other caller leaves them absent and the split path is
+  // bit-identical to before.
+  rothContributionBasisIraPrimary?: number | null;
+  rothContributionBasisEmployerPrimary?: number | null;
+  rothContributionBasisIraSpouse?: number | null;
+  rothContributionBasisEmployerSpouse?: number | null;
   // ROTH CONVERSION LOTS (Engine Review C9, Build 2 — W3):
   // per owner, the prior conversions / rollovers still
   // sitting in the Roth IRA — one lot per conversion year,
@@ -4681,6 +4701,22 @@ export type RothYearDetail = {
   rothEmployerEnd: number;
   rothIraEndSpouse: number;
   rothEmployerEndSpouse: number;
+  // PER-ACCOUNT CONTRIBUTION BASIS (fix round 2 —
+  // SHOULD-C2-2): each account's remaining contribution
+  // basis at year end, from the grown ledgers — always a
+  // number (the ledger stores 0 when the basis was never
+  // entered; entered-ness itself rides in the optimizer's
+  // own state null-ness, which the debit preserves). The
+  // dynamic roll-forward resumes from this split, so a
+  // re-anchored march rebuilds its Roth ledgers from the
+  // true post-draw split instead of re-splitting the
+  // remaining total by balances. Published unconditionally,
+  // like the split balances above — the lean marches the
+  // optimizer prices still carry it.
+  rothContribIraEnd: number;
+  rothContribEmployerEnd: number;
+  rothContribIraEndSpouse: number;
+  rothContribEmployerEndSpouse: number;
   // BASIS-DRIFT surfacing (display only): the year's realized
   // gain from ORDINARY draws alone — tax payments taken from
   // Taxable plus spending draws, priced pro-rata at the basis
@@ -5731,16 +5767,37 @@ export function simulateRothPlan(
     Math.max(0, inputs.rothEmployerStartSpouse ?? 0),
     Math.max(0, rothEmployerTotal),
   );
-  const rothBasisSplitP = splitRothBasisAcrossAccounts(
-    inputs.rothContributionBasisPrimary,
-    Math.max(0, rothIraTotal - rothIraSpouse),
-    Math.max(0, rothEmployerTotal - rothEmployerSpouse),
-  );
-  const rothBasisSplitS = splitRothBasisAcrossAccounts(
-    inputs.rothContributionBasisSpouse,
-    rothIraSpouse,
-    rothEmployerSpouse,
-  );
+  // Per-account override (fix round 2 — SHOULD-C2-2): when
+  // both per-account values for an owner are defined, they
+  // ARE the split (each null = that account's basis
+  // unentered); otherwise the owner's total splits by
+  // starting balances as before. The override is what lets
+  // a re-anchored march resume from the true post-draw
+  // split instead of re-deriving it from balances.
+  const rothBasisSplitP =
+    inputs.rothContributionBasisIraPrimary !== undefined &&
+    inputs.rothContributionBasisEmployerPrimary !== undefined
+      ? {
+          ira: inputs.rothContributionBasisIraPrimary,
+          employer: inputs.rothContributionBasisEmployerPrimary,
+        }
+      : splitRothBasisAcrossAccounts(
+          inputs.rothContributionBasisPrimary,
+          Math.max(0, rothIraTotal - rothIraSpouse),
+          Math.max(0, rothEmployerTotal - rothEmployerSpouse),
+        );
+  const rothBasisSplitS =
+    inputs.rothContributionBasisIraSpouse !== undefined &&
+    inputs.rothContributionBasisEmployerSpouse !== undefined
+      ? {
+          ira: inputs.rothContributionBasisIraSpouse,
+          employer: inputs.rothContributionBasisEmployerSpouse,
+        }
+      : splitRothBasisAcrossAccounts(
+          inputs.rothContributionBasisSpouse,
+          rothIraSpouse,
+          rothEmployerSpouse,
+        );
   let rothLedP: RothOwnerLedger = {
     ira: initRothAccountLedger(
       Math.max(0, rothIraTotal - rothIraSpouse),
@@ -11135,6 +11192,14 @@ export function simulateRothPlan(
       rothEmployerEnd: rothLedP.employer.balance + rothLedS.employer.balance,
       rothIraEndSpouse: rothLedS.ira.balance,
       rothEmployerEndSpouse: rothLedS.employer.balance,
+      // Year-end per-account contribution basis, from the
+      // grown ledgers (see the RothYearDetail note): the
+      // re-anchor resumes from these, not from a re-split
+      // of the remaining total.
+      rothContribIraEnd: rothLedP.ira.contributions,
+      rothContribEmployerEnd: rothLedP.employer.contributions,
+      rothContribIraEndSpouse: rothLedS.ira.contributions,
+      rothContribEmployerEndSpouse: rothLedS.employer.contributions,
       drawGains: r2(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,

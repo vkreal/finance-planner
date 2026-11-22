@@ -7051,8 +7051,14 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
   const rothEmployerTotal = inputs.rothEmployerStart ?? 0;
   const rothIraSpouse = Math.min(Math.max(0, inputs.rothIraStartSpouse ?? 0), Math.max(0, rothIraTotal));
   const rothEmployerSpouse = Math.min(Math.max(0, inputs.rothEmployerStartSpouse ?? 0), Math.max(0, rothEmployerTotal));
-  const rothBasisSplitP = splitRothBasisAcrossAccounts(inputs.rothContributionBasisPrimary, Math.max(0, rothIraTotal - rothIraSpouse), Math.max(0, rothEmployerTotal - rothEmployerSpouse));
-  const rothBasisSplitS = splitRothBasisAcrossAccounts(inputs.rothContributionBasisSpouse, rothIraSpouse, rothEmployerSpouse);
+  const rothBasisSplitP = inputs.rothContributionBasisIraPrimary !== undefined && inputs.rothContributionBasisEmployerPrimary !== undefined ? {
+    ira: inputs.rothContributionBasisIraPrimary,
+    employer: inputs.rothContributionBasisEmployerPrimary
+  } : splitRothBasisAcrossAccounts(inputs.rothContributionBasisPrimary, Math.max(0, rothIraTotal - rothIraSpouse), Math.max(0, rothEmployerTotal - rothEmployerSpouse));
+  const rothBasisSplitS = inputs.rothContributionBasisIraSpouse !== undefined && inputs.rothContributionBasisEmployerSpouse !== undefined ? {
+    ira: inputs.rothContributionBasisIraSpouse,
+    employer: inputs.rothContributionBasisEmployerSpouse
+  } : splitRothBasisAcrossAccounts(inputs.rothContributionBasisSpouse, rothIraSpouse, rothEmployerSpouse);
   let rothLedP = {
     ira: initRothAccountLedger(Math.max(0, rothIraTotal - rothIraSpouse), rothBasisSplitP.ira, inputs.rothConversionLotsPrimary, inputs.firstRothYearPrimary),
     employer: initRothAccountLedger(Math.max(0, rothEmployerTotal - rothEmployerSpouse), rothBasisSplitP.employer, [], inputs.firstDesignatedRothYearPrimary)
@@ -9038,6 +9044,10 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       rothEmployerEnd: rothLedP.employer.balance + rothLedS.employer.balance,
       rothIraEndSpouse: rothLedS.ira.balance,
       rothEmployerEndSpouse: rothLedS.employer.balance,
+      rothContribIraEnd: rothLedP.ira.contributions,
+      rothContribEmployerEnd: rothLedP.employer.contributions,
+      rothContribIraEndSpouse: rothLedS.ira.contributions,
+      rothContribEmployerEndSpouse: rothLedS.employer.contributions,
       drawGains: r22(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,
@@ -11470,8 +11480,16 @@ function dynamicReanchorInputs(base, state, year, policy, annualSpending) {
     drawOrder: [...policy.drawOrder],
     pretax401kEligiblePrimary: state.eligP,
     pretax401kEligibleSpouse: state.eligS,
-    rothContributionBasisPrimary: state.rothContribP,
-    rothContributionBasisSpouse: state.rothContribS,
+    rothContributionBasisPrimary: state.rothContribIraP != null && state.rothContribEmpP != null ? r23(state.rothContribIraP + state.rothContribEmpP) : null,
+    rothContributionBasisSpouse: state.rothContribIraS != null && state.rothContribEmpS != null ? r23(state.rothContribIraS + state.rothContribEmpS) : null,
+    rothContributionBasisIraPrimary: state.rothContribIraP,
+    rothContributionBasisEmployerPrimary: state.rothContribEmpP,
+    rothContributionBasisIraSpouse: state.rothContribIraS,
+    rothContributionBasisEmployerSpouse: state.rothContribEmpS,
+    firstRothYearPrimary: state.firstRothP,
+    firstRothYearSpouse: state.firstRothS,
+    firstDesignatedRothYearPrimary: state.firstDesigP,
+    firstDesignatedRothYearSpouse: state.firstDesigS,
     rothConversionLotsPrimary: state.rothLotsEnteredP ? state.rothLotsP.map((l) => ({ ...l })) : null,
     rothConversionLotsSpouse: state.rothLotsEnteredS ? state.rothLotsS.map((l) => ({ ...l })) : null,
     irmaaLookbackSeed: state.irmaaLookback,
@@ -11523,6 +11541,32 @@ function dynamicDebitRothDraw(contrib, lots, draw, known) {
     }
   }
   return { contrib: nextContrib, lots: nextLots };
+}
+function dynamicDebitRothOwner(args) {
+  let drawLeft = Math.max(0, args.draw);
+  const iraTake = Math.min(drawLeft, Math.max(0, args.iraBal + args.convertedIra));
+  const iraDebit = dynamicDebitRothDraw(args.contribIra, args.lots, iraTake, args.knownIra);
+  drawLeft = Math.max(0, drawLeft - iraTake);
+  const empTake = Math.min(drawLeft, Math.max(0, args.empBal));
+  let nextContribEmp = args.contribEmp;
+  if (nextContribEmp != null && nextContribEmp > 0 && empTake > 0) {
+    nextContribEmp = Math.max(0, nextContribEmp - Math.min(nextContribEmp, empTake));
+  }
+  drawLeft = Math.max(0, drawLeft - empTake);
+  return { contribIra: iraDebit.contrib, contribEmp: nextContribEmp, lots: iraDebit.lots, drawLeft };
+}
+function mergeRothFirstYear(xBal, xYear, yBal, yYear) {
+  const xEmpty = xBal <= 0;
+  const yEmpty = yBal <= 0;
+  if (xEmpty)
+    return yEmpty ? null : yYear;
+  if (yEmpty)
+    return xYear;
+  if (xYear == null)
+    return yYear;
+  if (yYear == null)
+    return xYear;
+  return Math.min(xYear, yYear);
 }
 function dynamicRowFromYear(y, policy, taxableBasisEnd, rmdAge, ssStartAge) {
   const f = y.funding;
@@ -11682,17 +11726,30 @@ function runDynamicOptimizer(base, opts) {
   const policies = opts?.policies ?? dynamicPolicySet(rmdAge - 1, base.endAgePrimary);
   const growthFactor = Math.max(0, 1 + base.expectedReturnPct / 100);
   const ssStartAge = base.ssPrimaryStartAge ?? null;
+  const seedIraTotal = base.rothIraStart ?? Math.max(0, base.rothStart - (base.rothEmployerStart ?? 0));
+  const seedEmpTotal = base.rothEmployerStart ?? 0;
+  const seedIraS = Math.min(Math.max(0, base.rothIraStartSpouse ?? 0), Math.max(0, seedIraTotal));
+  const seedEmpS = Math.min(Math.max(0, base.rothEmployerStartSpouse ?? 0), Math.max(0, seedEmpTotal));
+  const seedSplitP = splitRothBasisAcrossAccounts(base.rothContributionBasisPrimary, Math.max(0, seedIraTotal - seedIraS), Math.max(0, seedEmpTotal - seedEmpS));
+  const seedSplitS = splitRothBasisAcrossAccounts(base.rothContributionBasisSpouse, seedIraS, seedEmpS);
+  const clampSeedContrib = (v, bal) => v == null ? null : Math.min(Math.max(0, v), Math.max(0, bal));
   const state = {
     pretaxP: base.pretaxStart,
     pretaxS: base.pretaxSpouseStart ?? 0,
     roth: base.rothStart,
     taxable: base.taxableStart,
-    taxableBasis: base.taxableBasisPct / 100 * base.taxableStart,
+    taxableBasis: Math.min(Math.max(0, base.taxableBasisPct / 100 * base.taxableStart), Math.max(0, base.taxableStart)),
     hsa: base.hsaStart,
     eligP: base.pretax401kEligiblePrimary ?? null,
     eligS: base.pretax401kEligibleSpouse ?? null,
-    rothContribP: base.rothContributionBasisPrimary ?? null,
-    rothContribS: base.rothContributionBasisSpouse ?? null,
+    rothContribIraP: clampSeedContrib(seedSplitP.ira, Math.max(0, seedIraTotal - seedIraS)),
+    rothContribEmpP: clampSeedContrib(seedSplitP.employer, Math.max(0, seedEmpTotal - seedEmpS)),
+    rothContribIraS: clampSeedContrib(seedSplitS.ira, seedIraS),
+    rothContribEmpS: clampSeedContrib(seedSplitS.employer, seedEmpS),
+    firstRothP: base.firstRothYearPrimary ?? null,
+    firstRothS: base.firstRothYearSpouse ?? null,
+    firstDesigP: base.firstDesignatedRothYearPrimary ?? null,
+    firstDesigS: base.firstDesignatedRothYearSpouse ?? null,
     rothLotsP: (base.rothConversionLotsPrimary ?? []).map((l) => ({ ...l })),
     rothLotsS: (base.rothConversionLotsSpouse ?? []).map((l) => ({ ...l })),
     rmdDeferredPendingP: base.firstRmdDeferredCarryPrimary ?? 0,
@@ -11707,10 +11764,10 @@ function runDynamicOptimizer(base, opts) {
     tiersLedger: null,
     sleeve: deriveSpendFromCashSleeveStartDollars(base),
     giftApplied: false,
-    rothIra: base.rothIraStart ?? Math.max(0, base.rothStart - (base.rothEmployerStart ?? 0)),
-    rothEmployer: base.rothEmployerStart ?? 0,
-    rothIraS: base.rothIraStartSpouse ?? 0,
-    rothEmployerS: base.rothEmployerStartSpouse ?? 0,
+    rothIra: seedIraTotal,
+    rothEmployer: seedEmpTotal,
+    rothIraS: seedIraS,
+    rothEmployerS: seedEmpS,
     rothLotsEnteredP: base.rothConversionLotsPrimary != null,
     rothLotsEnteredS: base.rothConversionLotsSpouse != null,
     pendingEduRefund: 0,
@@ -11816,65 +11873,118 @@ function runDynamicOptimizer(base, opts) {
       magi: y0.magi,
       filingStatus: y0.isSurvivorYear ? "single" : base.filingStatus
     });
-    const eligP = trackEligibleEnd({
-      eligibleStart: state.eligP,
-      pretaxStart: state.pretaxP,
-      pretaxEnd: y0.pretaxPrimaryEnd,
-      growthFactor
-    });
-    const eligS = trackEligibleEnd({
-      eligibleStart: state.eligS,
-      pretaxStart: state.pretaxS,
-      pretaxEnd: y0.pretaxSpouseEnd,
-      growthFactor
-    });
+    let eligP;
+    let eligS;
     if (y0.isSurvivorYear) {
       const survivorIsPrimary = (base.survivorWho ?? "primary") === "spouse";
-      const deadIra = survivorIsPrimary ? state.rothIraS : state.rothIra;
-      const deadEmp = survivorIsPrimary ? state.rothEmployerS : state.rothEmployer;
-      const liveIra = survivorIsPrimary ? state.rothIra : state.rothIraS;
-      const liveEmp = survivorIsPrimary ? state.rothEmployer : state.rothEmployerS;
-      const deadContrib = survivorIsPrimary ? state.rothContribS : state.rothContribP;
-      const liveContrib = survivorIsPrimary ? state.rothContribP : state.rothContribS;
+      const combinedEligStart = state.eligP == null && state.pretaxP > 0 || state.eligS == null && state.pretaxS > 0 ? null : (state.eligP ?? 0) + (state.eligS ?? 0);
+      const combinedEligEnd = trackEligibleEnd({
+        eligibleStart: combinedEligStart,
+        pretaxStart: state.pretaxP + state.pretaxS,
+        pretaxEnd: y0.pretaxPrimaryEnd + y0.pretaxSpouseEnd,
+        growthFactor
+      });
+      if (survivorIsPrimary) {
+        eligP = combinedEligEnd;
+        eligS = null;
+      } else {
+        eligS = combinedEligEnd;
+        eligP = null;
+      }
+    } else {
+      eligP = trackEligibleEnd({
+        eligibleStart: state.eligP,
+        pretaxStart: state.pretaxP,
+        pretaxEnd: y0.pretaxPrimaryEnd,
+        growthFactor
+      });
+      eligS = trackEligibleEnd({
+        eligibleStart: state.eligS,
+        pretaxStart: state.pretaxS,
+        pretaxEnd: y0.pretaxSpouseEnd,
+        growthFactor
+      });
+    }
+    if (y0.isSurvivorYear) {
+      const survivorIsPrimary = (base.survivorWho ?? "primary") === "spouse";
+      const deadIra = survivorIsPrimary ? state.rothIraS : Math.max(0, state.rothIra - state.rothIraS);
+      const deadEmp = survivorIsPrimary ? state.rothEmployerS : Math.max(0, state.rothEmployer - state.rothEmployerS);
+      const liveIra = survivorIsPrimary ? Math.max(0, state.rothIra - state.rothIraS) : state.rothIraS;
+      const liveEmp = survivorIsPrimary ? Math.max(0, state.rothEmployer - state.rothEmployerS) : state.rothEmployerS;
+      const deadContribIra = survivorIsPrimary ? state.rothContribIraS : state.rothContribIraP;
+      const deadContribEmp = survivorIsPrimary ? state.rothContribEmpS : state.rothContribEmpP;
+      const liveContribIra = survivorIsPrimary ? state.rothContribIraP : state.rothContribIraS;
+      const liveContribEmp = survivorIsPrimary ? state.rothContribEmpP : state.rothContribEmpS;
       const deadLots = survivorIsPrimary ? state.rothLotsS : state.rothLotsP;
       const liveLots = survivorIsPrimary ? state.rothLotsP : state.rothLotsS;
-      const mergedContrib = deadContrib == null && deadIra + deadEmp > 0 || liveContrib == null && liveIra + liveEmp > 0 ? null : r23((deadContrib ?? 0) + (liveContrib ?? 0));
+      const deadLotsEntered = survivorIsPrimary ? state.rothLotsEnteredS : state.rothLotsEnteredP;
+      const liveLotsEntered = survivorIsPrimary ? state.rothLotsEnteredP : state.rothLotsEnteredS;
+      const deadFirstRoth = survivorIsPrimary ? state.firstRothS : state.firstRothP;
+      const liveFirstRoth = survivorIsPrimary ? state.firstRothP : state.firstRothS;
+      const deadFirstDesig = survivorIsPrimary ? state.firstDesigS : state.firstDesigP;
+      const liveFirstDesig = survivorIsPrimary ? state.firstDesigP : state.firstDesigS;
+      const mergeContrib = (deadC, deadBal, liveC, liveBal) => {
+        if (deadC == null && deadBal > 0 || liveC == null && liveBal > 0)
+          return null;
+        const dead = deadC == null ? 0 : Math.min(Math.max(0, deadC), Math.max(0, deadBal));
+        const live = liveC == null ? 0 : Math.min(Math.max(0, liveC), Math.max(0, liveBal));
+        return r23(dead + live);
+      };
+      const mergedContribIra = mergeContrib(deadContribIra, deadIra, liveContribIra, liveIra);
+      const mergedContribEmp = mergeContrib(deadContribEmp, deadEmp, liveContribEmp, liveEmp);
+      const deadKnownIra = deadContribIra != null && deadLotsEntered || deadIra <= 0;
+      const liveKnownIra = liveContribIra != null && liveLotsEntered || liveIra <= 0;
+      const mergedKnownIra = deadKnownIra && liveKnownIra;
       const mergedLots = [
         ...deadIra > 0 ? deadLots : [],
         ...liveIra > 0 ? liveLots : []
       ].map((l) => ({ ...l })).sort((a, b) => a.year - b.year);
+      const mergedFirstRoth = mergeRothFirstYear(deadIra, deadFirstRoth, liveIra, liveFirstRoth);
+      const mergedFirstDesig = mergeRothFirstYear(deadEmp, deadFirstDesig, liveEmp, liveFirstDesig);
       if (survivorIsPrimary) {
-        state.rothContribP = mergedContrib;
+        state.rothContribIraP = mergedContribIra;
+        state.rothContribEmpP = mergedContribEmp;
         state.rothLotsP = mergedLots;
-        state.rothContribS = 0;
+        state.rothLotsEnteredP = mergedKnownIra;
+        state.firstRothP = mergedFirstRoth;
+        state.firstDesigP = mergedFirstDesig;
+        state.rothContribIraS = 0;
+        state.rothContribEmpS = 0;
         state.rothLotsS = [];
+        state.rothLotsEnteredS = true;
+        state.firstRothS = null;
+        state.firstDesigS = null;
         state.rothIra = liveIra + deadIra;
         state.rothEmployer = liveEmp + deadEmp;
         state.rothIraS = 0;
         state.rothEmployerS = 0;
       } else {
-        state.rothContribS = mergedContrib;
+        state.rothContribIraS = mergedContribIra;
+        state.rothContribEmpS = mergedContribEmp;
         state.rothLotsS = mergedLots;
-        state.rothContribP = 0;
+        state.rothLotsEnteredS = mergedKnownIra;
+        state.firstRothS = mergedFirstRoth;
+        state.firstDesigS = mergedFirstDesig;
+        state.rothContribIraP = 0;
+        state.rothContribEmpP = 0;
         state.rothLotsP = [];
+        state.rothLotsEnteredP = true;
+        state.firstRothP = null;
+        state.firstDesigP = null;
         state.rothIraS = liveIra + deadIra;
         state.rothEmployerS = liveEmp + deadEmp;
         state.rothIra = 0;
         state.rothEmployer = 0;
       }
     }
-    let rothDrawLeft = y0.funding.rothDraw;
-    const knownP = state.rothContribP != null && state.rothLotsEnteredP || state.rothIra <= 0;
-    const knownS = state.rothContribS != null && state.rothLotsEnteredS || state.rothIraS <= 0;
-    const debitP = dynamicDebitRothDraw(state.rothContribP, state.rothLotsP, rothDrawLeft, knownP);
-    rothDrawLeft = Math.max(0, rothDrawLeft - ((state.rothContribP ?? 0) - (debitP.contrib ?? 0)) - (state.rothLotsP.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0) - debitP.lots.reduce((s, l) => s + l.taxableAmount + l.nontaxableAmount, 0)));
-    const debitS = dynamicDebitRothDraw(state.rothContribS, state.rothLotsS, rothDrawLeft, knownS);
-    let lotsP = debitP.lots;
-    let lotsS = debitS.lots;
+    let primaryConverted = 0;
+    let spouseConverted = 0;
+    let lotsP = state.rothLotsP;
+    let lotsS = state.rothLotsS;
     if (y0.funding.conversion > 0) {
       const survivorIsPrimary = y0.isSurvivorYear && (base.survivorWho ?? "primary") === "spouse";
-      const primaryConverted = y0.isSurvivorYear ? survivorIsPrimary ? y0.funding.conversion : 0 : Math.min(y0.funding.conversion, Math.max(0, state.pretaxP - y0.detail.rmdPrimary));
-      const spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+      primaryConverted = y0.isSurvivorYear ? survivorIsPrimary ? y0.funding.conversion : 0 : Math.min(y0.funding.conversion, Math.max(0, state.pretaxP - y0.detail.rmdPrimary));
+      spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
       if (primaryConverted > 0.005) {
         lotsP = [...lotsP, { year, taxableAmount: r23(primaryConverted), nontaxableAmount: 0 }];
       }
@@ -11882,6 +11992,32 @@ function runDynamicOptimizer(base, opts) {
         lotsS = [...lotsS, { year, taxableAmount: r23(spouseConverted), nontaxableAmount: 0 }];
       }
     }
+    const iraP = Math.max(0, state.rothIra - state.rothIraS);
+    const empP = Math.max(0, state.rothEmployer - state.rothEmployerS);
+    const knownIraP = state.rothContribIraP != null && state.rothLotsEnteredP || iraP <= 0;
+    const knownIraS = state.rothContribIraS != null && state.rothLotsEnteredS || state.rothIraS <= 0;
+    const debitP = dynamicDebitRothOwner({
+      contribIra: state.rothContribIraP,
+      contribEmp: state.rothContribEmpP,
+      lots: lotsP,
+      draw: y0.funding.rothDraw,
+      iraBal: iraP,
+      empBal: empP,
+      convertedIra: primaryConverted,
+      knownIra: knownIraP
+    });
+    const debitS = dynamicDebitRothOwner({
+      contribIra: state.rothContribIraS,
+      contribEmp: state.rothContribEmpS,
+      lots: lotsS,
+      draw: debitP.drawLeft,
+      iraBal: state.rothIraS,
+      empBal: state.rothEmployerS,
+      convertedIra: spouseConverted,
+      knownIra: knownIraS
+    });
+    lotsP = debitP.lots;
+    lotsS = debitS.lots;
     state.pretaxP = y0.pretaxPrimaryEnd;
     state.pretaxS = y0.pretaxSpouseEnd;
     state.roth = y0.rothEnd;
@@ -11905,8 +12041,10 @@ function runDynamicOptimizer(base, opts) {
     state.hsa = y0.hsaEnd;
     state.eligP = eligP;
     state.eligS = eligS;
-    state.rothContribP = debitP.contrib;
-    state.rothContribS = debitS.contrib;
+    state.rothContribIraP = state.rothContribIraP == null ? null : y0.detail.rothContribIraEnd;
+    state.rothContribEmpP = state.rothContribEmpP == null ? null : y0.detail.rothContribEmployerEnd;
+    state.rothContribIraS = state.rothContribIraS == null ? null : y0.detail.rothContribIraEndSpouse;
+    state.rothContribEmpS = state.rothContribEmpS == null ? null : y0.detail.rothContribEmployerEndSpouse;
     state.rothLotsP = lotsP;
     state.rothLotsS = lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
