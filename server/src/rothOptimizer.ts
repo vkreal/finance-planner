@@ -6293,8 +6293,10 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // 2026 table, a real 2027 on the 2027 table (projected
   // mode, the engine-audit round-2 fix), later years on
   // the 2026 table, and pre-2026 years keep the real
-  // coverage year: the enhanced-credit schedule has no
-  // cliff to re-price.
+  // coverage year and price on the 2025 table (the oldest
+  // row — the enhanced schedule, Rev. Proc. 2023-29 §2.01
+  // for 2024; the temporary §36B(b)(3)(A)(iii) percentages
+  // apply for 2021–2025), which has no cliff to re-price.
   const newestGuidelineYear = Math.max(
     ...Object.keys(FPL_GUIDELINES).map(Number),
   );

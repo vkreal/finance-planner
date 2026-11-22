@@ -37,7 +37,6 @@
 import {
 CHARITABLE_CEILING,
 DEDUCTION_2026,
-SALT_SCHEDULE_FIRST_YEAR,
 SENIOR_DEDUCTION,
 SS_THRESHOLDS,
 acaTableFor,
@@ -1422,15 +1421,16 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // household's itemized total, whose state-and-local-taxes
   // component is capped at the year's §164(b)(7) cap. The
   // cap is dated law the pricer consults BY CALENDAR YEAR
-  // (Build B; SALT_SCHEDULE in taxLaw.ts): for every year
-  // from 2025 on, the applicable limitation and phase-down
-  // threshold are the schedule entry ENACTED for that year
-  // — $40,000 / $500,000 in 2025, rising 1% a year through
-  // $41,624.16 / $520,302.01 in 2029, then $10,000 with no
-  // phase-down for taxable years beginning after 2029,
-  // permanently — never the 2026 law row's figures carried
-  // forward. (Years before 2025 keep the law-row path
-  // below, unchanged.) The applied cap is the entry's cap
+  // (Build B; SALT_SCHEDULE in taxLaw.ts): for every year,
+  // the applicable limitation and phase-down threshold are
+  // the schedule entry ENACTED for that year — $40,000 /
+  // $500,000 in 2025, rising 1% a year through $41,624.16 /
+  // $520,302.01 in 2029, then $10,000 with no phase-down
+  // for taxable years beginning after 2029, permanently —
+  // never the 2026 law row's figures carried forward.
+  // (Years before 2025 price the schedule's pre-2025
+  // entry: the $10,000 flat cap, no phase-down.) The
+  // applied cap is the entry's cap
   // reduced by its phase-down rate × the modified AGI above
   // the entry's phase-down start, floored at the entry's
   // floor. §164(b)(7) modified AGI adds back only the
@@ -1454,29 +1454,28 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // never priced). With no itemized inputs the itemized
   // total is $0, the standard side wins, and every figure
   // is bit-identical to before this build.
+  // SALT cap — every year prices through the dated schedule
+  // (saltScheduleForYear): 2025–2029 on their own entries,
+  // 2030+ on the post-2029 $10,000 entry, and pre-2025 years
+  // on the pre-2025 $10,000 flat entry (dated 2024) — never
+  // on the 2025 law row's $40,000 OBBBA cap. The 2025 and
+  // 2026 entries replicate the law rows' SALT fields exactly,
+  // so those years price bit-identically to the old law-row
+  // path; the schedule path's deflation anchor is the entry
+  // year, and for pre-2025 years the factor is 1.
   const saltEntered = Math.max(0, input.itemizedSaltPaid ?? 0);
-  let saltCapApplied: number;
-  if (input.calendarYear >= SALT_SCHEDULE_FIRST_YEAR) {
-    const salt = saltScheduleForYear(input.calendarYear);
-    const saltDefl = deflationFactor(
-      input.calendarYear,
-      salt.entryYear,
-      input.inflationPct,
-    );
-    saltCapApplied = Math.max(
-      salt.capFloor * saltDefl,
-      salt.cap * saltDefl -
-        (salt.phaseOutRatePct / 100) *
-          Math.max(0, agi - salt.phaseOutStart * saltDefl),
-    );
-  } else {
-    saltCapApplied = Math.max(
-      law.saltCapFloor * defl,
-      law.saltCap * defl -
-        (law.saltPhaseOutRatePct / 100) *
-          Math.max(0, agi - law.saltPhaseOutStart * defl),
-    );
-  }
+  const salt = saltScheduleForYear(input.calendarYear);
+  const saltDefl = deflationFactor(
+    input.calendarYear,
+    salt.entryYear,
+    input.inflationPct,
+  );
+  const saltCapApplied = Math.max(
+    salt.capFloor * saltDefl,
+    salt.cap * saltDefl -
+      (salt.phaseOutRatePct / 100) *
+        Math.max(0, agi - salt.phaseOutStart * saltDefl),
+  );
   const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
   /* ---- 2026 deduction trio (Pub. L. 119-21; DEDUCTION_2026
      in taxLaw.ts) — law years 2026 and later ONLY: a year

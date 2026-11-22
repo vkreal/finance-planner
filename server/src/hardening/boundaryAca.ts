@@ -71,14 +71,28 @@ function roundCent(n: number): number {
 }
 
 /* The published applicable-percentage tables the pins
-   are hand-derived from (Rev. Proc. 2024-35 for 2025,
-   Rev. Proc. 2025-25 §3.01 for 2026, Rev. Proc. 2026-26
-   for 2027). 2028 prices on the 2026 row (the newest
-   complete law row), never on the 2027 percentages.
-   Each entry: the band's top edge in % of FPL and its
-   initial/final percentages. */
+   are hand-derived from (Rev. Proc. 2023-29 §2.01 for
+   2024 — identical to 2025's enhanced schedule; Rev. Proc.
+   2024-35 for 2025, Rev. Proc. 2025-25 §3.01 for 2026,
+   Rev. Proc. 2026-26 for 2027). 2028 prices on the 2026
+   row (the newest complete law row), never on the 2027
+   percentages. Each entry: the band's top edge in % of
+   FPL and its initial/final percentages. */
 type AcaBandPin = { upToPctFpl: number; initialPct: number; finalPct: number };
 const BAND_TABLES: Record<number, AcaBandPin[]> = {
+  // 2024 (Rev. Proc. 2023-29 §2.01): the enhanced schedule,
+  // identical to 2025 — 0% below 150% FPL, rising 0–2% /
+  // 2–4% / 4–6% / 6–8.5% across the 150–200 / 200–250 /
+  // 250–300 / 300–400 bands, flat 8.5% at 400% and above,
+  // no cliff.
+  2024: [
+    { upToPctFpl: 133, initialPct: 0, finalPct: 0 },
+    { upToPctFpl: 150, initialPct: 0, finalPct: 0 },
+    { upToPctFpl: 200, initialPct: 0, finalPct: 2.0 },
+    { upToPctFpl: 250, initialPct: 2.0, finalPct: 4.0 },
+    { upToPctFpl: 300, initialPct: 4.0, finalPct: 6.0 },
+    { upToPctFpl: 400, initialPct: 6.0, finalPct: 8.5 },
+  ],
   2025: [
     { upToPctFpl: 133, initialPct: 0, finalPct: 0 },
     { upToPctFpl: 150, initialPct: 0, finalPct: 0 },
@@ -108,18 +122,24 @@ const BAND_TABLES: Record<number, AcaBandPin[]> = {
 const BAND_LOWS = [0, 133, 150, 200, 250, 300];
 
 /* Source-derived literal poverty guidelines (round-10
-   F3): the HHS poverty guidelines 2024–2026, transcribed
+   F3): the HHS poverty guidelines 2022–2026, transcribed
    as base + per-additional-person (the published form;
    FPL for a household = base + perAdditional x (size -
-   1)). The 2026 row is Federal Register, Jan. 15, 2026;
-   FR Doc. 2026-00755. These literals — never production
-   fplFor — locate every pin MAGI (magiForKind) and every
-   hand-derived expectation (deriveExpected): a wrong
-   guideline in the production law table must move
+   1)). The 2022 row is Federal Register, Jan. 21, 2022;
+   87 FR 3315 (household of 2 = $18,310). The 2023 row is
+   Federal Register, Jan. 19, 2023; 88 FR 3424 (household
+   of 2 = $19,720). The 2026 row is Federal Register, Jan.
+   15, 2026; FR Doc. 2026-00755. These literals — never
+   production fplFor — locate every pin MAGI (magiForKind)
+   and every hand-derived expectation (deriveExpected): a
+   wrong guideline in the production law table must move
    neither. Guideline years beyond the table fall back to
-   the newest row, mirroring fplFor's convention. */
+   the newest row, and years before it to the oldest row,
+   mirroring fplFor's convention. */
 type GuidelineRow = { base: number; perAdditional: number };
 const GUIDELINE_LITERALS: Record<number, GuidelineRow> = {
+  2022: { base: 13590, perAdditional: 4720 },
+  2023: { base: 14580, perAdditional: 5140 },
   2024: { base: 15060, perAdditional: 5380 },
   2025: { base: 15650, perAdditional: 5500 },
   2026: { base: 15960, perAdditional: 5680 },
@@ -138,7 +158,11 @@ function fplLiteral(
   const years = Object.keys(guidelines).map(Number);
   const newest =
     guidelines[Math.max(...years)] ?? { base: 15960, perAdditional: 5680 };
-  const g = guidelines[guidelineYear] ?? newest;
+  const oldest =
+    guidelines[Math.min(...years)] ?? { base: 13590, perAdditional: 4720 };
+  const g =
+    guidelines[guidelineYear] ??
+    (guidelineYear < Math.min(...years) ? oldest : newest);
   const size = Math.max(1, Math.round(householdSize));
   return g.base + g.perAdditional * (size - 1);
 }
@@ -160,7 +184,13 @@ function deriveExpected(
   applicablePct: number;
   overCliff: boolean;
 } | null {
-  const bands = BAND_TABLES[coverageYear] ?? BAND_TABLES[2026];
+  // Fallback mirrors production acaTableFor: a coverage year
+  // before 2025 prices on the 2025 table (the oldest row),
+  // a year after 2027 on the 2026 row (the newest complete
+  // row, never the 2027 partial row).
+  const bands =
+    BAND_TABLES[coverageYear] ??
+    (coverageYear < 2025 ? BAND_TABLES[2025] : BAND_TABLES[2026]);
   if (!bands) return null;
   const fpl = fplLiteral(householdSize, coverageYear - 1, guidelines);
   const cliff = 4 * fpl;
@@ -384,6 +414,38 @@ const LITERAL_CLIFF_PINS: AcaPin[] = [
   },
 ];
 
+/* Source-derived literal pre-2025 pin (core engine review
+   2026-11-21, M-3/N-27): the boundary pack's literal-pin
+   countermeasure stopped at 2025, so a pre-2025 fallback
+   error in production fplFor/acaTableFor was invisible to
+   it. This pin is fixed dollars on both sides, hand-derived
+   from the published sources — never from engine output:
+   - MAGI $84,000, household of 2, coverage 2024, benchmark
+     $25,000 (the fictional sample household's couple
+     benchmark): FPL is the 2023 guideline for a household
+     of 2, $19,720 (88 FR 3424), so the household is at
+     425.96% of FPL; the 2024 table is the enhanced schedule
+     (Rev. Proc. 2023-29 §2.01, identical to 2025's), flat
+     8.5% above 400% FPL with NO cliff pre-2026, so the
+     expected contribution is 8.5% x $84,000 = $7,140 and
+     the credit is $25,000 - $7,140 = $17,860.00.
+   Before the M-3 fix the engine priced this on 2026 law
+   (FPL $21,640, 9.96% — the 2026 table's 300–400% band is
+   flat) at $16,633.60 — a wrong guideline or a wrong
+   table must fail this pin. */
+const LITERAL_PRE2025_PINS: AcaPin[] = [
+  {
+    id: "aca-hh2-y2024-above400-literal",
+    magi: 84000,
+    householdSize: 2,
+    coverageYear: 2024,
+    benchmark: 25000,
+    expectedCredit: 17860,
+    expectedApplicablePct: 8.5,
+    expectedOverCliff: false,
+  },
+];
+
 function pinsFor(
   householdSize: number,
   coverageYear: number,
@@ -452,6 +514,10 @@ function buildFastPins(
     // guideline table, so only these fixed dollars pin
     // the published cliff independently.
     ...LITERAL_CLIFF_PINS,
+    // Literal pre-2025 pin (core engine review 2026-11-21,
+    // M-3/N-27): the one fixed-dollar pin for 2024 coverage,
+    // so the fast check catches a pre-2025 fallback error.
+    ...LITERAL_PRE2025_PINS,
   ];
 }
 
@@ -460,12 +526,13 @@ function buildFullPins(
 ): AcaPin[] {
   const pins: AcaPin[] = [];
   for (let hh = 1; hh <= 5; hh++) {
-    for (let year = 2025; year <= 2028; year++) {
+    for (let year = 2024; year <= 2028; year++) {
       pins.push(...pinsFor(hh, year, ALL_KINDS, guidelines));
     }
   }
   pins.push(...LITERAL_EDGE_PINS);
   pins.push(...LITERAL_CLIFF_PINS);
+  pins.push(...LITERAL_PRE2025_PINS);
   return pins;
 }
 
@@ -525,7 +592,7 @@ function runInner(pins: AcaPin[], label: string): HardeningCheckResult {
     `ACA boundary pins (${label}): ${pins.length} pins priced by ` +
     `acaCreditFor and acaCreditIndependent and checked against ` +
     `hand-derived credits — household sizes 1-5, coverage years ` +
-    `2025-2028, cliff / 100% FPL / 133% / band edges. ` +
+    `2024-2028, cliff / 100% FPL / 133% / band edges. ` +
     `${failures.length === 0 ? "All pins agree to the cent." : `${failures.length} mismatches.`}`;
   return {
     id: "boundary-aca",

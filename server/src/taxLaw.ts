@@ -212,11 +212,13 @@ export type YearLaw = {
      year 2025–2029 plus the permanent post-2029 $10,000
      limitation — lives in SALT_SCHEDULE below, and the
      pricer consults THAT schedule by calendar year for
-     every year from 2025 on (Build B): these row fields
-     carry only the schedule's 2025 / 2026 entries, kept so
-     the law rows stay self-describing and the T5 fixtures
-     that pin them keep their meaning; they price only
-     years before 2025, on the pre-Build-B path. Like the
+     every year (Build B routed 2025+ through it; this
+     build routes pre-2025 years through it too, via the
+     pre-2025 entry): these row fields carry only the
+     schedule's 2025 / 2026 entries, kept so the law rows
+     stay self-describing and the T5 fixtures that pin
+     them keep their meaning; they price no year in either
+     pricer. Like the
      NIIT thresholds and the §151(d)(5)(C) senior-deduction figures,
      the cap is statutory (not inflation-indexed — the 1%
      bump is a fixed statutory escalator), so the engine
@@ -731,10 +733,9 @@ export const TAX_LAW_2027_NOTE =
    this engine prices; married filing separately takes
    half — a status this engine does not price.
    The pricer (priceYear in taxEngine.ts) consults this
-   schedule BY CALENDAR YEAR for every year from 2025
-   on, instead of the law row's SALT fields: a priced
-   year can no longer inherit the 2026 row's $40,400 cap
-   by carry-forward. Each entry prices exactly in its
+   schedule BY CALENDAR YEAR for every year, instead of
+   the law row's SALT fields: a priced year can no longer
+   inherit the 2026 row's $40,400 cap by carry-forward. Each entry prices exactly in its
    own year; the post-2029 entry is dated 2030 and, like
    every other unindexed statutory figure carried past
    its row, deflates at the plan's inflation input for
@@ -774,14 +775,26 @@ export const SALT_POST_2029: SaltScheduleEntry = {
   phaseOutRatePct: 0,
 };
 
+// Taxable years before 2025 (§164(b)(6) as in effect
+// before OBBBA §70120 rewrote it): the $10,000 limitation,
+// flat and permanent, no phase-down. The pre-2025 pricer
+// consults this entry through saltScheduleForYear, so a
+// pre-2025 year never prices the 2025 row's $40,000 cap.
+export const SALT_PRE_2025: SaltScheduleEntry = {
+  cap: 10000,
+  capFloor: 10000,
+  phaseOutStart: Infinity,
+  phaseOutRatePct: 0,
+};
+
 /* The schedule entry a calendar year prices under, with
    the year that entry is dated (its deflation anchor —
    see deflationFactor in taxEngine.ts). Years from 2030
    on resolve to the post-2029 entry, dated 2030; years
-   before the schedule's first year resolve to the 2025
-   entry (the pricer does not consult the schedule for
-   those years — it keeps the law-row path — so this
-   fallback serves direct callers only). */
+   before the schedule's first year resolve to the
+   pre-2025 entry above, dated 2024 (the last pre-OBBBA
+   year) — the $10,000 cap is statute-fixed, so the
+   deflation factor is 1 for every pre-2025 year. */
 export function saltScheduleForYear(
   calendarYear: number,
 ): SaltScheduleEntry & { entryYear: number } {
@@ -790,6 +803,9 @@ export function saltScheduleForYear(
   }
   const entry = SALT_SCHEDULE[calendarYear];
   if (entry) return { ...entry, entryYear: calendarYear };
+  if (calendarYear < SALT_SCHEDULE_FIRST_YEAR) {
+    return { ...SALT_PRE_2025, entryYear: SALT_SCHEDULE_FIRST_YEAR - 1 };
+  }
   return {
     ...SALT_SCHEDULE[SALT_SCHEDULE_FIRST_YEAR]!,
     entryYear: SALT_SCHEDULE_FIRST_YEAR,
@@ -908,8 +924,22 @@ export const SS_THRESHOLDS: Record<FilingStatus, { first: number; second: number
    today's-dollars modeling the guidelines are inflation-indexed,
    so future coverage years reuse the newest row: guideline years
    beyond the newest row (2026) fall back to that newest row, not
-   to an older one. */
+   to an older one. Guideline years BEFORE the oldest row fall
+   back to the OLDEST row (2022) — the same oldest-row direction
+   the law table uses (see lawForYear): a pre-2025 coverage year
+   never prices on a later year's guidelines. The 2022 row is the
+   HHS 2022 guidelines (Federal Register, Jan. 21, 2022; 87 FR
+   3315): household of 2 = $18,310, +$4,720 per additional
+   person. The 2023 row is the HHS 2023 guidelines (Federal
+   Register, Jan. 19, 2023; 88 FR 3424): household of 2 =
+   $19,720, +$5,140 per additional person. */
 export const FPL_GUIDELINES: Record<number, { base: number; perAdditional: number }> = {
+  // 2022 guidelines (Federal Register, Jan. 21, 2022; 87 FR
+  // 3315): household of 2 = $18,310.
+  2022: { base: 13590, perAdditional: 4720 },
+  // 2023 guidelines (Federal Register, Jan. 19, 2023; 88 FR
+  // 3424): household of 2 = $19,720.
+  2023: { base: 14580, perAdditional: 5140 },
   2024: { base: 15060, perAdditional: 5380 },
   2025: { base: 15650, perAdditional: 5500 },
   // 2026 guidelines (Federal Register, Jan. 15, 2026; FR Doc.
@@ -918,12 +948,20 @@ export const FPL_GUIDELINES: Record<number, { base: number; perAdditional: numbe
   2026: { base: 15960, perAdditional: 5680 },
 };
 export function fplFor(householdSize: number, guidelineYear: number): number {
-  // Fallback is the NEWEST row (2026): guideline years beyond the
-  // table reuse the newest guidelines, per the convention above.
+  // Fallback is directional: guideline years beyond the newest
+  // row (2026) reuse the newest row, per the convention above;
+  // guideline years before the oldest row (2022) fall back to
+  // that OLDEST row, never to a later year's guidelines.
+  const years = Object.keys(FPL_GUIDELINES).map(Number);
   const newest =
-    FPL_GUIDELINES[Math.max(...Object.keys(FPL_GUIDELINES).map(Number))] ??
+    FPL_GUIDELINES[Math.max(...years)] ??
     { base: 15960, perAdditional: 5680 };
-  const g = FPL_GUIDELINES[guidelineYear] ?? newest;
+  const oldest =
+    FPL_GUIDELINES[Math.min(...years)] ??
+    { base: 13590, perAdditional: 4720 };
+  const g =
+    FPL_GUIDELINES[guidelineYear] ??
+    (guidelineYear < Math.min(...years) ? oldest : newest);
   const size = Math.max(1, Math.round(householdSize));
   return g.base + g.perAdditional * (size - 1);
 }
@@ -1009,7 +1047,13 @@ export const ACA_TABLES: Record<number, AcaBand[]> = {
    ("specific") mode — a named coverage year priced on its
    own: the year's own row when one is published (2025,
    2026, or the partial 2027 row for coverage year 2027
-   exactly), otherwise the 2026 row — the newest complete
+   exactly); a coverage year BEFORE 2025 prices on the 2025
+   row — the OLDEST row, the enhanced schedule (ARPA §9661
+   as extended by the IRA; the temporary §36B(b)(3)(A)(iii)
+   percentages apply for taxable years 2021–2025, and the
+   2024 table is identical to 2025's, Rev. Proc. 2023-29
+   §2.01), never on a later year's law; a coverage year
+   after 2027 prices on the 2026 row — the newest complete
    law row, and deliberately NOT the 2027 partial row, so
    2028+ never falls back to 2027 percentages. Projected
    mode — a year inside a multi-year projection (the plan
@@ -1028,11 +1072,17 @@ export function acaTableFor(
     // the 2027 row; projected 2028+ keep the 2026 row (the
     // 2027 percentages are never a later year's fallback);
     // projected years at or before 2026 are unchanged.
+    // Pre-2025 coverage years price on the 2025 row (the
+    // oldest row — the enhanced schedule), never on 2026 law.
     if (coverageYear === 2027) return ACA_TABLES[2027] ?? [];
+    if (coverageYear < 2025) return ACA_TABLES[2025] ?? [];
     const own = coverageYear <= 2026 ? ACA_TABLES[coverageYear] : undefined;
     return own ?? ACA_TABLES[2026] ?? [];
   }
   if (coverageYear === 2027) return ACA_TABLES[2027] ?? [];
+  // Pre-2025 coverage years price on the 2025 row (the
+  // oldest row — the enhanced schedule), never on 2026 law.
+  if (coverageYear < 2025) return ACA_TABLES[2025] ?? [];
   return ACA_TABLES[coverageYear] ?? ACA_TABLES[2026] ?? [];
 }
 

@@ -55,7 +55,6 @@ import type { FilingStatus, YearLaw } from "../taxLaw";
 import {
   lawForYear,
   saltScheduleForYear,
-  SALT_SCHEDULE_FIRST_YEAR,
   CHARITABLE_CEILING,
   DEDUCTION_2026,
   SENIOR_DEDUCTION,
@@ -401,38 +400,28 @@ function seniorDeductionFor(
 }
 
 // §164(b)(7) SALT cap as it applies to the year: the dated
-// schedule entry enacted for the calendar year (2025 on),
-// or the law row's figures for earlier years. The cap's
-// figures are statute-fixed, so they deflate by the years
-// past the schedule entry (or the row) they price under;
-// the phase-down runs on AGI and floors at the entry's
-// floor.
+// schedule entry enacted for the calendar year — the pre-2025
+// $10,000 flat entry for earlier years, the 2025–2029 entries
+// for their years, the post-2029 $10,000 entry from 2030 on.
+// The cap's figures are statute-fixed, so they deflate by the
+// years past the schedule entry they price under; the
+// phase-down runs on AGI and floors at the entry's floor.
 function saltCapFor(
   calendarYear: number,
   agi: number,
-  law: YearLaw,
-  defl: number,
   inflationPct: number,
 ): number {
-  if (calendarYear >= SALT_SCHEDULE_FIRST_YEAR) {
-    const entry = saltScheduleForYear(calendarYear);
-    const entryDefl = deflateYears(
-      calendarYear,
-      entry.entryYear,
-      inflationPct,
-    );
-    return Math.max(
-      entry.capFloor * entryDefl,
-      entry.cap * entryDefl -
-        (entry.phaseOutRatePct / 100) *
-          Math.max(0, agi - entry.phaseOutStart * entryDefl),
-    );
-  }
+  const entry = saltScheduleForYear(calendarYear);
+  const entryDefl = deflateYears(
+    calendarYear,
+    entry.entryYear,
+    inflationPct,
+  );
   return Math.max(
-    law.saltCapFloor * defl,
-    law.saltCap * defl -
-      (law.saltPhaseOutRatePct / 100) *
-        Math.max(0, agi - law.saltPhaseOutStart * defl),
+    entry.capFloor * entryDefl,
+    entry.cap * entryDefl -
+      (entry.phaseOutRatePct / 100) *
+        Math.max(0, agi - entry.phaseOutStart * entryDefl),
   );
 }
 
@@ -803,8 +792,6 @@ export function priceYearIndependent(
   const saltCapApplied = saltCapFor(
     input.calendarYear,
     agi,
-    law,
-    defl,
     input.inflationPct,
   );
   const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
