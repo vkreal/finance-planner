@@ -7664,9 +7664,13 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       let sRothLedS = cloneRothOwnerLedger(rothLedS);
       let appendedLotP = null;
       let appendedLotS = null;
+      let appendedLotAmtP = 0;
+      let appendedLotAmtS = 0;
       if (rothIn > 0) {
         const shareP = additionalArg > 0 ? rothIn * convFromP / additionalArg : rothIn;
         const shareS = Math.max(0, rothIn - shareP);
+        appendedLotAmtP = shareP;
+        appendedLotAmtS = shareS;
         const appendLot = (led, share) => {
           if (share <= 0)
             return null;
@@ -8044,6 +8048,8 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
         earlyWithdrawalEligibilityUnknown: spendEligUnknown,
         rothLedP: sRothLedP,
         rothLedS: sRothLedS,
+        appendedLotAmtP,
+        appendedLotAmtS,
         earliestRothLotYear,
         rothBal,
         taxableBal,
@@ -9048,6 +9054,18 @@ function simulateRothPlan(inputs, strategy, returnSeriesPct, opts) {
       rothContribEmployerEnd: rothLedP.employer.contributions,
       rothContribIraEndSpouse: rothLedS.ira.contributions,
       rothContribEmployerEndSpouse: rothLedS.employer.contributions,
+      rothConversionLotP: settled.appendedLotAmtP ?? 0,
+      rothConversionLotS: settled.appendedLotAmtS ?? 0,
+      rothLotsEndP: rothLedP.ira.lots.map((l) => ({
+        year: l.year,
+        taxableAmount: l.taxable,
+        nontaxableAmount: l.nontaxable
+      })),
+      rothLotsEndS: rothLedS.ira.lots.map((l) => ({
+        year: l.year,
+        taxableAmount: l.taxable,
+        nontaxableAmount: l.nontaxable
+      })),
       drawGains: r22(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,
@@ -11981,10 +11999,11 @@ function runDynamicOptimizer(base, opts) {
     let spouseConverted = 0;
     let lotsP = state.rothLotsP;
     let lotsS = state.rothLotsS;
-    if (y0.funding.conversion > 0) {
-      const survivorIsPrimary = y0.isSurvivorYear && (base.survivorWho ?? "primary") === "spouse";
-      primaryConverted = y0.isSurvivorYear ? survivorIsPrimary ? y0.funding.conversion : 0 : Math.min(y0.funding.conversion, Math.max(0, state.pretaxP - y0.detail.rmdPrimary));
-      spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+    const lotP = y0.detail.rothConversionLotP ?? 0;
+    const lotS = y0.detail.rothConversionLotS ?? 0;
+    if (lotP + lotS > 0) {
+      primaryConverted = lotP;
+      spouseConverted = lotS;
       if (primaryConverted > 0.005) {
         lotsP = [...lotsP, { year, taxableAmount: r23(primaryConverted), nontaxableAmount: 0 }];
       }
@@ -12045,8 +12064,8 @@ function runDynamicOptimizer(base, opts) {
     state.rothContribEmpP = state.rothContribEmpP == null ? null : y0.detail.rothContribEmployerEnd;
     state.rothContribIraS = state.rothContribIraS == null ? null : y0.detail.rothContribIraEndSpouse;
     state.rothContribEmpS = state.rothContribEmpS == null ? null : y0.detail.rothContribEmployerEndSpouse;
-    state.rothLotsP = lotsP;
-    state.rothLotsS = lotsS;
+    state.rothLotsP = state.rothLotsEnteredP ? y0.detail.rothLotsEndP.map((l) => ({ ...l })) : lotsP;
+    state.rothLotsS = state.rothLotsEnteredS ? y0.detail.rothLotsEndS.map((l) => ({ ...l })) : lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
     state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
     const ageSpouse = base.birthYearSpouse != null ? year - base.birthYearSpouse : null;

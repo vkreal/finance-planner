@@ -4717,6 +4717,50 @@ export type RothYearDetail = {
   rothContribEmployerEnd: number;
   rothContribIraEndSpouse: number;
   rothContribEmployerEndSpouse: number;
+  // APPENDED CONVERSION LOT (Engine Review core 2026-11-21,
+  // Build 1 fix round 3 — MUST-C3-1/C3-2): the amount the
+  // year's settlement actually appended to each owner's IRA
+  // ledger — the rothIn share, net of the opening
+  // withholding (the year's tax bill paid out of the
+  // conversion when payTaxFrom is "conversion") and
+  // excluding the already-converted amount, which never
+  // moves (it is already in Roth at year start). The
+  // dynamic roll-forward resumes from this amount, so a
+  // re-anchored march appends the net lot instead of the
+  // gross funding.conversion — the gross figure overstates
+  // the tracked lot by the withheld amount (MUST-C3-1)
+  // and by the YTD amount (MUST-C3-2), and the next Roth
+  // draw reaching the lots tier then shields that much
+  // earnings income the true march prices. Published
+  // unconditionally, like the split balances above — the
+  // lean marches the optimizer prices still carry it.
+  // (The top-up's later shrink of this lot is NOT in this
+  // figure — it applies after the spending draw — see
+  // rothLotsEndP/S below, which carry the post-draw,
+  // post-top-up lots standing.)
+  rothConversionLotP: number;
+  rothConversionLotS: number;
+  // YEAR-END CONVERSION LOTS (Engine Review core 2026-11-21,
+  // Build 1 fix round 3 — SHOULD-C3-1): the IRA conversion
+  // lots standing at year end per owner — the appended lot
+  // after the same-year draw consumed part of it and the
+  // top-up shrank the remainder (the lot step first, then
+  // the residual consumption of older lots through the IRA
+  // ledgers' composition), plus the $0-balance backstop.
+  // The dynamic roll-forward resumes from these lots, so a
+  // re-anchored march carries the march's own post-everything
+  // lots instead of the advance's append-then-debit model:
+  // the top-up shrink applies AFTER the draw, so no
+  // append-time amount can express it — the top-up lot-shrink
+  // diverges a re-anchored march on its own (proved on the
+  // TF-to-RF isolation shape: withheld $0, top-up $316.67 +
+  // $307.79, net diff −$169.41, firstDiv 2030). Published
+  // unconditionally, like the split balances above.
+  // Entered-ness rides in the optimizer's own state, exactly
+  // like the contribution overwrite: an unentered ledger's
+  // lots are never passed to a re-anchor.
+  rothLotsEndP: RothConversionLotInput[];
+  rothLotsEndS: RothConversionLotInput[];
   // BASIS-DRIFT surfacing (display only): the year's realized
   // gain from ORDINARY draws alone — tax payments taken from
   // Taxable plus spending draws, priced pro-rata at the basis
@@ -7644,9 +7688,23 @@ export function simulateRothPlan(
       let sRothLedS = cloneRothOwnerLedger(rothLedS);
       let appendedLotP: { year: number; taxable: number; nontaxable: number } | null = null;
       let appendedLotS: { year: number; taxable: number; nontaxable: number } | null = null;
+      // APPENDED-LOT AMOUNTS (Engine Review core 2026-11-21,
+      // Build 1 fix round 3 — MUST-C3-1/C3-2): the amount
+      // actually appended to each owner's IRA ledger this
+      // round — the rothIn share, net of the opening
+      // withholding and excluding the already-converted
+      // amount (rothIn derives from additionalArg only, so
+      // the YTD dollars never enter it). Published on the
+      // settlement result and the year detail, so the
+      // optimizer's state advance appends this net amount
+      // instead of the gross funding.conversion.
+      let appendedLotAmtP = 0;
+      let appendedLotAmtS = 0;
       if (rothIn > 0) {
         const shareP = additionalArg > 0 ? (rothIn * convFromP) / additionalArg : rothIn;
         const shareS = Math.max(0, rothIn - shareP);
+        appendedLotAmtP = shareP;
+        appendedLotAmtS = shareS;
         const appendLot = (
           led: RothOwnerLedger,
           share: number,
@@ -8745,6 +8803,14 @@ export function simulateRothPlan(
         // eligible remainders beside them.
         rothLedP: sRothLedP,
         rothLedS: sRothLedS,
+        // APPENDED CONVERSION LOT (fix round 3 — MUST-C3-1/
+        // C3-2): the amount actually appended to each
+        // owner's IRA ledger this round (see the note at the
+        // append above) — the advance's lot amount and IRA
+        // debit cap, net of the opening withholding and
+        // excluding the already-converted amount.
+        appendedLotAmtP,
+        appendedLotAmtS,
         // EARLIEST LOT YEAR (Engine Review C9, Build 2 —
         // W3): the earliest conversion-lot year this
         // settlement's ledgers held before any debit — the
@@ -11200,6 +11266,24 @@ export function simulateRothPlan(
       rothContribEmployerEnd: rothLedP.employer.contributions,
       rothContribIraEndSpouse: rothLedS.ira.contributions,
       rothContribEmployerEndSpouse: rothLedS.employer.contributions,
+      // Appended conversion lot, from the kept settlement
+      // (see the RothYearDetail note): the amount that
+      // actually reached each owner's IRA ledger this year.
+      rothConversionLotP: settled.appendedLotAmtP ?? 0,
+      rothConversionLotS: settled.appendedLotAmtS ?? 0,
+      // Year-end conversion lots, from the grown ledgers (see
+      // the RothYearDetail note): the re-anchor resumes from
+      // these, not from the advance's append-then-debit model.
+      rothLotsEndP: rothLedP.ira.lots.map((l) => ({
+        year: l.year,
+        taxableAmount: l.taxable,
+        nontaxableAmount: l.nontaxable,
+      })),
+      rothLotsEndS: rothLedS.ira.lots.map((l) => ({
+        year: l.year,
+        taxableAmount: l.taxable,
+        nontaxableAmount: l.nontaxable,
+      })),
       drawGains: r2(realizedGains),
       waGains: priced.waGains,
       waStandardDeduction: priced.waStandardDeduction,

@@ -12401,6 +12401,16 @@ export function runDynamicOptimizer(
       // (null); a $0 side contributes $0 (its basis there is
       // $0 by the march's own split + init clamp, whatever
       // it entered); otherwise the clamped sides add (r2).
+      // NOTE (fix round 3 — NICE-A3-1): the clamp to each
+      // side's balance is the one place this fold does not
+      // literally mirror mergeRothOwnerLedgers, which adds
+      // contributions unclamped — it is safe because the
+      // next re-anchor's init clamps identically and every
+      // draw is capped at the balance, so while basis
+      // exceeds balance every drawn dollar prices as
+      // contribution in both models (proved on the
+      // underwater fold shapes: contrib $340,000 vs balance
+      // $288,846 agrees to the cent).
       const mergeContrib = (
         deadC: number | null,
         deadBal: number,
@@ -12473,28 +12483,29 @@ export function runDynamicOptimizer(
     // the spending draw debits them, so a lot the true march
     // consumes in the same year's draw must be debitable by
     // this advance too — debiting first left it standing to
-    // shield the next year's earnings. The attribution is
-    // primary-first (exact whenever the spouse's pre-tax
-    // balance is $0); in a survivor year the whole conversion
-    // lands on the survivor's lots. The shares below also cap
-    // each owner's IRA take in the debit (the conversion
-    // tops the IRA up before the draw debits it).
+    // shield the next year's earnings. The amount appended
+    // is the march's ACTUAL appended-lot amount (fix round
+    // 3 — MUST-C3-1/C3-2): detail.rothConversionLotP/S, net
+    // of the opening withholding and excluding the
+    // already-converted amount — NOT the gross
+    // funding.conversion, which overstates the tracked lot
+    // by the withheld amount (payTaxFrom "conversion") and
+    // by the YTD amount. The per-owner shares already carry
+    // the march's own primary-first split (and, in a
+    // survivor year, the whole conversion on the survivor),
+    // so no re-split is needed here. The shares below also
+    // cap each owner's IRA take in the debit (the conversion
+    // tops the IRA up before the draw debits it) — the cap
+    // uses the same net amount.
     let primaryConverted = 0;
     let spouseConverted = 0;
     let lotsP = state.rothLotsP;
     let lotsS = state.rothLotsS;
-    if (y0.funding.conversion > 0) {
-      const survivorIsPrimary =
-        y0.isSurvivorYear && (base.survivorWho ?? "primary") === "spouse";
-      primaryConverted = y0.isSurvivorYear
-        ? survivorIsPrimary
-          ? y0.funding.conversion
-          : 0
-        : Math.min(
-            y0.funding.conversion,
-            Math.max(0, state.pretaxP - y0.detail.rmdPrimary),
-          );
-      spouseConverted = Math.max(0, y0.funding.conversion - primaryConverted);
+    const lotP = y0.detail.rothConversionLotP ?? 0;
+    const lotS = y0.detail.rothConversionLotS ?? 0;
+    if (lotP + lotS > 0) {
+      primaryConverted = lotP;
+      spouseConverted = lotS;
       if (primaryConverted > 0.005) {
         lotsP = [...lotsP, { year, taxableAmount: r2(primaryConverted), nontaxableAmount: 0 }];
       }
@@ -12619,8 +12630,24 @@ export function runDynamicOptimizer(
       state.rothContribIraS == null ? null : y0.detail.rothContribIraEndSpouse;
     state.rothContribEmpS =
       state.rothContribEmpS == null ? null : y0.detail.rothContribEmployerEndSpouse;
-    state.rothLotsP = lotsP;
-    state.rothLotsS = lotsS;
+    // YEAR-END CONVERSION LOTS (fix round 3 — SHOULD-C3-1):
+    // the committed year's own year-end lots are the
+    // authority for the LOTS, exactly like the contribution
+    // overwrite above (they absorb anything the append+debit
+    // model does not — above all the top-up's shrink of the
+    // appended lot, which applies AFTER the draw and so
+    // cannot be expressed by any append-time amount, and
+    // its residual consumption of older lots). Entered-ness
+    // is preserved from state, which the debit and the fold
+    // maintain: an unentered ledger keeps the debit model's
+    // lots (the re-anchor gate nulls them out anyway, so
+    // they never reach a march as if entered).
+    state.rothLotsP = state.rothLotsEnteredP
+      ? y0.detail.rothLotsEndP.map((l) => ({ ...l }))
+      : lotsP;
+    state.rothLotsS = state.rothLotsEnteredS
+      ? y0.detail.rothLotsEndS.map((l) => ({ ...l }))
+      : lotsS;
     state.rmdDeferredPendingP = y0.detail.rmdDeferredPrimary;
     state.rmdDeferredPendingS = y0.detail.rmdDeferredSpouse;
     // Per-person first-RMD flags (Pass 3 fix — M1): a person's

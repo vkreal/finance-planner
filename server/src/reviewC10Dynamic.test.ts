@@ -820,6 +820,137 @@ describe("C10 — core review (M-1/S-11/S-12/S-13): re-anchor state parity", () 
     expect(within2c(y0s.detail.rothIraEndSpouse, 126000)).toBe(true);
     expect(within2c(y0s.detail.rothEmployerEndSpouse, 42000)).toBe(true);
   });
+
+  test("conversion-channel withholding is excluded from the tracked lot", () => {
+    // MUST-C3-1 (fix round 3, reviewer C3): with
+    // payTaxFrom "conversion" the march appends the NET
+    // conversion as a lot (rothIn = additional − withheld,
+    // $109,100 − $10,885.56 = $98,214.44 in 2026), but the
+    // advance appended the GROSS funding.conversion — the
+    // tracked lot was too big by the withheld amount, and
+    // the next Roth draw reaching the lots tier shielded
+    // that much earnings income (greedy $2,635.73 cheaper,
+    // first divergence 2027, worst tax $3,048.19, pre-fix).
+    // The detail pins the mechanism directly: the appended
+    // lot is the net amount, and the year-end lot is the
+    // net amount less the $60,000 the 2026 draw consumed
+    // ($200,000 of contributions first, then the lot).
+    // Shape note: the reviewer's $220,000 variant carries
+    // the same mechanism (greedy $2,419.00 cheaper
+    // pre-fix) and is verified by probe post-fix (net
+    // $0.00, tax $0.00 every year); the committed shape
+    // uses the reviewer's $260,000 variant because the
+    // $220,000 variant's taxable-balance carry drifts 4c
+    // by 2031 — the known r2-dust class, not a mechanism
+    // (tax $0.00, basis 1c, net $0.00) — which would trip
+    // this harness's 2c bar.
+    const { march } = checkShapeWith(
+      {
+        endAgePrimary: 67,
+        windowStartAge: 57,
+        retirementAge: 57,
+        rothContributionBasisPrimary: 200000,
+        rothConversionLotsPrimary: [],
+        firstRothYearPrimary: 2028,
+        annualSpending: 260000,
+        payTaxFrom: "conversion",
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+    const y2026 = march.years[0]!;
+    expect(within2c(y2026.funding.conversion, 109100)).toBe(true);
+    // The new detail fields are this round's publication;
+    // the `as any` read keeps this file compilable on the
+    // pre-fix tree (there the fields are undefined and
+    // these assertions fail, as they should).
+    const d2026 = y2026.detail as any;
+    expect(within2c(d2026.rothConversionLotP, 98214.44)).toBe(true);
+    expect(d2026.rothLotsEndP.length).toBe(1);
+    expect(d2026.rothLotsEndP[0].year).toBe(2026);
+    expect(within2c(d2026.rothLotsEndP[0].taxableAmount, 38214.44)).toBe(true);
+  });
+
+  test("already-converted amount creates no lot", () => {
+    // MUST-C3-2 (fix round 3, reviewer C3): the march
+    // prices the already-converted amount as year-1 income
+    // but never appends a lot for it ("already reflected
+    // in the starting balances"), while the advance appended
+    // funding.conversion — which in year 1 includes the
+    // YTD amount — as a fresh lot. The $10,000 phantom lot
+    // shielded a later Roth draw (greedy $2,514.04
+    // cheaper, first divergence 2031, pre-fix). The old
+    // YTD test pinned conversion AMOUNTS only; this shape
+    // draws Roth to the lots tier after the YTD year and
+    // pins LOT COMPOSITION: the 2026 appended lot is $0
+    // against a $10,000 conversion, and no lot bearing
+    // year 2026 ever stands in any year's year-end lots.
+    const { march } = checkShapeWith(
+      {
+        endAgePrimary: 67,
+        convertedAlreadyThisYear: 10000,
+        rothContributionBasisPrimary: 200000,
+        rothConversionLotsPrimary: [],
+        firstRothYearPrimary: 2028,
+        annualSpending: 300000,
+      },
+      ROTH_FIRST_POLICY,
+      ROTH_FIRST_ORDER,
+    );
+    const y2026 = march.years[0]!;
+    expect(within2c(y2026.funding.conversion, 10000)).toBe(true);
+    const d2026 = y2026.detail as any;
+    expect(within2c(d2026.rothConversionLotP, 0)).toBe(true);
+    for (const m of march.years) {
+      const lots = (m.detail as any).rothLotsEndP as any[];
+      expect(lots.filter((l) => l.year === 2026).length).toBe(0);
+    }
+  });
+
+  test("conversion top-up shrink is carried in the tracked lots", () => {
+    // SHOULD-C3-1 (fix round 3, reviewer C3 — isolated
+    // here, not "could not isolate"): the top-up shrinks
+    // the appended lot AFTER the spending draw, so no
+    // append-time amount can express it. The isolation
+    // shape runs taxable-first until age 60 — the opening
+    // withholding is $0 there (conversion $23,500, lot
+    // $23,500) while the top-up fires ($316.67 in 2026,
+    // $307.79 in 2027) — then switches to Roth-first, so
+    // the later draws reach the shrunk lots (greedy
+    // $169.41 cheaper, first divergence 2030, pre-fix
+    // with the appended-amount fix alone). The detail pins
+    // the shrink directly: the year-end lots are the
+    // appended amounts less the top-up, with $0 drawn.
+    const { march } = checkShapeWith(
+      {
+        endAgePrimary: 67,
+        windowStartAge: 57,
+        retirementAge: 57,
+        rothContributionBasisPrimary: 200000,
+        rothConversionLotsPrimary: [],
+        firstRothYearPrimary: 2028,
+        annualSpending: 220000,
+        payTaxFrom: "conversion",
+        drawOrderSwitchAge: 60,
+        drawOrderAfter: [...ROTH_FIRST_ORDER],
+      },
+      POLICY,
+      ORDER,
+    );
+    const y2026 = march.years[0]!;
+    expect(within2c(y2026.funding.conversion, 23500)).toBe(true);
+    const d2026 = y2026.detail as any;
+    expect(within2c(d2026.rothConversionLotP, 23500)).toBe(true);
+    expect(d2026.rothLotsEndP.length).toBe(1);
+    expect(within2c(d2026.rothLotsEndP[0].taxableAmount, 23183.33)).toBe(true);
+    const y2027 = march.years[1]!;
+    expect(within2c(y2027.funding.conversion, 21100)).toBe(true);
+    const d2027 = y2027.detail as any;
+    expect(within2c(d2027.rothConversionLotP, 21100)).toBe(true);
+    expect(d2027.rothLotsEndP.length).toBe(2);
+    expect(within2c(d2027.rothLotsEndP[0].taxableAmount, 23183.33)).toBe(true);
+    expect(within2c(d2027.rothLotsEndP[1].taxableAmount, 20792.21)).toBe(true);
+  });
 });
 
 describe("C10 — dynamic optimizer (full set, short horizon)", () => {
