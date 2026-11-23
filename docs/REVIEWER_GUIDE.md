@@ -117,7 +117,7 @@ repeats until the tax due, the debits taken, and the priced income
 agree to the cent (bounded; a year that cannot converge returns its
 best iterated state). Every priced year carries the outcome on its
 face: `settlementConverged`, `settlementMismatchCents` ({gains,
-pretax} — both 0 when converged), and `ceilingBreached` (true when a
+pretax, roth, hsa, acaCredit} — all 0 when converged), and `ceilingBreached` (true when a
 switched-on ceiling is still breached by the year's final figures at
 conversion $0 — the draws alone breach). A non-converged year was
 priced from the iteration's best state, and the Tax Plan year rows

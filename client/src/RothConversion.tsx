@@ -13129,6 +13129,8 @@ export function RothConversion({
                           Did not settle
                           {y.settlementMismatchCents.gains !== 0 ||
                           y.settlementMismatchCents.pretax !== 0 ||
+                          y.settlementMismatchCents.roth !== 0 ||
+                          y.settlementMismatchCents.hsa !== 0 ||
                           y.settlementMismatchCents.acaCredit !== 0
                             ? ` — off by ${[
                                 y.settlementMismatchCents.gains !== 0
@@ -13136,6 +13138,12 @@ export function RothConversion({
                                   : "",
                                 y.settlementMismatchCents.pretax !== 0
                                   ? `${fmtCents(y.settlementMismatchCents.pretax)} pre-tax`
+                                  : "",
+                                y.settlementMismatchCents.roth !== 0
+                                  ? `${fmtCents(y.settlementMismatchCents.roth)} Roth`
+                                  : "",
+                                y.settlementMismatchCents.hsa !== 0
+                                  ? `${fmtCents(y.settlementMismatchCents.hsa)} HSA`
                                   : "",
                                 y.settlementMismatchCents.acaCredit !== 0
                                   ? `${fmtCents(y.settlementMismatchCents.acaCredit)} ACA credit`

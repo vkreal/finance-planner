@@ -382,9 +382,16 @@ export type CandidateIntegrity = {
   // third component — a year can fail on credit alone while
   // gains / pre-tax converge, and the gate judged such a year
   // benign before this field existed.
+  // (Core engine review 2026-11-21, Build 4, S-1): the Roth and
+  // HSA residuals are fourth and fifth components — a year can
+  // fail on either alone while gains / pre-tax / credit converge,
+  // and the gate judged such a year benign before these fields
+  // existed, exactly as it once did for the credit residual.
   maxMismatchGainsCents: number;
   maxMismatchPretaxCents: number;
   maxMismatchAcaCreditCents: number;
+  maxMismatchRothCents: number;
+  maxMismatchHsaCents: number;
   // Ceiling-breach counts: all breached years, and the subset
   // breached at conversion $0 (draws alone — not a defect).
   ceilingBreachedYears: number;
@@ -404,7 +411,11 @@ export function assessCandidateIntegrity(
   let maxMismatchGainsCents = 0;
   let maxMismatchPretaxCents = 0;
   let maxMismatchAcaCreditCents = 0;
+  let maxMismatchRothCents = 0;
+  let maxMismatchHsaCents = 0;
   const acaMismatchYears: number[] = [];
+  const rothMismatchYears: number[] = [];
+  const hsaMismatchYears: number[] = [];
   let ceilingBreachedYears = 0;
   let ceilingBreachedAtZeroConversionYears = 0;
   let spendShortfallTotal = 0;
@@ -421,6 +432,16 @@ export function assessCandidateIntegrity(
     const acaCredit = mismatch.acaCredit ?? 0;
     if (acaCredit > 0) acaMismatchYears.push(y.year);
     maxMismatchAcaCreditCents = Math.max(maxMismatchAcaCreditCents, acaCredit);
+    // (Core engine review 2026-11-21, Build 4, S-1): the Roth and
+    // HSA residuals are judged by the same tolerance — a Roth- or
+    // HSA-only failure is a real funding inconsistency exactly as
+    // a gains / pre-tax / credit residual is.
+    const roth = mismatch.roth ?? 0;
+    if (roth > 0) rothMismatchYears.push(y.year);
+    maxMismatchRothCents = Math.max(maxMismatchRothCents, roth);
+    const hsa = mismatch.hsa ?? 0;
+    if (hsa > 0) hsaMismatchYears.push(y.year);
+    maxMismatchHsaCents = Math.max(maxMismatchHsaCents, hsa);
     if (y.ceilingBreached) {
       ceilingBreachedYears++;
       if (conversion <= 0) ceilingBreachedAtZeroConversionYears++;
@@ -449,6 +470,18 @@ export function assessCandidateIntegrity(
     reasons.push(
       `unresolved ACA credit settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
         `(ACA credit ${maxMismatchAcaCreditCents}¢ in ${acaMismatchYears.join(", ")})`,
+    );
+  }
+  if (maxMismatchRothCents > SETTLEMENT_TOLERANCE_CENTS) {
+    reasons.push(
+      `unresolved Roth settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
+        `(Roth ${maxMismatchRothCents}¢ in ${rothMismatchYears.join(", ")})`,
+    );
+  }
+  if (maxMismatchHsaCents > SETTLEMENT_TOLERANCE_CENTS) {
+    reasons.push(
+      `unresolved HSA settlement mismatch above the ${SETTLEMENT_TOLERANCE_CENTS}¢ tolerance ` +
+        `(HSA ${maxMismatchHsaCents}¢ in ${hsaMismatchYears.join(", ")})`,
     );
   }
   if (convertingBreachedYears.length > 0) {
@@ -482,6 +515,8 @@ export function assessCandidateIntegrity(
     maxMismatchGainsCents,
     maxMismatchPretaxCents,
     maxMismatchAcaCreditCents,
+    maxMismatchRothCents,
+    maxMismatchHsaCents,
     ceilingBreachedYears,
     ceilingBreachedAtZeroConversionYears,
     unpaidTaxTotal,
@@ -9394,7 +9429,7 @@ export type RothFundingRow = {
   // whether the year's kept settlement was an exact fixed
   // point of the settlement iteration, and — when it was not —
   // the kept round's residual mismatch per component in
-  // integer cents (gains, pre-tax, and — Engine Review C3,
+  // integer cents (gains, pre-tax, Roth, HSA, and — Engine Review C3,
   // C3-S1 — the ACA credit residual; all 0 when converged),
   // plus how many rounds / passes the kept settlement took
   // and why each level stopped.
@@ -10437,7 +10472,7 @@ export type RothCompareScenarioYear = {
   // RothYear): whether the year's kept settlement was an exact fixed
   // point of the settlement iteration, and — when it was not — the
   // kept round's residual mismatch per component in integer cents
-  // (gains, pre-tax, and — Engine Review C3, C3-S1 — the ACA
+  // (gains, pre-tax, Roth, HSA, and — Engine Review C3, C3-S1 — the ACA
   // credit residual; all 0 when converged), plus how many
   // rounds / passes the kept settlement took and why each level
   // stopped. Display only — no score, ranking, or delta is

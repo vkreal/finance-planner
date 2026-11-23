@@ -120,6 +120,12 @@ type FakeYear = {
   // Engine Review C3, C3-S1: the ACA-credit mismatch component
   // (integer cents); omitted in a FakeYear means 0.
   acaCredit?: number;
+  // Core engine review 2026-11-21, Build 4, S-1 / N-24: the Roth
+  // and HSA mismatch components (integer cents); omitted means 0.
+  // The gate's fixtures fabricate 5-field mismatches now — a
+  // 3-field fabrication would encode the gate's old blindness.
+  roth?: number;
+  hsa?: number;
   breached: boolean;
   conversion: number;
   shortfall: number;
@@ -133,6 +139,8 @@ function fakeResult(years: FakeYear[], unpaidTax = 0): RothPlanResult {
       settlementMismatchCents: {
         gains: y.gains,
         pretax: y.pretax,
+        roth: y.roth ?? 0,
+        hsa: y.hsa ?? 0,
         acaCredit: y.acaCredit ?? 0,
       },
       ceilingBreached: y.breached,
@@ -362,6 +370,97 @@ describe("E4-S1 — candidate-integrity assessment (assessor units)", () => {
     );
     expect(i.status).toBe("valid");
     expect(i.maxMismatchAcaCreditCents).toBe(0);
+  });
+
+  test("Roth mismatch above the tolerance is independently invalid (Build 4, S-1)", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          roth: 500,
+        },
+      ]),
+    );
+    expect(i.status).toBe("invalid");
+    expect(i.maxMismatchRothCents).toBe(500);
+    expect(i.maxMismatchHsaCents).toBe(0);
+    expect(i.maxMismatchGainsCents).toBe(0);
+    expect(i.reasons.join(" ")).toMatch(/Roth/);
+    expect(i.reasons.join(" ")).toMatch(/500¢/);
+    expect(i.reasons.join(" ")).toMatch(/tolerance/);
+  });
+
+  test("HSA mismatch above the tolerance is independently invalid (Build 4, S-1)", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          hsa: 300,
+        },
+      ]),
+    );
+    expect(i.status).toBe("invalid");
+    expect(i.maxMismatchHsaCents).toBe(300);
+    expect(i.maxMismatchRothCents).toBe(0);
+    expect(i.reasons.join(" ")).toMatch(/HSA/);
+    expect(i.reasons.join(" ")).toMatch(/300¢/);
+  });
+
+  test("Roth/HSA mismatch at the tolerance is benign (Build 4, S-1)", () => {
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          roth: 2,
+          hsa: 2,
+        },
+      ]),
+    );
+    expect(i.status).toBe("valid-with-benign-residual");
+    expect(i.maxMismatchRothCents).toBe(2);
+    expect(i.maxMismatchHsaCents).toBe(2);
+    expect(i.reasons).toEqual([]);
+  });
+
+  test("combined Roth+HSA residual with converged gains/pre-tax/credit is invalid (Build 4, S-1)", () => {
+    // The core review's S-1 repro, verbatim: fabricated year with
+    // mismatch {gains 0, pretax 0, roth 500, hsa 300, acaCredit 0},
+    // settlementConverged false — pre-fix the gate scored it
+    // valid-with-benign-residual with no roth/hsa max field.
+    const i = assessCandidateIntegrity(
+      fakeResult([
+        {
+          ...CONVERGED_YEAR,
+          year: 2032,
+          converged: false,
+          gains: 0,
+          pretax: 0,
+          roth: 500,
+          hsa: 300,
+          acaCredit: 0,
+        },
+      ]),
+    );
+    expect(i.status).toBe("invalid");
+    expect(i.maxMismatchRothCents).toBe(500);
+    expect(i.maxMismatchHsaCents).toBe(300);
+    expect(i.maxMismatchGainsCents).toBe(0);
+    expect(i.maxMismatchPretaxCents).toBe(0);
+    expect(i.maxMismatchAcaCreditCents).toBe(0);
+    expect(i.reasons.join(" ")).toMatch(/Roth 500¢/);
+    expect(i.reasons.join(" ")).toMatch(/HSA 300¢/);
   });
 
   test("ceiling breached at conversion $0 is disclosed, not invalid", () => {

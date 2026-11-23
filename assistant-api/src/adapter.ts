@@ -1356,6 +1356,8 @@ type YearlyCompareRow = {
   settlementConverged: boolean;
   settlementMismatchGains: number;
   settlementMismatchPretax: number;
+  settlementMismatchRoth: number;
+  settlementMismatchHsa: number;
   settlementMismatchAcaCredit: number;
   ceilingBreached: boolean;
   // Law + state-tax provenance (Engine Review 3, P3-S1):
@@ -1412,6 +1414,12 @@ function yearlyTable(
     ),
     settlementMismatchPretax: centsToDollars(
       y.settlementMismatchCents.pretax,
+    ),
+    settlementMismatchRoth: centsToDollars(
+      y.settlementMismatchCents.roth ?? 0,
+    ),
+    settlementMismatchHsa: centsToDollars(
+      y.settlementMismatchCents.hsa ?? 0,
     ),
     settlementMismatchAcaCredit: centsToDollars(
       y.settlementMismatchCents.acaCredit ?? 0,
@@ -1791,6 +1799,12 @@ function yearlyTableFromRothYears(years: RothYear[]): YearlyCompareRow[] {
     settlementMismatchGains: centsToDollars(y.settlementMismatchCents.gains),
     settlementMismatchPretax: centsToDollars(
       y.settlementMismatchCents.pretax,
+    ),
+    settlementMismatchRoth: centsToDollars(
+      y.settlementMismatchCents.roth ?? 0,
+    ),
+    settlementMismatchHsa: centsToDollars(
+      y.settlementMismatchCents.hsa ?? 0,
     ),
     settlementMismatchAcaCredit: centsToDollars(
       y.settlementMismatchCents.acaCredit ?? 0,

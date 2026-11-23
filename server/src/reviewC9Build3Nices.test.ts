@@ -71,7 +71,7 @@ function fakeResult(unpaidTax: number, shortfall: number): RothPlanResult {
       {
         year: 2030,
         settlementConverged: true,
-        settlementMismatchCents: { gains: 0, pretax: 0, acaCredit: 0 },
+        settlementMismatchCents: { gains: 0, pretax: 0, roth: 0, hsa: 0, acaCredit: 0 },
         ceilingBreached: false,
         conversion: 0,
         spendShortfall: shortfall,

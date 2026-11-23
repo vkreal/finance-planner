@@ -4572,6 +4572,8 @@ const candidateIntegrityOut = z.object({
   maxMismatchGainsCents: z.number(),
   maxMismatchPretaxCents: z.number(),
   maxMismatchAcaCreditCents: z.number(),
+  maxMismatchRothCents: z.number(),
+  maxMismatchHsaCents: z.number(),
   ceilingBreachedYears: z.number(),
   ceilingBreachedAtZeroConversionYears: z.number(),
   unpaidTax: z.number(),
@@ -4726,6 +4728,8 @@ function toOptScore(
       maxMismatchGainsCents: s.integrity.maxMismatchGainsCents,
       maxMismatchPretaxCents: s.integrity.maxMismatchPretaxCents,
       maxMismatchAcaCreditCents: s.integrity.maxMismatchAcaCreditCents,
+      maxMismatchRothCents: s.integrity.maxMismatchRothCents,
+      maxMismatchHsaCents: s.integrity.maxMismatchHsaCents,
       ceilingBreachedYears: s.integrity.ceilingBreachedYears,
       ceilingBreachedAtZeroConversionYears:
         s.integrity.ceilingBreachedAtZeroConversionYears,
@@ -5575,7 +5579,10 @@ const playgroundPasteOut = z.object({
   harvestPoolBasisPct: z.number().nullable(),
 });
 
-const planYearRowOut = z.object({
+// Exported for the settlement-shape test (Core engine review
+// 2026-11-21, Build 4): the test parses fabricated rows against
+// the action's real published shapes.
+export const planYearRowOut = z.object({
   year: z.number(),
   agePrimary: z.number(),
   ageSpouse: z.number().nullable(),
@@ -5747,7 +5754,7 @@ const planYearRowOut = z.object({
   // year's kept settlement was an exact fixed point of the
   // settlement iteration (assumed feedback pair == created
   // pair), and the kept round's residual mismatch per
-  // component in integer cents — gains, pre-tax, and
+  // component in integer cents — gains, pre-tax, Roth, HSA, and
   // (Engine Review C3, C3-S1) the ACA credit residual
   // (all 0 when converged). A non-converged year was priced
   // from the iteration's best iterated state, not an exact
@@ -5759,6 +5766,8 @@ const planYearRowOut = z.object({
   settlementMismatchCents: z.object({
     gains: z.number(),
     pretax: z.number(),
+    roth: z.number(),
+    hsa: z.number(),
     acaCredit: z.number(),
   }),
   settlementRounds: z.number(),
@@ -5841,7 +5850,7 @@ function toPlanYearRow(y: {
     acaPremiumAdjustment: number;
   };
   settlementConverged: boolean;
-  settlementMismatchCents: { gains: number; pretax: number; acaCredit: number };
+  settlementMismatchCents: { gains: number; pretax: number; roth: number; hsa: number; acaCredit: number };
   settlementRounds: number;
   settlementPasses: number;
   settlementStopReason: "converged" | "repeated-assumption" | "iteration-limit";
@@ -5931,7 +5940,7 @@ function toPlanYearRow(y: {
    the Cents suffix because the values ARE cents). The row type
    is RothFundingRow in rothOptimizer.ts; the action's purpose
    entry in ACTION_PURPOSES defines every field's sign/scope. */
-const fundingRowOut = z.object({
+export const fundingRowOut = z.object({
   year: z.number(),
   agePrimary: z.number(),
   ageSpouse: z.number().nullable(),
@@ -6011,7 +6020,7 @@ const fundingRowOut = z.object({
   // Settlement convergence (LOW-1): whether the year's kept
   // settlement was an exact fixed point of the settlement
   // iteration, and the kept round's residual mismatch per
-  // component in integer cents — gains, pre-tax, and
+  // component in integer cents — gains, pre-tax, Roth, HSA, and
   // (Engine Review C3, C3-S1) the ACA credit residual
   // (all 0 when converged) — plus the rounds / passes the
   // kept settlement took and why each level stopped.
@@ -6019,6 +6028,8 @@ const fundingRowOut = z.object({
   settlementMismatchCents: z.object({
     gains: z.number(),
     pretax: z.number(),
+    roth: z.number(),
+    hsa: z.number(),
     acaCredit: z.number(),
   }),
   settlementRounds: z.number(),
@@ -6987,7 +6998,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
   runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). The searched candidate space includes gain-harvesting variants of every conversion candidate when the plan holds a taxable balance with basis below 100% (and is unchanged otherwise): each conversion candidate also gets a gainsHarvest twin, Do Nothing never does, and there is no separate ltcgZeroCap ceiling candidate family. Every scored candidate in the response (winner, runnersUp, doNothing, orderWinner, orderRunnersUp, orderDoNothing, claim-age table best entries, and the sensitivity entries) exposes its gainsHarvest state as a boolean, and a harvest twin's name carries the harvesting phrase (gain harvesting into the 0% bracket). Claiming-age floor conflicts are reported via claimAgeFloorMet and an explicit note rather than asserted away: claimAgeFloorMet is null when no claimAgeFloor is set, true when the crowned winner claims at or above the floor (or has no primary claiming age to violate it, or is the floor-exempt Do Nothing benchmark), and false when the winner claims below the floor — including a locked claim and the no-eligible-candidate fallback — in which case claimSearchNote states the conflict plainly, naming the floor and the winner's actual claiming age (and the locked reason when the claim is locked), and does not assert the winner meets the floor; the note never references below-floor markings in the per-age table when the claim age table is empty. PRICED LEVERS (build v69): the response also carries savedPlan — the entered plan priced as its own fixed strategy (its saved ceilings, window, draw order, and entered claiming ages) in the same score shape — improvements, the top three DISTINCT searched candidates (Do Nothing excluded) whose net cost beats savedPlan's, each extended with gainVsSavedPlan (savedPlan.netCost − candidate.netCost, dollars, from the search's own figures), and winnerIsDoNothing. (Engine Review 4 NICEs, NICE-3): excludedInvalidLevers counts the distinct levers the invalid check kept out of that improvements list — a lever invalid in one run but valid (and selected) in the other is not counted, and the same lever invalid in both runs counts once. Compute-only; saves nothing.",
-  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (build v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), educationRefundableCents (the year's refundable American Opportunity Credit portion — money the household receives even past a $0 tax bill, netted into the net bill beside the ACA credit), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxOutByChoiceCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it — distinct from runRothFunding's pretaxDrawCents, which is the extra spending draw plus pre-tax amounts applied to the tax bill and excludes the conversion itself; build v127, round-19 finding 11). PRE-TAX DRAW SPLIT (audit S-10, surfaced under re-audit SHOULD S-8): each year readout also carries the split of the year's total priced pre-tax draw — pretaxSpendingDrawCents (the pre-tax draw for spending alone), pretaxTaxDebitCents (the pre-tax debits that paid the tax bill alone — NOT money out by choice, and excluded from pretaxOutByChoiceCents), and extraPreTaxDrawCents (their sum, the total the year's priced AGI carries) — read off the same priced detail the by-choice field reads its spending component from, so a consumer can see the two components separately instead of re-deriving them (see the pretaxDrawSplitSemantics convention describeApi publishes). PER-YEAR PENALTY (P-S11, parity audit): each year readout also carries penaltyCents — the year's pre-59½ withholding penalty, read off the same priced march row (the scenario result has always carried the penalty as a lifetime total in penaltyCents; the per-year readouts now sum to it) — $0 in every year that prices no penalty. A year's federalTaxCents EXCLUDES its penalty, while runRothFunding's federalTaxCents for the same year INCLUDES it (the penalty is paid as part of the federal withholding), so a per-year tax bill built from these readouts must add penaltyCents beside federalTaxCents to agree with the funding rows — the Tax Plan's first-draw-year mini-bill does exactly that and names the penalty on its own row. SETTLEMENT FLAGS (round-8 SHOULD-1): each year readout also carries settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration), settlementMismatchCents ({gains, pretax, acaCredit} — the kept round's residual mismatch per component in integer cents, all 0 when converged; a non-converged year was priced from the iteration's best iterated state), settlementRounds / settlementPasses (how many inner rounds / outer credit passes the kept settlement took) and settlementStopReason / settlementInnerStopReason (why each level stopped: converged, repeated-assumption, or iteration-limit), and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes) — read off the same priced march row as the other per-year readouts, and the Tax Plan year rows mark a non-converged year and a ceiling-breached year, so a $0 conversion in a breached year reads as no room rather than a fill failure. Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). THREADED FIELDS (re-audit SHOULD S-7): each scenario's effectiveInputs echo also carries the threaded pricing values that scenario priced with — yieldFallbackDividendPct / yieldFallbackInterestPct (the blank-yield fallback transients threaded for it, re-derived from its own pool per contract v140 or supplied by the caller) and qualifiedDividendSharePct, plus effectiveDividendYieldPct / effectiveInterestYieldPct / effectiveQualifiedDividendPct (the engine inputs' resolved yields) — and the base payload and scenario overrides alike accept the three transients as passable optional fields: a supplied value is used exactly as supplied and never overwritten by the record derivation (see the taxReturnSemantics convention). " + CEILINGS_REPLACEMENT_SENTENCE,
+  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (build v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), educationRefundableCents (the year's refundable American Opportunity Credit portion — money the household receives even past a $0 tax bill, netted into the net bill beside the ACA credit), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxOutByChoiceCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it — distinct from runRothFunding's pretaxDrawCents, which is the extra spending draw plus pre-tax amounts applied to the tax bill and excludes the conversion itself; build v127, round-19 finding 11). PRE-TAX DRAW SPLIT (audit S-10, surfaced under re-audit SHOULD S-8): each year readout also carries the split of the year's total priced pre-tax draw — pretaxSpendingDrawCents (the pre-tax draw for spending alone), pretaxTaxDebitCents (the pre-tax debits that paid the tax bill alone — NOT money out by choice, and excluded from pretaxOutByChoiceCents), and extraPreTaxDrawCents (their sum, the total the year's priced AGI carries) — read off the same priced detail the by-choice field reads its spending component from, so a consumer can see the two components separately instead of re-deriving them (see the pretaxDrawSplitSemantics convention describeApi publishes). PER-YEAR PENALTY (P-S11, parity audit): each year readout also carries penaltyCents — the year's pre-59½ withholding penalty, read off the same priced march row (the scenario result has always carried the penalty as a lifetime total in penaltyCents; the per-year readouts now sum to it) — $0 in every year that prices no penalty. A year's federalTaxCents EXCLUDES its penalty, while runRothFunding's federalTaxCents for the same year INCLUDES it (the penalty is paid as part of the federal withholding), so a per-year tax bill built from these readouts must add penaltyCents beside federalTaxCents to agree with the funding rows — the Tax Plan's first-draw-year mini-bill does exactly that and names the penalty on its own row. SETTLEMENT FLAGS (round-8 SHOULD-1): each year readout also carries settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration), settlementMismatchCents ({gains, pretax, roth, hsa, acaCredit} — the kept round's residual mismatch per component in integer cents, all 0 when converged; a non-converged year was priced from the iteration's best iterated state), settlementRounds / settlementPasses (how many inner rounds / outer credit passes the kept settlement took) and settlementStopReason / settlementInnerStopReason (why each level stopped: converged, repeated-assumption, or iteration-limit), and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes) — read off the same priced march row as the other per-year readouts, and the Tax Plan year rows mark a non-converged year and a ceiling-breached year, so a $0 conversion in a breached year reads as no room rather than a fill failure. Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). THREADED FIELDS (re-audit SHOULD S-7): each scenario's effectiveInputs echo also carries the threaded pricing values that scenario priced with — yieldFallbackDividendPct / yieldFallbackInterestPct (the blank-yield fallback transients threaded for it, re-derived from its own pool per contract v140 or supplied by the caller) and qualifiedDividendSharePct, plus effectiveDividendYieldPct / effectiveInterestYieldPct / effectiveQualifiedDividendPct (the engine inputs' resolved yields) — and the base payload and scenario overrides alike accept the three transients as passable optional fields: a supplied value is used exactly as supplied and never overwritten by the record derivation (see the taxReturnSemantics convention). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Each scenario also carries fullyFundedRatePct (the share of paths with neither an unfunded-spending year nor an unpaid-tax year), pathsWithUnpaidTax, and the total unpaid tax p50/p90 in cents; neverShortfallRatePct and pathsWithShortfall remain the SPENDING-shortfall-only measures — a path can fund every dollar of spending yet leave assessed tax unpaid, and only fullyFundedRatePct counts that as a failure. Every scenario's horizon is validated like the base plan's (its end age must be after the current age); a scenario that fails makes the whole call fail with a reason naming that scenario. Each path draws a fixed 160-year shock vector (MC_STREAM_STRIDE_YEARS) regardless of which scenarios are batched, so a scenario's statistics are identical whether it is priced alone or alongside longer- or shorter-horizon companions. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Each year's return is applied with the year's growth factor floored at zero (returns floored at −100%), which at volatility near the 100% maximum raises the applied distribution's effective mean and lowers its effective volatility (a requested 0% mean / 100% volatility applies as approximately +8.33% / 86.67%), while at ordinary volatilities the effect is negligible. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing. In each work year the plan's taxable interest and dividend yields are priced as mandatory income on the year's opening Taxable balance, and Social Security benefits whose start age has been reached are deposited and taxed during the work years — the pre-full-retirement-age earnings test is NOT modeled, so benefits are deposited in full. A work-year deficit funded from Taxable realizes capital gains on the sale, priced into that year's tax, and the taxable account's cost basis rolls forward in dollars into the plan priced at the quit age. An entering capital-loss carryforward prices in the work years through the same loss ledger the plan march uses: each work year's sale gains net against it, its §1211(b) allowance prices against the year's taxable income (reconciled once at year end), and the plan priced at the quit age enters with the consumed carryforward. The optional medicareAgePrimary request field (the primary's Medicare enrollment age; request-only, never saved) stops all HSA contributions — the employee's and the employer's — in work years at or after that age; the employer HSA figure is read as the employer's contribution only in years the primary is HSA-eligible. Engine Review 7: the optional hsaCoverage request field states the HDHP coverage the HSA limit prices from (self-only / family / none); without it the family limit is assumed for joint filers and the self-only limit otherwise, recorded as an assumption on each priced row. The optional hsaEligible request field states HSA eligibility explicitly (false = no contribution of either source); without it eligibility is assumed unless Medicare enrollment ends it, likewise recorded as an assumption. The optional priorYearWagesCents request field states the prior calendar year's §3121(a) wages (W-2 Box 3) from the plan sponsor for the §414(v)(7) Roth catch-up test in the first modeled work year; without it the first year's own Box-3 wages stand in as the proxy, recorded as an assumption on the first priced row. Partial-year HSA eligibility is not modeled: a year prices the full annual limit when eligible and $0 when not.",
@@ -7892,6 +7903,8 @@ export function shapeRothCompareResponse(
           maxMismatchGainsCents: s.integrity.maxMismatchGainsCents,
           maxMismatchPretaxCents: s.integrity.maxMismatchPretaxCents,
           maxMismatchAcaCreditCents: s.integrity.maxMismatchAcaCreditCents,
+          maxMismatchRothCents: s.integrity.maxMismatchRothCents,
+          maxMismatchHsaCents: s.integrity.maxMismatchHsaCents,
           ceilingBreachedYears: s.integrity.ceilingBreachedYears,
           ceilingBreachedAtZeroConversionYears:
             s.integrity.ceilingBreachedAtZeroConversionYears,
@@ -14833,7 +14846,7 @@ export const Actions = {
               // (settlementConverged); the kept round's
               // residual mismatch per component in integer
               // cents (settlementMismatchCents — gains,
-              // pre-tax, and the ACA credit residual; all 0
+              // pre-tax, Roth, HSA, and the ACA credit residual; all 0
               // when converged; a non-converged year was priced
               // from the iteration's best iterated state);
               // the rounds / passes the kept settlement took
@@ -14850,6 +14863,8 @@ export const Actions = {
               settlementMismatchCents: z.object({
                 gains: z.number(),
                 pretax: z.number(),
+                roth: z.number(),
+                hsa: z.number(),
                 acaCredit: z.number(),
               }),
               settlementRounds: z.number(),
