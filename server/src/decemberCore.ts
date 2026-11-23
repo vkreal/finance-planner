@@ -6130,13 +6130,13 @@ export function runDecemberFixtures(): {
     // recognized long-term gains plus a $100,000 capital-
     // gain distribution declared Dec 2026 and paid Jan
     // 2027. After the fix the WA gain base is $1,378,000:
-    // $1,378,000 − $278,000 standard deduction = $1,100,000
+    // $1,378,000 − $290,000 standard deduction = $1,088,000
     // of taxable Washington gains → 7% × $1,000,000 + 9.9%
-    // × $100,000 = $79,900.00. The before-fix figure named
-    // here as the corrected error is $70,000.00 (base
-    // $1,278,000 − $278,000 = $1,000,000 → 7% flat): the
+    // × $88,000 = $78,712.00. The before-fix figure named
+    // here as the corrected error is $69,160.00 (base
+    // $1,278,000 − $290,000 = $988,000 → 7% flat): the
     // $0-portion leg below prices exactly that, so the
-    // understatement corrected is $9,900.00.
+    // understatement corrected is $9,552.00.
     const waBase = (): DecemberState => ({
       ...defaultDecemberState(2026),
       agePrimary: 60,
@@ -6154,18 +6154,18 @@ export function runDecemberFixtures(): {
     exact(fail, "capital-gain portion leaves ordinary dividends", fixedInputs.ordinaryDividends, 0);
     const fixedPg = pricePlaygroundYear(fixedInputs);
     exact(fail, "WA gains after fix", fixedPg.waGains, 1378000);
-    exact(fail, "WA taxable gains after fix", fixedPg.waTaxableGains, 1100000);
-    exact(fail, "WA excise after fix", fixedPg.stateTax, 79900);
+    exact(fail, "WA taxable gains after fix", fixedPg.waTaxableGains, 1088000);
+    exact(fail, "WA excise after fix", fixedPg.stateTax, 78712);
     const before = waBase();
     const beforePg = pricePlaygroundYear(decemberCaseInputs(before, "likely", 0));
     exact(fail, "WA gains before fix ($0 portion)", beforePg.waGains, 1278000);
-    exact(fail, "WA taxable gains before fix ($0 portion)", beforePg.waTaxableGains, 1000000);
-    exact(fail, "WA excise before fix (the corrected error)", beforePg.stateTax, 70000);
+    exact(fail, "WA taxable gains before fix ($0 portion)", beforePg.waTaxableGains, 988000);
+    exact(fail, "WA excise before fix (the corrected error)", beforePg.stateTax, 69160);
     exact(
       fail,
       "understatement corrected",
       r2(fixedPg.stateTax - beforePg.stateTax),
-      9900,
+      9552,
     );
   });
 
@@ -6576,9 +6576,9 @@ export function runDecemberFixtures(): {
     // and a $100,000 entering long-term carryforward that
     // is NOT Washington-attributable. Federal nets to
     // $400,000 either way; Washington's base stays at the
-    // gross $500,000 — excise $15,540.00, settlement
-    // $91,095.00 (the console's old single-net-gain entry
-    // priced the excise at $8,540.00, $7,000.00 low).
+    // gross $500,000 — excise $14,700.00, settlement
+    // $90,255.00 (the console's old single-net-gain entry
+    // priced the excise at $7,700.00, $7,000.00 low).
     const s = base();
     s.ytdOtherOrdinary = 110000;
     s.ytdCapitalGain = 500000;
@@ -6590,9 +6590,9 @@ export function runDecemberFixtures(): {
     if (r.headlineDraw !== 0) fail(`headline should be 0 (over the cliff at $0), got ${r.headlineDraw}`);
     const likely = r.cases[1]!;
     exact(fail, "federal tax", likely.federalTaxAtHeadline, 75555);
-    exact(fail, "Washington excise (gross base)", likely.stateTaxAtHeadline, 15540);
-    exact(fail, "total tax", likely.totalTaxAtHeadline, 91095);
-    exact(fail, "settlement", likely.netSettleAtHeadline, 91095);
+    exact(fail, "Washington excise (gross base)", likely.stateTaxAtHeadline, 14700);
+    exact(fail, "total tax", likely.totalTaxAtHeadline, 90255);
+    exact(fail, "settlement", likely.netSettleAtHeadline, 90255);
     exact(fail, "carry-out (fully absorbed)", likely.lossCarryOutLtAtHeadline, 0);
     // The old entry the planned-sales hint instructed —
     // the gain entered NET ($400,000) with no carry-in —
@@ -6605,7 +6605,7 @@ export function runDecemberFixtures(): {
     oldWay.aptcTaken = 0;
     const oldLikely = computeDecemberProjection(oldWay).cases[1]!;
     exact(fail, "old-entry federal tax (unchanged)", oldLikely.federalTaxAtHeadline, 75555);
-    exact(fail, "old-entry Washington excise (the corrected error)", oldLikely.stateTaxAtHeadline, 8540);
+    exact(fail, "old-entry Washington excise (the corrected error)", oldLikely.stateTaxAtHeadline, 7700);
   });
 
   run("dec-carryforward-wa-attributable-base-down", (fail) => {
@@ -6613,7 +6613,7 @@ export function runDecemberFixtures(): {
     // the SAME $100,000 entering carryforward, but stated
     // fully Washington-attributable — now the Washington
     // base prices DOWN to the federal net $400,000 and the
-    // excise is $8,540.00, while the federal tax is
+    // excise is $7,700.00, while the federal tax is
     // unchanged (attribution moves only the WA base).
     const s = base();
     s.ytdOtherOrdinary = 110000;
@@ -6626,9 +6626,9 @@ export function runDecemberFixtures(): {
     exact(fail, "Washington gains base priced down", pg.waGains, 400000);
     exact(fail, "federal tax unchanged by attribution", pg.federalTax, 75555);
     const likely = computeDecemberProjection(s).cases[1]!;
-    exact(fail, "Washington excise (attributable base)", likely.stateTaxAtHeadline, 8540);
-    exact(fail, "total tax", likely.totalTaxAtHeadline, 84095);
-    exact(fail, "settlement", likely.netSettleAtHeadline, 84095);
+    exact(fail, "Washington excise (attributable base)", likely.stateTaxAtHeadline, 7700);
+    exact(fail, "total tax", likely.totalTaxAtHeadline, 83255);
+    exact(fail, "settlement", likely.netSettleAtHeadline, 83255);
   });
 
   run("dec-carryforward-zero-taxable-utilization", (fail) => {

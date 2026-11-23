@@ -485,27 +485,21 @@ export const TAX_LAW_2026: YearLaw = {
   rothCatchUpWageThreshold: 15000000,
   giftAnnualExclusionCents: 1900000,
   kiddieTaxThresholdCents: 270000,
-  // WA excise (T3): DOR had published no 2026 adjusted
-  // amounts when this build was sourced, so — per the field
-  // note on YearLaw — the 2025 amounts carry forward
-  // unchanged (today's-dollars convention); the rate
-  // structure and the unindexed $1,000,000 threshold are
-  // statutory and identical in both rows. Re-checked for
-  // Engine Review 3 (November 2026): DOR's own capital-gains
-  // pages, as crawled November 2, 2026, still publish only
-  // the 2025 amounts ($278,000 / $111,000); one secondary
-  // source claims a November 12, 2026 DOR check publishing
-  // 2026 amounts of $290,000 (standard deduction and
-  // charitable threshold) and $116,000 (charitable cap),
-  // but that claim is NOT validated against a DOR source,
-  // so the 2026 row keeps the 2025 amounts and the claim
-  // stands as an open verification item, not a correction.
-  waStandardDeduction: 278000,
+  // WA excise (T3): the 2026 amounts are DOR's published
+  // Updated Amounts ($290,000 standard deduction and
+  // charitable threshold, $116,000 charitable cap), verified
+  // against DOR's own capital-gains page ("Do you owe capital
+  // gains tax?", Updated Amounts table, 2026 column) as
+  // crawled November 15, 2026 for Engine Review core
+  // Build 3 (M-4). The rate structure and the unindexed
+  // $1,000,000 threshold are statutory and identical in
+  // both rows.
+  waStandardDeduction: 290000,
   waRatePct: 7,
   waAdditionalRatePct: 2.9,
   waAdditionalThreshold: 1000000,
-  waCharitableThreshold: 278000,
-  waCharitableCap: 111000,
+  waCharitableThreshold: 290000,
+  waCharitableCap: 116000,
   // SALT cap (T5): the 2026 row carries the statute's own
   // 1% escalation of the 2025 figures — a $40,400 cap and a
   // $505,000 phase-down start; the $10,000 floor and the

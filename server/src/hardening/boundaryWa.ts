@@ -2,11 +2,11 @@
    Part 2 of the hardening block (boundary-case fixture pack).
    The Washington capital-gains excise (RCW 82.87) as priced
    by waCapitalGainsTax (taxEngine.ts) and wired into a priced
-   year by priceYear: the statute's $278,000 standard deduction
+   year by priceYear: the statute's $290,000 standard deduction
    prices the first dollar above it at 7%, the $1,000,000
    surtax threshold prices the dollar above it at a combined
    9.9%, and the charitable deduction starts only above
-   $278,000 of donations and caps at $111,000. The surtax
+   $290,000 of donations and caps at $116,000. The surtax
    threshold is the only statute-fixed amount that deflates:
    in a year priced under an older law row it is the nominal
    $1,000,000 times that year's deflationFactor; the standard
@@ -14,9 +14,9 @@
    gain owes $0 and carries nothing forward.
 
    Every pin is hand-derived from the statute and the law row
-   (TAX_LAW_2026: standard deduction $278,000, rate 7%,
+   (TAX_LAW_2026: standard deduction $290,000, rate 7%,
    additional 2.9% over $1,000,000, charitable threshold
-   $278,000, cap $111,000) and was probe-verified against the
+   $290,000, cap $116,000) and was probe-verified against the
    engine before this module was written. A pin that fails
    against the engine is a finding, never a reason to loosen
    the pin. */
@@ -50,28 +50,28 @@ type WaPin = {
 
 const WA_PINS: WaPin[] = [
   // Standard-deduction boundary.
-  { id: "wa-std-at", ltcg: 278000, donations: 0, waGains: 278000, charitableDeduction: 0, taxableGains: 0, tax: 0 },
-  { id: "wa-std-plus1c", ltcg: 278001, donations: 0, waGains: 278001, charitableDeduction: 0, taxableGains: 1, tax: 0.07 },
+  { id: "wa-std-at", ltcg: 290000, donations: 0, waGains: 290000, charitableDeduction: 0, taxableGains: 0, tax: 0 },
+  { id: "wa-std-plus1c", ltcg: 290001, donations: 0, waGains: 290001, charitableDeduction: 0, taxableGains: 1, tax: 0.07 },
   // Surtax-threshold boundary (taxable $1,000,000).
-  { id: "wa-surtax-at", ltcg: 1278000, donations: 0, waGains: 1278000, charitableDeduction: 0, taxableGains: 1000000, tax: 70000 },
-  { id: "wa-surtax-plus1c", ltcg: 1278001, donations: 0, waGains: 1278001, charitableDeduction: 0, taxableGains: 1000001, tax: 70000.1 },
+  { id: "wa-surtax-at", ltcg: 1290000, donations: 0, waGains: 1290000, charitableDeduction: 0, taxableGains: 1000000, tax: 70000 },
+  { id: "wa-surtax-plus1c", ltcg: 1290001, donations: 0, waGains: 1290001, charitableDeduction: 0, taxableGains: 1000001, tax: 70000.1 },
   // Charitable deduction: threshold, first dollar, cap, mid.
-  { id: "wa-char-at", ltcg: 500000, donations: 278000, waGains: 500000, charitableDeduction: 0, taxableGains: 222000, tax: 15540 },
-  { id: "wa-char-plus1c", ltcg: 500000, donations: 278001, waGains: 500000, charitableDeduction: 1, taxableGains: 221999, tax: 15539.93 },
-  { id: "wa-char-cap", ltcg: 500000, donations: 389000, waGains: 500000, charitableDeduction: 111000, taxableGains: 111000, tax: 7770 },
-  { id: "wa-char-mid", ltcg: 500000, donations: 300000, waGains: 500000, charitableDeduction: 22000, taxableGains: 200000, tax: 0.07 * 200000 },
+  { id: "wa-char-at", ltcg: 500000, donations: 290000, waGains: 500000, charitableDeduction: 0, taxableGains: 210000, tax: 14700 },
+  { id: "wa-char-plus1c", ltcg: 500000, donations: 290001, waGains: 500000, charitableDeduction: 1, taxableGains: 209999, tax: 14699.93 },
+  { id: "wa-char-cap", ltcg: 500000, donations: 406000, waGains: 500000, charitableDeduction: 116000, taxableGains: 94000, tax: 6580 },
+  { id: "wa-char-mid", ltcg: 500000, donations: 300000, waGains: 500000, charitableDeduction: 10000, taxableGains: 200000, tax: 0.07 * 200000 },
   // A negative gain owes $0 (no carryforward out of the pricer).
   { id: "wa-negative", ltcg: -5000, donations: 0, waGains: 0, charitableDeduction: 0, taxableGains: 0, tax: 0 },
   // Deflated surtax threshold, pinned through the factor the
   // function itself takes: at a factor of 1/2 the threshold is
   // $500,000, so the step sits at taxable $500,000.
-  { id: "wa-defl-half-at", ltcg: 778000, donations: 0, defl: 0.5, waGains: 778000, charitableDeduction: 0, taxableGains: 500000, tax: 35000 },
-  { id: "wa-defl-half-plus1c", ltcg: 778001, donations: 0, defl: 0.5, waGains: 778001, charitableDeduction: 0, taxableGains: 500001, tax: 35000.1 },
+  { id: "wa-defl-half-at", ltcg: 790000, donations: 0, defl: 0.5, waGains: 790000, charitableDeduction: 0, taxableGains: 500000, tax: 35000 },
+  { id: "wa-defl-half-plus1c", ltcg: 790001, donations: 0, defl: 0.5, waGains: 790001, charitableDeduction: 0, taxableGains: 500001, tax: 35000.1 },
   // Deflated threshold under the real 2028 factor
-  // (1 / 1.025^2): taxable $975,000 sits above the deflated
+  // (1 / 1.025^2): taxable $963,000 sits above the deflated
   // threshold ($951,814.40) and below the nominal $1,000,000,
   // so the tax is 7% to the deflated threshold and 9.9% past
-  // it — $68,922.38, not the undeflated $68,250.00.
+  // it — $67,734.38, not the undeflated $67,410.00.
   {
     id: "wa-defl-2028",
     ltcg: 1253000,
@@ -79,8 +79,8 @@ const WA_PINS: WaPin[] = [
     defl: deflationFactor(2028, 2026, 2.5),
     waGains: 1253000,
     charitableDeduction: 0,
-    taxableGains: 975000,
-    tax: 68922.38,
+    taxableGains: 963000,
+    tax: 67734.38,
   },
 ];
 
@@ -124,8 +124,8 @@ function waBaseInput(
 const WA_PRICE_PINS: WaPricePin[] = [
   {
     id: "wa-py-std-plus1c",
-    input: waBaseInput(2026, { residenceState: "WA", ltcg: 278001 }),
-    waGains: 278001,
+    input: waBaseInput(2026, { residenceState: "WA", ltcg: 290001 }),
+    waGains: 290001,
     waTaxableGains: 1,
     stateTax: 0.07,
   },
@@ -153,13 +153,13 @@ const WA_PRICE_PINS: WaPricePin[] = [
   {
     // The deflated surtax threshold inside a priced year:
     // 2028 carries the 2026 row forward at 2.5% inflation,
-    // so taxable $975,000 prices 7% to $951,814.40 and 9.9%
+    // so taxable $963,000 prices 7% to $951,814.40 and 9.9%
     // past it.
     id: "wa-py-2028-deflated",
     input: waBaseInput(2028, { residenceState: "WA", ltcg: 1253000 }),
     waGains: 1253000,
-    waTaxableGains: 975000,
-    stateTax: 68922.38,
+    waTaxableGains: 963000,
+    stateTax: 67734.38,
   },
 ];
 
@@ -255,12 +255,12 @@ function runWaFullSweep(): { failures: string[]; checked: number } {
   const failures: string[] = [];
   let checked = 0;
   const gainsGrid = [
-    0, 277999.99, 278000, 278000.01, 278001, 278100, 389000, 500000,
-    1277999.99, 1278000, 1278000.01, 1278001, 1300000, 2000000,
+    0, 289999.99, 290000, 290000.01, 290001, 290100, 406000, 500000,
+    1289999.99, 1290000, 1290000.01, 1290001, 1300000, 2000000,
   ];
   const donationsGrid = [
-    0, 277999.99, 278000, 278000.01, 300000, 388999.99, 389000,
-    389000.01, 500000,
+    0, 289999.99, 290000, 290000.01, 300000, 405999.99, 406000,
+    406000.01, 500000,
   ];
   const deflGrid = [1, 0.5, 0.95, deflationFactor(2028, 2026, 2.5)];
   for (const defl of deflGrid) {
@@ -307,8 +307,10 @@ function runWaFullSweep(): { failures: string[]; checked: number } {
     }
   }
   // Priced-year sweep: WA and non-WA across 2025, 2026, 2028.
+  // The 278,000/278,001 points straddle the 2025 boundary; the
+  // 290,000/290,001 points straddle the 2026 and 2028 boundary.
   for (const year of [2025, 2026, 2028]) {
-    for (const ltcg of [0, 278000, 278001, 500000, 1253000]) {
+    for (const ltcg of [0, 278000, 278001, 290000, 290001, 500000, 1253000]) {
       for (const residenceState of ["WA", "other"] as const) {
         const got = priceYear(
           waBaseInput(year, { residenceState, ltcg }),

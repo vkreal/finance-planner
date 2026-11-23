@@ -11561,7 +11561,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-paste-carries-residence-and-students",
     kind: "tax",
-    note: "Cold-AI audit fix — the Playground paste payload carries residenceState and educationStudents, so replaying a paste no longer silently reprices the year. Shape: 2026 MFJ, ages 60/49, other ordinary −$140,000 (a signed loss, as the dial allows), a $290,000 stock sale at $0 basis (a $290,000 gain; AGI $150,000, under the §25A phase-out start), residence WA, and one AOTC-eligible student with $10,000 of expenses. Washington prices the excise instead of the flat 0% rate: taxable WA gains $290,000 − $278,000 standard deduction = $12,000 at 7% = $840 of state tax; the student prices the full AOTC $2,500 ($1,500 nonrefundable, $1,000 refundable). The canonical payload round-trips with both fields intact and reprices bit-identically to the direct call. A paste written BEFORE the fix (the same payload with the two keys stripped) still loads — with residence null and no students, pricing $0 of state tax and $0 of refundable credit, exactly as it priced before — and a paste with an unknown residence or a malformed student entry is refused whole.",
+    note: "Cold-AI audit fix — the Playground paste payload carries residenceState and educationStudents, so replaying a paste no longer silently reprices the year. Shape: 2026 MFJ, ages 60/49, other ordinary −$152,000 (a signed loss, as the dial allows), a $302,000 stock sale at $0 basis (a $302,000 gain; AGI $150,000, under the §25A phase-out start), residence WA, and one AOTC-eligible student with $10,000 of expenses. Washington prices the excise instead of the flat 0% rate: taxable WA gains $302,000 − $290,000 standard deduction = $12,000 at 7% = $840 of state tax; the student prices the full AOTC $2,500 ($1,500 nonrefundable, $1,000 refundable). The canonical payload round-trips with both fields intact and reprices bit-identically to the direct call. A paste written BEFORE the fix (the same payload with the two keys stripped) still loads — with residence null and no students, pricing $0 of state tax and $0 of refundable credit, exactly as it priced before — and a paste with an unknown residence or a malformed student entry is refused whole.",
     expected: {
       carriedResidence: "WA",
       carriedStudents: 1,
@@ -11586,12 +11586,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         onMedicareSpouse: false,
         interest: 0,
         ordinaryDividends: 0,
-        otherOrdinary: -140000,
+        otherOrdinary: -152000,
         taxExemptInterest: 0,
         ssPrimary: 0,
         ssSpouse: 0,
         conversion: 0,
-        stockSold: 290000,
+        stockSold: 302000,
         stockBasis: 0,
         qualifiedDividends: 0,
         pretaxBalance: null,
@@ -19098,15 +19098,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-law-rows",
     kind: "tax",
-    note: "T3 (a) — WA LAW ROWS (RCW 82.87; WA DOR capital-gains page + June 30, 2025 special notice): both published tables carry the excise parameters as dated law-row data — base rate 7% (RCW 82.87.040(1)(a)), additional rate 2.9% over a $1,000,000 threshold (RCW 82.87.040(1)(b); the threshold is not among RCW 82.87.150's adjusted amounts, so it is a fixed $1,000,000), charitable threshold and cap per RCW 82.87.080. The 2025 standard deduction / charitable threshold $278,000 and cap $111,000 are DOR's published 2025 amounts; the 2026 row carries the same amounts forward because DOR had published no 2026 amounts when the table was sourced (the build's disclosed carry-forward, not a published 2026 figure).",
+    note: "T3 (a) — WA LAW ROWS (RCW 82.87; WA DOR capital-gains page + June 30, 2025 special notice): both published tables carry the excise parameters as dated law-row data — base rate 7% (RCW 82.87.040(1)(a)), additional rate 2.9% over a $1,000,000 threshold (RCW 82.87.040(1)(b); the threshold is not among RCW 82.87.150's adjusted amounts, so it is a fixed $1,000,000), charitable threshold and cap per RCW 82.87.080. The 2025 standard deduction / charitable threshold $278,000 and cap $111,000 are DOR's published 2025 amounts; the 2026 standard deduction / charitable threshold $290,000 and cap $116,000 are DOR's published 2026 amounts (Updated Amounts table, capital-gains page).",
     expected: {
       ded2025: 278000,
-      ded2026: 278000,
+      ded2026: 290000,
       rate2026: 7,
       addlRate2026: 2.9,
       threshold2026: 1000000,
-      charThreshold2026: 278000,
-      charCap2026: 111000,
+      charThreshold2026: 290000,
+      charCap2026: 116000,
       charCap2025: 111000,
     },
     actual: () => {
@@ -19127,11 +19127,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-below-deduction",
     kind: "tax",
-    note: "T3 (b) — WA YEAR UNDER THE STANDARD DEDUCTION PRICES $0 (RCW 82.87.040 / 82.87.060(1)): 2026, MFJ, $100,000 of long-term gains and a 5% flat state rate ALSO entered — Washington residence replaces the flat rate, and $100,000 of gains sits under the $278,000 standard deduction, so the state tax is $0 (the flat rate would have taken 5% of taxable income). Federally the $100,000 of gains sits under the $98,900 0% top plus the $32,200 standard deduction, so federal tax is $0 too.",
+    note: "T3 (b) — WA YEAR UNDER THE STANDARD DEDUCTION PRICES $0 (RCW 82.87.040 / 82.87.060(1)): 2026, MFJ, $100,000 of long-term gains and a 5% flat state rate ALSO entered — Washington residence replaces the flat rate, and $100,000 of gains sits under the $290,000 standard deduction, so the state tax is $0 (the flat rate would have taken 5% of taxable income). Federally the $100,000 of gains sits under the $98,900 0% top plus the $32,200 standard deduction, so federal tax is $0 too.",
     expected: {
       stateTax: 0,
       waGains: 100000,
-      waStandardDeduction: 278000,
+      waStandardDeduction: 290000,
       waTaxableGains: 0,
       federalTax: 0,
     },
@@ -19151,11 +19151,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-above-deduction",
     kind: "tax",
-    note: "T3 (c) — WA YEAR ABOVE THE STANDARD DEDUCTION (RCW 82.87.040(1)(a)): 2026, MFJ, $378,000 of long-term gains. Taxable Washington capital gains = $378,000 − $278,000 = $100,000, all in the first tier, so the excise is 7% × $100,000 = $7,000 — even with a 5% flat rate also entered (replaced, never stacked). Federal check, hand-derived: taxable income $378,000 − $32,200 = $345,800; gains at 0% $98,900, at 15% $246,900 → $37,035; NIIT 3.8% × min(gains, $378,000 − $250,000) = 3.8% × $128,000 = $4,864; federal total $41,899.",
+    note: "T3 (c) — WA YEAR ABOVE THE STANDARD DEDUCTION (RCW 82.87.040(1)(a)): 2026, MFJ, $378,000 of long-term gains. Taxable Washington capital gains = $378,000 − $290,000 = $88,000, all in the first tier, so the excise is 7% × $88,000 = $6,160 — even with a 5% flat rate also entered (replaced, never stacked). Federal check, hand-derived: taxable income $378,000 − $32,200 = $345,800; gains at 0% $98,900, at 15% $246,900 → $37,035; NIIT 3.8% × min(gains, $378,000 − $250,000) = 3.8% × $128,000 = $4,864; federal total $41,899.",
     expected: {
-      stateTax: 7000,
+      stateTax: 6160,
       waGains: 378000,
-      waTaxableGains: 100000,
+      waTaxableGains: 88000,
       federalTax: 41899,
     },
     actual: () => {
@@ -19173,7 +19173,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-boundary",
     kind: "tax",
-    note: "T3 (d) — WA BOUNDARIES (RCW 82.87.040 / 82.87.060(1)): gains exactly AT the $278,000 standard deduction price $0 of excise with $0 of taxable gains; $1 over prices 7% × $1 = $0.07. Taxable gains exactly AT the $1,000,000 tier threshold (gains $1,278,000) price 7% × $1,000,000 = $70,000 with nothing in the 9.9% tier; $1 over (gains $1,278,001) adds 9.9% × $1 = $0.099 → $70,000.10; gains of $2,278,000 price 7% × $1,000,000 + 9.9% × $1,000,000 = $70,000 + $99,000 = $169,000.",
+    note: "T3 (d) — WA BOUNDARIES (RCW 82.87.040 / 82.87.060(1)): gains exactly AT the $290,000 standard deduction price $0 of excise with $0 of taxable gains; $1 over prices 7% × $1 = $0.07. Taxable gains exactly AT the $1,000,000 tier threshold (gains $1,290,000) price 7% × $1,000,000 = $70,000 with nothing in the 9.9% tier; $1 over (gains $1,290,001) adds 9.9% × $1 = $0.099 → $70,000.10; gains of $2,290,000 price 7% × $1,000,000 + 9.9% × $1,000,000 = $70,000 + $99,000 = $169,000.",
     expected: {
       atDeductionTax: 0,
       atDeductionTaxable: 0,
@@ -19186,11 +19186,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
     actual: () => {
       const law = lawForYear(2026);
-      const at = waCapitalGainsTax({ ltcg: 278000, law });
-      const over = waCapitalGainsTax({ ltcg: 278001, law });
-      const tier = waCapitalGainsTax({ ltcg: 1278000, law });
-      const tierOver = waCapitalGainsTax({ ltcg: 1278001, law });
-      const twoM = waCapitalGainsTax({ ltcg: 2278000, law });
+      const at = waCapitalGainsTax({ ltcg: 290000, law });
+      const over = waCapitalGainsTax({ ltcg: 290001, law });
+      const tier = waCapitalGainsTax({ ltcg: 1290000, law });
+      const tierOver = waCapitalGainsTax({ ltcg: 1290001, law });
+      const twoM = waCapitalGainsTax({ ltcg: 2290000, law });
       return {
         atDeductionTax: at.tax,
         atDeductionTaxable: at.taxableGains,
@@ -19206,12 +19206,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-flat-fallback",
     kind: "tax",
-    note: "T3 (e) — FLAT-RATE FALLBACK BIT-IDENTICAL: the t3-wa-above-deduction shape ($378,000 of gains, 5% flat rate entered) priced with residence 'other' and with NO residence at all both price the pre-T3 flat math — 5% × $345,800 of federal taxable income = $17,290 — and carry $0 of WA breakdown, while the same shape as a Washington year prices the $7,000 excise. The fallback never sees the excise and the excise never sees the flat rate.",
+    note: "T3 (e) — FLAT-RATE FALLBACK BIT-IDENTICAL: the t3-wa-above-deduction shape ($378,000 of gains, 5% flat rate entered) priced with residence 'other' and with NO residence at all both price the pre-T3 flat math — 5% × $345,800 of federal taxable income = $17,290 — and carry $0 of WA breakdown, while the same shape as a Washington year prices the $6,160 excise. The fallback never sees the excise and the excise never sees the flat rate.",
     expected: {
       otherStateTax: 17290,
       absentStateTax: 17290,
       otherWaTaxable: 0,
-      waStateTax: 7000,
+      waStateTax: 6160,
     },
     actual: () => {
       const shape = { ltcg: 378000, stateRatePct: 5 };
@@ -19229,10 +19229,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-base-purity",
     kind: "tax",
-    note: "T3 (f) — THE EXCISE BASE IS LONG-TERM GAINS ONLY (RCW 82.87.020(1)/(16), 82.87.050(3)): a Washington year with $500,000 of other ordinary income (the stand-in for wages / pension / retirement-account draws), $80,000 of Social Security, and $200,000 of qualified dividends prices $0 of excise while its realized gains are $100,000 — none of the other income is in the base, and qualified dividends are not capital gains. The control with gains of $400,000 prices 7% × ($400,000 − $278,000) = 7% × $122,000 = $8,540 — the $200,000 of qualified dividends adds nothing (had it entered the base, the tax would be 7% × $322,000 = $22,540).",
+    note: "T3 (f) — THE EXCISE BASE IS LONG-TERM GAINS ONLY (RCW 82.87.020(1)/(16), 82.87.050(3)): a Washington year with $500,000 of other ordinary income (the stand-in for wages / pension / retirement-account draws), $80,000 of Social Security, and $200,000 of qualified dividends prices $0 of excise while its realized gains are $100,000 — none of the other income is in the base, and qualified dividends are not capital gains. The control with gains of $400,000 prices 7% × ($400,000 − $290,000) = 7% × $110,000 = $7,700 — the $200,000 of qualified dividends adds nothing (had it entered the base, the tax would be 7% × $310,000 = $21,700).",
     expected: {
       smallGainsStateTax: 0,
-      bigGainsStateTax: 8540,
+      bigGainsStateTax: 7700,
       bigGainsWaBase: 400000,
     },
     actual: () => {
@@ -19254,16 +19254,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-charitable-and-loss",
     kind: "tax",
-    note: "T3 (g) — CHARITABLE DEDUCTION AND LOSS YEARS (RCW 82.87.080; RCW 82.87.040(3)): on $1,000,000 of gains under the 2026 row (threshold $278,000, cap $111,000): donations of $400,000 deduct min($111,000, $400,000 − $278,000) = $111,000 → taxable gains $611,000 → tax $42,770; donations of $300,000 deduct $22,000 → taxable $700,000 → tax $49,000; donations of $200,000 (under the threshold) deduct $0 → taxable $722,000 → tax $50,540. The same $400,000-donation year priced through priceYear carries the deduction on its breakdown and the same $42,770. A net-loss year (gains −$50,000) enters a $0 base, owes $0, and carries nothing forward.",
+    note: "T3 (g) — CHARITABLE DEDUCTION AND LOSS YEARS (RCW 82.87.080; RCW 82.87.040(3)): on $1,000,000 of gains under the 2026 row (threshold $290,000, cap $116,000): donations of $400,000 deduct min($116,000, $400,000 − $290,000) = $110,000 → taxable gains $600,000 → tax $42,000; donations of $300,000 deduct $10,000 → taxable $700,000 → tax $49,000; donations of $200,000 (under the threshold) deduct $0 → taxable $710,000 → tax $49,700. The same $400,000-donation year priced through priceYear carries the deduction on its breakdown and the same $42,000. A net-loss year (gains −$50,000) enters a $0 base, owes $0, and carries nothing forward.",
     expected: {
-      cappedDeduction: 111000,
-      cappedTax: 42770,
-      partialDeduction: 22000,
+      cappedDeduction: 110000,
+      cappedTax: 42000,
+      partialDeduction: 10000,
       partialTax: 49000,
       underThresholdDeduction: 0,
-      underThresholdTax: 50540,
-      pricedStateTax: 42770,
-      pricedCharitable: 111000,
+      underThresholdTax: 49700,
+      pricedStateTax: 42000,
+      pricedCharitable: 110000,
       lossStateTax: 0,
       lossWaGains: 0,
     },
@@ -19316,13 +19316,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v61-wa-surtax-threshold-deflates",
     kind: "tax",
-    note: "Build v61, F1 — THE WA SURTAX THRESHOLD DEFLATES (tax-law data audit acceptance case, hand-derived; RCW 82.87.040(1)(b), RCW 82.87.150): the $1,000,000 surtax threshold is statute-fixed — it is NOT among the amounts RCW 82.87.150 adjusts annually — so a year priced off a carried law row deflates it by deflationFactor, while the DOR-indexed standard deduction ($278,000) and charitable threshold / cap stay at their nominal row values. Case: gains priced as calendar 2027 off the 2026 law row at 3% inflation — $1,278,000 of WA long-term gains − $278,000 standard deduction = $1,000,000 of taxable gains; the deflated threshold is $1,000,000 / 1.03 = $970,873.79, so the tax is 7% × $970,873.79 + 9.9% × $29,126.21 = $67,961.17 + $2,883.50 = $70,844.66 (the pre-fix engine priced the nominal threshold: 7% × $1,000,000 = $70,000, an $844.66 understatement). Pinned three ways: a direct waCapitalGainsTax call with the explicit factor, the same year priced through priceYear, and the no-factor control at exactly $70,000 — the direct fixture calls of t3-wa-boundary keep pinning current-year behavior bit-identically, because a year with its own row has factor 1.0.",
+    note: "Build v61, F1 — THE WA SURTAX THRESHOLD DEFLATES (tax-law data audit acceptance case, hand-derived; RCW 82.87.040(1)(b), RCW 82.87.150): the $1,000,000 surtax threshold is statute-fixed — it is NOT among the amounts RCW 82.87.150 adjusts annually — so a year priced off a carried law row deflates it by deflationFactor, while the DOR-indexed standard deduction ($290,000) and charitable threshold / cap stay at their nominal row values. Case: gains priced as calendar 2027 off the 2026 law row at 3% inflation — $1,278,000 of WA long-term gains − $290,000 standard deduction = $988,000 of taxable gains; the deflated threshold is $1,000,000 / 1.03 = $970,873.79, so the tax is 7% × $970,873.79 + 9.9% × $17,126.21 = $67,961.17 + $1,695.50 = $69,656.66 (the pre-fix engine priced the nominal threshold: 7% × $988,000 = $69,160, a $496.66 understatement). Pinned three ways: a direct waCapitalGainsTax call with the explicit factor, the same year priced through priceYear, and the no-factor control at exactly $69,160 — the direct fixture calls of t3-wa-boundary keep pinning current-year behavior bit-identically, because a year with its own row has factor 1.0.",
     expected: {
-      directTax: 70844.66,
-      directTaxable: 1000000,
-      pricedStateTax: 70844.66,
-      pricedWaTaxable: 1000000,
-      controlTax: 70000,
+      directTax: 69656.66,
+      directTaxable: 988000,
+      pricedStateTax: 69656.66,
+      pricedWaTaxable: 988000,
+      controlTax: 69160,
     },
     actual: () => {
       const law = lawForYear(2026);
@@ -19352,7 +19352,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-plan-anchor-shape",
     kind: "tax",
-    note: "T3 (h) — PLAN-LEVEL ANCHOR SHAPE: a Washington plan that lives on taxable-account draws (no pre-tax, $2,000,000 taxable at 50% basis, $200,000/yr of spending, ages 57–60, 0% return) realizes roughly $100–130K of gains a year — every year under the $278,000 standard deduction — so its lifetime state tax is $0 even with a 5% flat rate also entered, and the plan prices bit-identically to the same plan with no residence and a 0% flat rate (same ending taxable balance, same federal tax). The $0 is the deduction working on real realized gains (the largest year's WA base is over $0), not an empty base.",
+    note: "T3 (h) — PLAN-LEVEL ANCHOR SHAPE: a Washington plan that lives on taxable-account draws (no pre-tax, $2,000,000 taxable at 50% basis, $200,000/yr of spending, ages 57–60, 0% return) realizes roughly $100–130K of gains a year — every year under the $290,000 standard deduction — so its lifetime state tax is $0 even with a 5% flat rate also entered, and the plan prices bit-identically to the same plan with no residence and a 0% flat rate (same ending taxable balance, same federal tax). The $0 is the deduction working on real realized gains (the largest year's WA base is over $0), not an empty base.",
     expected: {
       totalStateTax: 0,
       yearsPriced: 4,
@@ -19381,7 +19381,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           Math.round(wa.years.reduce((s, y) => s + y.stateTax, 0) * 100) / 100,
         yearsPriced: wa.years.length,
         maxWaGainsOverZero: maxWaGains > 0 ? 1 : 0,
-        maxWaGainsUnderDeduction: maxWaGains < 278000 ? 1 : 0,
+        maxWaGainsUnderDeduction: maxWaGains < 290000 ? 1 : 0,
         endingMatchesControl:
           wa.endingTaxable === control.endingTaxable ? 1 : 0,
         federalMatchesControl:
@@ -19398,11 +19398,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t3-wa-playground-path",
     kind: "tax",
-    note: "T3 (i) — PLAYGROUND PATH: a Playground year (2026, MFJ, ages 60/49) whose stock sale realizes the t3-wa-above-deduction gain ($478,000 sold, $100,000 basis → $378,000 gain) prices the same $7,000 excise with the same breakdown through pricePlaygroundYear, and the API argument mapping carries residenceState through (absent → null → the flat rate, so pre-build payloads price exactly as before).",
+    note: "T3 (i) — PLAYGROUND PATH: a Playground year (2026, MFJ, ages 60/49) whose stock sale realizes the t3-wa-above-deduction gain ($478,000 sold, $100,000 basis → $378,000 gain) prices the same $6,160 excise with the same breakdown through pricePlaygroundYear, and the API argument mapping carries residenceState through (absent → null → the flat rate, so pre-build payloads price exactly as before).",
     expected: {
-      stateTax: 7000,
+      stateTax: 6160,
       waGains: 378000,
-      waTaxableGains: 100000,
+      waTaxableGains: 88000,
       argsResidence: "WA",
       argsAbsentResidence: "flat",
     },
@@ -19789,12 +19789,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t4-wa-excise-takes-no-carryforward",
     kind: "tax",
-    note: "T4 (f) — WASHINGTON EXCISE ON GROSS GAINS WHEN NO WASHINGTON-ALLOCATED PORTION IS ENTERED (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it; the figures are UNCHANGED by build v101, which corrected the rule's statement and scope: this case enters no Washington-attributable portion of its banked loss, so under RCW 82.87.020(1)(c)–(e) the whole carryforward is added back and the base stays at the gross gains — the v101 fixtures pin the entered-attribution cases): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
+    note: "T4 (f) — WASHINGTON EXCISE ON GROSS GAINS WHEN NO WASHINGTON-ALLOCATED PORTION IS ENTERED (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it; the figures are UNCHANGED by build v101, which corrected the rule's statement and scope: this case enters no Washington-attributable portion of its banked loss, so under RCW 82.87.020(1)(c)–(e) the whole carryforward is added back and the base stays at the gross gains — the v101 fixtures pin the entered-attribution cases): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $290,000 standard deduction = $210,000 of taxable Washington gains at 7% = $14,700 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $14,700 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
     expected: {
       federalTax: 0,
-      stateTax: 15540,
+      stateTax: 14700,
       waGains: 500000,
-      waTaxableGains: 222000,
+      waTaxableGains: 210000,
       grossGains: 500000,
       gainsPriced: 0,
       absorbed: 500000,
@@ -20380,15 +20380,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-charitable-flows-into-wa-base",
     kind: "tax",
-    note: "T5 (g) — THE ONE CHARITABLE INPUT FLOWS INTO THE WASHINGTON BASE (hand-derived; RCW 82.87.080; RE-DERIVED for Build A's deduction trio — the pre-trio pin of $400,000 / $103,665 priced the federal side with no floor and no §68; the Washington figures are unchanged because the excise prices from the RAW input): a Washington year with $1,000,000 of long-term gains and the charitable component entered at $400,000 prices the SAME entered figure into both systems, each under its own rules: federally the §170(b)(1)(I) floor (0.5% × $1,000,000 AGI = $5,000) leaves $395,000 of charitable, and §68 then reduces the $395,000 itemized total by 2/37 × min($395,000, $1,000,000 − $768,700 = $231,300) = $12,502.70, leaving $382,497.30 (which beats the $32,200 standard deduction); taxable income $617,502.70, all gains — $98,900 at 0%, $514,800 at 15%, $3,802.70 at 20% = $77,980.54 of gains tax; NIIT 3.8% × $750,000 = $28,500; federal tax $106,480.54. In the Washington base the SAME raw $400,000 deducts min($111,000, $400,000 − $278,000) = $111,000, leaving $611,000 of taxable Washington gains at 7% = $42,770 of state tax. No second charitable figure exists anywhere in the pricing.",
+    note: "T5 (g) — THE ONE CHARITABLE INPUT FLOWS INTO THE WASHINGTON BASE (hand-derived; RCW 82.87.080; RE-DERIVED for Build A's deduction trio — the pre-trio pin of $400,000 / $103,665 priced the federal side with no floor and no §68; the Washington figures are unchanged because the excise prices from the RAW input): a Washington year with $1,000,000 of long-term gains and the charitable component entered at $400,000 prices the SAME entered figure into both systems, each under its own rules: federally the §170(b)(1)(I) floor (0.5% × $1,000,000 AGI = $5,000) leaves $395,000 of charitable, and §68 then reduces the $395,000 itemized total by 2/37 × min($395,000, $1,000,000 − $768,700 = $231,300) = $12,502.70, leaving $382,497.30 (which beats the $32,200 standard deduction); taxable income $617,502.70, all gains — $98,900 at 0%, $514,800 at 15%, $3,802.70 at 20% = $77,980.54 of gains tax; NIIT 3.8% × $750,000 = $28,500; federal tax $106,480.54. In the Washington base the SAME raw $400,000 deducts min($116,000, $400,000 − $290,000) = $110,000, leaving $600,000 of taxable Washington gains at 7% = $42,000 of state tax. No second charitable figure exists anywhere in the pricing.",
     expected: {
       itemizedDeduction: 382497.3,
       deductionTaken: "itemized",
       deductions: 382497.3,
       federalTax: 106480.54,
-      waCharitableDeduction: 111000,
-      waTaxableGains: 611000,
-      stateTax: 42770,
+      waCharitableDeduction: 110000,
+      waTaxableGains: 600000,
+      stateTax: 42000,
     },
     actual: () => {
       const r = priceYear(
@@ -25135,11 +25135,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-allocated-carryforward-acceptance",
     kind: "tax",
-    note: "BUILD v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $278,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $278,000 = $1,022,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $22,000 = $72,178.00 of excise — the corrected error, an overstatement of $7,638.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $278,000 = $922,000, excise 7% × $922,000 = $64,540.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
+    note: "BUILD v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $290,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $290,000 = $1,010,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $10,000 = $70,990.00 of excise — the corrected error, an overstatement of $7,290.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $290,000 = $910,000, excise 7% × $910,000 = $63,700.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
     expected: {
-      stateTax: 64540,
+      stateTax: 63700,
       waGains: 1200000,
-      waTaxableGains: 922000,
+      waTaxableGains: 910000,
       grossGains: 1300000,
       absorbed: 100000,
       waAbsorbed: 100000,
@@ -25178,17 +25178,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-nonwa-carryforward-base-unchanged",
     kind: "tax",
-    note: "BUILD v101 (round-14 fix F4) — A NON-WASHINGTON-ONLY CARRYFORWARD LEAVES THE WASHINGTON BASE AT THE GROSS GAINS (hand-derived; RCW 82.87.020(1)(c)–(e)): the acceptance case's exact shape — $1,300,000 of gross gains against a $100,000 entering long-term carryforward — but with NO Washington-attributable portion entered (capitalLossCarryInLtWa $0). The federal NETTING is identical to the acceptance case (the same $100,000 absorbed, the same $1,200,000 priced gain, nothing carried out — the two runs' final federal bills differ only through the settlement feedback, the larger excise being paid by a larger pre-tax distribution, which is itself ordinary income), but the whole carryforward is in the statutory addback population, so the Washington base stays at the gross $1,300,000: taxable Washington gains $1,022,000 and excise $72,178.00 — the pre-fix figure, correct for THIS attribution. The state-tax gap between the two runs is exactly the $7,638.00 the acceptance fixture corrects when the attribution is entered.",
+    note: "BUILD v101 (round-14 fix F4) — A NON-WASHINGTON-ONLY CARRYFORWARD LEAVES THE WASHINGTON BASE AT THE GROSS GAINS (hand-derived; RCW 82.87.020(1)(c)–(e)): the acceptance case's exact shape — $1,300,000 of gross gains against a $100,000 entering long-term carryforward — but with NO Washington-attributable portion entered (capitalLossCarryInLtWa $0). The federal NETTING is identical to the acceptance case (the same $100,000 absorbed, the same $1,200,000 priced gain, nothing carried out — the two runs' final federal bills differ only through the settlement feedback, the larger excise being paid by a larger pre-tax distribution, which is itself ordinary income), but the whole carryforward is in the statutory addback population, so the Washington base stays at the gross $1,300,000: taxable Washington gains $1,010,000 and excise $70,990.00 — the pre-fix figure, correct for THIS attribution. The state-tax gap between the two runs is exactly the $7,290.00 the acceptance fixture corrects when the attribution is entered.",
     expected: {
-      stateTax: 72178,
+      stateTax: 70990,
       waGains: 1300000,
-      waTaxableGains: 1022000,
+      waTaxableGains: 1010000,
       grossGains: 1300000,
       absorbed: 100000,
       waAbsorbed: 0,
       outLt: 0,
       fedNettingSameAsWaCase: 1,
-      stateGapVsWaCase: 7638,
+      stateGapVsWaCase: 7290,
     },
     actual: () => {
       const shape = {
@@ -25236,11 +25236,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-mixed-carryforward-split-and-threading",
     kind: "tax",
-    note: "BUILD v101 (round-14 fix F4) — A MIXED WASHINGTON / NON-WASHINGTON CARRYFORWARD PINS THE SPLIT, AND THE ATTRIBUTION THREADS ACROSS YEARS (hand-derived; RCW 82.87.040(3), RCW 82.87.020(1)). SPLIT LEGS (one year, 2026, the acceptance shape): a $2,000,000 entering long-term carryforward meets $1,300,000 of gross gains, so the gains absorb $1,300,000 of the pool and a $700,000 net loss remains (allowance $3,000 claimed). With HALF the pool Washington-attributable ($1,000,000), the fungible pool's pro-rata attribution puts $650,000 of the absorption on the Washington side: base $1,300,000 − $650,000 = $650,000, taxable Washington gains $372,000, excise 7% × $372,000 = $26,040.00. With the WHOLE pool attributable the absorbed $1,300,000 is all Washington: base $0, excise $0. With NONE attributable the base stays at gross: excise $72,178.00, as in the non-Washington fixture. THREADING LEG (two years): a $200,000 long-term carryforward, half Washington-attributable ($100,000), meets $100,000 of gains in 2026 ($200,000 drawn from a $1,000,000 account at 50% basis for spending; no other income, no tax): pro-rata absorption is $100,000 total / $50,000 Washington, so the 2026 base is $50,000 (excise $0, under the $278,000 deduction); the $3,000 allowance is claimed but the year has no taxable income before it, so none is used and $100,000 carries out — $50,000 of it still Washington-attributable. In 2027 Social Security of $400,000 (from age 58) covers the $200,000 spending AND the year's whole tax bill from cash — no account is drawn — and an injected $400,000 long-term sale gain (the engine's one-time sale-gain input) meets the carried $100,000: absorption $100,000 total / $50,000 Washington, base $400,000 − $50,000 = $350,000, taxable Washington gains $72,000, excise 7% × $72,000 = $5,040.00, and nothing carries out, the 2027 gross gains staying exactly the injected $400,000.",
+    note: "BUILD v101 (round-14 fix F4) — A MIXED WASHINGTON / NON-WASHINGTON CARRYFORWARD PINS THE SPLIT, AND THE ATTRIBUTION THREADS ACROSS YEARS (hand-derived; RCW 82.87.040(3), RCW 82.87.020(1)). SPLIT LEGS (one year, 2026, the acceptance shape): a $2,000,000 entering long-term carryforward meets $1,300,000 of gross gains, so the gains absorb $1,300,000 of the pool and a $700,000 net loss remains (allowance $3,000 claimed). With HALF the pool Washington-attributable ($1,000,000), the fungible pool's pro-rata attribution puts $650,000 of the absorption on the Washington side: base $1,300,000 − $650,000 = $650,000, taxable Washington gains $360,000, excise 7% × $360,000 = $25,200.00. With the WHOLE pool attributable the absorbed $1,300,000 is all Washington: base $0, excise $0. With NONE attributable the base stays at gross: excise $70,990.00, as in the non-Washington fixture. THREADING LEG (two years): a $200,000 long-term carryforward, half Washington-attributable ($100,000), meets $100,000 of gains in 2026 ($200,000 drawn from a $1,000,000 account at 50% basis for spending; no other income, no tax): pro-rata absorption is $100,000 total / $50,000 Washington, so the 2026 base is $50,000 (excise $0, under the $290,000 deduction); the $3,000 allowance is claimed but the year has no taxable income before it, so none is used and $100,000 carries out — $50,000 of it still Washington-attributable. In 2027 Social Security of $400,000 (from age 58) covers the $200,000 spending AND the year's whole tax bill from cash — no account is drawn — and an injected $400,000 long-term sale gain (the engine's one-time sale-gain input) meets the carried $100,000: absorption $100,000 total / $50,000 Washington, base $400,000 − $50,000 = $350,000, taxable Washington gains $60,000, excise 7% × $60,000 = $4,200.00, and nothing carries out, the 2027 gross gains staying exactly the injected $400,000.",
     expected: {
       mixedWaGains: 650000,
-      mixedWaTaxable: 372000,
-      mixedStateTax: 26040,
+      mixedWaTaxable: 360000,
+      mixedStateTax: 25200,
       mixedAbsorbed: 1300000,
       mixedWaAbsorbed: 650000,
       mixedAllowance: 3000,
@@ -25248,7 +25248,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       allWaStateTax: 0,
       allWaAbsorbed: 1300000,
       noneWaGains: 1300000,
-      noneWaStateTax: 72178,
+      noneWaStateTax: 70990,
       noneWaAbsorbed: 0,
       y1WaGains: 50000,
       y1StateTax: 0,
@@ -25258,8 +25258,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       y1OutLt: 100000,
       y2GrossGains: 400000,
       y2WaGains: 350000,
-      y2WaTaxable: 72000,
-      y2StateTax: 5040,
+      y2WaTaxable: 60000,
+      y2StateTax: 4200,
       y2Absorbed: 100000,
       y2WaAbsorbed: 50000,
       y2OutLt: 0,
@@ -25338,26 +25338,26 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-workyears-wa-allocated-carryforward",
     kind: "tax",
-    note: "BUILD v101 (round-14 fix F4) — A WORK YEAR'S WASHINGTON BASE DEDUCTS ONLY THE WASHINGTON-ATTRIBUTABLE ABSORBED PART (hand-derived; RCW 82.87.040(3); the workyears-deficit-sale shape of the build v100 gains leg: MFJ b.1971/b.1982, one work year at 55 in 2026, salary $100,000, employer 401(k) $5,000, 0% return, Taxable at 0% basis so a deficit-funding sale realizes its whole drawn amount as the gross gain; the stack shelters $84,750 — deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 — so taxable wages are $57,750, ordinary taxable income is $25,550, the ordinary federal tax is $2,570.00, and FICA is $6,904.13; a $400,000 entering long-term carryforward nets the sale federally in both legs). MIXED LEG (spending $404,235.87; $100,000 of the carryforward Washington-attributable): at a gross gain of $400,000 the netted federal gain is $0 (federal tax stays the $2,570.00 ordinary tax, no allowance — no net loss remains), the Washington base is $400,000 − $100,000 = $300,000, taxable Washington gains $22,000, excise $1,540.00, and the fixed point is exact: deficit = $404,235.87 + $2,570.00 + $1,540.00 + $6,904.13 + $84,750.00 − $100,000.00 = $400,000.00 of sale, leaving Taxable at $600,000 of the $1,000,000 and handing the march a $0 carryforward with a $0 Washington remainder. NON-WASHINGTON LEG (spending $443,735.87; no Washington portion entered): at a gross gain of $450,000 the netted gain is $50,000, inside the $73,350 of remaining 0% space ($98,900 threshold − $25,550 ordinary stack), so the federal tax is again $2,570.00, but the Washington base stays at the gross $450,000 — taxable Washington gains $172,000, excise $12,040.00 — and the fixed point is again exact: $443,735.87 − $5,775.87 (salary less FICA, contributions, and the ordinary tax) + $12,040.00 = $450,000.00, leaving Taxable at $550,000. Before this fix a work year inherited the march's gross-base override for the whole carryforward (and, read the other way, netting the full carryforward against the base would have priced the mixed leg's excise at $0): both legs now price the base the statute prices. A 5% flat rate is entered in both legs and ignored (the excise replaces it).",
+    note: "BUILD v101 (round-14 fix F4) — A WORK YEAR'S WASHINGTON BASE DEDUCTS ONLY THE WASHINGTON-ATTRIBUTABLE ABSORBED PART (hand-derived; RCW 82.87.040(3); the workyears-deficit-sale shape of the build v100 gains leg: MFJ b.1971/b.1982, one work year at 55 in 2026, salary $100,000, employer 401(k) $5,000, 0% return, Taxable at 0% basis so a deficit-funding sale realizes its whole drawn amount as the gross gain; the stack shelters $84,750 — deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 — so taxable wages are $57,750, ordinary taxable income is $25,550, the ordinary federal tax is $2,570.00, and FICA is $6,904.13; a $400,000 entering long-term carryforward nets the sale federally in both legs). MIXED LEG (spending $404,235.87; $100,000 of the carryforward Washington-attributable): at a gross gain of $398,991.14 the $400,000 pool absorbs $398,991.14 of it — pro-rata $99,747.79 Washington-attributable — leaving a $1,008.86 net loss that the allowance offsets against ordinary income (ordinary taxable income $25,550 − $1,008.86 = $24,541.14, federal tax $2,454.11, still inside the 10% band), the Washington base is $398,991.14 − $99,747.79 = $299,243.35, taxable Washington gains $9,243.35, excise $647.03, and the fixed point is exact: deficit = $404,235.87 + $2,454.11 + $647.03 + $6,904.13 + $84,750.00 − $100,000.00 = $398,991.14 of sale, leaving Taxable at $601,008.86 of the $1,000,000 and handing the march a $0 carryforward with a $0 Washington remainder. NON-WASHINGTON LEG (spending $443,735.87; no Washington portion entered): at a gross gain of $449,096.77 the netted gain is $49,096.77, inside the $73,350 of remaining 0% space ($98,900 threshold − $25,550 ordinary stack), so the federal tax is again $2,570.00, but the Washington base stays at the gross $449,096.77 — taxable Washington gains $159,096.77, excise $11,136.77 — and the fixed point is again exact: $443,735.87 − $5,775.87 (salary less FICA, contributions, and the ordinary tax) + $11,136.77 = $449,096.77, leaving Taxable at $550,903.23. Before this fix a work year inherited the march's gross-base override for the whole carryforward (and, read the other way, netting the full carryforward against the base would have priced the mixed leg's excise at $0): both legs now price the base the statute prices. A 5% flat rate is entered in both legs and ignored (the excise replaces it).",
     expected: {
-      mixedGross: 400000,
-      mixedNet: 0,
-      mixedFederal: 2570,
-      mixedState: 1540,
-      mixedAbsorbed: 400000,
-      mixedWaAbsorbed: 100000,
+      mixedGross: 398991.14,
+      mixedNet: -1008.86,
+      mixedFederal: 2454.11,
+      mixedState: 647.03,
+      mixedAbsorbed: 398991.14,
+      mixedWaAbsorbed: 99747.79,
       mixedCarryOutLt: 0,
       mixedCarryOutWaLt: 0,
-      mixedTaxableAtQuit: 600000,
+      mixedTaxableAtQuit: 601008.86,
       mixedRolledLt: 0,
       mixedRolledWaLt: 0,
-      noneGross: 450000,
-      noneNet: 50000,
+      noneGross: 449096.77,
+      noneNet: 49096.77,
       noneFederal: 2570,
-      noneState: 12040,
+      noneState: 11136.77,
       noneWaAbsorbed: 0,
       noneCarryOutLt: 0,
-      noneTaxableAtQuit: 550000,
+      noneTaxableAtQuit: 550903.23,
       noneRolledWaLt: 0,
     },
     actual: () => {
@@ -29192,7 +29192,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-loaded-plan-carry-in-followup4",
     kind: "tax",
-    note: "FOLLOW-UP #4 (engines review round 2 follow-up, SHOULD — settled STAND): loading a saved-plan year dropped its loss carryforward. The Playground's carry-in dials exist (S-2) and buildPgInputs passes them, but loadPgSavedPlanYear never set them, so a loaded year priced its gains gross and its ordinary income without the §1211(b) allowance the march claimed. LEG A — THE SETTLEMENT'S WORKED EXAMPLE (shared fictional sample household, server/src/sampleHousehold.ts; Do Nothing): a 2026 MFJ saved year, other ordinary income at the settlement's level (written in the code as 2 × $40,000 — the level itself coincides with a figure on the standing scrub list, so this build never writes the literal; the defect is pinned by its deltas and by the bare leg's taxable and tax figures), an entering LONG-TERM capital-loss carryforward of $3,000, no gains, no conversions, no yields. THE MARCH prices AGI $77,000 (the income less the $3,000 allowance), taxable $44,800 (less the $32,200 standard deduction), federal tax $4,880 (10% × $24,800 + 12% × $20,000), ACA MAGI $77,000, and the year's taxable income before the allowance covers the allowance whole, so the carry-in is consumed (carry-out $0). THE FIXED LOADER CONSTRUCTION (the S-3 loader construction plus the four carry-ins read off the year's detail — the federal pair from lossCarryInSt / lossCarryInLt, the Washington pair from the detail's new lossCarryInWaSt / lossCarryInWaLt lines) reproduces the march row EXACTLY: AGI, taxable, federal tax, and ACA MAGI agree to the cent (agreement 0 cents), the priced allowance is the march's $3,000, and the reconciled carry-out is the march's $0. THE PRE-FIX CONSTRUCTION (the same inputs with the carry-ins stripped — what the loader produced before this build) prices taxable $47,800 and federal tax $5,240: AGI and ACA MAGI overstated by exactly the $3,000 allowance, tax overstated by exactly $360 (the allowance at the year's 12% marginal rate). LEG B — THE WASHINGTON HALF IS NEEDED, not just the federal half (the brief's qualification): the same household as a Washington-resident plan (residenceState WA, no yields, taxable basis 0%, spending $500,000) entering a $200,000 long-term carryforward FULLY Washington-attributable. The no-income years 2026–2029 claim the allowance in pricing but use none of it (no taxable income for it to offset), so the full $200,000 — federal and Washington parts alike — enters 2030 (the detail's new carry-in / carry-out Washington lines pin the threading: in $200,000 and out $200,000 on 2026, in $200,000 on 2030). In 2030 (ages 62 / 60, the first spending year) the march's sales realize $539,984.46 of gains; the carry-in absorbs $200,000 of them, all of it Washington-attributable (lossWaAbsorbed $200,000), so the excise base is $339,984.46, the taxable Washington gains are $61,984.46 (less the $278,000 standard deduction), and the state tax is $4,338.91 (7%). THE FIXED LOADER reproduces the march's AGI, federal tax, state tax, excise base, and taxable Washington gains to the cent (agreement 0 cents). A FEDERAL-ONLY LOADER (the four federal dials copied, the Washington pair at $0 — the most the pre-fix detail could have supported, since it surfaced only the absorbed Washington part) prices the identical federal figures but an excise base of $539,984.46 and a state tax of $18,338.91 — the Washington tax overstated by exactly the 7% excise on the $200,000 Washington absorption. The bare construction prices the gains gross: AGI $539,984.46 and federal tax $73,245.55 — AGI overstated by the whole $200,000 carry-in. THE ENGINE CHANGE behind the Washington pair: RothYearDetail now surfaces lossCarryInWaSt / lossCarryInWaLt entering and lossCarryOutWaSt / lossCarryOutLtWa leaving (the march's ledger already threaded the sub-state; only the absorbed part was surfaced) — no pricing changed anywhere, and a plan with no Washington attribution reads $0 on all four lines (leg A's pins).",
+    note: "FOLLOW-UP #4 (engines review round 2 follow-up, SHOULD — settled STAND): loading a saved-plan year dropped its loss carryforward. The Playground's carry-in dials exist (S-2) and buildPgInputs passes them, but loadPgSavedPlanYear never set them, so a loaded year priced its gains gross and its ordinary income without the §1211(b) allowance the march claimed. LEG A — THE SETTLEMENT'S WORKED EXAMPLE (shared fictional sample household, server/src/sampleHousehold.ts; Do Nothing): a 2026 MFJ saved year, other ordinary income at the settlement's level (written in the code as 2 × $40,000 — the level itself coincides with a figure on the standing scrub list, so this build never writes the literal; the defect is pinned by its deltas and by the bare leg's taxable and tax figures), an entering LONG-TERM capital-loss carryforward of $3,000, no gains, no conversions, no yields. THE MARCH prices AGI $77,000 (the income less the $3,000 allowance), taxable $44,800 (less the $32,200 standard deduction), federal tax $4,880 (10% × $24,800 + 12% × $20,000), ACA MAGI $77,000, and the year's taxable income before the allowance covers the allowance whole, so the carry-in is consumed (carry-out $0). THE FIXED LOADER CONSTRUCTION (the S-3 loader construction plus the four carry-ins read off the year's detail — the federal pair from lossCarryInSt / lossCarryInLt, the Washington pair from the detail's new lossCarryInWaSt / lossCarryInWaLt lines) reproduces the march row EXACTLY: AGI, taxable, federal tax, and ACA MAGI agree to the cent (agreement 0 cents), the priced allowance is the march's $3,000, and the reconciled carry-out is the march's $0. THE PRE-FIX CONSTRUCTION (the same inputs with the carry-ins stripped — what the loader produced before this build) prices taxable $47,800 and federal tax $5,240: AGI and ACA MAGI overstated by exactly the $3,000 allowance, tax overstated by exactly $360 (the allowance at the year's 12% marginal rate). LEG B — THE WASHINGTON HALF IS NEEDED, not just the federal half (the brief's qualification): the same household as a Washington-resident plan (residenceState WA, no yields, taxable basis 0%, spending $500,000) entering a $200,000 long-term carryforward FULLY Washington-attributable. The no-income years 2026–2029 claim the allowance in pricing but use none of it (no taxable income for it to offset), so the full $200,000 — federal and Washington parts alike — enters 2030 (the detail's new carry-in / carry-out Washington lines pin the threading: in $200,000 and out $200,000 on 2026, in $200,000 on 2030). In 2030 (ages 62 / 60, the first spending year) the march's sales realize $538,852.39 of gains; the carry-in absorbs $200,000 of them, all of it Washington-attributable (lossWaAbsorbed $200,000), so the excise base is $338,852.39, the taxable Washington gains are $48,852.39 (less the $290,000 standard deduction), and the state tax is $3,419.67 (7%). The draw itself re-solves with the lower tax: 2030 spending is $500,000 and the year's total tax falls $1,132.07 ($919.24 of state tax plus $212.83 of federal tax at the 18.8% marginal rate on the smaller draw), so the realized gains fall by exactly that $1,132.07. THE FIXED LOADER reproduces the march's AGI, federal tax, state tax, excise base, and taxable Washington gains to the cent (agreement 0 cents). A FEDERAL-ONLY LOADER (the four federal dials copied, the Washington pair at $0 — the most the pre-fix detail could have supported, since it surfaced only the absorbed Washington part) prices the identical federal figures but an excise base of $538,852.39 and a state tax of $17,419.67 — the Washington tax overstated by exactly the 7% excise on the $200,000 Washington absorption. The bare construction prices the gains gross: AGI $538,852.39 and federal tax $73,032.72 — AGI overstated by the whole $200,000 carry-in. THE ENGINE CHANGE behind the Washington pair: RothYearDetail now surfaces lossCarryInWaSt / lossCarryInWaLt entering and lossCarryOutWaSt / lossCarryOutLtWa leaving (the march's ledger already threaded the sub-state; only the absorbed part was surfaced) — no pricing changed anywhere, and a plan with no Washington attribution reads $0 on all four lines (leg A's pins).",
     expected: {
       marchInLtA: 3000,
       marchInWaLtA: 0,
@@ -29221,24 +29221,24 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       marchWaAbsorbedB: 200000,
       marchOutLtB: 0,
       marchOutWaLtB: 0,
-      marchDrawGainsB: 539984.46,
-      marchWaBaseB: 339984.46,
-      marchWaTaxableB: 61984.46,
-      marchStateTaxB: 4338.91,
-      marchFedB: 35645.55,
-      marchAgiB: 339984.46,
-      fixedStateTaxB: 4338.91,
-      fixedWaBaseB: 339984.46,
-      fixedWaTaxableB: 61984.46,
-      fixedFedB: 35645.55,
-      fixedAgiB: 339984.46,
+      marchDrawGainsB: 538852.39,
+      marchWaBaseB: 338852.39,
+      marchWaTaxableB: 48852.39,
+      marchStateTaxB: 3419.67,
+      marchFedB: 35432.72,
+      marchAgiB: 338852.39,
+      fixedStateTaxB: 3419.67,
+      fixedWaBaseB: 338852.39,
+      fixedWaTaxableB: 48852.39,
+      fixedFedB: 35432.72,
+      fixedAgiB: 338852.39,
       fixedOutWaLtB: 0,
       agreementCentsB: 0,
-      fedOnlyStateTaxB: 18338.91,
-      fedOnlyWaBaseB: 539984.46,
-      fedOnlyFedB: 35645.55,
-      bareAgiB: 539984.46,
-      bareFedB: 73245.55,
+      fedOnlyStateTaxB: 17419.67,
+      fedOnlyWaBaseB: 538852.39,
+      fedOnlyFedB: 35432.72,
+      bareAgiB: 538852.39,
+      bareFedB: 73032.72,
     },
     actual: () => {
       const r2 = (n: number) => Math.round(n * 100) / 100;
