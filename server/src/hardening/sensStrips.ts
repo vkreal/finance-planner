@@ -106,13 +106,14 @@
    120s cap, so the pins are the design. Teeth sets the
    winner's cost to the measured scored[4] costs at all
    six points (winnerAboveMinimum) — the round-11 mutation
-   values — and requires exactly ten failures: five
-   naming the minimality violation (the 6% return point
-   ties the minimum, so its corrupted cost equals the pin
-   and correctly does not fail) and five naming the
+   values — and requires exactly twelve failures: six
+   naming the minimality violation and six naming the
    winner-agreement violation, because the corrupted
    reported cost is not the winner spec's repriced cost
-   either — see (f).
+   either — see (f). The 6% return point tied the minimum
+   before the C3 re-pin (2026-11-24), so it then failed
+   neither assertion; it no longer ties, so it fails both
+   like the other five points.
 
    (f) Winner-spec agreement (round 13, R13-F1): at every
    point on BOTH strips the winner's SPEC is repriced
@@ -249,17 +250,28 @@ function fmt(n: number): string {
    (sensitivity helpers returning scored[4] as the winner)
    at the same points — teeth sets the winner's cost to
    these values and requires the minimality assertion to
-   fire. Note the 6% return point: the mutated cost equals
-   the minimum there (scored[4] ties the winner), so that
-   point correctly does not fail under the mutation. Any
-   legitimate engine change that moves a minimum must
-   update these pins deliberately. */
+   fire. Before the C3 re-pin the 6% return point tied: the
+   mutated cost equaled the minimum there (scored[4] ties the
+   winner), so that point correctly did not fail under the
+   mutation. C3's harvest reprice moved the minima, so the
+   mutated cost no longer ties at 6% — the point now fails
+   under the mutation, and teeth leg (3) expects twelve
+   failures, not ten. Any legitimate engine change that moves
+   a minimum must update these pins deliberately. Deliberate
+   re-pin, 2026-11-24 (first failing commit 875ce0c, Engine
+   Review C3): C3 repriced the harvest block so the pay-sale
+   gain is priced income; the winners' net costs rose
+   +$686.20 / +$862.15 / +$1,206.16 at 4/5/6% (the 5% move
+   matches C3's own commit message), Do Nothing unchanged
+   across the boundary, reported = independently repriced to
+   the cent at every point. Priced on main at dadfee2 (fast
+   and full hardening runs agree exactly). */
 const EXPECTED_MIN_COSTS_CENTS: {
   return: Record<number, number>;
   heir: Record<number, number>;
 } = {
-  return: { 4: 49359430, 5: 57632507, 6: 69966065 },
-  heir: { 0: 57632507, 22: 57632507, 32: 57632507 },
+  return: { 4: 49428049, 5: 57718725, 6: 70086683 },
+  heir: { 0: 57718725, 22: 57718725, 32: 57718725 },
 };
 const MUTATED_WINNER_COSTS_CENTS: {
   return: Record<number, number>;
@@ -412,14 +424,15 @@ function priceHeirStrip(): HeirPoint[] {
 //   minimum for that point (EXPECTED_MIN_COSTS_CENTS).
 //   Teeth sets the winner's cost to the measured scored[4]
 //   costs at all six points (winnerAboveMinimum) — the
-//   round-11 mutation values — and requires exactly ten
-//   failures: five naming the minimality violation and
-//   five naming the winner-agreement violation (family
+//   round-11 mutation values — and requires exactly twelve
+//   failures: six naming the minimality violation and
+//   six naming the winner-agreement violation (family
 //   (f) below), because a reported cost that is not the
-//   winner spec's repriced cost fires that assertion too;
-//   the 6% return point ties the minimum, so its
-//   corrupted cost equals the pin and correctly does not
-//   fail either assertion.
+//   winner spec's repriced cost fires that assertion too.
+//   The 6% return point tied the minimum before the C3
+//   re-pin (2026-11-24), so it then failed neither
+//   assertion; it no longer ties, so it fails both like
+//   the other five points.
 //   (4) Reported-versus-repriced Do Nothing agreement
 //   (round 12, R12-F1; heir strip only — the return strip
 //   collects no reported Do Nothing): at every heir point
@@ -534,8 +547,8 @@ function evaluateStrips(strips: Strips, corrupt?: Corrupt): PinFailure[] {
   // reported cost is read through the same winnerAboveMinimum
   // substitution as the minimality loops, so a corrupted
   // reported cost — the round-11 mutation's form — fires
-  // this assertion too (leg (3) produces five minimality
-  // failures and five agreement failures).
+  // this assertion too (leg (3) produces six minimality
+  // failures and six agreement failures).
   for (const p of ret) {
     const repricedCents =
       corrupt?.winnerSpecSwapped === true
@@ -683,12 +696,14 @@ function runSensStripsTeeth(): HardeningTeethResult {
   //   must appear.
   //   (3) the winner's cost set to the measured scored[4]
   //   costs at all six points (the round-11 mid-pack
-  //   substitution values), so exactly ten failures must
-  //   appear — five naming the minimality violation and
-  //   five naming the winner-agreement violation, because
+  //   substitution values), so exactly twelve failures must
+  //   appear — six naming the minimality violation and
+  //   six naming the winner-agreement violation, because
   //   the corrupted reported cost is not the winner spec's
   //   repriced cost either (family (f)); the 6% return
-  //   point ties the minimum and correctly fails neither.
+  //   point tied the minimum before the C3 re-pin
+  //   (2026-11-24) and correctly failed neither — it no
+  //   longer ties, so it fails both like the other five.
   //   (4) the reported Do Nothing inflated by $1,000,000 at
   //   all three heir points (the round-12 reviewer's
   //   mutation), so exactly three failures naming the
@@ -741,15 +756,15 @@ function runSensStripsTeeth(): HardeningTeethResult {
       winnerEqualsDnFailures.every((f) =>
         f.includes("does not strictly beat independently repriced Do Nothing"),
       ) &&
-      minAboveFailures.length === 10 &&
+      minAboveFailures.length === 12 &&
       minAboveFailures.filter(
         (f) =>
           f.includes("does not attain the pinned minimum") &&
           !f.includes("independently repriced winner"),
-      ).length === 5 &&
+      ).length === 6 &&
       minAboveFailures.filter((f) =>
         f.includes("does not agree with independently repriced winner"),
-      ).length === 5 &&
+      ).length === 6 &&
       reportedDnInflatedFailures.length === 3 &&
       reportedDnInflatedFailures.every((f) =>
         f.includes("does not agree with independently repriced Do Nothing"),
