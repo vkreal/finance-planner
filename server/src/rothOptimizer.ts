@@ -1298,6 +1298,35 @@ export function scoreAllCandidates(
   return scored;
 }
 
+/* ---------------- Winner margin (Engine Review, Build 5, S-8) ----
+   The winner–runner-up net-cost gap and the near-tie flag, computed
+   from the result's own winner and runners-up (never re-derived by
+   a consumer from a different ordering). The band is the
+   sensitivity suite's own $5,000 band
+   (hardening/sensCaps.ts NEAR_TIE_BAND_CENTS = 500000), not a new
+   number: the suite treats sub-$5,000 gaps as unstable, so a crown
+   inside it is a close call. Net costs are dollars on
+   NetCostBreakdown; the gap is integer cents, matching the
+   suite's cent-based band and the integrity maxes. */
+export const WINNER_NEAR_TIE_BAND_CENTS = 500000; // $5,000
+
+export function winnerRunnerUpGapCents(result: {
+  winner: ScoredCandidate;
+  runnersUp: ScoredCandidate[];
+}): number | null {
+  const runnerUp = result.runnersUp[0];
+  if (runnerUp == null) return null;
+  return Math.round((runnerUp.cost.netCost - result.winner.cost.netCost) * 100);
+}
+
+export function winnerNearTie(result: {
+  winner: ScoredCandidate;
+  runnersUp: ScoredCandidate[];
+}): boolean {
+  const gap = winnerRunnerUpGapCents(result);
+  return gap != null && gap <= WINNER_NEAR_TIE_BAND_CENTS;
+}
+
 export type OptimizerResult = {
   candidatesTested: number;
   // Candidates whose priced march is valid to recommend
@@ -1324,6 +1353,35 @@ export type OptimizerResult = {
   // only when no candidate was valid at all and the raw winner
   // was crowned anyway (see crownOptimizerWinners).
   winnerQualified: boolean;
+  // (Engine Review, Build 5, S-7): the crowned winner's premium
+  // years whose IRMAA surcharge is UNKNOWN — no lookback entry
+  // exists for year − 2 — so the winner's net cost prices $0 of
+  // IRMAA in those years. A copy of
+  // winner.result.irmaaLookbackMissingYears (the same list every
+  // candidate carries: the missing years depend on the plan's
+  // Medicare start and the lookback seed, not the strategy).
+  // Empty on every plan whose winner has no unknown premium
+  // year. `winnerQualified` does NOT assert this — a non-empty
+  // list means the recommendation rests on an unknown, not a
+  // computed zero, exactly as the dynamic result documents for
+  // its own top-level list.
+  irmaaLookbackMissingYears: number[];
+  // (Engine Review, Build 5, S-8): the winner–runner-up
+  // net-cost gap, in integer cents (runner-up net cost minus
+  // winner net cost on the cost-first ordering — always ≥ 0),
+  // or null when the winner has no runner-up. A
+  // within-tolerance settlement residual alone can reverse a
+  // crowning whenever this margin is ≤ ~7¢ (the tolerance
+  // derivation: a 2¢ residual's balance knock-on stays under
+  // ~7¢ over a 40-year horizon), so a crown with a small gap
+  // is a close call the result must say so about, not a
+  // comfortable win.
+  winnerRunnerUpGapCents: number | null;
+  // (Engine Review, Build 5, S-8): true exactly when a
+  // runner-up exists and the gap is within the near-tie band
+  // (WINNER_NEAR_TIE_BAND_CENTS, above) — the crown is inside
+  // the band the sensitivity suite treats as unstable.
+  winnerNearTie: boolean;
   // The raw cost-first candidate over ALL tested candidates,
   // when it was excluded as invalid — so a material unresolved
   // discrepancy can never silently produce an unqualified
@@ -1605,6 +1663,12 @@ export function runOptimizer(
     winnerByEndingWealth: crowned.winnerByEndingWealth,
     winnersDiffer: crowned.winnersDiffer,
     winnerQualified: crowned.winnerQualified,
+    // (Engine Review, Build 5, S-7/S-8): the winner's unknown-IRMAA
+    // years, the winner–runner-up gap, and the near-tie flag —
+    // computed from this run's own winner and runners-up.
+    irmaaLookbackMissingYears: [...winner.result.irmaaLookbackMissingYears],
+    winnerRunnerUpGapCents: winnerRunnerUpGapCents({ winner, runnersUp }),
+    winnerNearTie: winnerNearTie({ winner, runnersUp }),
     excludedInvalidWinner: crowned.excludedInvalidWinner,
     objective: OPTIMIZER_OBJECTIVE,
     searchScope: describeOptimizerSearchScope(inputs, {
@@ -2220,6 +2284,15 @@ export function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerRes
     winnerByEndingWealth,
     winnersDiffer: crowned.winnersDiffer,
     winnerQualified: crowned.winnerQualified,
+    // (Engine Review, Build 5, S-7/S-8): the winner's unknown-IRMAA
+    // years, the winner–runner-up gap, and the near-tie flag —
+    // computed from this run's own winner and runners-up (the
+    // joint runner pool, same as `runnersUp` above). The compact
+    // summary spreads the whole result, so these scalars survive
+    // the cache round-trip unchanged.
+    irmaaLookbackMissingYears: [...winner.result.irmaaLookbackMissingYears],
+    winnerRunnerUpGapCents: winnerRunnerUpGapCents({ winner, runnersUp }),
+    winnerNearTie: winnerNearTie({ winner, runnersUp }),
     excludedInvalidWinner: crowned.excludedInvalidWinner,
     objective: OPTIMIZER_OBJECTIVE,
     searchScope: describeOptimizerSearchScope(inputs, {

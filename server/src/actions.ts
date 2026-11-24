@@ -14288,6 +14288,15 @@ export const Actions = {
       objective: z.string(),
       searchScope: optimizerSearchScopeOut,
       runnersUp: z.array(optScoreOut),
+      // (Engine Review, Build 5, S-7/S-8): the crowned winner's
+      // unknown-IRMAA years, the winner–runner-up net-cost gap in
+      // integer cents, and the near-tie flag — the engine result's
+      // own fields, mapped whole from the joint run (see the
+      // success mapping below). Null gap / false flag when the
+      // winner has no runner-up.
+      irmaaLookbackMissingYears: z.array(z.number().int()),
+      winnerRunnerUpGapCents: z.number().int().nullable(),
+      winnerNearTie: z.boolean(),
       // Priced levers (build v69): the entered plan priced as
       // its own fixed strategy (its saved ceilings / window /
       // draw order / claiming ages), and the top distinct
@@ -14433,6 +14442,13 @@ export const Actions = {
           heldFixed: [] as string[],
         },
         runnersUp: [],
+        // (Engine Review, Build 5, S-7/S-8): the failure path
+        // crowns nobody, so no unknown-IRMAA years, no gap, no
+        // near-tie — the same defaults the engine fields carry
+        // when a winner has no runner-up.
+        irmaaLookbackMissingYears: [],
+        winnerRunnerUpGapCents: null,
+        winnerNearTie: false,
         savedPlan: null,
         improvements: [],
         excludedInvalidLevers: 0,
@@ -14658,6 +14674,12 @@ export const Actions = {
             heldFixed: res.searchScope.heldFixed,
           },
           runnersUp: res.runnersUp.map((s) => toOptScore(s, dnCost)),
+          // (Engine Review, Build 5, S-7/S-8): the joint run's
+          // own fields, mapped whole — they describe the
+          // response's crowned winner.
+          irmaaLookbackMissingYears: res.irmaaLookbackMissingYears,
+          winnerRunnerUpGapCents: res.winnerRunnerUpGapCents,
+          winnerNearTie: res.winnerNearTie,
           savedPlan: toOptScore(savedPlanScore, dnCost),
           improvements: pricedLevers.improvements.map(
             ({ candidate, gainVsSavedPlan }) => ({
