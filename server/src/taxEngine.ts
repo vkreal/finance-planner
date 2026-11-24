@@ -9104,6 +9104,22 @@ export function simulateRothPlan(
       const first = iterateCreditFrom(
         premiumReconcile ? premiumInitialCredit : 0,
       );
+      // (Engine Review core, S-3): the credit priced at the cliff
+      // itself, shared by both re-seed attempts below — the
+      // converged-$0 branch and the non-converged branch. Hoisted
+      // verbatim from the converged branch's inline computation;
+      // the expression and its inputs are unchanged, and
+      // acaCreditFor is pure, so computing it here moves nothing.
+      const cliffCredit =
+        benchmark != null && acaCliffDollars != null
+          ? acaCreditFor({
+              magi: acaCliffDollars,
+              householdSize,
+              coverageYear: year,
+              benchmarkAnnual: benchmark,
+              projected: true,
+            }).credit
+          : 0;
       if (first.converged) {
         // W5-B1 DEGENERATE-$0 RE-SEED: the credit map has
         // TWO exact fixed points whenever funding the full
@@ -9142,16 +9158,6 @@ export function simulateRothPlan(
         // equality just checked in either branch; the inner
         // fields pass through untouched.
         if (first.settlement.createdFbCredit === 0) {
-          const cliffCredit =
-            benchmark != null && acaCliffDollars != null
-              ? acaCreditFor({
-                  magi: acaCliffDollars,
-                  householdSize,
-                  coverageYear: year,
-                  benchmarkAnnual: benchmark,
-                  projected: true,
-                }).credit
-              : 0;
           if (cliffCredit > 0) {
             const second = iterateCreditFrom(cliffCredit);
             if (
@@ -9202,6 +9208,40 @@ export function simulateRothPlan(
       const keptAcaCreditCents = Math.round(
         Math.abs(kept.createdFbCredit - kept.feedbackCredit) * 100,
       );
+      // (Engine Review core, S-3): the first run did not converge,
+      // and the kept settlement's own ACA residual is above $0 —
+      // the credit iteration itself alternates, so no exact fixed
+      // point was found from the first seed. Attempt the re-seed
+      // once from the cliff credit, exactly as the converged-$0
+      // branch does above, and keep it ONLY if it converges
+      // exactly to a credit above $0. The residual > $0 gate is
+      // a defensive pin: it skips the re-seed when the kept
+      // settlement's credit residual is already 0¢, i.e. the year
+      // is settled on its credit within tolerance. With
+      // cent-quantized inputs that cannot happen on this branch —
+      // a 0¢ residual would have converged — so the gate only
+      // ever filters a sub-cent edge, and it can only ever skip
+      // a re-seed attempt, never cause a wrong one. In a
+      // genuinely over-cliff year no such state exists: the
+      // re-seed converges back to $0 (or not at all), and the
+      // year keeps its closest settlement exactly as before.
+      if (keptAcaCreditCents > 0 && cliffCredit > 0) {
+        const second = iterateCreditFrom(cliffCredit);
+        if (
+          second.converged &&
+          second.settlement.createdFbCredit > 0
+        ) {
+          return {
+            ...second.settlement,
+            settlementMismatchCents: {
+              ...second.settlement.settlementMismatchCents,
+              acaCredit: 0,
+            },
+            settlementPasses: second.passes,
+            settlementStopReason: "converged" as const,
+          };
+        }
+      }
       return {
         ...kept,
         settlementConverged: false,
